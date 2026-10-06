@@ -1,9 +1,8 @@
 """IdentityService — resolve and link principals across channels (Phase 3).
 
-Storage-agnostic: an in-memory store is the default; a durable Postgres-backed
-store (``identity_links`` / ``principals`` tables) swaps in later behind the same
-async interface, exactly like the chat persistence swap. All lookups are
-tenant-scoped.
+Storage-agnostic: the in-memory store is the no-DB default; with a database the
+lifespan installs ``PostgresIdentityStore`` (``principals`` / ``identity_links``,
+migration 0131) behind the same async interface. All lookups are tenant-scoped.
 """
 
 from __future__ import annotations
@@ -22,7 +21,9 @@ class IdentityStore(Protocol):
         self, tenant_id: str, channel: str, channel_user_id: str
     ) -> IdentityLink | None: ...
 
-    async def create_link(self, link: IdentityLink) -> None: ...
+    async def create_link(self, link: IdentityLink) -> IdentityLink: ...
+
+    async def claim_link(self, principal: Principal, link: IdentityLink) -> Principal: ...
 
     async def links_for_principal(
         self, principal_id: str, tenant_id: str
@@ -46,8 +47,18 @@ class InMemoryIdentityStore:
     ) -> IdentityLink | None:
         return self._links.get((tenant_id, channel, channel_user_id))
 
-    async def create_link(self, link: IdentityLink) -> None:
+    async def create_link(self, link: IdentityLink) -> IdentityLink:
+        return self._links.setdefault(link.key, link)
+
+    async def claim_link(self, principal: Principal, link: IdentityLink) -> Principal:
+        existing = self._links.get(link.key)
+        if existing is not None:
+            bound = self._principals.get(existing.principal_id)
+            if bound is not None and bound.tenant_id == link.tenant_id:
+                return bound
+        self._principals[principal.id] = principal
         self._links[link.key] = link
+        return principal
 
     async def links_for_principal(
         self, principal_id: str, tenant_id: str
@@ -86,16 +97,20 @@ class IdentityService:
         principal = Principal(
             tenant_id=tenant_id, kind=kind, display_name=display_name or channel_user_id
         )
-        await self._store.create_principal(principal)
-        await self._store.create_link(
+        # Atomic claim: two first contacts racing on one identity (replicas, a
+        # double-sent message) used to each create a principal, and the loser's
+        # ON CONFLICT DO NOTHING link insert was ignored — it went on with an
+        # orphan principal and claimed a second chat thread (a10-F249-02).
+        winner: Principal = await self._store.claim_link(
+            principal,
             IdentityLink(
                 tenant_id=tenant_id,
                 channel=channel,
                 channel_user_id=channel_user_id,
                 principal_id=principal.id,
-            )
+            ),
         )
-        return principal
+        return winner
 
     async def link_identity(
         self,
@@ -121,8 +136,10 @@ class IdentityService:
             channel_user_id=channel_user_id,
             principal_id=principal_id,
         )
-        await self._store.create_link(link)
-        return link
+        # The store returns the binding that is in the table: a concurrent link of
+        # the same identity to another principal wins and is returned unchanged.
+        bound: IdentityLink = await self._store.create_link(link)
+        return bound
 
     async def get_principal(self, principal_id: str, tenant_id: str) -> Principal | None:
         return await self._store.get_principal(principal_id, tenant_id)

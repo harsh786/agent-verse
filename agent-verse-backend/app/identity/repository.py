@@ -63,23 +63,117 @@ class PostgresIdentityStore:
             ).mappings().one_or_none()
             return self._link(row) if row else None
 
-    async def create_link(self, link: IdentityLink) -> None:
+    async def create_link(self, link: IdentityLink) -> IdentityLink:
+        """Insert *link* unless the identity is already bound; return the binding
+        that is in the table (the existing one when another request won)."""
         async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, link.tenant_id):
+            won = (
+                await s.execute(
+                    text(
+                        "INSERT INTO identity_links "
+                        "(tenant_id, channel, channel_user_id, principal_id, created_at) "
+                        "VALUES (:t, :c, :u, :p, :ca) "
+                        "ON CONFLICT (tenant_id, channel, channel_user_id) DO NOTHING "
+                        "RETURNING principal_id"
+                    ),
+                    {
+                        "t": link.tenant_id,
+                        "c": link.channel,
+                        "u": link.channel_user_id,
+                        "p": link.principal_id,
+                        "ca": link.created_at,
+                    },
+                )
+            ).scalar_one_or_none()
+            if won is not None:
+                return link
+            row = (
+                await s.execute(
+                    text(
+                        "SELECT * FROM identity_links WHERE tenant_id = :t "
+                        "AND channel = :c AND channel_user_id = :u"
+                    ),
+                    {"t": link.tenant_id, "c": link.channel, "u": link.channel_user_id},
+                )
+            ).mappings().one()
+            return self._link(row)
+
+    async def claim_link(self, principal: Principal, link: IdentityLink) -> Principal:
+        """First contact: create *principal* bound to *link* — or, when a concurrent
+        request bound the identity first, return THAT principal (a10-F249-02).
+
+        One transaction. The link insert is ``ON CONFLICT DO NOTHING RETURNING``;
+        when it loses, the bound principal is read back in a NEW statement (READ
+        COMMITTED: it sees the winner's committed rows, which the insert's own
+        snapshot does not) and this request's principal is deleted again, so no
+        orphan is left. A link whose principal no longer exists is re-pointed,
+        conditionally on the value just read, so a live binding is never displaced.
+        """
+        t = principal.tenant_id
+        key = {"t": t, "c": link.channel, "u": link.channel_user_id}
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, t):
             await s.execute(
                 text(
-                    "INSERT INTO identity_links "
-                    "(tenant_id, channel, channel_user_id, principal_id, created_at) "
-                    "VALUES (:t, :c, :u, :p, :ca) "
-                    "ON CONFLICT (tenant_id, channel, channel_user_id) DO NOTHING"
+                    "INSERT INTO principals (id, tenant_id, kind, display_name, created_at) "
+                    "VALUES (:id, :t, :kind, :dn, :ca) ON CONFLICT (id) DO NOTHING"
                 ),
                 {
-                    "t": link.tenant_id,
-                    "c": link.channel,
-                    "u": link.channel_user_id,
-                    "p": link.principal_id,
-                    "ca": link.created_at,
+                    "id": principal.id,
+                    "t": t,
+                    "kind": principal.kind,
+                    "dn": principal.display_name,
+                    "ca": principal.created_at,
                 },
             )
+            won = (
+                await s.execute(
+                    text(
+                        "INSERT INTO identity_links "
+                        "(tenant_id, channel, channel_user_id, principal_id, created_at) "
+                        "VALUES (:t, :c, :u, :p, :ca) "
+                        "ON CONFLICT (tenant_id, channel, channel_user_id) DO NOTHING "
+                        "RETURNING principal_id"
+                    ),
+                    {**key, "p": principal.id, "ca": link.created_at},
+                )
+            ).scalar_one_or_none()
+            if won is not None:
+                return principal
+            row = (
+                await s.execute(
+                    text(
+                        "SELECT l.principal_id AS bound_id, p.id, p.tenant_id, p.kind, "
+                        "p.display_name, p.created_at FROM identity_links l "
+                        "LEFT JOIN principals p "
+                        "ON p.id = l.principal_id AND p.tenant_id = l.tenant_id "
+                        "WHERE l.tenant_id = :t AND l.channel = :c AND l.channel_user_id = :u"
+                    ),
+                    key,
+                )
+            ).mappings().one()
+            if row["id"] is not None:
+                await s.execute(
+                    text("DELETE FROM principals WHERE id = :id AND tenant_id = :t"),
+                    {"id": principal.id, "t": t},
+                )
+                return self._principal(row)
+            # Dangling link (its principal was deleted): re-point it to ours, only
+            # if it still names the principal we saw missing.
+            repointed = (
+                await s.execute(
+                    text(
+                        "UPDATE identity_links SET principal_id = :p, created_at = :ca "
+                        "WHERE tenant_id = :t AND channel = :c AND channel_user_id = :u "
+                        "AND principal_id = :old RETURNING principal_id"
+                    ),
+                    {**key, "p": principal.id, "ca": link.created_at, "old": row["bound_id"]},
+                )
+            ).scalar_one_or_none()
+            if repointed is None:
+                raise RuntimeError(
+                    "identity link changed concurrently while re-pointing a dangling link"
+                )
+            return principal
 
     async def links_for_principal(
         self, principal_id: str, tenant_id: str
