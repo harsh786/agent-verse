@@ -35,6 +35,8 @@ _DEFAULT_RULE_REFRESH_S = 60.0
 _LOAD_RETRY_BACKOFF_S = 5.0
 # Per-tenant cap of the in-process violation cache (Postgres is the record).
 _VIOLATION_CACHE_PER_TENANT = 1000
+# Actions that withhold the content (``evaluate`` answers ``blocked``).
+_BLOCKING_ACTIONS = frozenset({GuardrailAction.BLOCK.value, GuardrailAction.QUARANTINE.value})
 
 
 class GuardrailRulesUnavailableError(RuntimeError):
@@ -658,9 +660,14 @@ class GuardrailsEngine:
         violations = []
         redacted_content = content
         blocked = False
+        quarantined = False
         hitl_required = False
 
         for rule in rules:
+            if rule.action == GuardrailAction.ALLOW:
+                # QA-11: an explicit exemption — matching it is not a violation
+                # and there is nothing to enforce, so it need not even be run.
+                continue
             checked = (
                 injection_content
                 if injection_content is not None and rule.rule_type == "prompt_injection"
@@ -687,6 +694,11 @@ class GuardrailsEngine:
 
                 if rule.action == GuardrailAction.BLOCK:
                     blocked = True
+                elif rule.action == GuardrailAction.QUARANTINE:
+                    # QA-11: quarantine used to fall through every branch, so the
+                    # content flowed on. It withholds the content like BLOCK.
+                    blocked = True
+                    quarantined = True
                 elif rule.action == GuardrailAction.REQUIRE_HITL:
                     hitl_required = True
                 elif rule.action == GuardrailAction.REDACT:
@@ -695,6 +707,7 @@ class GuardrailsEngine:
         await self._persist_violations(tenant_id, violations)
         return {
             "blocked": blocked,
+            "quarantined": quarantined,
             "hitl_required": hitl_required,
             "violation_count": len(violations),
             "violations": [
@@ -721,6 +734,8 @@ class GuardrailsEngine:
         would_trigger = []
 
         for rule in rules:
+            if rule.action == GuardrailAction.ALLOW:
+                continue  # never a violation (see evaluate)
             result = await self._evaluate_rule(rule, content)
             if result["triggered"]:
                 would_trigger.append(
@@ -734,7 +749,10 @@ class GuardrailsEngine:
                 )
 
         return {
-            "would_block": any(w["action"] == "block" for w in would_trigger),
+            "would_block": any(w["action"] in _BLOCKING_ACTIONS for w in would_trigger),
+            "would_quarantine": any(
+                w["action"] == GuardrailAction.QUARANTINE.value for w in would_trigger
+            ),
             "would_require_hitl": any(w["action"] == "require_hitl" for w in would_trigger),
             "triggered_rules": would_trigger,
         }

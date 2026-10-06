@@ -52,6 +52,20 @@ def _to_row(rule: GuardrailRule) -> dict[str, object]:
     }
 
 
+def _row_action(row: GuardrailRuleRow) -> GuardrailAction:
+    action = GuardrailAction(row.action)
+    # QA-11: the legacy /guardrails API stored "allow" rules as ``log`` (so each
+    # match recorded a violation); their legacy record still says "allow".
+    legacy = (row.config or {}).get("_legacy")
+    if (
+        action == GuardrailAction.LOG
+        and isinstance(legacy, dict)
+        and str(legacy.get("action") or "").strip().lower() == GuardrailAction.ALLOW.value
+    ):
+        return GuardrailAction.ALLOW
+    return action
+
+
 def _from_row(row: GuardrailRuleRow) -> GuardrailRule:
     return GuardrailRule(
         rule_id=row.rule_id,
@@ -59,7 +73,7 @@ def _from_row(row: GuardrailRuleRow) -> GuardrailRule:
         name=row.name,
         rule_type=row.rule_type,
         layers=[GuardrailLayer(x) for x in (row.layers or [])],
-        action=GuardrailAction(row.action),
+        action=_row_action(row),
         categories=[ViolationCategory(c) for c in (row.categories or [])],
         severity=row.severity,
         enabled=row.enabled,

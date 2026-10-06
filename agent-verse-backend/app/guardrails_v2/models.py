@@ -25,7 +25,11 @@ class GuardrailAction(StrEnum):
     REDACT = "redact"
     BLOCK = "block"
     REQUIRE_HITL = "require_hitl"
+    # Blocks the content like BLOCK; reported as quarantined (QA-11).
     QUARANTINE = "quarantine"
+    # An explicit exemption: a matching ALLOW rule takes no action and records
+    # no violation. It does not exempt the content from the tenant's other rules.
+    ALLOW = "allow"
 
 
 class ViolationCategory(StrEnum):

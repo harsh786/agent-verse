@@ -173,7 +173,7 @@ _ACTION_MAP: dict[str, str] = {
     "warn": "warn",
     "flag": "warn",
     "log": "log",
-    "allow": "log",
+    "allow": "allow",
     "require_hitl": "require_hitl",
     "require_approval": "require_hitl",
     "quarantine": "quarantine",
