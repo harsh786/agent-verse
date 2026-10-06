@@ -861,26 +861,24 @@ class TestConnectorsExtra:
         # Line 539: when no authorize_url, full_auth_url contains config hint
         assert "Configure" in data.get("auth_url", "")
 
-    # lines 814–815 — search_capabilities: mcp_client.discover_all_tools raises → empty list
+    # a02-F032-02: a failed discovery is a 503, never "no tools".
     def test_search_capabilities_mcp_client_exception(self) -> None:
         mock_mcp = AsyncMock()
-        mock_mcp.discover_all_tools = AsyncMock(side_effect=RuntimeError("discover failed"))
+        mock_mcp.discover_all_tools_report = AsyncMock(side_effect=RuntimeError("listing down"))
 
         app = _make_connectors_app(mcp_client=mock_mcp)
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/connectors/capabilities/search?q=database", headers=_H)
-        assert resp.status_code == 200
-        assert "results" in resp.json()
+        assert resp.status_code == 503
 
-    # lines 915–916 — missing_capabilities: mcp_client.discover_all_tools raises → empty
     def test_missing_capabilities_mcp_exception(self) -> None:
         mock_mcp = AsyncMock()
-        mock_mcp.discover_all_tools = AsyncMock(side_effect=RuntimeError("discover failed"))
+        mock_mcp.discover_all_tools_report = AsyncMock(side_effect=RuntimeError("listing down"))
 
         app = _make_connectors_app(mcp_client=mock_mcp)
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/connectors/capabilities/missing?goal=create jira ticket", headers=_H)
-        assert resp.status_code == 200
+        assert resp.status_code == 503
 
 
 # ===========================================================================

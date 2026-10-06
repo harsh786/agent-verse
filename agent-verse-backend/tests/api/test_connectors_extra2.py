@@ -611,28 +611,24 @@ def test_list_capabilities_db_error_is_503_not_fake_catalog_tools() -> None:
 
 
 def test_search_capabilities_without_mcp_client() -> None:
-    """search_capabilities runs even without mcp_client (lines 839-840)."""
+    """a02-F032-02: without an MCP client the search is a 503, not an empty list."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get(
         "/connectors/capabilities/search?q=search",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "query" in body
-    assert body["query"] == "search"
-    assert "results" in body
+    assert resp.status_code == 503
 
 
 def test_search_capabilities_with_mcp_client() -> None:
-    """search_capabilities calls mcp_client.discover_all_tools (lines 839-840)."""
-    mock_tool = MagicMock()
-    mock_tool.name = "search_issues"
-    mock_tool.description = "Search for issues"
-    mock_tool.to_dict.return_value = {"name": "search_issues", "description": "Search for issues"}
+    """search_capabilities runs the per-connector discovery report."""
+    from app.mcp.client import DiscoveryReport, ToolDefinition
 
+    report = DiscoveryReport(
+        tools=[ToolDefinition(name="search_issues", description="Search for issues")]
+    )
     mock_client = MagicMock()
-    mock_client.discover_all_tools = AsyncMock(return_value=[mock_tool])
+    mock_client.discover_all_tools_report = AsyncMock(return_value=report)
 
     client = TestClient(_make_app(mcp_client=mock_client), raise_server_exceptions=False)
     resp = client.get(
@@ -642,7 +638,9 @@ def test_search_capabilities_with_mcp_client() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["query"] == "search"
-    mock_client.discover_all_tools.assert_awaited_once()
+    assert body["complete"] is True
+    assert [r["tool_name"] for r in body["results"]] == ["search_issues"]
+    mock_client.discover_all_tools_report.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -729,22 +727,21 @@ def test_discover_connector_tools_discovery_failure_returns_500() -> None:
 
 
 def test_missing_capabilities_without_mcp_client() -> None:
-    """missing_capabilities works without mcp_client (no tools)."""
+    """a02-F032-02: no MCP client is a 503 (tool availability is unknown)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get(
         "/connectors/capabilities/missing?goal=search github for issues",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "goal" in body
-    assert "missing_connectors" in body
+    assert resp.status_code == 503
 
 
 def test_missing_capabilities_with_mcp_client() -> None:
-    """missing_capabilities calls mcp_client.discover_all_tools (lines 915-916)."""
+    """missing_capabilities runs the per-connector discovery report."""
+    from app.mcp.client import DiscoveryReport
+
     mock_client = MagicMock()
-    mock_client.discover_all_tools = AsyncMock(return_value=[])
+    mock_client.discover_all_tools_report = AsyncMock(return_value=DiscoveryReport())
 
     client = TestClient(_make_app(mcp_client=mock_client), raise_server_exceptions=False)
     resp = client.get(
@@ -754,7 +751,9 @@ def test_missing_capabilities_with_mcp_client() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["available_tool_count"] == 0
-    mock_client.discover_all_tools.assert_awaited_once()
+    assert body["missing_connectors"] == []
+    assert body["can_proceed"] is True
+    mock_client.discover_all_tools_report.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

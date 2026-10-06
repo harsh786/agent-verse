@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import inspect
 import logging
 import os
@@ -14,7 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
@@ -2021,9 +2020,22 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
 # ── Capability Registry API ───────────────────────────────────────────────────
 
 
+CAPABILITIES_PAGE_MAX = 500
+
+
 @router.get("/capabilities")
-async def list_capabilities(request: Request, q: str = "") -> list[dict]:
-    """List all discovered tool capabilities for this tenant."""
+async def list_capabilities(
+    request: Request,
+    response: Response,
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=100, ge=1, le=CAPABILITIES_PAGE_MAX),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+) -> list[dict]:
+    """One page of the tenant's discovered tool capabilities (a02-F032-05).
+
+    It returned every row for the tenant with no LIMIT. Pages are ordered by
+    (tool_name, connector_id); ``X-Next-Offset`` is set when there is more.
+    """
     tenant_ctx = _require_tenant(request)
     try:
         # Resolved inside the try: a factory that cannot be built is the same
@@ -2047,8 +2059,13 @@ async def list_capabilities(request: Request, q: str = "") -> list[dict]:
             if q:
                 sql += " AND (tool_name ILIKE :q OR description ILIKE :q)"
                 params["q"] = f"%{q}%"
+            sql += " ORDER BY tool_name, connector_id LIMIT :lim OFFSET :off"
+            params.update(lim=limit + 1, off=offset)
             result = await session.execute(text(sql), params)
-            rows = result.fetchall()
+            rows = list(result.fetchall())
+        if len(rows) > limit:
+            rows = rows[:limit]
+            response.headers["X-Next-Offset"] = str(offset + limit)
         return [
             {
                 "tool_name": r[0],
@@ -2072,25 +2089,86 @@ async def list_capabilities(request: Request, q: str = "") -> list[dict]:
         ) from exc
 
 
-@router.get("/capabilities/search")
-async def search_capabilities(request: Request, q: str = Query(...)) -> dict:
-    """Semantic + keyword search over discovered capabilities."""
-    tenant_ctx = _require_tenant(request)
+CAPABILITY_SEARCH_RATE_LIMIT = 30  # requests per tenant ...
+CAPABILITY_SEARCH_WINDOW_S = 60  # ... per this many seconds
+
+
+async def _capability_rate_limit(request: Request, tenant_id: str) -> None:
+    """Live discovery of every connector is costly: bound it per tenant (a02-F032-07)."""
+    from app.tenancy.ip_rate_limit import enforce_key_rate_limit
+
+    await enforce_key_rate_limit(
+        f"capability_search:{tenant_id}",
+        bucket="capability_search",
+        limit=CAPABILITY_SEARCH_RATE_LIMIT,
+        window_s=CAPABILITY_SEARCH_WINDOW_S,
+        redis=getattr(request.app.state, "_redis", None),
+        detail="Too many capability searches for this tenant. Try again shortly.",
+    )
+
+
+async def _discovery_report(request: Request, tenant_ctx: Any) -> Any:
+    """Live tools of every connector, with per-connector errors (a02-F032-02/06).
+
+    No MCP client or an unreadable connector list is a 503 — never an empty
+    result standing in for an error.
+    """
     mcp_client = getattr(request.app.state, "mcp_client", None)
+    if mcp_client is None:
+        raise HTTPException(status_code=503, detail="MCP client not available")
+    try:
+        return await mcp_client.discover_all_tools_report(tenant_ctx=tenant_ctx)
+    except Exception as exc:
+        _logger.warning("capability_discovery_failed error=%s", str(exc)[:200])
+        raise HTTPException(
+            status_code=503, detail="Connector list unavailable; tool discovery failed"
+        ) from exc
 
-    all_tools: list = []
-    if mcp_client is not None:
-        with contextlib.suppress(Exception):
-            all_tools = await mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
 
+@router.get("/capabilities/search")
+async def search_capabilities(
+    request: Request, q: str = Query(..., min_length=1, max_length=500)
+) -> dict:
+    """Semantic + keyword search over the tenant's live connector tools.
+
+    A connector whose discovery fails is listed in ``connector_errors`` and
+    ``complete`` is false (it used to read as "no tools"). Rate-limited per
+    tenant; descriptor embeddings are cached and new ones are charged to the
+    tenant's budget (429 when exhausted, 503 when it cannot be verified).
+    """
+    tenant_ctx = _require_tenant(request)
+    await _capability_rate_limit(request, tenant_ctx.tenant_id)
+    report = await _discovery_report(request, tenant_ctx)
+
+    from app.embedding.metering import (
+        EmbeddingBudgetExceededError,
+        EmbeddingBudgetUnverifiableError,
+        resolve_cost_controller,
+    )
     from app.mcp.capability_search import CapabilitySearch
 
     embedder = getattr(request.app.state, "embedder", None)
-    search = CapabilitySearch(tools=all_tools, embedder=embedder)
-    results = await search.search(q, top_k=10)
+    try:
+        search = CapabilitySearch(
+            tools=report.tools,
+            embedder=embedder,
+            cost_controller=resolve_cost_controller(request.app.state)
+            if embedder is not None
+            else None,
+            meter=True,
+        )
+        results = await search.search(q, tenant_ctx=tenant_ctx, top_k=10)
+    except EmbeddingBudgetExceededError as exc:
+        raise HTTPException(status_code=429, detail="LLM budget exhausted for this tenant") from exc
+    except EmbeddingBudgetUnverifiableError as exc:
+        raise HTTPException(
+            status_code=503, detail="Budget state could not be verified; search refused"
+        ) from exc
     return {
         "query": q,
         "results": [r.to_dict() if hasattr(r, "to_dict") else r for r in results],
+        "complete": report.complete,
+        "connector_errors": report.errors,
     }
 
 
@@ -2194,30 +2272,84 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
     }
 
 
+def _catalog_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def _catalog_phrases(spec: Any) -> set[str]:
+    """How a goal may name a catalog connector ('google-sheets' → 'google sheets')."""
+    phrases = {
+        re.sub(r"[-_\s]+", " ", str(v).lower()).strip()
+        for v in (spec.name, getattr(spec, "display_name", ""))
+        if v
+    }
+    return {p for p in phrases if p}
+
+
+def _goal_names(goal: str, spec: Any) -> bool:
+    """True when the goal names the connector as a whole word / phrase.
+
+    It used to be a substring test ('git' matched 'digital', 'box' matched
+    'inbox')."""
+    text = re.sub(r"[-_\s]+", " ", goal.lower())
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text)
+        for phrase in _catalog_phrases(spec)
+    )
+
+
+def _registered_catalog_keys(configs: list[Any]) -> set[str]:
+    """Catalog keys of the tenant's registered connectors (name, built-in type)."""
+    from app.mcp.servers.registry_wiring import builtin_type_of
+
+    keys: set[str] = set()
+    for cfg in configs:
+        keys.add(_catalog_key(str(getattr(cfg, "name", "") or "")))
+        builtin = builtin_type_of(cfg)
+        if builtin:
+            keys.add("builtin:" + builtin)
+            keys.add(_catalog_key(builtin.removeprefix("builtin-")))
+    return keys
+
+
 @router.get("/capabilities/missing")
-async def missing_capabilities(request: Request, goal: str = Query(...)) -> dict:
-    """Identify capabilities needed for a goal but not yet available."""
+async def missing_capabilities(
+    request: Request, goal: str = Query(..., min_length=1, max_length=10_000)
+) -> dict:
+    """Catalog connectors the goal names that the tenant has not registered.
+
+    a02-F032-01: catalog names used to be matched as substrings of the goal and
+    compared with TOOL names (never equal to a connector name), and
+    ``can_proceed`` was true whenever any tool existed. Now the goal must name a
+    connector as a word or phrase, it is missing when no registered connector is
+    of that type (by name or built-in type), and ``can_proceed`` is true only
+    when nothing the goal names is missing and discovery of the registered
+    connectors was complete (a02-F032-02: failures are reported, not hidden).
+    """
     tenant_ctx = _require_tenant(request)
-    mcp_client = getattr(request.app.state, "mcp_client", None)
+    await _capability_rate_limit(request, tenant_ctx.tenant_id)
+    try:
+        configs = await _registry(request).list_servers(tenant_ctx=tenant_ctx)
+    except Exception as exc:
+        _logger.warning("capability_missing_registry_failed error=%s", str(exc)[:200])
+        raise HTTPException(status_code=503, detail="Connector list unavailable") from exc
+    report = await _discovery_report(request, tenant_ctx)
 
-    available_tools: list = []
-    if mcp_client is not None:
-        with contextlib.suppress(Exception):
-            available_tools = await mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
-
-    available_names = {getattr(t, "name", "") for t in available_tools}
-
+    registered = _registered_catalog_keys(configs)
     suggestions: list[dict] = []
-    goal_lower = goal.lower()
     for spec in CONNECTOR_CATALOG:
-        name_words = spec.name.lower().replace("-", " ").replace("_", " ")
-        if (
-            name_words in goal_lower or spec.name.lower() in goal_lower
-        ) and spec.name not in available_names:
+        if not _goal_names(goal, spec):
+            continue
+        installed = (
+            _catalog_key(spec.name) in registered
+            or _catalog_key(getattr(spec, "display_name", "") or "") in registered
+            or (bool(spec.builtin_server_id) and f"builtin:{spec.builtin_server_id}" in registered)
+        )
+        if not installed:
             suggestions.append(
                 {
                     "connector": spec.name,
-                    "category": "integration",
+                    "category": getattr(spec, "category", "") or "integration",
                     "install_hint": (
                         f"Register the {spec.name} connector to enable this capability"
                     ),
@@ -2226,9 +2358,11 @@ async def missing_capabilities(request: Request, goal: str = Query(...)) -> dict
 
     return {
         "goal": goal,
-        "available_tool_count": len(available_tools),
+        "available_tool_count": len(report.tools),
         "missing_connectors": suggestions[:5],
-        "can_proceed": len(suggestions) == 0 or len(available_tools) > 0,
+        "can_proceed": not suggestions and report.complete,
+        "complete": report.complete,
+        "connector_errors": report.errors,
     }
 
 
@@ -2251,8 +2385,13 @@ async def list_connector_tools(request: Request, server_id: str) -> list[dict[st
     mcp_client = getattr(request.app.state, "mcp_client", None)
     if mcp_client is None:
         raise HTTPException(status_code=503, detail="MCP client not available")
+    from app.mcp.client import strict_discovery
+
     try:
-        tools = await mcp_client.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
+        # Strict: a transport / protocol failure is the 502 this route promises,
+        # not an empty tool list (a02-F032-02).
+        with strict_discovery():
+            tools = await mcp_client.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
     except Exception as exc:
         _logger.warning("connector_tools_discovery_failed server=%s: %s", server_id, exc)
         raise HTTPException(status_code=502, detail=f"Tool discovery failed: {exc}") from exc

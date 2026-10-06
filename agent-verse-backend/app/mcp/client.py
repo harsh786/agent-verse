@@ -37,6 +37,23 @@ _IDEMPOTENCY_KEY: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
+# a02-F032-02/06: inside strict discovery, discover_tools raises the transport /
+# protocol error instead of answering [] (an error must not read as "no tools").
+_STRICT_DISCOVERY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "mcp_strict_discovery", default=False
+)
+
+
+@contextlib.contextmanager
+def strict_discovery() -> Any:
+    """Within this block a failing ``discover_tools`` raises instead of returning []."""
+    token = _STRICT_DISCOVERY.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_DISCOVERY.reset(token)
+
+
 def current_idempotency_key() -> str | None:
     return _IDEMPOTENCY_KEY.get()
 
@@ -93,6 +110,22 @@ class ToolDefinition:
     input_schema: dict[str, Any] = field(default_factory=dict)
     server_id: str = ""
     server_name: str = ""
+
+
+DISCOVERY_CONCURRENCY = 8
+DISCOVERY_TIMEOUT_S = 20.0
+
+
+@dataclass
+class DiscoveryReport:
+    """Tools of every connector that answered, and why the others did not."""
+
+    tools: list[ToolDefinition] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return not self.errors
 
 
 @dataclass
@@ -806,20 +839,71 @@ class MCPClient:
                     if t.get("name")
                 ]
         except Exception:
+            if _STRICT_DISCOVERY.get():
+                raise
             return []
 
+    async def discover_all_tools_report(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        concurrency: int = DISCOVERY_CONCURRENCY,
+        timeout_s: float = DISCOVERY_TIMEOUT_S,
+    ) -> DiscoveryReport:
+        """Discover every connector of the tenant, each on its own (a02-F032-06).
+
+        The listing failing raises (the caller decides how to answer). One
+        connector failing — SSRF block, unresolvable secret, transport error,
+        timeout — is recorded in ``errors`` and the others still run, with
+        bounded concurrency and a per-connector timeout (they ran serially).
+        """
+        import asyncio
+
+        records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _one(server_id: str) -> tuple[list[ToolDefinition], str | None]:
+            async with sem:
+                try:
+                    with strict_discovery():
+                        tools = await asyncio.wait_for(
+                            self.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx),
+                            timeout=timeout_s,
+                        )
+                except TimeoutError:
+                    return [], f"discovery timed out after {timeout_s:g}s"
+                except Exception as exc:
+                    return [], (str(exc) or type(exc).__name__)[:300]
+            return list(tools or []), None
+
+        ids = [str(sid) for sid, _ in records]
+        outcomes = await asyncio.gather(*(_one(sid) for sid in ids))
+        report = DiscoveryReport()
+        for server_id, (tools, error) in zip(ids, outcomes, strict=True):
+            report.tools.extend(tools)
+            if error is not None:
+                report.errors.append({"connector_id": server_id, "error": error})
+        return report
+
     async def discover_all_tools(self, *, tenant_ctx: TenantContext) -> list[ToolDefinition]:
-        """Discover all tools across all registered servers for this tenant."""
-        all_tools: list[ToolDefinition] = []
+        """Discover all tools across all registered servers for this tenant.
+
+        Best effort for callers that only want a tool list: a failing connector
+        no longer aborts the others (a02-F032-06) and every failure is logged.
+        Callers that must report incompleteness use :meth:`discover_all_tools_report`.
+        """
         try:
-            # Use public API instead of accessing private _redis directly.
-            records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
-            for sid_str, _ in records:
-                tools = await self.discover_tools(server_id=sid_str, tenant_ctx=tenant_ctx)
-                all_tools.extend(tools)
+            report = await self.discover_all_tools_report(tenant_ctx=tenant_ctx)
         except Exception as exc:
             logger.warning("discover_all_tools failed: %s", exc)
-        return all_tools
+            return []
+        for err in report.errors:
+            logger.warning(
+                "discover_all_tools_connector_failed server=%s error=%s",
+                err["connector_id"],
+                err["error"],
+            )
+        return report.tools
 
     async def _dispatch_builtin_tool(
         self,
