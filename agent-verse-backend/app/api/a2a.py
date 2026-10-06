@@ -138,14 +138,24 @@ A2A_SIGNATURE_MAX_SKEW_SECONDS = 300
 _seen_signatures: dict[str, float] = {}  # no-Redis replay cache (single process)
 
 
-async def _check_signed_request(request: Request, raw_body: bytes, secret: str) -> None:
-    """Verify a timestamped, single-use A2A signature (raise 401/503).
+class A2AReplayError(Exception):
+    """This signature was already used for an accepted task (any replica)."""
+
+
+SIGNATURE_UNIQUE_INDEX = "uq_a2a_tasks_hmac_signature"
+
+
+async def _check_signed_request(request: Request, raw_body: bytes, secret: str) -> str:
+    """Verify a timestamped, single-use A2A signature (raise 401/503); return it.
 
     The HMAC used to cover the body only, with no timestamp or nonce: a captured
     request could be replayed forever. Now the signer sends ``X-A2A-Timestamp``
     (unix seconds) and signs ``f"{timestamp}.".encode() + body``; the timestamp
-    must be within ±5 min and each signature is accepted once (Redis SET NX,
-    in-process without Redis; a Redis error refuses the request).
+    must be within ±5 min and each signature is accepted once: Redis SET NX when
+    Redis is wired (a Redis error refuses the request), and in every case with a
+    database the task row's unique ``hmac_signature`` (see :func:`_persist_task`),
+    which holds across replicas without Redis (a02-F040-11). The per-process
+    cache is only for a dev process with neither; production refuses that.
     """
     import time
 
@@ -170,13 +180,19 @@ async def _check_signed_request(request: Request, raw_body: bytes, secret: str) 
             raise HTTPException(503, "A2A replay protection unavailable; retry") from exc
         if not fresh:
             raise HTTPException(401, "A2A request replayed")
-        return
+        return signature
+    if getattr(request.app.state, "db_session_factory", None) is not None:
+        return signature  # single use enforced by the a2a_tasks unique index
+    if _is_production():
+        # A per-process cache lets every replica accept a captured signature once.
+        raise HTTPException(503, "A2A replay protection unavailable (no Redis or database)")
     for sig, seen_at in list(_seen_signatures.items()):
         if now - seen_at > ttl:
             _seen_signatures.pop(sig, None)
     if signature in _seen_signatures:
         raise HTTPException(401, "A2A request replayed")
     _seen_signatures[signature] = now
+    return signature
 
 
 def _is_production() -> bool:
@@ -201,25 +217,34 @@ async def _persist_task(task_id: str, data: dict[str, Any], db: Any) -> None:
         _tasks[task_id] = data
         return
     from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
 
     from app.db.rls import sqlalchemy_rls_context
 
     tenant_id = str(data["tenant_id"])
-    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
-        await session.execute(
-            text("""INSERT INTO a2a_tasks
-                (id, tenant_id, goal_text, status, callback_url, requester_id, created_at)
-                VALUES (:id, :tid, :goal, :status, :cb, :req, NOW())
-                ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status"""),
-            {
-                "id": task_id,
-                "tid": tenant_id,
-                "goal": data.get("goal", ""),
-                "status": data.get("status", "pending"),
-                "cb": data.get("callback_url", ""),
-                "req": data.get("requester_agent_id", ""),
-            },
-        )
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            await session.execute(
+                text("""INSERT INTO a2a_tasks
+                    (id, tenant_id, goal_text, status, callback_url, requester_id,
+                     hmac_signature, created_at)
+                    VALUES (:id, :tid, :goal, :status, :cb, :req, :sig, NOW())
+                    ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status"""),
+                {
+                    "id": task_id,
+                    "tid": tenant_id,
+                    "goal": data.get("goal", ""),
+                    "status": data.get("status", "pending"),
+                    "cb": data.get("callback_url", ""),
+                    "req": data.get("requester_agent_id", ""),
+                    # a02-F040-11: unique across tenants and replicas.
+                    "sig": data.get("hmac_signature") or None,
+                },
+            )
+    except IntegrityError as exc:
+        if SIGNATURE_UNIQUE_INDEX in str(exc.orig if exc.orig is not None else exc):
+            raise A2AReplayError(task_id) from exc
+        raise
 
 
 async def _update_task_status(
@@ -489,8 +514,9 @@ async def receive_a2a_task(
         # Fail closed: an unsigned A2A inbound is a dev convenience, never a
         # production posture.
         raise HTTPException(503, "A2A inbound is disabled: A2A_SHARED_SECRET is not configured")
+    signature = ""
     if secret:
-        await _check_signed_request(request, raw_body, secret)
+        signature = await _check_signed_request(request, raw_body, secret)
 
     # SSRF guard — validate callback URL before accepting the task
     if body.callback_url:
@@ -536,10 +562,14 @@ async def receive_a2a_task(
         "requester_agent_id": body.requester_agent_id or "",
         "agent_id": target_agent_id or "",
         "tenant_id": a2a_tenant_id,
+        "hmac_signature": signature,
         "created_at": datetime.now(UTC).isoformat(),
     }
 
-    await _persist_task(task_id, task_data, db)
+    try:
+        await _persist_task(task_id, task_data, db)
+    except A2AReplayError:
+        raise HTTPException(401, "A2A request replayed") from None
 
     # A2A-01: submit the goal BEFORE answering (it used to be submitted by an
     # untracked asyncio task after the 202, so a restart stranded the task as
