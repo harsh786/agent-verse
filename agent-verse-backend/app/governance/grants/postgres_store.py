@@ -247,6 +247,25 @@ class PostgresGrantStore:
         # Re-checked in Python too (clock skew between app and DB is irrelevant).
         return tuple(g for g in (_row_to_grant(r) for r in rows) if g.is_active(now))
 
+    async def list_children(
+        self, tenant_id: str, grant_id: str, *, limit: int = _ACTIVE_LIMIT
+    ) -> tuple[Grant, ...]:
+        """The grants delegated directly from *grant_id* (bounded)."""
+        async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant_id
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        f"SELECT {_COLS} FROM agent_grants "
+                        "WHERE tenant_id = :tid AND parent_grant_id = :gid "
+                        "ORDER BY not_before, grant_id LIMIT :lim"
+                    ),
+                    {"tid": tenant_id, "gid": grant_id, "lim": max(1, int(limit))},
+                )
+            ).mappings().all()
+        return tuple(_row_to_grant(r) for r in rows)
+
     async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
         async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
             session, tenant_id

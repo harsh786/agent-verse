@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.governance.grants import Grant
+from app.governance.grants.delegation import DelegationError, mint_delegation
 from app.observability.logging import get_logger
 from app.tenancy.rbac import require_role
 
@@ -198,3 +199,109 @@ async def revoke_grant(
         request, tenant_id, {"event": "grant_revoked", "grant_id": grant_id}
     )
     return {**_to_dict(revoked), "audit_recorded": audit_recorded}
+
+
+# Ancestor walks stop here (a cycle or runaway chain cannot loop the request).
+_MAX_CHAIN_DEPTH = 32
+
+
+class DelegateGrantRequest(BaseModel):
+    """A narrowed child of an existing grant (a03-F055-02).
+
+    Every field may only NARROW the parent: omitted scopes / window / cap
+    inherit the parent's (the cap defaults to the parent's REMAINING budget, as
+    the automatic sub-agent delegation does); anything wider is a 400.
+    """
+
+    grantee_agent_id: str = Field(min_length=1, max_length=200)
+    scopes: list[str] | None = Field(default=None, min_length=1)
+    ttl_seconds: int | None = Field(default=None, gt=0, le=60 * 60 * 24 * 365)
+    max_cost_usd: float | None = Field(default=None, ge=0, le=MAX_GRANT_COST_USD)
+
+
+@router.post("/{grant_id}/delegate", status_code=status.HTTP_201_CREATED)
+async def delegate_grant(
+    grant_id: str,
+    body: DelegateGrantRequest,
+    request: Request,
+    # Minting authority is an admin action, like issuing a grant.
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Delegate a narrowed copy of *grant_id* to another agent of the tenant.
+
+    Delegation used to happen only inside the sub-agent spawn path
+    (``delegate_active_grants``); an administrator could not create one or see
+    the result. The child records ``parent_grant_id``: revoking the parent
+    revokes it, and its spend counts against the parent's budget.
+    """
+    tenant_id = _tenant_id(request)
+    store = _store(request)
+    parent = await store.get(tenant_id, grant_id)
+    if parent is None:
+        raise HTTPException(status_code=404, detail="grant not found")
+    await _require_grantee(request, body.grantee_agent_id)
+    now = datetime.now(UTC)
+    expires_at = (
+        now + timedelta(seconds=body.ttl_seconds)
+        if body.ttl_seconds is not None
+        else parent.expires_at
+    )
+    max_cost = body.max_cost_usd
+    if max_cost is None and parent.max_cost_usd is not None:
+        max_cost = max(0.0, parent.max_cost_usd - parent.spent_usd)
+    try:
+        child = mint_delegation(
+            parent,
+            grant_id=uuid.uuid4().hex,
+            grantee_agent_id=body.grantee_agent_id,
+            scopes=tuple(body.scopes) if body.scopes else parent.scopes,
+            expires_at=expires_at,
+            not_before=max(now, parent.not_before),
+            max_cost_usd=max_cost,
+            now=now,
+        )
+    except DelegationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # The grantor names who delegated: the parent's agent, through this admin.
+    child = Grant(**{**child.__dict__, "grantor": f"{child.grantor} via {_principal(request)}"})
+    stored = await store.issue(child)
+    audit_recorded = await _audit(
+        request,
+        tenant_id,
+        {
+            "event": "grant_delegated",
+            "grant_id": stored.grant_id,
+            "parent_grant_id": parent.grant_id,
+            "grantee_agent_id": stored.grantee_agent_id,
+            "scopes": list(stored.scopes),
+            "grantor": stored.grantor,
+        },
+    )
+    return {**_to_dict(stored), "audit_recorded": audit_recorded}
+
+
+@router.get("/{grant_id}/chain")
+async def get_grant_chain(grant_id: str, request: Request) -> dict[str, Any]:
+    """The grant, its ancestors (parent first, up to the root) and its direct delegations."""
+    tenant_id = _tenant_id(request)
+    store = _store(request)
+    grant = await store.get(tenant_id, grant_id)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="grant not found")
+    ancestors: list[Grant] = []
+    seen = {grant.grant_id}
+    parent_id = grant.parent_grant_id
+    while parent_id and parent_id not in seen and len(ancestors) < _MAX_CHAIN_DEPTH:
+        seen.add(parent_id)
+        parent = await store.get(tenant_id, parent_id)
+        if parent is None:
+            break
+        ancestors.append(parent)
+        parent_id = parent.parent_grant_id
+    lister = getattr(store, "list_children", None)
+    children = await lister(tenant_id, grant_id) if lister is not None else ()
+    return {
+        "grant": _to_dict(grant),
+        "ancestors": [_to_dict(g) for g in ancestors],
+        "delegations": [_to_dict(g) for g in children],
+    }

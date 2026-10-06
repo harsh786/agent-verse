@@ -140,6 +140,20 @@ class InMemoryGrantStore:
             if t == tenant_id and g.grantee_agent_id == agent_id and g.is_active(now)
         )
 
+    async def list_children(
+        self, tenant_id: str, grant_id: str, *, limit: int = 500
+    ) -> tuple[Grant, ...]:
+        """The grants delegated directly from *grant_id* (bounded)."""
+        children = sorted(
+            (
+                g
+                for (t, _gid), g in self._grants.items()
+                if t == tenant_id and g.parent_grant_id == grant_id
+            ),
+            key=lambda g: (g.not_before, g.grant_id),
+        )
+        return tuple(children[: max(1, int(limit))])
+
     async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
         return any(
             t == tenant_id and g.grantee_agent_id == agent_id
