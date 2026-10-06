@@ -1030,6 +1030,32 @@
         "title": "ChannelMappingDecision",
         "type": "object"
       },
+      "ChatKnowledgeOptIn": {
+        "properties": {
+          "opted_in": {
+            "title": "Opted In",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "opted_in"
+        ],
+        "title": "ChatKnowledgeOptIn",
+        "type": "object"
+      },
+      "ChatTranscriptsKnowledgeSetting": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ChatTranscriptsKnowledgeSetting",
+        "type": "object"
+      },
       "CheckoutRequest": {
         "properties": {
           "plan": {
@@ -24216,6 +24242,72 @@
         ]
       }
     },
+    "/chat/settings/knowledge": {
+      "get": {
+        "description": "Whether the caller's own chats are indexed as knowledge (off by default).",
+        "operationId": "get_chat_knowledge_opt_in_chat_settings_knowledge_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Chat Knowledge Opt In Chat Settings Knowledge Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Chat Knowledge Opt In",
+        "tags": [
+          "chat"
+        ]
+      },
+      "put": {
+        "description": "Opt the caller's own chats in or out of the workspace's knowledge.\n\nOpting in needs the workspace switch (an admin's) to be on; only the chat\nsessions the caller created are indexed, under the caller's id, with PII and\nsecrets redacted. Revoking stops indexing at once and removes the caller's\ntranscripts already indexed (a document under legal hold is kept and\nreported), never anyone else's.",
+        "operationId": "set_chat_knowledge_opt_in_chat_settings_knowledge_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatKnowledgeOptIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Chat Knowledge Opt In Chat Settings Knowledge Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Chat Knowledge Opt In",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/chat/skills": {
       "get": {
         "description": "Discover the chat command-surface skills available to this tenant (Phase 5).",
@@ -45018,6 +45110,74 @@
           }
         },
         "summary": "Set A2A Directory",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/chat-transcripts-knowledge": {
+      "get": {
+        "description": "Whether chat transcripts may become knowledge in this workspace (owner\ndecision 7). Off by default; each person must also opt in for their own chats.",
+        "operationId": "get_chat_transcripts_knowledge_tenants_me_chat_transcripts_knowledge_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Get Chat Transcripts Knowledge Tenants Me Chat Transcripts Knowledge Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Chat Transcripts Knowledge",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "put": {
+        "description": "Enable or disable the ``chat_transcript`` knowledge kind (admin only).\n\nOn: an ``agent_generated`` Source may list the kind, and it indexes the chats\nof the people who opted in. Off: the kind is refused on save, Sources index no\ntranscript, and every transcript already indexed is removed (bounded batches;\na document under legal hold is kept and reported).",
+        "operationId": "set_chat_transcripts_knowledge_tenants_me_chat_transcripts_knowledge_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatTranscriptsKnowledgeSetting"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Chat Transcripts Knowledge Tenants Me Chat Transcripts Knowledge Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Chat Transcripts Knowledge",
         "tags": [
           "tenants"
         ]
