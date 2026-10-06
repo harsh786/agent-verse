@@ -43,9 +43,16 @@ def _mapping_db(mappings: dict[tuple[str, str], str]) -> Any:
 
 @pytest.fixture
 def teams_app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
-    from app.gateway.channels.teams import MicrosoftTeamsAdapter
+    from app.gateway.channels import teams as teams_module
 
-    monkeypatch.setattr(MicrosoftTeamsAdapter, "verify_auth", AsyncMock(return_value=True))
+    # A verified Bot Framework token for the platform bot (DEF-1 checks the
+    # token itself in tests/api/test_teams_events_jwt_binding.py).
+    monkeypatch.setenv("TEAMS_APP_ID", "platform-app")
+    monkeypatch.setattr(
+        teams_module,
+        "decode_bot_framework_token",
+        AsyncMock(return_value={"aud": "platform-app"}),
+    )
     app = FastAPI()
     app.include_router(router)
     gateway = AsyncMock()
@@ -101,7 +108,7 @@ def test_activity_without_org_id_is_not_routed_by_service_url(teams_app):
     app, gateway = teams_app
     client = TestClient(app)
     resp = client.post("/channels/teams/events", json=_activity(None))
-    assert resp.status_code == 200
+    assert resp.status_code == 403  # DEF-1: unknown org
     gateway.ingest.assert_not_called()
 
 
@@ -109,7 +116,7 @@ def test_unmapped_org_is_not_routed(teams_app):
     app, gateway = teams_app
     client = TestClient(app)
     other = "11111111-2222-3333-4444-555555555555"
-    assert client.post("/channels/teams/events", json=_activity(other)).status_code == 200
+    assert client.post("/channels/teams/events", json=_activity(other)).status_code == 403
     gateway.ingest.assert_not_called()
 
 

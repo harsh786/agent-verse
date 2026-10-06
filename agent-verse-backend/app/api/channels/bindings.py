@@ -7,8 +7,12 @@ in ``channel_tenant_mappings`` (see :mod:`app.gateway.binding_store`):
 * ``POST   /channels/bindings`` — bind a Telegram bot, WhatsApp number, Slack
   workspace, Teams organisation or a generic webhook. Ownership is proven
   first (:mod:`app.gateway.binding_verification`); a channel another tenant
-  has verified is refused (409). Secrets are vault-encrypted at rest; a
-  server-generated secret is returned ONCE.
+  has verified is refused (409). Secrets are sealed with the tenant's envelope
+  key (``tv1:``; the platform vault when it has none); a server-generated
+  secret / WhatsApp verify token is returned ONCE. DEF-3: with
+  ``GATEWAY_PUBLIC_BASE_URL`` set, a Telegram binding is registered with
+  ``setWebhook`` (its URL + ``secret_token``) before it is stored — a refusal
+  stores nothing.
 * ``GET    /channels/bindings`` — the tenant's bindings (no secrets).
 * ``DELETE /channels/bindings/{id}`` — unbind.
 
@@ -53,6 +57,13 @@ class BindingCreate(BaseModel):
     )
     app_id: str = Field(default="", description="Teams: the tenant's Bot Framework app id")
     org_id: str = ""
+    register_webhook: bool = Field(
+        default=True,
+        description=(
+            "Telegram: call setWebhook with this binding's URL and secret_token "
+            "(needs GATEWAY_PUBLIC_BASE_URL on the server)"
+        ),
+    )
 
 
 def _tenant_id(request: Request) -> str:
@@ -72,7 +83,10 @@ def _dbs(request: Request) -> tuple[Any, Any]:
 
 
 def _webhook_url(channel: str, addressee: str) -> str:
-    return f"/v1/gateway/{channel}/chat/{addressee}"
+    """The binding's delivery URL: absolute when GATEWAY_PUBLIC_BASE_URL is set."""
+    from app.gateway.binding_verification import public_base_url
+
+    return f"{public_base_url()}/v1/gateway/{channel}/chat/{addressee}"
 
 
 async def _invalidate(request: Request) -> None:
@@ -87,8 +101,14 @@ async def _invalidate(request: Request) -> None:
 async def create_binding(body: BindingCreate, request: Request) -> dict[str, Any]:
     from app.api.channels.ingestion import _normalize_m365_tenant_id
     from app.api.channels.verification import STATUS_VERIFIED, _verified_by_other
-    from app.gateway.binding_store import GATEWAY_CHANNELS, encrypt_secret
-    from app.gateway.binding_verification import BindingOwnershipError, verify_ownership
+    from app.gateway.binding_store import GATEWAY_CHANNELS, seal_binding_secret
+    from app.gateway.binding_verification import (
+        TELEGRAM_SECRET_TOKEN,
+        BindingOwnershipError,
+        public_base_url,
+        register_telegram_webhook,
+        verify_ownership,
+    )
 
     tenant_id = _tenant_id(request)
     tenant_db, system_db = _dbs(request)
@@ -111,6 +131,11 @@ async def create_binding(body: BindingCreate, request: Request) -> dict[str, Any
             raise HTTPException(422, "app_id (your Bot Framework app id) is required for Teams")
     if channel in ("telegram", "webhook") and not secret:
         secret, generated_secret = secrets.token_urlsafe(32), True
+    if channel == "telegram" and not TELEGRAM_SECRET_TOKEN.match(secret):
+        raise HTTPException(422, "Telegram secret_token must be 1-256 of A-Z a-z 0-9 _ -")
+    # WhatsApp: Meta's subscription handshake must echo this server-generated
+    # token (GET /v1/gateway/whatsapp/chat/{phone_number_id}); shown once.
+    verify_token = secrets.token_urlsafe(24) if channel == "whatsapp" else ""
     if channel in ("whatsapp", "slack") and not secret:
         raise HTTPException(
             422,
@@ -136,13 +161,36 @@ async def create_binding(body: BindingCreate, request: Request) -> dict[str, Any
         except BindingOwnershipError as exc:
             raise HTTPException(422, f"Ownership not proven: {exc}") from None
 
+    webhook_registered: bool | None = None
+    if channel == "telegram" and body.register_webhook:
+        webhook_registered = False
+        if public_base_url():
+            try:
+                await register_telegram_webhook(
+                    body.outbound_token.strip(), _webhook_url(channel, addressee), secret
+                )
+            except BindingOwnershipError as exc:
+                raise HTTPException(422, f"Webhook not registered: {exc}") from None
+            webhook_registered = True
+
+    try:
+        sealed = {
+            "secret_enc": await seal_binding_secret(tenant_db, tenant_id, secret),
+            "outbound_token_enc": await seal_binding_secret(
+                tenant_db, tenant_id, body.outbound_token.strip()
+            ),
+            "verify_token_enc": await seal_binding_secret(tenant_db, tenant_id, verify_token),
+        }
+    except Exception as exc:  # the tenant key is unreadable: store nothing
+        raise HTTPException(
+            503, f"Binding secrets could not be sealed: {type(exc).__name__}"
+        ) from None
     config: dict[str, Any] = dict((existing or {}).get("channel_config") or {})
     config.update(
         {
             "gateway": True,
             "org_id": body.org_id.strip(),
-            "secret_enc": encrypt_secret(secret),
-            "outbound_token_enc": encrypt_secret(body.outbound_token.strip()),
+            **sealed,
             "app_id": body.app_id.strip(),
         }
     )
@@ -163,6 +211,16 @@ async def create_binding(body: BindingCreate, request: Request) -> dict[str, Any
     }
     if generated_secret:
         response["secret"] = secret  # shown once
+    if verify_token:
+        response["verify_token"] = verify_token  # shown once
+    if webhook_registered is not None:
+        response["webhook_registered"] = webhook_registered
+        if not webhook_registered:
+            response["webhook_registration"] = (
+                "Not registered: the server has no GATEWAY_PUBLIC_BASE_URL. Call Telegram "
+                "setWebhook with this webhook_url (on your public host) and this secret "
+                "as secret_token."
+            )
     return response
 
 
@@ -286,6 +344,7 @@ async def list_bindings(request: Request) -> list[dict[str, Any]]:
                     "org_id": str(cfg.get("org_id") or ""),
                     "has_secret": bool(cfg.get("secret_enc")),
                     "has_outbound_token": bool(cfg.get("outbound_token_enc")),
+                    "has_verify_token": bool(cfg.get("verify_token_enc")),
                     "app_id": str(cfg.get("app_id") or ""),
                     "webhook_url": _webhook_url(str(r[1]), str(r[2])),
                     "created_at": r[5].isoformat() if r[5] is not None else None,
@@ -330,7 +389,8 @@ async def delete_binding(binding_id: str, request: Request) -> dict[str, Any]:
             await session.execute(
                 text(
                     "UPDATE channel_tenant_mappings SET channel_config = channel_config "
-                    "- 'gateway' - 'secret_enc' - 'outbound_token_enc' - 'app_id' - 'org_id', "
+                    "- 'gateway' - 'secret_enc' - 'outbound_token_enc' - 'verify_token_enc' "
+                    "- 'app_id' - 'org_id', "
                     "updated_at = now() WHERE id = :id AND tenant_id = :tid"
                 ),
                 {"id": binding_id, "tid": tenant_id},

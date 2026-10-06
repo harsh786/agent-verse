@@ -55,6 +55,8 @@ _PG_STORES: tuple[tuple[str, str, str, tuple[str, ...], bool], ...] = (
         False,
     ),
     ("source_credentials", "source_configs", "id", ("connection_config",), True),
+    # Messaging-gateway binding secrets (DEF-3): channel_config.*_enc.
+    ("channel_binding_secrets", "channel_tenant_mappings", "id", ("channel_config",), True),
     # Durable connector secrets (SECRET-01); composite key -> keyset on the
     # "<server_id>\x1f<secret_key>" expression (a handful of rows per tenant).
     (
@@ -115,7 +117,8 @@ class _Sealer:
         return TENANT_CIPHER_PREFIX + self.primary.encrypt(plain)
 
     def reseal_source(self, config: Any) -> Any:
-        """connection_config with ``enc:v1:tv1:`` secrets re-sealed (None = unchanged)."""
+        """A JSON config with its ``enc:v1:tv1:`` secrets (source credentials) and
+        ``*_enc`` ``tv1:`` values (gateway binding secrets) re-sealed (None = unchanged)."""
         if not isinstance(config, dict):
             return None
         changed, out = False, {}
@@ -124,6 +127,8 @@ class _Sealer:
             if isinstance(value, str) and value.startswith(_SOURCE_PREFIX):
                 inner = self.reseal(value[len(_SOURCE_PREFIX) :])
                 new = None if inner is None else _SOURCE_PREFIX + inner
+            elif isinstance(value, str) and str(key).endswith("_enc"):
+                new = self.reseal(value)
             elif isinstance(value, dict):
                 new = self.reseal_source(value)
             out[key] = value if new is None else new

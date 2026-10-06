@@ -22,8 +22,8 @@ from contextlib import suppress
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
-from fastapi.responses import Response
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse, Response
 from opentelemetry import trace
 from pydantic import BaseModel
 
@@ -571,9 +571,11 @@ async def slack_events(
     summary="WhatsApp webhook verification",
 )
 async def whatsapp_verify(
-    hub_mode: str = "",
-    hub_verify_token: str = "",
-    hub_challenge: str = "",
+    # Meta sends dotted names (hub.mode=...): the underscore parameter names
+    # alone never matched a real subscription request.
+    hub_mode: str = Query(default="", alias="hub.mode"),
+    hub_verify_token: str = Query(default="", alias="hub.verify_token"),
+    hub_challenge: str = Query(default="", alias="hub.challenge"),
 ) -> Any:
     import hmac
     import os
@@ -922,6 +924,51 @@ async def channel_chat_for_binding(
     """Same as ``/{channel}/chat`` with the binding named in the URL — the form a
     Telegram webhook must use, since Bot API updates do not name the bot."""
     return await _channel_chat(channel, request, binding_id=binding_id)
+
+
+@router.get(
+    "/{channel}/chat/{binding_id}",
+    operation_id="gateway_channel_chat_verify",
+    summary="WhatsApp webhook subscription handshake for a tenant binding",
+)
+async def channel_chat_verify(
+    channel: str,
+    binding_id: str,
+    request: Request,
+    hub_mode: str = Query(default="", alias="hub.mode"),
+    hub_verify_token: str = Query(default="", alias="hub.verify_token"),
+    hub_challenge: str = Query(default="", alias="hub.challenge"),
+) -> Response:
+    """DEF-3: Meta subscribes a WhatsApp webhook by GETting its URL with
+    ``hub.mode=subscribe``, the configured ``hub.verify_token`` and a
+    ``hub.challenge`` to echo. The token is THIS binding's server-generated
+    verify token (shown once when the binding was created) — never a platform
+    value shared by every tenant. Unknown binding / wrong token → 403."""
+    import hmac
+
+    from app.gateway.binding_store import (
+        ChannelBindingStoreUnavailableError,
+        resolve_binding,
+    )
+
+    if channel.strip().lower() != "whatsapp":
+        raise HTTPException(status_code=405, detail="Only WhatsApp webhooks are verified by GET")
+    try:
+        binding = await resolve_binding(request.app.state, "whatsapp", binding_id)
+    except ChannelBindingStoreUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Channel bindings are temporarily unavailable",
+        ) from None
+    expected = str(getattr(binding, "verify_token", "") or "") if binding is not None else ""
+    if (
+        not expected
+        or hub_mode != "subscribe"
+        or not hub_challenge
+        or not hmac.compare_digest(expected.encode(), hub_verify_token.encode())
+    ):
+        raise HTTPException(status_code=403, detail="Verification failed")
+    return PlainTextResponse(hub_challenge)
 
 
 async def _channel_chat(channel: str, request: Request, *, binding_id: str) -> dict[str, Any]:

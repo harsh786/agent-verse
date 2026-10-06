@@ -51,9 +51,11 @@ def verify_slack_signature(
     except (ValueError, TypeError):
         return False
 
-    base = f"v0:{timestamp}:{body.decode('utf-8')}"
-    expected = "v0=" + hmac.new(signing_secret.encode(), base.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    # Sign the raw bytes: decoding first raised on a non-UTF-8 body (a 500
+    # instead of a refusal).
+    base = b"v0:" + str(timestamp).encode() + b":" + body
+    expected = "v0=" + hmac.new(signing_secret.encode(), base, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected.encode(), (signature or "").encode())
 
 
 async def send_slack_message(

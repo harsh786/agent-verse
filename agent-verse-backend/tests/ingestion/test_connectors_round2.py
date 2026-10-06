@@ -579,7 +579,9 @@ class TestKafkaConnector:
         doc2, cursor2 = docs[1]
         assert doc2.content_type == "text/plain"
         assert cursor2 == "orders:0:101"
-        fake_consumer_instance.commit.assert_called_once()
+        # DEF-4: nothing was acknowledged by a sync loop, so no offset moves
+        # (tests/ingestion/test_kafka_at_least_once.py covers the ack path).
+        fake_consumer_instance.commit.assert_not_called()
         fake_consumer_instance.close.assert_called_once()
 
 

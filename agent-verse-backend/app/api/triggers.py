@@ -988,6 +988,29 @@ async def _mark_sns_confirmed(store: Any, records: list[dict[str, Any]], caller:
             )
 
 
+# Vendors whose signature covers only the body (no signed timestamp / id).
+_BODY_SIGNED_VENDORS = frozenset(
+    {"github", "jira", "confluence", "linear", "sentry", "pagerduty", "salesforce", "grafana"}
+)
+
+
+def _vendor_signed_message_id(webhook_type: str, body: Any, body_bytes: bytes) -> str:
+    """Dedup identity derived only from what the vendor signed ("" = use the
+    generic delivery identity)."""
+    import hashlib
+
+    data = body if isinstance(body, dict) else {}
+    if webhook_type == "stripe" and str(data.get("id", "")).startswith("evt_"):
+        return f"delivery:{data['id']}"
+    if webhook_type == "slack" and data.get("event_id"):
+        return f"signed:slack:{str(data['event_id'])[:200]}"
+    if webhook_type == "teams" and data.get("id"):
+        return f"signed:teams:{str(data['id'])[:200]}"
+    if webhook_type in _BODY_SIGNED_VENDORS:
+        return f"signed-body:{hashlib.sha256(body_bytes).hexdigest()[:40]}"
+    return ""
+
+
 @router.post("/webhooks/{webhook_type}/{token}")
 async def receive_typed_webhook(webhook_type: str, token: str, request: Request) -> Any:
     """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc.
@@ -1146,6 +1169,14 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     delivery_message_id = _ingress.firing_message_id(request.headers, body_bytes)
     if webhook_type == "stripe" and str(body.get("id", "")).startswith("evt_"):
         delivery_message_id = f"delivery:{body['id']}"
+    # DEF-5: for a vendor-signed delivery the identity must come from SIGNED
+    # content. Delivery-id headers (X-GitHub-Delivery, Idempotency-Key, ...) are
+    # not covered by GitHub / Jira / Confluence / ... signatures, and the body
+    # hash above is windowed — so a captured delivery replayed under a fresh
+    # header, or after the window, would fire again. Vendors that sign an id
+    # (Stripe evt_, Slack event_id, Teams activity id) key on it; the rest on
+    # the signed body itself, unwindowed.
+    signed_message_id = _vendor_signed_message_id(webhook_type, body, body_bytes)
     matched = 0
     failed = 0
     results: list[Any] = []
@@ -1180,7 +1211,15 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                 # Constant-time HMAC, optional signed timestamp (replay window).
                 _ingress.check_signature(request.headers, body_bytes, candidates)
             verified = generic
-            if sig_header and not generic:
+            # Jira Connect apps send "Authorization: JWT ..." instead of a body
+            # signature header (DEF-5).
+            jira_jwt = webhook_type == "jira" and request.headers.get(
+                "authorization", ""
+            ).startswith("JWT ")
+            if (sig_header or jira_jwt) and not generic:
+                path = request.url.path
+                mount = path.find("/triggers/webhooks/")
+                paths = (path, path[mount:]) if mount > 0 else (path,)
                 for candidate in candidates:
                     if await verifier.verify_for_type(
                         webhook_type,
@@ -1188,11 +1227,15 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                         sig_header,
                         candidate,
                         headers=request.headers,
+                        method=request.method,
+                        paths=paths,
+                        query=request.url.query,
                     ):
                         verified = True
                         break
             if not verified:
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        vendor_signed = bool(secret) and not generic and bool(signed_message_id)
         if (
             webhook_type == "slack"
             and isinstance(body, dict)
@@ -1214,6 +1257,8 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             elif sf_message_id:
                 # Salesforce redelivers the same notification ids until acked.
                 message_id = sf_message_id
+            elif vendor_signed:
+                message_id = signed_message_id
             else:
                 message_id = delivery_message_id
             # A throttled delivery is answered 429 (the sender retries) rather
