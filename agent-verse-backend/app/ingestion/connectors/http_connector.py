@@ -28,6 +28,7 @@ failures raise so the scheduler dead-letters the source and retries.
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 import time
@@ -41,10 +42,15 @@ from app.ingestion.base_connector import (
     row_identity,
     stable_doc_id,
 )
-from app.ingestion.connector_egress import GuardedFetch, guarded_fetch
+from app.ingestion.connector_egress import (
+    GuardedFetch,
+    assert_source_url,
+    guarded_fetch,
+    source_client,
+)
 from app.ingestion.connector_registry import register
 from app.ingestion.source_config import CONNECTOR_MOVED_KEY
-from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
+from app.net.ssrf_guard import SSRFError
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -106,7 +112,8 @@ class HttpApiConnector(BaseConnector):
         if not url:
             return ConnectionHealth(ok=False, error="connection_config.url is required")
         try:
-            assert_public_url(url, context="http_connector.validate")
+            # The same operator egress policy as every connector (EGRESS-NET).
+            await asyncio.to_thread(assert_source_url, url, context="http_connector.validate")
         except (SSRFError, ValueError) as exc:
             return ConnectionHealth(ok=False, error=f"url blocked: {exc}")
         try:
@@ -131,7 +138,7 @@ class HttpApiConnector(BaseConnector):
             # USR-1: nothing can be fetched — fail, never an empty success.
             raise ConnectorFetchError("http: connection_config.url is required")
         # SSRF egress guard — fail closed before any request.
-        assert_public_url(url, context="http_connector.get_delta")
+        await asyncio.to_thread(assert_source_url, url, context="http_connector.get_delta")
 
         id_field = str(cc.get("id_field", "id"))
         cursor_field = str(cc.get("cursor_field", ""))
@@ -207,7 +214,7 @@ class HttpApiConnector(BaseConnector):
             params[cursor_param] = cursor
         timeout = float(cc.get("timeout_seconds", 15.0))
 
-        async with public_async_client(timeout=timeout) as client:
+        async with source_client(timeout=timeout) as client:
             # USR-5: a moved endpoint is followed (every hop egress-checked, at
             # most 5); the final URL and a permanent move are recorded.
             fetched = await guarded_fetch(

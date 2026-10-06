@@ -11,6 +11,10 @@
 Features:
 - Re-validates after DNS resolution (anti-rebinding defence)
 - Per-tenant allowed-domain allowlist (override via env or runtime config)
+- Operator-only allowed NETWORKS (``allowed_networks``; EGRESS-NET): private
+  ranges an operator opens for LAN sources. Only the ingestion egress policy
+  passes them — never a tenant-supplied list. Link-local / metadata / 0.0.0.0
+  stay unreachable even inside a listed network.
 - All checks fail-closed (raises on error)
 """
 
@@ -77,6 +81,42 @@ class SSRFError(ValueError):
     """Raised when a URL is blocked by the SSRF guard."""
 
 
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def parse_allowed_networks(raw: str) -> list[IPNetwork]:
+    """The CIDR entries (``a.b.c.d/n``, ``fc00::/7``) of a comma-separated list.
+
+    Entries without a ``/`` are hostnames / single IPs (handled as allowed
+    domains) and are skipped here. A malformed CIDR is dropped and logged —
+    it never widens the policy.
+    """
+    networks: list[IPNetwork] = []
+    for entry in (part.strip() for part in raw.split(",")):
+        if "/" not in entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            logger.warning("ssrf_allowed_network_invalid", entry=entry[:64])
+    return networks
+
+
+def _in_allowed_networks(ip_str: str, networks: list[IPNetwork] | None) -> bool:
+    """True when ``ip_str`` is inside an operator-allowed network and is not one of
+    the never-reachable addresses (metadata / link-local / 0.0.0.0 / multicast)."""
+    if not networks or _is_always_blocked_ip(ip_str):
+        return False
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return any(addr.version == net.version and addr in net for net in networks)
+
+
 def _is_always_blocked_ip(ip_str: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip_str)
@@ -117,6 +157,7 @@ def assert_public_url(
     *,
     allowed_domains: list[str] | None = None,
     context: str = "",
+    allowed_networks: list[IPNetwork] | None = None,
 ) -> list[str]:
     """Assert that a URL is safe to fetch (public, non-metadata, correct scheme).
 
@@ -127,6 +168,9 @@ def assert_public_url(
         url: The URL to validate.
         allowed_domains: Optional per-tenant allowlist of exact domains.
         context: Human-readable context for error messages (e.g. "A2A callback").
+        allowed_networks: Operator-only private networks whose addresses are
+            reachable (never link-local / metadata / 0.0.0.0). Every resolved
+            address must still be public or inside one of them.
     """
     if not url or not isinstance(url, str):
         raise SSRFError(f"SSRF guard [{context}]: empty or non-string URL")
@@ -196,6 +240,8 @@ def assert_public_url(
     except ValueError:
         pass  # not a literal IP; proceed to DNS resolution
     else:
+        if _in_allowed_networks(str(addr), allowed_networks):
+            return [str(addr)]  # inside an operator-allowed network
         if _is_blocked_ip(str(addr)):
             raise SSRFError(
                 f"SSRF guard [{context}]: IP address '{hostname}' is in a blocked range"
@@ -213,7 +259,7 @@ def assert_public_url(
         raise SSRFError(f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed")
 
     for ip in ips:
-        if _is_blocked_ip(ip):
+        if _is_blocked_ip(ip) and not _in_allowed_networks(ip, allowed_networks):
             raise SSRFError(
                 f"SSRF guard [{context}]: hostname '{hostname}' resolved to "
                 f"blocked IP '{ip}' (anti-rebinding check)"
@@ -267,7 +313,12 @@ async def request_public(
     raise SSRFError(f"SSRF guard [{context}]: too many redirects (>{max_redirects})")
 
 
-def resolve_and_check_host(host: str, *, allowed_domains: list[str] | None = None) -> list[str]:
+def resolve_and_check_host(
+    host: str,
+    *,
+    allowed_domains: list[str] | None = None,
+    allowed_networks: list[IPNetwork] | None = None,
+) -> list[str]:
     """Resolve *host* and validate every address; return the checked IPs.
 
     Used at CONNECT time by :class:`PinnedNetworkBackend`, so the address the
@@ -277,6 +328,7 @@ def resolve_and_check_host(host: str, *, allowed_domains: list[str] | None = Non
         f"http://{host}/" if ":" not in host else f"http://[{host}]/",
         allowed_domains=allowed_domains,
         context="connect",
+        allowed_networks=allowed_networks,
     )
 
 
@@ -292,11 +344,17 @@ class PinnedNetworkBackend:
     (httpcore passes the origin host to ``start_tls``, not the connect address).
     """
 
-    def __init__(self, *, allowed_domains: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        allowed_domains: list[str] | None = None,
+        allowed_networks: list[IPNetwork] | None = None,
+    ) -> None:
         import httpcore
 
         self._inner = httpcore.AnyIOBackend()
         self._allowed_domains = allowed_domains
+        self._allowed_networks = allowed_networks
 
     async def connect_tcp(
         self,
@@ -309,7 +367,10 @@ class PinnedNetworkBackend:
         import asyncio
 
         ips = await asyncio.to_thread(
-            resolve_and_check_host, host, allowed_domains=self._allowed_domains
+            resolve_and_check_host,
+            host,
+            allowed_domains=self._allowed_domains,
+            allowed_networks=self._allowed_networks,
         )
         if not ips:
             raise SSRFError(f"SSRF guard [connect]: no checked address for '{host}'")
@@ -335,7 +396,12 @@ class PinnedNetworkBackend:
         await self._inner.sleep(seconds)
 
 
-def public_async_client(*, allowed_domains: list[str] | None = None, **kwargs: Any) -> Any:
+def public_async_client(
+    *,
+    allowed_domains: list[str] | None = None,
+    allowed_networks: list[IPNetwork] | None = None,
+    **kwargs: Any,
+) -> Any:
     """An ``httpx.AsyncClient`` whose connections are pinned to validated IPs.
 
     Redirects are never followed automatically (``follow_redirects=False``) —
@@ -349,7 +415,9 @@ def public_async_client(*, allowed_domains: list[str] | None = None, **kwargs: A
     transport = httpx.AsyncHTTPTransport()
     # httpcore>=1.0 AsyncConnectionPool keeps its backend here (pinned in
     # uv.lock; tests/net/test_ssrf_guard_pinning.py fails if it moves).
-    transport._pool._network_backend = PinnedNetworkBackend(allowed_domains=allowed_domains)
+    transport._pool._network_backend = PinnedNetworkBackend(
+        allowed_domains=allowed_domains, allowed_networks=allowed_networks
+    )
     return httpx.AsyncClient(transport=transport, **kwargs)
 
 

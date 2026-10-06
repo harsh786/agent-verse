@@ -633,7 +633,10 @@ class Settings(BaseSettings):
     mongodb_client_cache_size: int = 64
     mongodb_client_idle_ttl_s: int = 300
     mongodb_client_max_age_s: int = 1800
-    ingestion_internal_source_allowlist: str = ""  # comma-separated hostnames
+    # Comma-separated hostnames / single IPs. Testing deployments may also list
+    # private networks in CIDR form (192.168.0.0/16; EGRESS-NET) — production
+    # refuses those at startup: use service hostnames there.
+    ingestion_internal_source_allowlist: str = ""
     # Connector drivers are pinned to the addresses the egress check validated
     # (no DNS-rebinding window). A driver that resolves hosts outside Python and
     # cannot be pinned (confluent-kafka / librdkafka) is refused while this is on.
@@ -773,6 +776,17 @@ class Settings(BaseSettings):
         if self.repo_ingest_heartbeat_seconds * 3 > self.repo_ingest_lease_seconds:
             raise ValueError(
                 "repo_ingest_heartbeat_seconds must be at most one-third of lease duration"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_ip_ranges_in_production(self) -> Settings:
+        # EGRESS-NET: opening whole private ranges is a testing aid. Production
+        # keeps SSRF protection and names its internal services instead.
+        if self.environment == "production" and "/" in self.ingestion_internal_source_allowlist:
+            raise ValueError(
+                "INGESTION_INTERNAL_SOURCE_ALLOWLIST: IP ranges (CIDR) are refused in "
+                "production; allowlist service hostnames instead"
             )
         return self
 

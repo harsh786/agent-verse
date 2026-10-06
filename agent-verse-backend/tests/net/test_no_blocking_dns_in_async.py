@@ -33,10 +33,6 @@ _OTHER_OWNER = "owned by another fix package — migrate to assert_public_url_as
 _KNOWN: dict[tuple[str, str], str] = {
     ("agent/tools/a2a_call.py", "call_external_a2a_agent"): _OTHER_OWNER,  # agent-core
     ("gateway/router.py", "_download_command_file"): _OTHER_OWNER,  # triggers
-    ("ingestion/connectors/http_connector.py", "HttpApiConnector.get_delta"): _OTHER_OWNER,
-    ("ingestion/connectors/http_connector.py", "HttpApiConnector.validate_connection"): (
-        _OTHER_OWNER
-    ),
     ("rag_platform/hosted_reranker.py", "HostedReranker.rerank"): _OTHER_OWNER,  # knowledge
 }
 

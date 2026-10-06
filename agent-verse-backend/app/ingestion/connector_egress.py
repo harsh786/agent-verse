@@ -18,7 +18,10 @@ an on-prem deployment needs when its Jira really does live on a LAN.
 
 The escape hatch is deliberately **operator-scoped, never tenant-scoped**:
 ``INGESTION_ALLOW_INTERNAL_SOURCES`` plus an explicit
-``INGESTION_INTERNAL_SOURCE_ALLOWLIST`` of hostnames. A value in
+``INGESTION_INTERNAL_SOURCE_ALLOWLIST`` of hostnames, single IPs and — for
+testing deployments only (production refuses them) — private networks in CIDR
+form (``192.168.0.0/16``; EGRESS-NET). Link-local / metadata / 0.0.0.0 stay
+unreachable even inside a listed network. A value in
 ``connection_config`` can never widen it — that field is exactly what an attacker
 controls.
 
@@ -53,7 +56,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
-from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
+from app.net.ssrf_guard import (
+    IPNetwork,
+    SSRFError,
+    assert_public_url,
+    parse_allowed_networks,
+    public_async_client,
+)
 from app.observability.logging import get_logger
 
 if TYPE_CHECKING:
@@ -100,7 +109,8 @@ def _operator_allowlist() -> tuple[bool, list[str]]:
         return False, []
     allow = bool(getattr(settings, "ingestion_allow_internal_sources", False))
     raw = str(getattr(settings, "ingestion_internal_source_allowlist", "") or "")
-    domains = [d.strip().lower() for d in raw.split(",") if d.strip()]
+    # CIDR entries are networks (_effective_networks), never domain suffixes.
+    domains = [d.strip().lower() for d in raw.split(",") if d.strip() and "/" not in d]
     return allow, domains
 
 
@@ -112,6 +122,21 @@ def _effective_allowlist() -> list[str] | None:
     return allowed_domains if (allow_internal and allowed_domains) else None
 
 
+def _effective_networks() -> list[IPNetwork] | None:
+    """The operator's allowed private networks (CIDR entries of the allowlist),
+    honoured only when the escape hatch is also on."""
+    try:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    except Exception:  # pragma: no cover - settings unavailable: fail closed
+        return None
+    if not bool(getattr(settings, "ingestion_allow_internal_sources", False)):
+        return None
+    raw = str(getattr(settings, "ingestion_internal_source_allowlist", "") or "")
+    return parse_allowed_networks(raw) or None
+
+
 def source_client(**httpx_kwargs: Any) -> Any:
     """An ``httpx.AsyncClient`` for connector fetches, pinned under the egress policy.
 
@@ -121,7 +146,11 @@ def source_client(**httpx_kwargs: Any) -> Any:
     refused. Redirects are never followed automatically — use
     :func:`guarded_request` for URLs that can redirect.
     """
-    return public_async_client(allowed_domains=_effective_allowlist(), **httpx_kwargs)
+    return public_async_client(
+        allowed_domains=_effective_allowlist(),
+        allowed_networks=_effective_networks(),
+        **httpx_kwargs,
+    )
 
 
 def assert_source_url(url: str, *, context: str, config: SourceConfig | None = None) -> list[str]:
@@ -141,7 +170,12 @@ def assert_source_url(url: str, *, context: str, config: SourceConfig | None = N
 
     effective_allowlist = _effective_allowlist()
     try:
-        return assert_public_url(url, allowed_domains=effective_allowlist, context=context)
+        return assert_public_url(
+            url,
+            allowed_domains=effective_allowlist,
+            context=context,
+            allowed_networks=_effective_networks(),
+        )
     except (SSRFError, ValueError) as exc:
         _log.warning("connector_egress_blocked", context=context, error=str(exc)[:200])
         raise ConnectorEgressBlockedError(str(exc)) from exc

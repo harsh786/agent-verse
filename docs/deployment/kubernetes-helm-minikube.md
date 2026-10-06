@@ -299,6 +299,10 @@ addresses. If a knowledge source lives on your own network (say a MinIO at
 | `INGESTION_ALLOW_INTERNAL_SOURCES` | `ingestion.allowInternalSources` | `false` |
 | `INGESTION_INTERNAL_SOURCE_ALLOWLIST` | `ingestion.internalSourceAllowlist` | `""` |
 
+`INGESTION_INTERNAL_SOURCE_ALLOWLIST` takes hostnames and single IPs (a host covers every port). For testing
+only, it also takes private ranges in CIDR form (`192.168.0.0/16`); metadata / link-local / `0.0.0.0/8` stay blocked even
+when listed, and `ENVIRONMENT=production` refuses CIDR entries — allowlist service hostnames in production.
+
 ```bash
 helm upgrade --install agentverse infra/helm/agentverse \
   --set ingestion.allowInternalSources=true \

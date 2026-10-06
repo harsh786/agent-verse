@@ -30,7 +30,12 @@ def install_connect_spy(monkeypatch: pytest.MonkeyPatch) -> ConnectSpy:
     spy = ConnectSpy()
     monkeypatch.setattr(g, "_resolve_host", lambda host: [PUBLIC_IP])
 
-    def _connect_check(host: str, *, allowed_domains: list[str] | None = None) -> list[str]:
+    def _connect_check(
+        host: str,
+        *,
+        allowed_domains: list[str] | None = None,
+        allowed_networks: list[object] | None = None,
+    ) -> list[str]:
         spy.dialed.append(host)
         spy.allowlists.append(allowed_domains)
         raise g.SSRFError(
