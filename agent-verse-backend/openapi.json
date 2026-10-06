@@ -699,6 +699,12 @@
             "title": "Outbound Token",
             "type": "string"
           },
+          "register_webhook": {
+            "default": true,
+            "description": "Telegram: call setWebhook with this binding's URL and secret_token (needs GATEWAY_PUBLIC_BASE_URL on the server)",
+            "title": "Register Webhook",
+            "type": "boolean"
+          },
           "secret": {
             "default": "",
             "description": "Inbound credential: Telegram secret_token (generated if empty), WhatsApp app secret, Slack signing secret, webhook HMAC key (generated if empty)",
@@ -2097,6 +2103,20 @@
             "title": "Name",
             "type": "string"
           },
+          "roles": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roles"
+          },
           "scopes": {
             "items": {
               "type": "string"
@@ -2338,6 +2358,10 @@
         "properties": {
           "action": {
             "default": "deny",
+            "enum": [
+              "deny",
+              "require_approval"
+            ],
             "title": "Action",
             "type": "string"
           },
@@ -4637,10 +4661,16 @@
         "description": "LLM provider configuration for a tenant.",
         "properties": {
           "api_key": {
-            "description": "API key (stored encrypted in vault)",
-            "minLength": 1,
-            "title": "Api Key",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "API key (stored encrypted in vault); omit to keep the stored one",
+            "title": "Api Key"
           },
           "base_url": {
             "anyOf": [
@@ -4667,8 +4697,7 @@
           }
         },
         "required": [
-          "provider",
-          "api_key"
+          "provider"
         ],
         "title": "LLMProviderConfig",
         "type": "object"
@@ -5275,6 +5304,27 @@
       },
       "OcrResponse": {
         "properties": {
+          "confidence_measured": {
+            "default": true,
+            "title": "Confidence Measured",
+            "type": "boolean"
+          },
+          "degradation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degradation Reason"
+          },
+          "degraded": {
+            "default": false,
+            "title": "Degraded",
+            "type": "boolean"
+          },
           "document_type": {
             "title": "Document Type",
             "type": "string"
@@ -5318,9 +5368,32 @@
             "title": "Page Count",
             "type": "integer"
           },
+          "page_engines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Page Engines",
+            "type": "array"
+          },
           "raw_text": {
             "title": "Raw Text",
             "type": "string"
+          },
+          "source_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Format"
+          },
+          "vision_pages": {
+            "default": 0,
+            "title": "Vision Pages",
+            "type": "integer"
           }
         },
         "required": [
@@ -8552,6 +8625,17 @@
       "TriggerSpecRequest": {
         "additionalProperties": true,
         "properties": {
+          "allow_self_trigger": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Self Trigger"
+          },
           "condition_cel": {
             "anyOf": [
               {
@@ -8800,6 +8884,29 @@
               }
             ],
             "title": "Connector Ids"
+          },
+          "domain_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Context"
+          },
+          "domain_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain Metadata"
           },
           "enable_cot": {
             "anyOf": [
@@ -12550,18 +12657,6 @@
       "get": {
         "description": "Claims awaiting operator approval + legacy send-only mappings (cross-tenant).",
         "operationId": "list_channel_mapping_review_admin_channel_mappings_review_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -12574,16 +12669,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
         "summary": "List Channel Mapping Review",
@@ -12603,16 +12688,6 @@
             "required": true,
             "schema": {
               "title": "Mapping Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
               "type": "string"
             }
           }
@@ -12677,16 +12752,6 @@
               "title": "Mapping Id",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
-              "type": "string"
-            }
           }
         ],
         "requestBody": {
@@ -12749,16 +12814,6 @@
               "default": 50,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
-              "type": "string"
             }
           }
         ],
@@ -12832,16 +12887,6 @@
               ],
               "title": "Search"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -12887,16 +12932,6 @@
               "title": "Tenant Id",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -12940,16 +12975,6 @@
             "required": true,
             "schema": {
               "title": "Tenant Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
               "type": "string"
             }
           }
@@ -12998,18 +13023,6 @@
       "get": {
         "description": "Aggregate platform-wide usage from the goals and tenants tables.\n\nNo database configured -> 501; database error -> 503 (never zeros).\n``avg_latency_ms`` is the mean wall-clock time of goals completed today\n(UTC), ``null`` when none has.",
         "operationId": "get_platform_usage_admin_usage_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-admin-key",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "X-Admin-Key",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -13022,16 +13035,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
         "summary": "Get Platform Usage",
@@ -21653,7 +21656,7 @@
     },
     "/billing/plans": {
       "get": {
-        "description": "Return available billing plans with Razorpay pricing info.",
+        "description": "Every plan tier (free included) with its price and ENFORCED limits.",
         "operationId": "list_plans_billing_plans_get",
         "responses": {
           "200": {
@@ -22562,7 +22565,7 @@
     },
     "/channels/teams/events": {
       "post": {
-        "description": "Handle Microsoft Teams webhook (Bot Framework JWT authenticated).",
+        "description": "Handle Microsoft Teams webhook (Bot Framework JWT authenticated).\n\nDEF-1: the tenant is bound by what the VERIFIED token and activity say:\n\n1. The Bot Framework JWT is validated (RS256 against the cached Bot\n   Framework JWKS, issuer, expiry, ``serviceurl`` claim = activity\n   ``serviceUrl``, key endorsements) \u2014 401 otherwise.\n2. Its audience (the bot app id) must be the platform bot\n   (``TEAMS_APP_ID``) or the Bot Framework app the bound tenant registered\n   for THIS Microsoft 365 org \u2014 a tenant's own bot cannot carry another\n   org's activities into someone else's tenant (401).\n3. The org (``channelData.tenant.id`` / ``conversation.tenantId``) must be\n   bound to a tenant by a verified mapping; unknown or unbound orgs get 403.\n   ``serviceUrl`` is never used: it is a regional endpoint shared by every\n   Teams organisation, and mapping it routed every org to one tenant.",
         "operationId": "teams_events_channels_teams_events_post",
         "responses": {
           "200": {
@@ -32766,6 +32769,7 @@
     },
     "/guardrails/test": {
       "post": {
+        "description": "Dry-run *body* against the built-in checks AND the tenant's stored rules.\n\nQA-12: this used to run only the built-in v1 checks, so a tenant's own rules\n(what goals, workflows and ingestion actually enforce) never showed up here.\nNothing is recorded.",
         "operationId": "test_guardrail_guardrails_test_post",
         "requestBody": {
           "content": {
@@ -39855,9 +39859,57 @@
         ]
       }
     },
+    "/models/catalog": {
+      "get": {
+        "description": "Reference models per provider (NVIDIA, Groq, xAI, Claude, OpenAI, Gemini,\nQwen on-prem, Ollama, Voyage) with whether this deployment has the\nprovider's credentials and whether each model is already configured.",
+        "operationId": "list_catalog_models_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Catalog Models Catalog Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Catalog",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
+    "/models/catalog/import": {
+      "post": {
+        "description": "Copy catalog models into the configured registry (platform admin).\n\nBody ``{\"providers\": [...], \"model_ids\": [...]}``; both optional (omitted =\neverything). Models already configured keep the operator's edits. Models of a\nprovider without credentials are imported but skipped by selection until the\nkey is set.",
+        "operationId": "import_catalog_models_catalog_import_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Import Catalog Models Catalog Import Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Import Catalog",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
     "/models/configured": {
       "get": {
-        "description": "List the deployment's configured models, grouped by capability, marking the\none currently SELECTED (cheapest) for each capability.",
+        "description": "The deployment's configured models per capability, in EXECUTION order\n(the operator's preference order, then cheapest first), with the model\ncurrently selected and the failover chain after it.",
         "operationId": "list_configured_models_models_configured_get",
         "responses": {
           "200": {
@@ -39901,6 +39953,30 @@
         ]
       }
     },
+    "/models/configured/access": {
+      "get": {
+        "description": "Whether the caller may change the model registry, and how (UI gating).",
+        "operationId": "registry_access_models_configured_access_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Registry Access Models Configured Access Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Registry Access",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
     "/models/configured/reseed": {
       "post": {
         "description": "Re-seed the configured registry from env + persisted overrides.\nPlatform-admin only (global registry).",
@@ -39920,6 +39996,30 @@
           }
         },
         "summary": "Reseed Configured Models",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
+    "/models/configured/test-endpoint": {
+      "post": {
+        "description": "Check that a model's own endpoint answers (platform admin).\n\nBody ``{provider, model_id, base_url, capabilities}``. Lists the server's\nmodels (``GET {base_url}/models``), then makes one real call for the\ncapability: a short chat completion (reasoning / vision / OCR), an embedding,\nor a rerank. ``ok: false`` (HTTP 200) carries the error; 400 = URL refused.",
+        "operationId": "test_model_endpoint_models_configured_test_endpoint_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Test Model Endpoint Models Configured Test Endpoint Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Model Endpoint",
         "tags": [
           "model-registry"
         ]
@@ -40044,6 +40144,118 @@
           }
         },
         "summary": "Model Plan Cap",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
+    "/models/preferences": {
+      "get": {
+        "description": "The saved preference order per capability (missing = cheapest first).",
+        "operationId": "get_preferences_models_preferences_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Preferences Models Preferences Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Preferences",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
+    "/models/preferences/{capability}": {
+      "delete": {
+        "description": "Drop the saved order for one capability: back to cheapest first.",
+        "operationId": "reset_preference_models_preferences__capability__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "title": "Capability",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Reset Preference Models Preferences  Capability  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Preference",
+        "tags": [
+          "model-registry"
+        ]
+      },
+      "put": {
+        "description": "Save the execution order for one capability (platform admin).\n\nBody ``{\"order\": [\"provider/model_id\", ...]}``: the first eligible model is\nused, the next ones are the failover chain; configured models not listed\nfollow cheapest first.",
+        "operationId": "set_preference_models_preferences__capability__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "title": "Capability",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Preference Models Preferences  Capability  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Preference",
         "tags": [
           "model-registry"
         ]
@@ -46879,7 +47091,7 @@
     },
     "/triggers/webhooks/{webhook_type}/{token}": {
       "post": {
-        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.",
+        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).",
         "operationId": "receive_typed_webhook_triggers_webhooks__webhook_type___token__post",
         "parameters": [
           {
@@ -47358,6 +47570,51 @@
           }
         },
         "summary": "Rotate Secret",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/triggers/{schedule_id}/rotate-token": {
+      "post": {
+        "description": "Issue a new webhook URL token; the old one stops working at once (B2-6).\n\nThe path token is the credential a third party holds: a leaked URL used to\nbe revocable only by deleting the trigger. The new token is persisted on\nthe schedules row (the indexed pre-auth lookup), so every replica rejects\nthe old token immediately; the signing secret is unchanged.",
+        "operationId": "rotate_webhook_token_triggers__schedule_id__rotate_token_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rotate Webhook Token Triggers  Schedule Id  Rotate Token Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Webhook Token",
         "tags": [
           "triggers"
         ]
@@ -47856,6 +48113,84 @@
       }
     },
     "/v1/gateway/{channel}/chat/{binding_id}": {
+      "get": {
+        "description": "DEF-3: Meta subscribes a WhatsApp webhook by GETting its URL with\n``hub.mode=subscribe``, the configured ``hub.verify_token`` and a\n``hub.challenge`` to echo. The token is THIS binding's server-generated\nverify token (shown once when the binding was created) \u2014 never a platform\nvalue shared by every tenant. Unknown binding / wrong token \u2192 403.",
+        "operationId": "gateway_channel_chat_verify",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "title": "Binding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hub.mode",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Hub.Mode",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hub.verify_token",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Hub.Verify Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hub.challenge",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Hub.Challenge",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "WhatsApp webhook subscription handshake for a tenant binding",
+        "tags": [
+          "gateway"
+        ]
+      },
       "post": {
         "description": "Same as ``/{channel}/chat`` with the binding named in the URL \u2014 the form a\nTelegram webhook must use, since Bot API updates do not name the bot.",
         "operationId": "gateway_channel_chat_binding",
@@ -48293,31 +48628,31 @@
         "parameters": [
           {
             "in": "query",
-            "name": "hub_mode",
+            "name": "hub.mode",
             "required": false,
             "schema": {
               "default": "",
-              "title": "Hub Mode",
+              "title": "Hub.Mode",
               "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "hub_verify_token",
+            "name": "hub.verify_token",
             "required": false,
             "schema": {
               "default": "",
-              "title": "Hub Verify Token",
+              "title": "Hub.Verify Token",
               "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "hub_challenge",
+            "name": "hub.challenge",
             "required": false,
             "schema": {
               "default": "",
-              "title": "Hub Challenge",
+              "title": "Hub.Challenge",
               "type": "string"
             }
           }
