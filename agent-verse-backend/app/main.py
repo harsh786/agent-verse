@@ -1916,6 +1916,10 @@ def create_app(
                     mcp_client=_wf_mcp_client,
                     run_store=_wf_run_store,
                     hitl_workflow_gateway=_wf_hitl_gw_existing,
+                    # QA-7: tool steps evaluate the tenant's policies (slice
+                    # reloaded under its RLS context) and policy-as-code rules.
+                    policy_engine=_policy_engine,
+                    db_session_factory=db_factory,
                     llm_provider=_wf_platform,
                     provider=_wf_platform,
                     llm_provider_resolver=_WFLLMResolver(
@@ -3289,6 +3293,8 @@ def create_app(
         _wf_compiler = WorkflowCompiler(
             context_resolver=_wf_ctx,
             hitl_workflow_gateway=_hitl_wf_gateway,
+            # QA-7: tool steps honour the tenant's governance policies.
+            policy_engine=_policy_engine,
             # BYOK-3: tenant BYOK → platform → "no LLM provider configured".
             llm_provider_resolver=TenantLLMProviderResolver(
                 platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider

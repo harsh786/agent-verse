@@ -38,7 +38,8 @@ from app.workflow.state import (
     WorkflowState,
 )
 from app.workflow.steps.hitl_step import classify_hitl_decision
-from app.workflow.steps.tool_step import is_gated_tool_step
+from app.workflow.steps.tool_step import has_tool_governance
+from app.workflow.steps.tool_step import is_gated_tool_step as _is_gated_tool_step
 
 _log = get_logger(__name__)
 
@@ -198,9 +199,15 @@ class WorkflowCompiler:
 
     def _compile_uncached(self, definition: WorkflowDefinition) -> CompiledWorkflow:
         graph = StateGraph(WorkflowState)
+        # QA-7: with tenant governance wired, a policy may deny any tool step or
+        # require an approval for it at run time, so every tool step is a gate.
+        governed = has_tool_governance(self._services)
+
+        def is_gated_tool_step(s: Any) -> bool:
+            return _is_gated_tool_step(s, governed=governed)
 
         # 1. Register each step as a graph node
-        barriers = self._approval_barriers(definition)
+        barriers = self._approval_barriers(definition, governed=governed)
         by_id = {s.id: s for s in definition.steps}
         for step in definition.steps:
             node_fn = self._build_node_fn(step, barriers.get(step.id), by_id)
@@ -303,7 +310,9 @@ class WorkflowCompiler:
         return CompiledWorkflow(compiled_graph, definition)
 
     @staticmethod
-    def _approval_barriers(definition: WorkflowDefinition) -> dict[str, _Barrier]:
+    def _approval_barriers(
+        definition: WorkflowDefinition, *, governed: bool = False
+    ) -> dict[str, _Barrier]:
         """Per step: (direct approval deps, indirect approval ancestors).
 
         Only ``depends_on`` (all-of) edges carry the barrier; a
@@ -313,7 +322,9 @@ class WorkflowCompiler:
         # Approval gates: approval steps and gated (write_high / destructive)
         # tool steps (OI-2).
         hitl_ids = {
-            s.id for s in definition.steps if s.type == "hitl" or is_gated_tool_step(s)
+            s.id
+            for s in definition.steps
+            if s.type == "hitl" or _is_gated_tool_step(s, governed=governed)
         }
         memo: dict[str, frozenset[str]] = {}
 

@@ -7,6 +7,14 @@ run fails; ``write_high`` suspends the run on the workflow's durable approval
 barrier (a persisted workflow approval, ``waiting_hitl``, nothing downstream
 runs) and only an explicit approval decision runs the call. A rejection, an
 unrecognised decision or a missing approval gateway never runs it.
+
+QA-7: before the risk gate the call is checked against the tenant's governance,
+as a goal's ``GovernedToolGate`` does — the PolicyEngine (its tenant slice
+reloaded first when a DB is wired), the tenant's policy-as-code rules and its
+compliance bundles' approval requirements. A deny fails the step without calling
+the connector; a require_approval takes the same durable approval path as
+``write_high``. Agent-scoped checks (grants, agent permissions) have no agent in
+a workflow and are not applied here.
 """
 
 from __future__ import annotations
@@ -58,11 +66,24 @@ def static_tool_risk(tool: str, arguments: dict[str, Any] | None = None) -> str:
     return max(known, key=_RISK_ORDER.index)
 
 
-def is_gated_tool_step(step: Any) -> bool:
-    """A tool step that may suspend for approval or be denied (compile time)."""
+def is_gated_tool_step(step: Any, *, governed: bool = False) -> bool:
+    """A tool step that may suspend for approval or be denied (compile time).
+
+    *governed*: tenant governance (policies / policy rules) is wired, so ANY tool
+    step may be denied or need an approval at run time (QA-7).
+    """
     if getattr(step, "type", "") != "tool":
         return False
+    if governed:
+        return True
     return static_tool_risk(str(getattr(step, "tool", "") or "")) in ("write_high", "destructive")
+
+
+def has_tool_governance(services: dict[str, Any]) -> bool:
+    """Whether the step services carry tenant governance for tool steps (QA-7)."""
+    return (
+        services.get("policy_engine") is not None or services.get("db_session_factory") is not None
+    )
 
 
 def _redacted_args(arguments: Any) -> str:
@@ -86,6 +107,9 @@ class ToolStepNode:
         self.ctx = context_resolver
         self.mcp_client = services.get("mcp_client")
         self.hitl_gateway = services.get("hitl_workflow_gateway")
+        # QA-7: the tenant's governance (policy engine + policy rules DB).
+        self.policy_engine = services.get("policy_engine")
+        self.governance_db = services.get("db_session_factory")
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         resolved_input = self.ctx.resolve_dict(self.step.input, state)
@@ -130,6 +154,15 @@ class ToolStepNode:
                 )
             # OI-2: the tool risk gate, before anything is dispatched.
             risk = await self._effective_risk(resolved_input, _tctx)
+            # QA-7: the tenant's governance policies come first.
+            verdict, reason = await self._governance_verdict(resolved_input, _tctx)
+            if verdict == "deny":
+                return self._denied(
+                    state,
+                    f"tool step {self.step.id!r}: the call to '{self.step.tool}' was "
+                    f"{reason}; it was not run",
+                    risk,
+                )
             if risk == "destructive":
                 return self._denied(
                     state,
@@ -138,9 +171,11 @@ class ToolStepNode:
                     risk,
                 )
             approval: dict[str, Any] | None = None
-            if risk == "write_high":
+            if risk == "write_high" or verdict == "approval":
                 if state.get("hitl_request_id") != self.step.id:
-                    return await self._suspend_for_approval(state, resolved_input, risk)
+                    return await self._suspend_for_approval(
+                        state, resolved_input, risk, reason=reason
+                    )
                 from app.workflow.steps.hitl_step import classify_hitl_decision
 
                 action = state.get("hitl_action", "")
@@ -209,6 +244,69 @@ class ToolStepNode:
             "step_timings": {**(state.get("step_timings") or {}), self.step.id: duration_ms},
         }
 
+    def _governed_name(self) -> str:
+        """The step's tool name carrying every form a policy may name it by."""
+        from app.mcp.tool_naming import GovernedToolName
+
+        tool = str(self.step.tool or "")
+        bare = _bare_tool_name(tool)
+        forms = [f"{self.step.server_id}/{bare}" if self.step.server_id else "", tool, bare]
+        return GovernedToolName(tool, forms)
+
+    async def _governance_verdict(
+        self, arguments: dict[str, Any], tenant_ctx: Any
+    ) -> tuple[str, str]:
+        """``("deny" | "approval" | "allow", reason)`` from the tenant's governance.
+
+        Same checks, order and fail-closed semantics as ``GovernedToolGate``
+        steps 2c and 3: policy-as-code rules, compliance bundles, policy engine.
+        """
+        tool = self._governed_name()
+        tenant_id = str(getattr(tenant_ctx, "tenant_id", "") or "")
+        needs_approval = ""
+        if self.governance_db is not None and tenant_id:
+            from app.governance import compliance_bundles, policy_rules
+
+            denial = await policy_rules.policy_rules_denial(
+                self.governance_db,
+                tenant_id,
+                {
+                    "tool_name": tool,
+                    "arguments": arguments or {},
+                    "agent_id": "",
+                    "goal_id": "",
+                    "step": self.step.name or self.step.id,
+                },
+            )
+            if denial is not None:
+                return "deny", denial
+            try:
+                bundle = await compliance_bundles.bundle_hitl_requirement(
+                    self.governance_db, tenant_id, tool
+                )
+            except Exception as exc:
+                return "deny", (
+                    f"blocked: compliance bundles could not be read ({type(exc).__name__}), "
+                    "failing closed"
+                )
+            if bundle:
+                needs_approval = f"compliance bundle {bundle!r} requires an approval"
+        if self.policy_engine is not None:
+            from app.governance.policies import PolicyResult
+
+            ensure = getattr(self.policy_engine, "ensure_tenant_loaded", None)
+            if ensure is not None and self.governance_db is not None and tenant_id:
+                # A first load that fails leaves a deny-all policy (fail closed).
+                await ensure(self.governance_db, tenant_id)
+            result = self.policy_engine.evaluate(tool, tenant_ctx=tenant_ctx)
+            if result == PolicyResult.DENY:
+                return "deny", "denied by governance policy"
+            if result == PolicyResult.REQUIRE_APPROVAL:
+                needs_approval = "governance policy requires an approval"
+        if needs_approval:
+            return "approval", needs_approval
+        return "allow", ""
+
     async def _effective_risk(self, arguments: dict[str, Any], tenant_ctx: Any) -> str:
         """The call's risk tier, as a goal's tool gate would resolve it."""
         from app.agent.nodes._helpers import resolve_effective_tool_risk
@@ -268,7 +366,7 @@ class ToolStepNode:
         }
 
     async def _suspend_for_approval(
-        self, state: WorkflowState, arguments: dict[str, Any], risk: str
+        self, state: WorkflowState, arguments: dict[str, Any], risk: str, *, reason: str = ""
     ) -> dict[str, Any]:
         """File a durable workflow approval for this call and suspend the run."""
         assignee = self.step.assignee
@@ -282,6 +380,8 @@ class ToolStepNode:
             {"label": "Risk", "value": risk, "display_type": "text"},
             {"label": "Arguments", "value": _redacted_args(arguments), "display_type": "json"},
         ]
+        if reason:
+            context_payload.append({"label": "Reason", "value": reason, "display_type": "text"})
         if self.hitl_gateway is not None:
             escalation_hours = None
             escalation_role = None

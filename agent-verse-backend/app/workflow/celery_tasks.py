@@ -148,11 +148,18 @@ def _build_worker_runner() -> Any:
         )
     except Exception as _mcp_exc:
         _log.warning("worker_runner_mcp_client_unavailable", error=str(_mcp_exc)[:120])
+    # QA-7: tool steps evaluate the run tenant's governance policies. The engine is
+    # worker-local; each tenant's slice is loaded under its RLS context on first
+    # use and refreshed when stale (a failed first load denies — fail closed).
+    from app.governance.policies import PolicyEngine
+
     compiler = WorkflowCompiler(
         context_resolver=ContextResolver(),
         checkpointer=_WORKER_CHECKPOINTER,
         run_store=run_store,
         hitl_workflow_gateway=hitl_workflow_gateway,
+        policy_engine=PolicyEngine(),
+        db_session_factory=db_factory,
         llm_provider=_wf_provider,
         provider=_wf_provider,
         llm_provider_resolver=_wf_llm_resolver,
