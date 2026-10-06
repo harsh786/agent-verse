@@ -22,6 +22,10 @@ from tests._test_backends import BACKEND_ROOT, migrated_postgres
 pytestmark = pytest.mark.integration
 
 _PREV = "f6a9d4e2b8c5"
+# The widening migration itself. Policies / views are compared AT this revision:
+# later migrations add their own (e.g. the chat owner policies), which a
+# downgrade to _PREV correctly removes, so a head snapshot can never match.
+_WIDEN = "e7b1c4d9a2f6"
 _DASHED_TENANT = str(uuid.uuid4())  # 36 chars
 assert len(_DASHED_TENANT) == 36
 
@@ -116,6 +120,9 @@ async def test_widened_ids_round_trip_and_hold_a_dashed_tenant() -> None:
     import asyncpg
 
     with migrated_postgres() as url:
+        # Step back from head to the widening revision (exercises every later
+        # migration's downgrade too) and snapshot the schema there.
+        _alembic(url, "downgrade", _WIDEN)
         dsn = url.replace("postgresql+asyncpg://", "postgresql://")
         conn = await asyncpg.connect(dsn)
         try:
@@ -149,11 +156,19 @@ async def test_widened_ids_round_trip_and_hold_a_dashed_tenant() -> None:
         finally:
             await conn.close()
 
-        _alembic(url, "upgrade", "head")
+        _alembic(url, "upgrade", _WIDEN)
         conn = await asyncpg.connect(dsn)
         try:
             assert await conn.fetch(_NARROW_IDS) == []
             assert {tuple(r) for r in await conn.fetch(_POLICIES)} == policies
             assert {tuple(r) for r in await conn.fetch(_VIEWS)} == views
+        finally:
+            await conn.close()
+
+        # And forward to head again: the later migrations re-apply cleanly.
+        _alembic(url, "upgrade", "head")
+        conn = await asyncpg.connect(dsn)
+        try:
+            assert await conn.fetch(_NARROW_IDS) == []
         finally:
             await conn.close()
