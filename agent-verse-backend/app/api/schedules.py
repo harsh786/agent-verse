@@ -171,8 +171,16 @@ def _spec_to_dict(spec: TriggerSpec) -> dict[str, Any]:
     }
 
 
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
 def _record_to_dict(rec: dict[str, Any]) -> dict[str, Any]:
+    from app.triggers.next_run import next_run_at
+
     out = dict(rec)
+    # B1-13: the real next run, not the beat's evaluation hint / claim lease.
+    out["next_fire_at"] = next_run_at(rec)
     out.setdefault("agent_id", "")
     out.setdefault("goal_template", out.get("goal_id", ""))
     if isinstance(out.get("spec"), TriggerSpec):
@@ -322,6 +330,8 @@ async def get_schedule_analytics(request: Request) -> dict[str, Any]:
     Returns counts by status and trigger type, plus a simple 7-day
     firing cadence derived from last_fired_at timestamps.
     """
+    from app.triggers.next_run import next_run_at
+
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
     records = await _durable(store.list_all_async(tenant_ctx=tenant_ctx, strict=True))
@@ -366,7 +376,7 @@ async def get_schedule_analytics(request: Request) -> dict[str, Any]:
                 "trigger_type": _analytics_trigger_type(r),
                 "status": "paused" if r.get("paused") else "active",
                 "last_fired_at": r.get("last_fired_at"),
-                "next_run_at": r.get("next_run_at"),
+                "next_run_at": _iso(next_run_at(r)),
             }
             for r in records[:20]  # cap at 20 for response size
         ],

@@ -249,8 +249,12 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
     # Surface lifecycle timestamps so the UI can show when a trigger was created
     # and when it will next / last fire. Values may be datetime (DB-hydrated) or
     # already-ISO strings; normalise to ISO for the JSON response.
+    # B1-13: the real next run, not the beat's evaluation hint / claim lease.
+    from app.triggers.next_run import next_run_at
+
+    times = {**rec, "next_fire_at": next_run_at(rec)}
     for _ts in ("created_at", "next_fire_at", "last_fired_at"):
-        _val = rec.get(_ts)
+        _val = times.get(_ts)
         if _val is not None:
             out[_ts] = _val.isoformat() if hasattr(_val, "isoformat") else _val
     if spec is not None:

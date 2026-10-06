@@ -28,6 +28,8 @@ from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app, goal_queue_for
 from app.scaling.retry_policy import is_transient_infra_error
+from app.triggers.time_math import is_business_time as _is_business_time
+from app.triggers.time_math import resolve_tz as _resolve_tz
 
 logger = get_logger(__name__)
 
@@ -4953,17 +4955,6 @@ def _norm_utc_naive(dt: datetime.datetime | None) -> datetime.datetime | None:
     return dt
 
 
-def _resolve_tz(tz_name: str) -> datetime.tzinfo:
-    if not tz_name or tz_name.upper() == "UTC":
-        return datetime.UTC
-    try:
-        from zoneinfo import ZoneInfo
-
-        return ZoneInfo(tz_name)
-    except Exception:
-        return datetime.UTC
-
-
 def _cron_missed_runs_utc(
     cron_expr: str,
     last_fired_utc: datetime.datetime | None,
@@ -5090,35 +5081,6 @@ def _interval_due_slot_utc(
     elapsed = (now_utc - _INTERVAL_EPOCH).total_seconds()
     slot_index = int(elapsed // interval_seconds)
     return _INTERVAL_EPOCH + datetime.timedelta(seconds=slot_index * interval_seconds)
-
-
-_DEFAULT_BUSINESS_DAYS = (0, 1, 2, 3, 4)
-
-
-def _is_business_time(
-    dt_utc: datetime.datetime,
-    tz_name: str = "UTC",
-    calendar: dict[str, Any] | None = None,
-) -> bool:
-    """True when the instant is a business moment of *calendar*, in local time.
-
-    Default: Mon-Fri, 09:00-17:00. B1-6: ``business_days`` (Monday = 0),
-    ``business_hours_start`` / ``_end`` (local "HH:MM", end exclusive) and
-    ``holidays`` (local "YYYY-MM-DD" dates) come from the trigger.
-    """
-    cal = calendar or {}
-    tz = _resolve_tz(tz_name)
-    aware = dt_utc.replace(tzinfo=datetime.UTC) if dt_utc.tzinfo is None else dt_utc
-    local = aware.astimezone(tz)
-    days = cal.get("business_days") or _DEFAULT_BUSINESS_DAYS
-    if local.weekday() not in {int(d) for d in days}:
-        return False
-    if local.date().isoformat() in {str(h) for h in cal.get("holidays") or ()}:
-        return False
-    hhmm = local.strftime("%H:%M")
-    start = str(cal.get("business_hours_start") or "09:00")
-    end = str(cal.get("business_hours_end") or "17:00")
-    return start <= hhmm < end
 
 
 def _business_calendar_slots(
