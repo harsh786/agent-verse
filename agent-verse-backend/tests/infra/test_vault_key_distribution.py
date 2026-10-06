@@ -220,7 +220,7 @@ def test_helm_secret_provides_every_vault_variable() -> None:
 # ── NF-15: every app workload gets the app secrets the API gets ──────────────
 
 # API-only secrets: nothing a worker / beat runs reads them.
-_API_ONLY = {"PLATFORM_ADMIN_KEY"}
+_API_ONLY = {"PLATFORM_ADMIN_KEY", "A2A_SHARED_SECRET"}  # API-only: no worker needs them
 # What every app process needs (app.core.config Settings + os.getenv readers):
 # DB / Redis, MinIO (artifacts, training exports), JWT, the vault key pair,
 # goal / stream tokens (HITL links), manifest signing, provider keys, SMTP.
