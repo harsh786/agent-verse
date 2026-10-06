@@ -123,6 +123,47 @@ describe('SettingsPage – LLM Provider section', () => {
     expect(screen.getByText('claude-opus-4-5')).toBeInTheDocument();
   });
 
+  test('a08-F195-05: an admin can remove the stored provider key', async () => {
+    const calls: string[] = [];
+    let configured = true;
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${url}`);
+      if (url.endsWith('/tenants/me/llm') && method === 'DELETE') {
+        configured = false;
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/tenants/me/llm') || url.endsWith('/tenants/me/llm-config')) {
+        const body = configured
+          ? { provider: 'openai', default_model: 'gpt-4o', masked_key: 'sk-12345...wxyz', configured: true }
+          : { provider: null, configured: false };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    renderSettingsPage('llm');
+    const remove = await screen.findByRole('button', { name: /remove stored key/i });
+    await userEvent.click(remove);
+    await waitFor(() =>
+      expect(calls.some((c) => c.startsWith('DELETE') && c.endsWith('/tenants/me/llm'))).toBe(true),
+    );
+    await waitFor(() => expect(screen.getByText('Not set')).toBeInTheDocument());
+  });
+
+  test('a08-F195-05: non-admins get no remove button', async () => {
+    makeSettingsFetch({
+      llmConfig: { provider: 'openai', default_model: 'gpt-4o', masked_key: '****', can_edit: false },
+    });
+    renderSettingsPage('llm');
+    await waitFor(() => expect(screen.getByText('openai')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /remove stored key/i })).not.toBeInTheDocument();
+  });
+
   test('non-admin callers cannot open the LLM editor (SVC-31)', async () => {
     makeSettingsFetch({
       llmConfig: { provider: 'openai', default_model: 'gpt-4o', masked_key: '****', can_edit: false },

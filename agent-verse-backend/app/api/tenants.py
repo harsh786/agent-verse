@@ -659,6 +659,54 @@ async def set_llm_config(
     )
 
 
+@router.delete("/me/llm", status_code=204)
+async def delete_llm_config(
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+    _: None = Depends(require_role("admin")),
+) -> Response:
+    """Remove this tenant's LLM provider config, stored API key included.
+
+    a08-F195-05: there was no way to remove a stored BYOK key (only GET/PUT).
+    Admin only and audited. Afterwards the tenant's LLM calls use the platform
+    provider where the deployment offers one (as before any key was set).
+    Idempotent: removing a config that does not exist is also 204. A store
+    error is a 503 — the key is never reported removed while it is still used.
+    """
+    from app.services.llm_config_store import LLMConfigCacheStaleError, LLMConfigPersistError
+
+    store = _llm_store(request)
+    if store is not None:
+        try:
+            await store.delete_config(ctx.tenant_id)
+        except LLMConfigCacheStaleError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LLMConfigPersistError as exc:
+            raise HTTPException(
+                status_code=503, detail="LLM configuration could not be removed"
+            ) from exc
+    else:
+        getattr(request.app.state, "_llm_configs", {}).pop(ctx.tenant_id, None)
+
+    from app.governance.audit import AuditEvent
+    from app.governance.permissions import ActionLevel
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is not None:
+        audit_log.record(
+            AuditEvent(
+                goal_id="tenant_settings",
+                tool_name="tenant.llm_config",
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome="deleted",
+                api_key_id=ctx.api_key_id,
+                note="llm config and stored API key removed",
+            ),
+            tenant_ctx=ctx,
+        )
+    return Response(status_code=204)
+
+
 # ── LLM config: non-secret fields ────────────────────────────────────────────
 
 

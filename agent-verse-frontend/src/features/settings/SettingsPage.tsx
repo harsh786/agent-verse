@@ -252,6 +252,17 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
     },
   });
 
+  // a08-F195-05: remove the stored provider config and key (admin only).
+  const removeMutation = useMutation({
+    mutationFn: () => apiClient<void>('/tenants/me/llm', { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['llm-config'] });
+      qc.invalidateQueries({ queryKey: ['llm-config-simple'] });
+      setEditing(false);
+      toast({ kind: 'success', message: 'Stored LLM provider key removed' });
+    },
+  });
+
   // The provider key and base_url decide where every prompt goes, so only tenant
   // admins may change them (the backend answers 403 otherwise and reports can_edit).
   const canEdit =
@@ -372,6 +383,29 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
               <dd className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value}</dd>
             </div>
           ))}
+          {canEdit && (llmFull as any)?.masked_key && (
+            <div className="flex flex-col items-end gap-1 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      'Remove the stored LLM provider key? LLM calls then use the platform provider, if this deployment offers one.',
+                    )
+                  ) {
+                    removeMutation.mutate();
+                  }
+                }}
+                disabled={removeMutation.isPending}
+                className="text-xs text-red-600 hover:opacity-70 disabled:opacity-50"
+              >
+                {removeMutation.isPending ? 'Removing…' : 'Remove stored key'}
+              </button>
+              {removeMutation.isError && (
+                <p className="text-xs text-red-600">{String(removeMutation.error)}</p>
+              )}
+            </div>
+          )}
         </dl>
       )}
     </SectionShell>
