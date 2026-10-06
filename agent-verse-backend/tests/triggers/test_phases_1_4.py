@@ -121,7 +121,9 @@ async def test_chain_consumer_respects_depth_limit():
         }).encode(),
     }
     await consumer._handle(msg)
-    mock_dispatcher.dispatch.assert_not_called()
+    # B7-L3: past the cap the dispatcher (not the consumer) refuses and audits.
+    (call,) = mock_dispatcher.dispatch.await_args_list
+    assert call.args[1]["trigger_chain_depth"] == 11
 
 
 # ── WebhookSignatureVerifier ──────────────────────────────────────────────────

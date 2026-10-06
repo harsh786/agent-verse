@@ -64,18 +64,14 @@ class MemoryTriggerConsumer:
         if not triggers:
             return
         from app.triggers.consumers.tenant_ctx import event_tenant_ctx
-        from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, source_lineage
+        from app.triggers.lineage import chained_payload, source_lineage
 
         # B7 loop guard: the lineage of the goal that wrote this memory (a
         # trigger-started goal writes a learning when it completes). A read
         # error raises, so the stream entry is retried, never fired unchecked.
+        # The depth cap is enforced and audited by the dispatcher (B7-L3).
         source_goal_id = str(data.get("source_goal_id") or data.get("goal_id") or "")
         lineage = await source_lineage(self._dispatcher, tenant_id, source_goal_id, data)
-        if lineage.depth >= MAX_CHAIN_DEPTH:
-            _log.warning(
-                "memory_chain_depth_exceeded depth=%d goal_id=%s", lineage.depth, source_goal_id
-            )
-            return
         payload = chained_payload(data, lineage)
         # One memory is one firing, however often it is (re)published.
         memory_id = str(data.get("memory_id", "") or "")

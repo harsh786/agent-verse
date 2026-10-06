@@ -1,0 +1,23 @@
+Using CPython 3.12.14
+Creating virtual environment at: .venv
+   Building agent-verse-backend @ file:///Users/harsh/Documents/Learning/agent-verse/.claude/worktrees/p3b7/agent-verse-backend
+      Built agent-verse-backend @ file:///Users/harsh/Documents/Learning/agent-verse/.claude/worktrees/p3b7/agent-verse-backend
+Installed 280 packages in 1.70s
+== chain A->B, self-loop guard
+create trigger goal_completed 201 
+create trigger goal_completed 201 
+t1 1f791ad9b84c47bda0b2a7d4232f5282 {"trigger_type": "goal_completed", "description": "", "goal_template": "Follow-up for goal {{payload.goal_id}} (status {{payload.status}}). Reply with exactly the word ACK. Do not use any tools.", "condition": "", "priority": "normal", "max_firings_per_hour": 0, "expires_at_iso": "", "on_failure_not
+submit 202 
+goal A 1e1588b9087445f0b4fadc02611b034e complete
+t1 events [(None, 'eb3d1bee428942ac8422876a2c1389e6', '1e1588b9087445f0b4fadc02611b034e', 1)]
+goal B eb3d1bee428942ac8422876a2c1389e6 complete None 810ebdce79dd4dca88047fb23c0bb69b
+t2 events (self trigger: B fires t2 -> goal C) [(None, '4230123a40634d809db1d97af1e2b672', 'eb3d1bee428942ac8422876a2c1389e6', 2)]
+goal C 4230123a40634d809db1d97af1e2b672 complete
+t2 events after C [('self_trigger', None, '4230123a40634d809db1d97af1e2b672', 3), (None, '4230123a40634d809db1d97af1e2b672', 'eb3d1bee428942ac8422876a2c1389e6', 2)]
+t1 events final [(None, 'eb3d1bee428942ac8422876a2c1389e6', '1e1588b9087445f0b4fadc02611b034e', 1)]
+== goal fails via worker (bad model)
+create trigger goal_failed 201 
+submit 202 
+goal 3c60fdd197084e2fad1969aff08f05ff complete None
+events []
+rc=0

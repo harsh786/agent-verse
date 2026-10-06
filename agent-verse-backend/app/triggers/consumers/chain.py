@@ -184,15 +184,10 @@ class ChainTriggerConsumer:
         if not isinstance(data, dict):
             return
 
-        # Enforce chain depth limit
+        # The chain depth cap (MAX_CHAIN_DEPTH) is enforced AND audited by the
+        # dispatcher's loop guard, per matching trigger (B7-L3): returning here
+        # stopped the chain with a log line only, no trigger_events row.
         chain_depth = lineage_from_context(data).depth
-        if chain_depth >= MAX_CHAIN_DEPTH:
-            _log.warning(
-                "chain_depth_exceeded depth=%d goal_id=%s",
-                chain_depth,
-                data.get("goal_id"),
-            )
-            return
 
         trigger_type = self._channel_to_type(channel)
         if trigger_type is None:

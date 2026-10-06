@@ -230,6 +230,23 @@ def creatable_error(spec: TriggerSpec, *, plan: str = "free") -> str | None:
     return None
 
 
+def score_dimension_error(dimension: str) -> str | None:
+    """Why a goal_score_below ``score_dimension`` is invalid (``None`` = valid).
+
+    B7-L4: blank / ``overall`` = the overall average, else one of the
+    evaluator's dimensions. A typo used to be stored and the trigger then never
+    fired (the scorecard has no such score).
+    """
+    from app.intelligence.eval_runner import EvalRunner
+
+    if dimension in ("", "overall") or dimension in EvalRunner.DIMENSIONS:
+        return None
+    return (
+        f"score_dimension {dimension!r} is not an evaluation dimension; use 'overall' or one "
+        f"of: {', '.join(EvalRunner.DIMENSIONS)}"
+    )
+
+
 def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     """Validate cross-cutting options + type-specific required fields.
 
@@ -284,6 +301,8 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
             "goal_score_below trigger requires a score_threshold in (0, 1] "
             "(it fires when the goal's score is below it)"
         )
+    if v == "goal_score_below" and (reason := score_dimension_error(spec.score_dimension)):
+        raise ValueError(reason)
 
     # ── Type-specific required fields ────────────────────────────────────────
     if v == "cron":

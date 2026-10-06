@@ -69,15 +69,13 @@ class HITLTriggerConsumer:
             return
         from app.governance.hitl_queues import matches
         from app.triggers.consumers.tenant_ctx import event_tenant_ctx
-        from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, source_lineage
+        from app.triggers.lineage import chained_payload, source_lineage
 
         # B7 loop guard: the lineage of the goal whose approval this is. A read
         # error raises, so the stream entry is retried, never fired unchecked.
+        # The depth cap is enforced and audited by the dispatcher (B7-L3).
         goal_id = str(data.get("goal_id", "") or "")
         lineage = await source_lineage(self._dispatcher, tenant_id, goal_id, data)
-        if lineage.depth >= MAX_CHAIN_DEPTH:
-            _log.warning("hitl_chain_depth_exceeded depth=%d goal_id=%s", lineage.depth, goal_id)
-            return
         payload = chained_payload(data, lineage)
         # One decision is one firing, whichever replica relays it and whatever
         # else (approver note, plan stamp) differs between the copies.
