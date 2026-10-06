@@ -121,6 +121,9 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("PUT", "/models"): "tenancy:write",
     ("PATCH", "/models"): "tenancy:write",
     ("DELETE", "/models"): "tenancy:write",
+    # A tenant's OWN routing policy is not a registry mutation: operators set it
+    # (longest prefix wins over the "/models" rule above).
+    ("PUT", "/models/routing-policies"): "goals:write",
     # Schedules
     ("GET", "/schedules"): "goals:read",
     ("POST", "/schedules"): "goals:write",

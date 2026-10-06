@@ -38,7 +38,9 @@ def test_every_registered_scope_is_a_known_scope() -> None:
         ("POST", "/models/configured", "tenancy:write"),
         ("POST", "/models/configured/reseed", "tenancy:write"),
         ("DELETE", "/models/configured/openai/gpt-4o", "tenancy:write"),
-        ("PUT", "/models/routing-policies/coding", "tenancy:write"),
+        # A tenant's own routing policy is operator-settable, unlike the registry.
+        ("PUT", "/models/routing-policies/coding", "goals:write"),
+        ("GET", "/models/routing-policies", "tenancy:read"),
         ("GET", "/api/v1/workflows", "goals:read"),
         ("GET", "/api/v1/workflows/wf-1/versions", "goals:read"),
         ("POST", "/api/v1/workflows", "goals:write"),
@@ -125,3 +127,15 @@ async def test_rotate_key_rejects_unknown_scopes() -> None:
         headers=h,
     )
     assert resp.status_code == 422, resp.text
+
+
+def test_operators_can_set_their_routing_policy_but_not_mutate_the_registry() -> None:
+    from app.auth.scope_enforcement import ROLE_SCOPES
+
+    operator = ROLE_SCOPES["operator"]
+    assert _req("PUT", "/models/routing-policies/coding") in operator
+    assert _req("POST", "/models/configured") not in operator  # registry: admins only
+    # every role may read the registry; admins may write it
+    for role in ("viewer", "operator", "approver", "admin"):
+        assert _req("GET", "/models/configured") in ROLE_SCOPES[role]
+    assert _req("POST", "/models/configured") in ROLE_SCOPES["admin"]
