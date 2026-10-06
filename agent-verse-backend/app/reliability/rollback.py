@@ -29,7 +29,15 @@ class RollbackReport:
     failed: list[dict[str, str]] = field(default_factory=list)
 
     def record(self, action: str, result: Any) -> None:
-        """Classify one inverse's return value (``InverseResult`` or legacy None)."""
+        """Classify one inverse's return value.
+
+        An :class:`InverseResult` says what happened. ``False`` is a failure. A
+        legacy callable that returned anything else (``None``, ``True``) without
+        raising is trusted to have completed — the same rule ``run_inverse``
+        applies to custom inverses. An inverse that did nothing (the
+        ``register_typed`` placeholder) reports SKIPPED, never "rolled back"
+        (a08-F200-01).
+        """
         from app.reliability.tool_inverses import FAILED, SKIPPED, InverseResult
 
         if isinstance(result, InverseResult):
@@ -39,6 +47,9 @@ class RollbackReport:
             if result.outcome == FAILED:
                 self.failed.append({"action": action, "detail": result.detail})
                 return
+        elif result is False:
+            self.failed.append({"action": action, "detail": "inverse returned False"})
+            return
         self.rolled_back.append(action)
 
     def as_dict(self) -> dict[str, Any]:
@@ -127,56 +138,74 @@ class RollbackEngine:
         inverse_fn: Callable[[], None] | None = None,
     ) -> None:
         """Register a typed rollback action with an optional real inverse."""
+        inverse: Callable[[], Any]
         if inverse_fn is None:
             _type_val = action_type.value
             _desc_val = action_description
 
-            def _noop_inverse() -> None:
+            def _noop_inverse() -> Any:
+                from app.reliability.tool_inverses import SKIPPED, InverseResult
+
                 logger.warning(
                     "Rollback called for '%s' (%s) but no inverse function provided.",
                     _desc_val,
                     _type_val,
                 )
+                # Nothing was undone: it used to count as "rolled back".
+                return InverseResult(SKIPPED, "no inverse function provided")
 
-            inverse_fn = _noop_inverse
+            inverse = _noop_inverse
+        else:
+            inverse = inverse_fn
 
-        self._stack.append((f"{action_type.value}:{action_description}", inverse_fn))
+        self._stack.append((f"{action_type.value}:{action_description}", inverse))
 
     def rollback_all(self) -> list[str]:
-        """Execute all inverse operations in LIFO order.
+        """Execute all inverse operations in LIFO order (synchronous callers).
 
-        In async contexts, prefer ``rollback_all_async()`` to ensure completion.
-        This method schedules async inverses as tasks (fire-and-forget) and logs
-        a warning — use ``rollback_all_async()`` when guaranteed completion matters.
+        Every inverse runs to completion before the next: a coroutine inverse
+        is run on a fresh event loop. Inside a running loop that is impossible
+        without blocking it, so such an inverse is NOT run and is reported as
+        failed (use :meth:`rollback_all_async`). It used to be scheduled
+        fire-and-forget and still counted as rolled back (a08-F200-01).
 
-        Returns list of rolled-back action names. Errors are logged but do not
-        abort the remaining rollback sequence.
+        Returns the actions that were actually undone; the full breakdown is
+        left on :attr:`last_report`. Errors are logged but do not abort the
+        remaining rollback sequence.
         """
         import asyncio
 
-        rolled_back: list[str] = []
+        report = RollbackReport()
+        self.last_report = report
         while self._stack:
             action, inverse = self._stack.pop()
             try:
                 result = inverse()
                 if asyncio.iscoroutine(result):
                     try:
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(result)  # noqa: RUF006  # intentional fire-and-forget
-                        logger.warning(
-                            "rollback_fire_and_forget action=%s "
-                            "use_rollback_all_async_for_guaranteed_completion",
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        result = asyncio.run(result)
+                    else:
+                        result.close()  # never awaited: no "never awaited" warning
+                        logger.error(
+                            "rollback_async_inverse_not_run action=%s "
+                            "use_rollback_all_async_inside_an_event_loop",
                             action,
                         )
-                    except RuntimeError:
-                        # No running loop — cannot schedule; close the coroutine cleanly
-                        logger.error("rollback_skipped_no_event_loop action=%s", action)
-                        result.close()  # Prevent "coroutine never awaited" warning
-                rolled_back.append(action)
+                        report.failed.append(
+                            {
+                                "action": action,
+                                "detail": "async inverse needs rollback_all_async",
+                            }
+                        )
+                        continue
+                report.record(action, result)
                 logger.info("Rolled back: %s", action)
             except Exception as exc:
+                report.failed.append({"action": action, "detail": str(exc)[:200]})
                 logger.error("Rollback failed for '%s': %s", action, exc)
-        return rolled_back
+        return list(report.rolled_back)
 
     async def rollback_all_async(
         self,

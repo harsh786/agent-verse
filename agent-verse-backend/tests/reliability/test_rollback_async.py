@@ -85,8 +85,10 @@ async def test_rollback_all_async_empty_stack_returns_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollback_all_sync_handles_coroutine_in_running_loop() -> None:
-    """In an async context, sync rollback_all schedules coroutines as tasks (fire-and-forget)."""
+async def test_rollback_all_sync_refuses_a_coroutine_inverse_in_a_running_loop() -> None:
+    """a08-F200-01: inside a running loop the sync rollback_all cannot await an
+    async inverse. It used to schedule it fire-and-forget and still report it
+    rolled back; now it is not run and is reported as failed."""
     engine = RollbackEngine()
     completed: list[str] = []
 
@@ -95,13 +97,12 @@ async def test_rollback_all_sync_handles_coroutine_in_running_loop() -> None:
 
     engine.register(action="async_action", inverse=async_inv)
 
-    # Should not raise — schedules the coroutine as a task
     result = engine.rollback_all()
-    assert "async_action" in result  # action still counted as "rolled back" (fire-and-forget)
-
-    # Give the scheduled task a chance to run
+    assert result == []
+    assert engine.last_report is not None
+    assert [f["action"] for f in engine.last_report.failed] == ["async_action"]
     await asyncio.sleep(0)
-    assert completed == ["ran"]  # task completed after yield
+    assert completed == []  # nothing was left running in the background
 
 
 def test_rollback_all_sync_handles_sync_inverse_without_event_loop() -> None:
