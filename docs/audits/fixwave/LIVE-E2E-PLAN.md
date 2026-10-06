@@ -73,3 +73,6 @@ P2 retrieval/grounding → P4 workflows/HITL → P5 agent core (live) → P6 mem
 P8 guardrails → P9 scale → P10 frontend e2e → P11 full rerun → push →
 then deferred: A7 → B3 → B8 → C1–C5 → A6 → final full rerun → push.
 Every completion: merge to main, commit, full test, push.
+7. Chat transcripts into knowledge (2026-10-06, owner "yes"): allowed with double consent — off by default; tenant admin
+   switch enables the kind; each user opts in for their own chats (per user, revocable; revoking removes their
+   indexed transcripts). PII/secret redaction applies; tenant-scoped; never another user's private chat without consent.
