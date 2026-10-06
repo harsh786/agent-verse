@@ -133,7 +133,13 @@ async def ocr_pdf_pages(
     another page's citation). Raises OcrUnavailableError without an OCR engine,
     DocumentParseError when more pages need OCR than one request may run.
     """
-    from app.ocr.concurrency import current_limits, map_bounded, ocr_page_slot, run_ocr_work
+    from app.ocr.concurrency import (
+        current_limits,
+        map_bounded,
+        ocr_document_scope,
+        ocr_page_slot,
+        run_ocr_work,
+    )
 
     if len(page_numbers) > OCR_MAX_PDF_PAGES:
         raise DocumentParseError(
@@ -147,7 +153,9 @@ async def ocr_pdf_pages(
         ocr_engine = OcrEngine()
     limits = current_limits()
 
-    with tempfile.TemporaryDirectory(prefix="ocr-upload-") as tmp:
+    # One fairness queue for this document's pages (OCR-FAIR); the tenant comes
+    # from the request / task scope.
+    with ocr_document_scope(), tempfile.TemporaryDirectory(prefix="ocr-upload-") as tmp:
         path = Path(tmp) / "document.pdf"
         await run_ocr_work(path.write_bytes, data)  # once, not once per page
 

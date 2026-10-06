@@ -405,6 +405,10 @@ class Settings(BaseSettings):
     # TTL of a running sync's per-Source lock (TG-12). The worker renews it every
     # third of the TTL; a worker that dies frees its Source within one TTL.
     ingestion_sync_lock_ttl_seconds: int = 300
+    # Documents ONE connector sync ingests at once (fetch, parse / OCR, embed,
+    # index). The cursor and connector acknowledgements still advance in source
+    # order, only past documents that finished. 1 = one document at a time.
+    ingestion_sync_doc_concurrency: int = Field(default=4, ge=1, le=64)
     # GET /sources/{id}/health results (failures too) are shared through Redis
     # for this long per Source + connection config (C8); 0 disables the cache.
     ingestion_health_cache_seconds: int = 60

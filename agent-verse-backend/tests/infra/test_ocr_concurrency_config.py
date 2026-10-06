@@ -30,16 +30,20 @@ from tests.infra.test_vault_key_distribution import (
     _kustomized,
 )
 
+# INGESTION_SYNC_DOC_CONCURRENCY (SYNC-CONC): documents one connector sync
+# ingests (and OCRs) at once — carried exactly like the OCR knobs.
 OCR_KEYS = ("OCR_MAX_CONCURRENCY", "OCR_PAGE_CONCURRENCY", "OCR_VISION_CONCURRENCY",
-            "OCR_RENDER_DPI", "OMP_THREAD_LIMIT")
+            "OCR_RENDER_DPI", "OMP_THREAD_LIMIT", "INGESTION_SYNC_DOC_CONCURRENCY")
 _DEFAULTS = {"OCR_MAX_CONCURRENCY": "0", "OCR_PAGE_CONCURRENCY": "0",
-             "OCR_VISION_CONCURRENCY": "4", "OCR_RENDER_DPI": "300", "OMP_THREAD_LIMIT": "1"}
+             "OCR_VISION_CONCURRENCY": "4", "OCR_RENDER_DPI": "300", "OMP_THREAD_LIMIT": "1",
+             "INGESTION_SYNC_DOC_CONCURRENCY": "4"}
 _HELM_EXPR = {
     "OCR_MAX_CONCURRENCY": "{{ .Values.ocr.maxConcurrency | quote }}",
     "OCR_PAGE_CONCURRENCY": "{{ .Values.ocr.pageConcurrency | quote }}",
     "OCR_VISION_CONCURRENCY": "{{ .Values.ocr.visionConcurrency | quote }}",
     "OCR_RENDER_DPI": "{{ .Values.ocr.renderDpi | quote }}",
     "OMP_THREAD_LIMIT": "{{ .Values.ocr.ompThreadLimit | quote }}",
+    "INGESTION_SYNC_DOC_CONCURRENCY": "{{ .Values.ingestion.syncDocConcurrency | quote }}",
 }
 _HELM_OCR_VALUES = {"maxConcurrency": 0, "pageConcurrency": 0, "visionConcurrency": 4,
                     "renderDpi": 300, "ompThreadLimit": 1,
@@ -55,6 +59,7 @@ def test_settings_defaults_match_the_deployments() -> None:
     assert fields["ocr_page_concurrency"].default == 0
     assert fields["ocr_vision_concurrency"].default == 4
     assert fields["ocr_render_dpi"].default == 300
+    assert fields["ingestion_sync_doc_concurrency"].default == 4
 
 
 def test_image_pins_tesseract_openmp_to_one_thread() -> None:

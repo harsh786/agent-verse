@@ -488,6 +488,35 @@ class CostController:
         )
         return True
 
+    async def refund_async(
+        self,
+        *,
+        goal_id: str,
+        cost_usd: float,
+        tenant_ctx: Any,
+        reason: str = "",
+        agent_id: str | None = None,
+    ) -> None:
+        """Give back cost recorded by :meth:`check_and_record` (an LLM budget
+        reservation larger than the call's real cost, or a call that failed).
+        Same contract as ``RedisCostController.refund_async``; never below 0."""
+        if cost_usd <= 0:
+            return
+        tenant_id = tenant_ctx.tenant_id
+        agent = _charge_agent(agent_id, tenant_ctx)
+        async with self._locks[f"tenant:{tenant_id}"]:
+            goal_key = (tenant_id, goal_id)
+            self._goal_totals[goal_key] = max(0.0, self._goal_totals[goal_key] - cost_usd)
+            self._daily_totals[tenant_id] = max(0.0, self._daily_totals[tenant_id] - cost_usd)
+            agent_key = (tenant_id, agent)
+            if agent and agent_key in self._agent_daily_totals:
+                self._agent_daily_totals[agent_key] = max(
+                    0.0, self._agent_daily_totals[agent_key] - cost_usd
+                )
+        get_logger(__name__).info(
+            "cost_refunded", goal_id=goal_id, amount=cost_usd, reason=reason
+        )
+
     async def _alert(
         self,
         tenant_id: str,

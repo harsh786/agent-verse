@@ -10,9 +10,11 @@ upload, several ingestion jobs in one worker — shares the primitives here:
   shares: N documents x M pages used to queue there, unbounded by OCR).
 * :func:`ocr_page_slot` — a page holds one of ``OCR_MAX_CONCURRENCY``
   process-wide slots from rasterisation until its text is read, which bounds the
-  page bitmaps in memory. The slots are FIFO across documents and work across
-  event loops: Celery runs every task in a fresh loop, so a loop-bound
-  ``asyncio.Semaphore`` could never be process-wide.
+  page bitmaps in memory. The slots work across event loops (Celery runs every
+  task in a fresh loop, so a loop-bound ``asyncio.Semaphore`` could never be
+  process-wide) and are handed out round-robin across tenants, then across the
+  documents of a tenant (:class:`ProcessSemaphore`), so one tenant's batch of
+  scans never starves another tenant's upload.
 * :func:`map_bounded` runs ONE document's pages, at most
   ``OCR_PAGE_CONCURRENCY`` at once (below the global cap by default, so a second
   document always gets a slot while a 200-page scan is running), returns results
@@ -42,9 +44,10 @@ import functools
 import math
 import os
 import threading
+import uuid
 import weakref
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -144,21 +147,34 @@ def ocr_limits() -> OcrLimits:
     )
 
 
+_Waiter = tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]
+
+
 class ProcessSemaphore:
-    """A FIFO semaphore shared by every event loop (and thread) of the process.
+    """A fair semaphore shared by every event loop (and thread) of the process.
 
     ``asyncio.Semaphore`` binds to one loop. The API serves from one loop, but a
     Celery task runs in a fresh loop each time and tests run many: the OCR
-    limits must hold for all of them. Waiters are woken in arrival order through
-    their own loop (``call_soon_threadsafe``); a waiter cancelled while (or just
-    as) it is granted passes the slot on, so a slot is never leaked.
+    limits must hold for all of them. Waiters are woken through their own loop
+    (``call_soon_threadsafe``); a waiter cancelled while (or just as) it is
+    granted passes the slot on, so a slot is never leaked.
+
+    Fairness (OCR-FAIR): waiters are queued per tenant, and per document within
+    a tenant. A freed slot goes to the tenant at the head of the rotation, to
+    that tenant's head document, FIFO within the document; both then move to the
+    back. So one tenant's ZIP of 50 scans (or a sync OCR'ing several documents
+    at once) can no longer queue hundreds of pages ahead of another tenant's
+    one-page upload: that upload gets the next free slot. Callers that pass no
+    keys share one queue and get plain FIFO order.
     """
 
     def __init__(self, value: int) -> None:
         self._lock = threading.Lock()
         self._limit = max(1, value)
         self._free = self._limit
-        self._waiters: deque[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = deque()
+        # tenant -> document -> waiters; dict order is the round-robin order.
+        self._queues: dict[str, dict[str, deque[_Waiter]]] = {}
+        self._waiting = 0
 
     @property
     def limit(self) -> int:
@@ -169,31 +185,67 @@ class ProcessSemaphore:
         with self._lock:
             return self._limit - self._free
 
-    async def acquire(self) -> None:
+    @property
+    def waiting(self) -> int:
+        with self._lock:
+            return self._waiting
+
+    async def acquire(self, *, tenant: str = "", document: str = "") -> None:
         loop = asyncio.get_running_loop()
         with self._lock:
-            if self._free > 0 and not self._waiters:
+            if self._free > 0 and not self._waiting:
                 self._free -= 1
                 return
             fut: asyncio.Future[None] = loop.create_future()
-            self._waiters.append((loop, fut))
+            waiter = (loop, fut)
+            self._queues.setdefault(tenant, {}).setdefault(document, deque()).append(waiter)
+            self._waiting += 1
         try:
             await fut
         except BaseException:
             with self._lock:
-                try:
-                    self._waiters.remove((loop, fut))
-                    queued = True
-                except ValueError:
-                    queued = False
+                queued = self._discard(tenant, document, waiter)
             if not queued and fut.done() and not fut.cancelled():
                 self.release()  # granted just as we were cancelled: pass it on
             raise
 
+    def _discard(self, tenant: str, document: str, waiter: _Waiter) -> bool:
+        """Drop a still-queued waiter (lock held); False when it was already granted."""
+        docs = self._queues.get(tenant)
+        queue = docs.get(document) if docs is not None else None
+        if docs is None or queue is None:
+            return False
+        try:
+            queue.remove(waiter)
+        except ValueError:
+            return False
+        self._waiting -= 1
+        if not queue:
+            del docs[document]
+        if not docs:
+            del self._queues[tenant]
+        return True
+
+    def _pop_next(self) -> _Waiter | None:
+        """The next waiter, round-robin: tenant, then document, then FIFO (lock held)."""
+        if not self._queues:
+            return None
+        tenant = next(iter(self._queues))
+        docs = self._queues.pop(tenant)
+        document = next(iter(docs))
+        queue = docs.pop(document)
+        waiter = queue.popleft()
+        self._waiting -= 1
+        if queue:
+            docs[document] = queue  # this document goes to the back of its tenant
+        if docs:
+            self._queues[tenant] = docs  # this tenant goes to the back of the rotation
+        return waiter
+
     def release(self) -> None:
         with self._lock:
-            while self._waiters:
-                loop, fut = self._waiters.popleft()
+            while (waiter := self._pop_next()) is not None:
+                loop, fut = waiter
                 try:
                     loop.call_soon_threadsafe(self._grant, fut)
                 except RuntimeError:  # that loop is closed: its waiter is gone
@@ -226,6 +278,14 @@ _runtime_lock = threading.Lock()
 _executors: weakref.WeakSet[ThreadPoolExecutor] = weakref.WeakSet()
 _holds_page_slot: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "ocr_holds_page_slot", default=False
+)
+# Fairness keys of the OCR work running in this context (OCR-FAIR): the tenant
+# it is done for and the document it belongs to.
+_ocr_tenant: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ocr_tenant", default=None
+)
+_ocr_document: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ocr_document", default=None
 )
 
 
@@ -298,6 +358,60 @@ async def run_ocr_work[T](fn: Callable[..., T], /, *args: Any, **kwargs: Any) ->
     return await loop.run_in_executor(_get_runtime().executor, call)
 
 
+@contextlib.contextmanager
+def ocr_tenant_scope(tenant_id: str | None) -> Iterator[None]:
+    """OCR work inside is queued as ``tenant_id``'s (overrides the charge scope)."""
+    token = _ocr_tenant.set(str(tenant_id or ""))
+    try:
+        yield
+    finally:
+        _ocr_tenant.reset(token)
+
+
+@contextlib.contextmanager
+def ocr_document_scope() -> Iterator[str]:
+    """The pages OCR'd inside belong to ONE document (one fairness queue).
+
+    Re-entrant: a nested scope (the engine called per page by
+    ``ocr_pdf_pages``) keeps the outer document's key.
+    """
+    current = _ocr_document.get()
+    if current is not None:
+        yield current
+        return
+    key = uuid.uuid4().hex
+    token = _ocr_document.set(key)
+    try:
+        yield key
+    finally:
+        _ocr_document.reset(token)
+
+
+def current_ocr_tenant() -> str:
+    """The tenant OCR work in this context is done for ("" when unknown).
+
+    An explicit :func:`ocr_tenant_scope`, else the LLM charge scope every
+    tenant-serving path already enters: the running goal's tenant, the HTTP
+    request's tenant (``TenantMiddleware``) or a Celery task's ``tenant_id``.
+    """
+    explicit = _ocr_tenant.get()
+    if explicit is not None:
+        return explicit
+    try:
+        from app.providers.guarded_completion import current_charge_tenant_id
+
+        return current_charge_tenant_id() or ""
+    except Exception:  # pragma: no cover - fairness must never break OCR
+        return ""
+
+
+def _fairness_keys(tenant: str | None = None) -> dict[str, str]:
+    return {
+        "tenant": current_ocr_tenant() if tenant is None else str(tenant),
+        "document": _ocr_document.get() or "",
+    }
+
+
 @asynccontextmanager
 async def ocr_page_slot() -> AsyncIterator[None]:
     """Hold one process-wide page slot. Re-entrant: a page that already holds a
@@ -308,7 +422,7 @@ async def ocr_page_slot() -> AsyncIterator[None]:
         yield
         return
     slots = _get_runtime().page_slots
-    await slots.acquire()
+    await slots.acquire(**_fairness_keys())
     token = _holds_page_slot.set(True)
     try:
         yield
@@ -322,10 +436,11 @@ def page_slots_in_use() -> int:
 
 
 @asynccontextmanager
-async def ocr_vision_slot() -> AsyncIterator[None]:
-    """Hold one of the process-wide LLM-vision fallback slots."""
+async def ocr_vision_slot(tenant: str | None = None) -> AsyncIterator[None]:
+    """Hold one of the process-wide LLM-vision fallback slots (tenant-fair like
+    the page slots; ``tenant`` overrides the context's tenant)."""
     slots = _get_runtime().vision_slots
-    await slots.acquire()
+    await slots.acquire(**_fairness_keys(tenant))
     try:
         yield
     finally:

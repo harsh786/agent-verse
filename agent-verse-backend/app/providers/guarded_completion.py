@@ -111,6 +111,17 @@ def tenant_charge_scope(tenant_ctx: Any) -> Iterator[None]:
         _tenant_scope.reset(token)
 
 
+def current_charge_tenant_id() -> str | None:
+    """The tenant LLM calls made here would be charged to: the running goal's
+    tenant, else the request / task tenant scope (None when there is none)."""
+    scope = _scope.get()
+    tenant = scope.tenant_ctx if scope is not None and scope.tenant_ctx is not None else None
+    if tenant is None:
+        tenant = _tenant_scope.get()
+    tenant_id = getattr(tenant, "tenant_id", None)
+    return str(tenant_id) if tenant_id else None
+
+
 _system_job: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "agentverse_decision_system_job", default=None
 )
@@ -253,6 +264,80 @@ async def _preflight(scope: _ChargeScope | None, tenant: Any) -> None:
         raise DecisionBudgetExceededError("tenant daily LLM budget exhausted")
 
 
+@dataclass(frozen=True)
+class _Reservation:
+    """Budget reserved for one decision call before it ran (see :func:`_reserve`)."""
+
+    controller: Any
+    tenant_ctx: Any
+    goal_id: str
+    amount: float
+
+
+async def _reserve(
+    scope: _ChargeScope | None, tenant: Any, amount: float, *, goal_id: str
+) -> _Reservation | None:
+    """Reserve ``amount`` USD of the goal / tenant budget before the call.
+
+    The preflight only asks "any budget left?": N concurrent calls (the OCR
+    vision fallback runs up to OCR_VISION_CONCURRENCY at once) all passed it
+    before the first was charged, and together overshot the budget. A
+    reservation is an atomic check-and-record on the cost controller (a Redis
+    Lua script across replicas), so a call that the remaining budget cannot
+    cover is refused BEFORE it runs. None when there is nothing to reserve
+    against (no controller, or one that cannot refund).
+    """
+    from app.agent.nodes.llm_cost import (
+        can_reserve_llm_spend,
+        charge_goal_id,
+        reserve_llm_spend,
+    )
+
+    if amount <= 0:
+        return None
+    if scope is not None:
+        controller = getattr(scope.graph, "_cost_controller", None)
+        tenant_ctx = scope.tenant_ctx if scope.tenant_ctx is not None else tenant
+        reserve_goal = charge_goal_id(scope.agent_state)
+    else:
+        controller, _ = _platform() if tenant is not None else (None, None)
+        tenant_ctx = tenant
+        reserve_goal = goal_id
+    if tenant_ctx is None or controller is None or not can_reserve_llm_spend(controller):
+        return None
+    try:
+        ok = await reserve_llm_spend(
+            controller, goal_id=reserve_goal, tenant_ctx=tenant_ctx, amount=amount
+        )
+    except Exception as exc:
+        # Fail closed: an unknown budget must not let spend through.
+        raise DecisionBudgetExceededError(f"budget reservation unavailable: {exc}") from exc
+    if not ok:
+        if scope is not None:
+            context = getattr(scope.agent_state, "context", None)
+            if isinstance(context, dict):
+                context["_budget_exhausted"] = True
+        raise DecisionBudgetExceededError(
+            f"LLM budget cannot cover this call (needs up to ${amount:.4f})"
+        )
+    return _Reservation(controller, tenant_ctx, reserve_goal, amount)
+
+
+async def _release(reservation: _Reservation | None, reason: str) -> None:
+    """Give a reservation back in full (the call failed: nothing to charge)."""
+    if reservation is None:
+        return
+    from app.agent.nodes.llm_cost import refund_llm_spend
+
+    await refund_llm_spend(
+        reservation.controller,
+        goal_id=reservation.goal_id,
+        tenant_ctx=reservation.tenant_ctx,
+        amount=reservation.amount,
+        reason=reason,
+    )
+
+
 async def _charge(
     scope: _ChargeScope | None,
     tenant: Any,
@@ -261,6 +346,7 @@ async def _charge(
     role: str,
     model: str,
     goal_id: str | None,
+    reserved_usd: float = 0.0,
 ) -> None:
     from app.agent.nodes.llm_cost import charge_llm_call
 
@@ -272,6 +358,7 @@ async def _charge(
             model=model,
             agent_state=scope.agent_state,
             tenant_ctx=scope.tenant_ctx if scope.tenant_ctx is not None else tenant,
+            reserved_usd=reserved_usd,
         )
         return
     if tenant is None:
@@ -285,7 +372,8 @@ async def _charge(
         context={},
     )
     await charge_llm_call(
-        shim, resp=resp, role=role, model=model, agent_state=state, tenant_ctx=tenant
+        shim, resp=resp, role=role, model=model, agent_state=state, tenant_ctx=tenant,
+        reserved_usd=reserved_usd,
     )
     if state.context.get("_budget_exhausted"):
         raise DecisionBudgetExceededError("tenant LLM budget exhausted by this call")
@@ -414,8 +502,15 @@ async def complete_decision(
     timeout_seconds: float | None = None,
     charge: bool = True,
     fallback_models: Sequence[str] = (),
+    reserve_usd: float = 0.0,
 ) -> Any:
     """``provider.complete(request)`` with circuit breaker, timeout and cost charging.
+
+    ``reserve_usd`` (> 0): the most this call may cost. It is reserved from the
+    goal / tenant budget atomically BEFORE the call (refused with
+    :class:`DecisionBudgetExceededError` when the remaining budget cannot cover
+    it), settled against the real cost afterwards and given back if the call
+    fails — so concurrent calls can never together spend past the budget.
 
     ``fallback_models`` are tried in order when ``request.model`` fails (down,
     timing out, empty answer) — see :func:`complete_with_failover`. The model that
@@ -436,9 +531,14 @@ async def complete_decision(
         return await provider.complete(request)
     scope = _scope.get()
     tenant = _tenant(tenant_ctx, tenant_id)
+    reservation: _Reservation | None = None
     if charge:
         _require_attribution(scope, tenant)
         await _preflight(scope, tenant)
+        if reserve_usd > 0:
+            # Reserve and settle under ONE goal id (out of a goal: a fresh one).
+            goal_id = goal_id or f"decision:{role}:{uuid.uuid4().hex}"
+            reservation = await _reserve(scope, tenant, reserve_usd, goal_id=goal_id)
     import time
 
     from app.ai_router.health_feed import record_llm_outcome
@@ -449,7 +549,10 @@ async def complete_decision(
         resp = await _traced_call(
             provider, request, role, _timeout(timeout_seconds), fallback_models
         )
-    except Exception as exc:
+    except BaseException as exc:
+        await _release(reservation, f"{role}:call_failed")
+        if not isinstance(exc, Exception):
+            raise
         if getattr(exc, "provider_failure", True):
             record_llm_outcome(
                 provider=provider, model=model, ok=False,
@@ -474,5 +577,6 @@ async def complete_decision(
             role=role,
             model=model,
             goal_id=goal_id,
+            reserved_usd=reservation.amount if reservation is not None else 0.0,
         )
     return resp
