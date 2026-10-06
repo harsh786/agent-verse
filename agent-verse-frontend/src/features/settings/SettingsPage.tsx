@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Eye, EyeOff, RefreshCw, Trash2, Copy, Check,
   User, Cpu, KeyRound, Shield, Bell, Palette, AlertTriangle, AlertCircle,
-  Sun, Moon, Monitor, CheckCircle, Loader2, Download, CreditCard,
+  Sun, Moon, Monitor, CheckCircle, Loader2, Download, CreditCard, Mail,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { useThemeStore } from '@/stores/theme';
@@ -14,6 +14,7 @@ import { apiFetch as apiClient, ApiError, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
 import { A2ADirectorySetting } from './A2ADirectorySetting';
 import { ChatTranscriptsKnowledgeSetting } from './ChatTranscriptsKnowledgeSetting';
+import { EmailSettings } from './EmailSettings';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -74,6 +75,7 @@ const SETTINGS_TABS = [
   { id: 'profile',       label: 'General',       icon: User          },
   { id: 'llm',           label: 'LLM Providers', icon: Cpu           },
   { id: 'apikeys',       label: 'API Keys',      icon: KeyRound      },
+  { id: 'email',         label: 'Email',         icon: Mail          },
   { id: 'security',      label: 'Security',      icon: Shield        },
   { id: 'notifications', label: 'Notifications', icon: Bell          },
   { id: 'appearance',    label: 'Appearance',    icon: Palette       },
@@ -1056,6 +1058,12 @@ export function SettingsPage() {
         return <LLMProviderSection apiKey={apiKey} />;
       case 'apikeys':
         return <ApiKeysSection apiKey={apiKey} />;
+      case 'email':
+        return (
+          <SectionShell title="Email">
+            <EmailSettings />
+          </SectionShell>
+        );
       case 'security':
         return <SecurityTab />;
       case 'notifications':
