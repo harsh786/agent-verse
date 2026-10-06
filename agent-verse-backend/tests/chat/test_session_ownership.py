@@ -74,6 +74,7 @@ def _session_requests(sid: str, mid: str) -> list[tuple[str, str, dict[str, Any]
         ("GET", f"/chat/sessions/{sid}/stream?message_id={mid}", {}),
         ("PATCH", f"/chat/sessions/{sid}/messages/{mid}", {"json": {"content": "edited"}}),
         ("POST", f"/chat/sessions/{sid}/messages/{mid}/feedback", {"json": {"rating": 1}}),
+        ("DELETE", f"/chat/sessions/{sid}/messages/{mid}/feedback", {}),
         ("GET", f"/chat/sessions/{sid}/usage", {}),
         ("POST", f"/chat/sessions/{sid}/summarize", {}),
         ("GET", f"/chat/sessions/{sid}/search?q=salary", {}),

@@ -32,9 +32,15 @@ from starlette.responses import Response, StreamingResponse
 from app.chat.execution import ChatCodeExecutor
 from app.chat.intent import IntentRouter
 from app.chat.memory_api import MemoryAPI
-from app.chat.ownership import UNOWNED_SCOPE, ChatScope, principal_of, scope_of
+from app.chat.ownership import (
+    UNOWNED_SCOPE,
+    ChatFolderNotFoundError,
+    ChatScope,
+    principal_of,
+    scope_of,
+)
 from app.chat.search import ChatSearchEngine
-from app.chat.service import ChatService
+from app.chat.service import ChatFolderLimitError, ChatService
 from app.chat.services_api import ServicesAPI
 from app.chat.stream import (
     stream_clarify,
@@ -138,9 +144,18 @@ class EditMessageRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=32_000)
 
 
+# A folder color is rendered into the UI's style: a hex color only.
+_HEX_COLOR = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+
+
 class CreateFolderRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    color: str = "#6366f1"
+    color: str = Field(default="#6366f1", pattern=_HEX_COLOR)
+
+
+class UpdateFolderRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    color: str | None = Field(default=None, pattern=_HEX_COLOR)
 
 
 # A saved session artifact (code/text snippet) is capped; generated documents are
@@ -187,6 +202,12 @@ def _session_to_dict(s: Any) -> dict[str, Any]:
     }
 
 
+def _feedback_to_dict(f: Any) -> dict[str, Any] | None:
+    if f is None:
+        return None
+    return {"rating": f.rating, "comment": f.comment, "updated_at": f.updated_at.isoformat()}
+
+
 def _message_to_dict(m: Any) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -209,15 +230,18 @@ def _message_to_dict(m: Any) -> dict[str, Any]:
 async def create_session(body: CreateSessionRequest, request: Request) -> dict[str, Any]:
     tenant, scope = _scope(request)
     svc = _svc(request)
-    s = await svc.acreate_session(
-        tenant.tenant_id,
-        title=body.title,
-        system_prompt=body.system_prompt,
-        agent_id=body.agent_id,
-        folder_id=body.folder_id,
-        owner_user_id=tenant.user_id,
-        owner_principal=scope.principal,
-    )
+    try:
+        s = await svc.acreate_session(
+            tenant.tenant_id,
+            title=body.title,
+            system_prompt=body.system_prompt,
+            agent_id=body.agent_id,
+            folder_id=body.folder_id,
+            owner_user_id=tenant.user_id,
+            owner_principal=scope.principal,
+        )
+    except ChatFolderNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Folder not found") from exc
     return _session_to_dict(s)
 
 
@@ -310,7 +334,10 @@ async def update_session(
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if "ttl_days" in body.model_fields_set and body.ttl_days is None:
         updates["ttl_days"] = None  # an explicit null: the session never expires
-    s = await svc.aupdate_session(session_id, tenant.tenant_id, scope=scope, **updates)
+    try:
+        s = await svc.aupdate_session(session_id, tenant.tenant_id, scope=scope, **updates)
+    except ChatFolderNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Folder not found") from exc
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -385,7 +412,17 @@ async def list_messages(
 ) -> dict[str, Any]:
     tenant, svc, scope, _s = await _owned(request, session_id)
     msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=limit, scope=scope)
-    return {"messages": [_message_to_dict(m) for m in msgs]}
+    # CHAT-D-2: each reply carries the caller's own saved feedback (or None).
+    feedback = await svc.alist_feedback(
+        session_id=session_id, tenant_id=tenant.tenant_id,
+        message_ids=[m.id for m in msgs if m.role == "assistant"], scope=scope,
+    )
+    return {
+        "messages": [
+            {**_message_to_dict(m), "feedback": _feedback_to_dict(feedback.get(m.id))}
+            for m in msgs
+        ]
+    }
 
 
 @router.post("/sessions/{session_id}/messages")
@@ -468,14 +505,27 @@ async def stream_session(
             yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
         elif intent == "GOAL":
             if svc.can_run_goals:
-                # Real engine: submit to GoalService, stream its real events.
-                goal_id = await svc.run_goal(
-                    session_id=session_id,
-                    tenant_id=tenant.tenant_id,
-                    tenant_ctx=tenant,
-                    message_id=message_id,
-                    user_message=content,
-                )
+                # Real engine: submit to GoalService with the session's agent
+                # (CHAT-D-3), stream its real events.
+                try:
+                    goal_id = await svc.run_goal(
+                        session_id=session_id,
+                        tenant_id=tenant.tenant_id,
+                        tenant_ctx=tenant,
+                        message_id=message_id,
+                        user_message=content,
+                    )
+                except LookupError:
+                    from app.chat.events import ChatEventType, sse_event
+
+                    yield sse_event(
+                        ChatEventType.ERROR, session_id=session_id, message_id=message_id,
+                        message="This chat no longer exists.",
+                    )
+                    yield sse_event(
+                        ChatEventType.DONE, session_id=session_id, message_id=message_id
+                    )
+                    return
                 async for chunk in svc.stream_goal(
                     goal_id=goal_id,
                     tenant_ctx=tenant,
@@ -690,28 +740,61 @@ async def search_messages(body: SearchRequest, request: Request) -> dict[str, An
 # ── Folder endpoints ──────────────────────────────────────────────────────────
 
 
+def _folder_to_dict(f: Any) -> dict[str, Any]:
+    return {
+        "id": f.id,
+        "tenant_id": f.tenant_id,
+        "name": f.name,
+        "color": f.color,
+        "position": f.position,
+        "created_at": f.created_at.isoformat(),
+        "updated_at": f.updated_at.isoformat(),
+    }
+
+
+# CHAT-D-1: folders are durable (Postgres when wired) and private to their owner,
+# like sessions: another principal's folder does not exist (404).
+
+
 @router.post("/folders", status_code=status.HTTP_201_CREATED)
 async def create_folder(body: CreateFolderRequest, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    f = svc.create_folder(tenant.tenant_id, body.name, body.color)
-    return {"id": f.id, "name": f.name, "color": f.color, "tenant_id": f.tenant_id}
+    tenant, scope = _scope(request)
+    try:
+        f = await _svc(request).acreate_folder(
+            tenant.tenant_id, body.name, body.color, scope=scope
+        )
+    except ChatFolderLimitError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _folder_to_dict(f)
 
 
 @router.get("/folders")
 async def list_folders(request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    folders = svc.list_folders(tenant.tenant_id)
-    return {"folders": [{"id": f.id, "name": f.name, "color": f.color} for f in folders]}
+    """The caller's own folders (bounded)."""
+    tenant, scope = _scope(request)
+    folders = await _svc(request).alist_folders(tenant.tenant_id, scope=scope)
+    return {"folders": [_folder_to_dict(f) for f in folders]}
+
+
+@router.patch("/folders/{folder_id}")
+async def update_folder(
+    folder_id: str, body: UpdateFolderRequest, request: Request
+) -> dict[str, Any]:
+    """Rename and/or recolor one of the caller's folders."""
+    tenant, scope = _scope(request)
+    f = await _svc(request).aupdate_folder(
+        folder_id, tenant.tenant_id, scope=scope, name=body.name, color=body.color
+    )
+    if f is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return _folder_to_dict(f)
 
 
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_folder(folder_id: str, request: Request) -> None:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    ok = svc.delete_folder(folder_id, tenant.tenant_id)
-    if not ok:
+    """Delete one of the caller's folders; its sessions stay, unfiled."""
+    tenant, scope = _scope(request)
+    if not await _svc(request).adelete_folder(folder_id, tenant.tenant_id, scope=scope):
         raise HTTPException(status_code=404, detail="Folder not found")
 
 
@@ -719,10 +802,16 @@ async def delete_folder(folder_id: str, request: Request) -> None:
 async def move_to_folder(
     session_id: str,
     request: Request,
-    folder_id: str | None = None,
+    folder_id: str | None = Query(default=None, max_length=64),
 ) -> dict[str, Any]:
+    """File the caller's session into one of the caller's folders (none: unfile)."""
     tenant, svc, scope, _s = await _owned(request, session_id)
-    s = svc.move_session_to_folder(session_id, tenant.tenant_id, folder_id, scope=scope)
+    try:
+        s = await svc.amove_session_to_folder(
+            session_id, tenant.tenant_id, folder_id, scope=scope
+        )
+    except ChatFolderNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Folder not found") from exc
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -1185,22 +1274,46 @@ async def disconnect_service(service_id: str, request: Request) -> None:
 # ── Feedback ──────────────────────────────────────────────────────────────────
 
 
+# CHAT-D-2: feedback is saved (chat_message_feedback), one per person per reply;
+# posting again edits it. A reply that carries a goal also feeds goal_feedback,
+# the signal the daily self-improvement pass learns from.
+
+
 class FeedbackRequest(BaseModel):
     rating: int = Field(..., ge=-1, le=1)
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=4000)
 
 
 @router.post("/sessions/{session_id}/messages/{message_id}/feedback")
 async def submit_feedback(
     session_id: str, message_id: str, body: FeedbackRequest, request: Request
 ) -> dict[str, Any]:
+    from app.chat.repository import ChatFeedbackTargetError
+
     tenant, svc, scope, _s = await _owned(request, session_id)
-    msg = await svc.aget_message(session_id, message_id, tenant.tenant_id, scope=scope)
-    if not msg:
+    comment = (body.comment or "").strip() or None
+    try:
+        fb = await svc.asubmit_feedback(
+            session_id=session_id, message_id=message_id, tenant_id=tenant.tenant_id,
+            rating=body.rating, comment=comment, scope=scope,
+        )
+    except ChatFeedbackTargetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if fb is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    # Store feedback in metadata
-    msg.metadata["feedback"] = {"rating": body.rating, "comment": body.comment}
-    return {"status": "ok", "rating": body.rating}
+    return {"status": "ok", "message_id": message_id, **(_feedback_to_dict(fb) or {})}
+
+
+@router.delete(
+    "/sessions/{session_id}/messages/{message_id}/feedback",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def clear_feedback(session_id: str, message_id: str, request: Request) -> None:
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    if not await svc.adelete_feedback(
+        session_id=session_id, message_id=message_id, tenant_id=tenant.tenant_id, scope=scope
+    ):
+        raise HTTPException(status_code=404, detail="Feedback not found")
 
 
 # ── Export ────────────────────────────────────────────────────────────────────

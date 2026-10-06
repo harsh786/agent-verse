@@ -15,7 +15,8 @@ choice of an already-authorized internal path.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -23,7 +24,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.chat.ownership import SYSTEM_SCOPE, ChatScope
+from app.chat.ownership import SYSTEM_SCOPE, ChatFolderNotFoundError, ChatScope
 from app.db.rls import sqlalchemy_rls_context
 
 # Bounded defaults so list queries never walk an unbounded history (must scale past
@@ -32,6 +33,32 @@ from app.db.rls import sqlalchemy_rls_context
 # regression while the SQL is now LIMIT-bounded and keyset-pageable.
 _DEFAULT_MESSAGE_LIMIT = 1000
 _DEFAULT_SESSION_LIMIT = 500
+# A principal's folders (CHAT-D-1): the list is bounded, and so is how many one
+# principal may create (the sidebar renders them all).
+MAX_FOLDERS_PER_OWNER = 500
+
+# CHAT-D-2: a reply's thumbs (-1/0/1) on the 1..5 scale of ``goal_feedback``,
+# whose daily self-improvement pass turns a low rating with a comment into a
+# lesson (process_feedback_batch: rating <= 2).
+_GOAL_FEEDBACK_RATING = {-1: 1, 0: 3, 1: 5}
+
+
+def goal_feedback_id(tenant_id: str, message_id: str, principal: str) -> str:
+    """The ``goal_feedback`` row mirroring one person's feedback on one reply."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL, f"chat_feedback:{tenant_id}:{message_id}:{principal}"
+    ).hex
+
+
+class ChatFeedbackTargetError(ValueError):
+    """Feedback is given on assistant replies only."""
+
+
+# The folder a session is filed into must belong to the session's own owner.
+_FOLDER_OF_OWNER = (
+    "SELECT 1 FROM chat_session_folders WHERE id = :fid AND tenant_id = :t "
+    "AND owner_principal IS NOT DISTINCT FROM :fowner FOR KEY SHARE"
+)
 
 
 def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
@@ -101,6 +128,13 @@ class PostgresChatRepository:
     ) -> None:
         scope = ChatScope.of(owner_principal) if owner_principal else ChatScope("unowned")
         async with self._tx(tenant_id, scope) as s:
+            if folder_id is not None and (
+                await s.execute(
+                    text(_FOLDER_OF_OWNER),
+                    {"fid": folder_id, "t": tenant_id, "fowner": owner_principal},
+                )
+            ).fetchone() is None:
+                raise ChatFolderNotFoundError(folder_id)
             await s.execute(
                 text(
                     "INSERT INTO chat_sessions (id, tenant_id, title, system_prompt, "
@@ -177,6 +211,26 @@ class PostgresChatRepository:
         set_clause = ", ".join(f"{col} = :{col}" for col in updates)
         pred, pp = scope.predicate()
         async with self._tx(tenant_id, scope) as s:
+            if updates.get("folder_id") is not None:
+                # CHAT-D-1: file only into a folder of the session's own owner.
+                owner = (
+                    await s.execute(
+                        text(
+                            "SELECT owner_principal FROM chat_sessions WHERE id = :id "
+                            f"AND tenant_id = :t{pred} FOR UPDATE"
+                        ),
+                        {"id": session_id, "t": tenant_id, **pp},
+                    )
+                ).fetchone()
+                if owner is None:
+                    return False
+                if (
+                    await s.execute(
+                        text(_FOLDER_OF_OWNER),
+                        {"fid": updates["folder_id"], "t": tenant_id, "fowner": owner[0]},
+                    )
+                ).fetchone() is None:
+                    raise ChatFolderNotFoundError(str(updates["folder_id"]))
             result = await s.execute(
                 text(
                     f"UPDATE chat_sessions SET {set_clause}, updated_at = now() "
@@ -185,6 +239,110 @@ class PostgresChatRepository:
                 {**updates, "id": session_id, "t": tenant_id, **pp},
             )
             return (result.rowcount or 0) > 0
+
+    # ── Folders (chat_session_folders, CHAT-D-1) ──────────────────────────────
+    # Owned like sessions: every query carries the owner predicate of the scope
+    # and the restrictive ``chat_session_folders_owner`` policy enforces it.
+
+    async def create_folder(
+        self, *, folder_id: str, tenant_id: str, name: str, color: str, scope: ChatScope
+    ) -> dict[str, Any] | None:
+        """Create a folder owned by the scope's principal; None at the per-owner cap."""
+        if scope.kind != "principal":
+            raise ValueError("a chat folder is created by a principal")
+        params = {
+            "id": folder_id, "t": tenant_id, "name": name, "color": color,
+            "p": scope.principal, "max": MAX_FOLDERS_PER_OWNER,
+        }
+        async with self._tx(tenant_id, scope) as s:
+            row = (
+                await s.execute(
+                    text(
+                        "INSERT INTO chat_session_folders "
+                        "(id, tenant_id, name, color, owner_principal, position) "
+                        "SELECT CAST(:id AS varchar), CAST(:t AS varchar), "
+                        "CAST(:name AS varchar), CAST(:color AS varchar), "
+                        "CAST(:p AS varchar), "
+                        "coalesce((SELECT max(position) + 1 FROM chat_session_folders "
+                        "WHERE tenant_id = :t AND owner_principal = :p), 0) "
+                        "WHERE (SELECT count(*) FROM chat_session_folders "
+                        "WHERE tenant_id = :t AND owner_principal = :p) < :max "
+                        "RETURNING *"
+                    ),
+                    params,
+                )
+            ).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+    async def list_folders(
+        self, tenant_id: str, *, scope: ChatScope, limit: int = MAX_FOLDERS_PER_OWNER
+    ) -> list[dict[str, Any]]:
+        pred, pp = scope.predicate()
+        async with self._tx(tenant_id, scope) as s:
+            rows = (
+                await s.execute(
+                    text(
+                        f"SELECT * FROM chat_session_folders WHERE tenant_id = :t{pred} "
+                        "ORDER BY position, created_at, id LIMIT :lim"
+                    ),
+                    {"t": tenant_id, "lim": max(1, min(limit, MAX_FOLDERS_PER_OWNER)), **pp},
+                )
+            ).mappings().all()
+            return [dict(r) for r in rows]
+
+    async def update_folder(
+        self,
+        folder_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Rename/recolor a folder of the scope; None when it is not the caller's."""
+        pred, pp = scope.predicate()
+        async with self._tx(tenant_id, scope) as s:
+            row = (
+                await s.execute(
+                    text(
+                        "UPDATE chat_session_folders SET name = coalesce(:name, name), "
+                        "color = coalesce(:color, color), updated_at = now() "
+                        f"WHERE id = :id AND tenant_id = :t{pred} RETURNING *"
+                    ),
+                    {"name": name, "color": color, "id": folder_id, "t": tenant_id, **pp},
+                )
+            ).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+    async def delete_folder(self, folder_id: str, tenant_id: str, *, scope: ChatScope) -> bool:
+        """Delete a folder of the scope and unfile its sessions, in one transaction.
+
+        The DELETE waits for any filing that holds the folder row (``FOR KEY
+        SHARE``), and the unfiling statement runs after it, so a session filed
+        concurrently is unfiled too (idx_chat_sessions_folder). The sessions
+        keep their ``updated_at``: unfiling is not chat activity.
+        """
+        pred, pp = scope.predicate()
+        async with self._tx(tenant_id, scope) as s:
+            owner = (
+                await s.execute(
+                    text(
+                        "DELETE FROM chat_session_folders WHERE id = :id AND tenant_id = :t"
+                        f"{pred} RETURNING owner_principal"
+                    ),
+                    {"id": folder_id, "t": tenant_id, **pp},
+                )
+            ).fetchone()
+            if owner is None:
+                return False
+            await s.execute(
+                text(
+                    "UPDATE chat_sessions SET folder_id = NULL WHERE folder_id = :id "
+                    "AND tenant_id = :t AND owner_principal IS NOT DISTINCT FROM :owner"
+                ),
+                {"id": folder_id, "t": tenant_id, "owner": owner[0]},
+            )
+            return True
 
     async def assign_unowned_session(
         self, session_id: str, tenant_id: str, *, owner_user_id: str
@@ -568,6 +726,138 @@ class PostgresChatRepository:
                 )
             ).scalar()
             return int(value or 0)
+
+    # ── Feedback (chat_message_feedback, CHAT-D-2) ────────────────────────────
+    # One row per (message, rater). The rater is the scope's principal, who owns
+    # the session (chats are private), so every query carries both the owner
+    # predicate of the session and the rater's own.
+
+    async def upsert_feedback(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        message_id: str,
+        rating: int,
+        comment: str | None,
+        scope: ChatScope,
+    ) -> dict[str, Any] | None:
+        """Save (or edit) the caller's feedback on a reply; None when not visible.
+
+        When the reply carries a goal, the same transaction mirrors it into
+        ``goal_feedback`` (deterministic id, upserted and re-queued for the
+        self-improvement pass), so an edit never adds a second signal.
+        """
+        if scope.kind != "principal":
+            raise ValueError("feedback is given by a principal")
+        own, pp = scope.session_exists("chat_messages.session_id")
+        async with self._tx(tenant_id, scope) as s:
+            msg = (
+                await s.execute(
+                    text(
+                        "SELECT role, goal_id FROM chat_messages WHERE id = :mid "
+                        f"AND session_id = :sid AND tenant_id = :t{own} FOR KEY SHARE"
+                    ),
+                    {"mid": message_id, "sid": session_id, "t": tenant_id, **pp},
+                )
+            ).fetchone()
+            if msg is None:
+                return None
+            if msg[0] != "assistant":
+                raise ChatFeedbackTargetError("feedback is given on assistant replies only")
+            row = (
+                await s.execute(
+                    text(
+                        "INSERT INTO chat_message_feedback "
+                        "(id, tenant_id, session_id, message_id, owner_principal, rating, comment) "
+                        "VALUES (:id, :t, :sid, :mid, :p, :r, :c) "
+                        "ON CONFLICT (message_id, owner_principal) DO UPDATE SET "
+                        "rating = EXCLUDED.rating, comment = EXCLUDED.comment, "
+                        "updated_at = now() RETURNING *"
+                    ),
+                    {
+                        "id": uuid.uuid4().hex, "t": tenant_id, "sid": session_id,
+                        "mid": message_id, "p": scope.principal, "r": rating, "c": comment,
+                    },
+                )
+            ).mappings().one()
+            if msg[1]:
+                await s.execute(
+                    text(
+                        "INSERT INTO goal_feedback "
+                        "(id, goal_id, tenant_id, rating, correction, created_at) "
+                        "SELECT CAST(:id AS varchar), CAST(:gid AS varchar), "
+                        "CAST(:t AS varchar), CAST(:r AS smallint), CAST(:c AS text), now() "
+                        "WHERE EXISTS (SELECT 1 FROM goals WHERE id = :gid AND tenant_id = :t) "
+                        "ON CONFLICT (id) DO UPDATE SET rating = EXCLUDED.rating, "
+                        "correction = EXCLUDED.correction, processed_at = NULL"
+                    ),
+                    {
+                        "id": goal_feedback_id(tenant_id, message_id, str(scope.principal)),
+                        "gid": msg[1], "t": tenant_id,
+                        "r": _GOAL_FEEDBACK_RATING[rating], "c": comment,
+                    },
+                )
+            return dict(row)
+
+    async def delete_feedback(
+        self, *, tenant_id: str, session_id: str, message_id: str, scope: ChatScope
+    ) -> bool:
+        """Clear the caller's feedback on a reply (and its goal_feedback mirror)."""
+        if scope.kind != "principal":
+            raise ValueError("feedback is given by a principal")
+        own, pp = scope.session_exists("chat_message_feedback.session_id")
+        async with self._tx(tenant_id, scope) as s:
+            gone = (
+                await s.execute(
+                    text(
+                        "DELETE FROM chat_message_feedback WHERE message_id = :mid "
+                        "AND session_id = :sid AND tenant_id = :t AND owner_principal = :p"
+                        f"{own} RETURNING id"
+                    ),
+                    {
+                        "mid": message_id, "sid": session_id, "t": tenant_id,
+                        "p": scope.principal, **pp,
+                    },
+                )
+            ).fetchone()
+            if gone is None:
+                return False
+            await s.execute(
+                text("DELETE FROM goal_feedback WHERE id = :id AND tenant_id = :t"),
+                {"id": goal_feedback_id(tenant_id, message_id, str(scope.principal)),
+                 "t": tenant_id},
+            )
+            return True
+
+    async def list_feedback(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        message_ids: Sequence[str],
+        scope: ChatScope,
+    ) -> list[dict[str, Any]]:
+        """The caller's feedback on the given messages of a session (unique-index lookups)."""
+        if scope.kind != "principal" or not message_ids:
+            return []
+        own, pp = scope.session_exists("chat_message_feedback.session_id")
+        async with self._tx(tenant_id, scope) as s:
+            rows = (
+                await s.execute(
+                    text(
+                        "SELECT * FROM chat_message_feedback "
+                        "WHERE message_id = ANY(CAST(:mids AS varchar[])) "
+                        "AND owner_principal = :p AND session_id = :sid AND tenant_id = :t"
+                        f"{own}"
+                    ),
+                    {
+                        "mids": list(message_ids), "p": scope.principal, "sid": session_id,
+                        "t": tenant_id, **pp,
+                    },
+                )
+            ).mappings().all()
+            return [dict(r) for r in rows]
 
     # ── Artifacts (chat_artifacts, ORG-42) ────────────────────────────────────
     # Generated documents (kind='document', retention via expires_at) and saved

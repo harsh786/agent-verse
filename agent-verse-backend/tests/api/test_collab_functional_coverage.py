@@ -115,6 +115,16 @@ class FakeCollabStore:
         return list(self.operations.get((tenant_ctx.tenant_id, session_id), []))
 
 
+@pytest.fixture(autouse=True)
+def _reset_presence_registry() -> Any:
+    """Presence viewers live in a module-level registry; start every test empty."""
+    from app.api.collab import _presence_conns
+
+    _presence_conns.clear()
+    yield
+    _presence_conns.clear()
+
+
 def _make_app(store: FakeCollabStore | None = None) -> FastAPI:
     app = FastAPI()
 
@@ -786,9 +796,11 @@ def test_crdt_token_minted_on_one_replica_is_valid_on_another() -> None:
     replica_a, replica_b = _make_app(), _make_app()
     replica_a.state._redis = shared
     replica_b.state._redis = shared
-    token = TestClient(replica_a).post(
-        "/collab/crdt-token", headers={"X-API-Key": KEY_A}
-    ).json()["token"]
+    token = (
+        TestClient(replica_a)
+        .post("/collab/crdt-token", headers={"X-API-Key": KEY_A})
+        .json()["token"]
+    )
     collab_mod._crdt_tokens.clear()  # nothing process-local to fall back on
     room = f"collab-{TENANT_A.tenant_id}-xreplica"
     try:
@@ -796,3 +808,26 @@ def test_crdt_token_minted_on_one_replica_is_valid_on_another() -> None:
             pass
     finally:
         collab_mod._crdt_manager.set_redis(None)
+
+
+def test_presence_dead_peer_is_pruned_not_kept_forever() -> None:
+    """A viewer whose socket died without a clean close is dropped on the next send."""
+    from app.api.collab import _presence_conns
+
+    dead_ws = MagicMock()
+    dead_ws.send_text = AsyncMock(side_effect=RuntimeError("socket gone"))
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    protocol_a = f"av.v1.{_encode(KEY_A)}"
+    with client.websocket_connect("/collab/presence/org-1/ws", subprotocols=[protocol_a]) as ws1:
+        key = next(k for k in _presence_conns if k[1] == "org-1")
+        _presence_conns[key].append(
+            {"ws": dead_ws, "userId": "deadbeef", "name": "Viewer dead", "section": None}
+        )
+        ws1.send_text(json.dumps({"type": "presence.update", "section": "dashboard"}))
+        with client.websocket_connect(
+            "/collab/presence/org-1/ws", subprotocols=[protocol_a]
+        ) as ws2:
+            # ws2 is told about ws1 only after the dead peer was pruned by ws1's update.
+            first = json.loads(ws2.receive_text())
+            assert first["userId"] != "deadbeef"
+        assert all(p["userId"] != "deadbeef" for p in _presence_conns.get(key, []))

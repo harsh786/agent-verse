@@ -1,9 +1,21 @@
 /**
  * ChatSidebar — left panel with session list, folders, pin, and new chat.
+ *
+ * Folders (CHAT-D-1) are the caller's own and durable on the server: create,
+ * rename and delete them here, and file a chat into one with "Move to folder".
  */
 
 import { useState, type JSX } from 'react';
-import { Plus, Pin, Folder, Trash2, Search, MessageSquare, Pencil } from 'lucide-react';
+import {
+  Plus,
+  Pin,
+  Folder,
+  FolderPlus,
+  Trash2,
+  Search,
+  MessageSquare,
+  Pencil,
+} from 'lucide-react';
 import type { ChatSession, ChatFolder } from './types/chat.types';
 
 interface Props {
@@ -15,7 +27,49 @@ interface Props {
   onDeleteSession: (id: string) => void;
   onPinSession: (id: string, pinned: boolean) => void;
   onRenameSession?: (id: string, title: string) => void;
+  onCreateFolder?: (name: string) => void;
+  onRenameFolder?: (folderId: string, name: string) => void;
+  onDeleteFolder?: (folderId: string) => void;
+  /** File a chat into a folder (null: take it out of its folder). */
+  onMoveSession?: (sessionId: string, folderId: string | null) => void;
   isLoading?: boolean;
+}
+
+/** Inline name editor: Enter commits a changed non-empty name, Escape cancels. */
+function NameInput({
+  initial,
+  label,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  label: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState(initial);
+  const commit = () => {
+    const name = draft.trim();
+    if (name && name !== initial) onCommit(name);
+    else onCancel();
+  };
+  return (
+    <input
+      className="flex-1 min-w-0 text-sm bg-transparent border-b border-indigo-500 outline-none text-foreground"
+      value={draft}
+      autoFocus
+      maxLength={200}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') onCancel();
+      }}
+      aria-label={label}
+    />
+  );
 }
 
 export function ChatSidebar({
@@ -27,9 +81,16 @@ export function ChatSidebar({
   onDeleteSession,
   onPinSession,
   onRenameSession,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onMoveSession,
   isLoading,
 }: Props): JSX.Element {
   const [search, setSearch] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [confirmingFolderDelete, setConfirmingFolderDelete] = useState<string | null>(null);
 
   // NOTE(scale): this search runs over the sessions already loaded into the
   // sidebar (capped by chatApi.listSessions' client-side limit — GET
@@ -42,6 +103,10 @@ export function ChatSidebar({
 
   const pinned = filtered.filter((s) => s.pinned);
   const unpinned = filtered.filter((s) => !s.pinned);
+  // A chat filed into a folder this list does not know (deleted elsewhere, or
+  // never persisted) is shown as unfiled rather than disappearing.
+  const knownFolders = new Set(folders.map((f) => f.id));
+  const isUnfiled = (s: ChatSession) => !s.folder_id || !knownFolders.has(s.folder_id);
 
   function SessionItem({ session }: { session: ChatSession }) {
     const isActive = session.id === activeSessionId;
@@ -93,6 +158,27 @@ export function ChatSidebar({
         )}
 
         <div className="hidden group-hover:flex items-center gap-1">
+          {onMoveSession && folders.length > 0 && (
+            <select
+              className="max-w-[5.5rem] text-xs bg-card border border-border rounded px-1 py-0.5 text-muted-foreground"
+              value={session.folder_id && knownFolders.has(session.folder_id) ? session.folder_id : ''}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation();
+                onMoveSession(session.id, e.target.value || null);
+              }}
+              aria-label="Move to folder"
+              title="Move to folder"
+            >
+              <option value="">No folder</option>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          )}
           {onRenameSession && !editing && (
             <button
               className="p-1 rounded hover:bg-muted"
@@ -180,6 +266,34 @@ export function ChatSidebar({
         </div>
       </div>
 
+      {onCreateFolder && (
+        <div className="px-3 pb-1">
+          {creatingFolder ? (
+            <div className="flex items-center gap-2 px-2 py-1">
+              <FolderPlus className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <NameInput
+                initial=""
+                label="New folder name"
+                onCommit={(name) => {
+                  setCreatingFolder(false);
+                  onCreateFolder(name);
+                }}
+                onCancel={() => setCreatingFolder(false)}
+              />
+            </div>
+          ) : (
+            <button
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted"
+              onClick={() => setCreatingFolder(true)}
+              aria-label="New folder"
+            >
+              <FolderPlus className="w-3.5 h-3.5" />
+              New folder
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Sessions list */}
       <nav className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
         {isLoading && (
@@ -197,38 +311,87 @@ export function ChatSidebar({
           </div>
         )}
 
-        {folders.length > 0 &&
-          folders.map((folder) => {
-            const folderSessions = unpinned.filter((s) => s.folder_id === folder.id);
-            if (folderSessions.length === 0) return null;
-            return (
-              <div key={folder.id}>
-                <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground px-3 py-1 uppercase tracking-wide">
-                  <Folder
-                    className="w-3 h-3"
-                    style={{ color: folder.color }}
+        {folders.map((folder) => {
+          const folderSessions = unpinned.filter((s) => s.folder_id === folder.id);
+          // While searching, a folder with no match stays out of the way.
+          if (search && folderSessions.length === 0) return null;
+          const confirming = confirmingFolderDelete === folder.id;
+          return (
+            <div key={folder.id} data-testid={`folder-${folder.id}`}>
+              <div className="group flex items-center gap-1 px-3 py-1">
+                <Folder className="w-3 h-3 shrink-0" style={{ color: folder.color }} />
+                {renamingFolder === folder.id && onRenameFolder ? (
+                  <NameInput
+                    initial={folder.name}
+                    label="Folder name"
+                    onCommit={(name) => {
+                      setRenamingFolder(null);
+                      onRenameFolder(folder.id, name);
+                    }}
+                    onCancel={() => setRenamingFolder(null)}
                   />
-                  {folder.name}
-                </p>
-                {folderSessions.map((s) => (
-                  <SessionItem key={s.id} session={s} />
-                ))}
+                ) : (
+                  <p className="flex-1 truncate text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    {folder.name}
+                  </p>
+                )}
+                <div className="hidden group-hover:flex items-center gap-1">
+                  {onRenameFolder && renamingFolder !== folder.id && (
+                    <button
+                      className="p-1 rounded hover:bg-muted"
+                      onClick={() => setRenamingFolder(folder.id)}
+                      aria-label={`Rename folder ${folder.name}`}
+                    >
+                      <Pencil className="w-3 h-3 text-muted-foreground" />
+                    </button>
+                  )}
+                  {onDeleteFolder && (
+                    <button
+                      className={[
+                        'p-1 rounded',
+                        confirming
+                          ? 'bg-red-500/20 ring-1 ring-red-500'
+                          : 'hover:bg-red-100 dark:hover:bg-red-950',
+                      ].join(' ')}
+                      onClick={() => {
+                        // Two-click confirm; the folder's chats are kept, unfiled.
+                        if (confirming) {
+                          setConfirmingFolderDelete(null);
+                          onDeleteFolder(folder.id);
+                        } else {
+                          setConfirmingFolderDelete(folder.id);
+                        }
+                      }}
+                      onBlur={() => setConfirmingFolderDelete(null)}
+                      aria-label={
+                        confirming
+                          ? `Confirm delete folder ${folder.name}`
+                          : `Delete folder ${folder.name}`
+                      }
+                      title={confirming ? 'Click again to delete (its chats are kept)' : 'Delete folder'}
+                    >
+                      <Trash2 className="w-3 h-3 text-red-500" />
+                    </button>
+                  )}
+                </div>
               </div>
-            );
-          })}
+              {folderSessions.map((s) => (
+                <SessionItem key={s.id} session={s} />
+              ))}
+            </div>
+          );
+        })}
 
-        {unpinned.filter((s) => !s.folder_id).length > 0 && (
+        {unpinned.filter(isUnfiled).length > 0 && (
           <div>
             {(pinned.length > 0 || folders.length > 0) && (
               <p className="text-xs font-medium text-muted-foreground px-3 py-1 uppercase tracking-wide">
                 Recent
               </p>
             )}
-            {unpinned
-              .filter((s) => !s.folder_id)
-              .map((s) => (
-                <SessionItem key={s.id} session={s} />
-              ))}
+            {unpinned.filter(isUnfiled).map((s) => (
+              <SessionItem key={s.id} session={s} />
+            ))}
           </div>
         )}
 

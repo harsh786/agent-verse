@@ -268,9 +268,29 @@ async def _resolve_ws_tenant(
 _presence_conns: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
 
-async def _presence_send(ws: WebSocket, payload: dict[str, Any]) -> None:
-    with contextlib.suppress(Exception):
+async def _presence_send(ws: WebSocket, payload: dict[str, Any]) -> bool:
+    """Send one presence frame; False when the peer's socket is dead."""
+    try:
         await ws.send_text(json.dumps(payload))
+    except Exception:
+        return False
+    return True
+
+
+async def _presence_broadcast(
+    peers: list[dict[str, Any]], payload: dict[str, Any], *, exclude: dict[str, Any] | None = None
+) -> None:
+    """Send to every peer but ``exclude``; drop peers whose socket is dead.
+
+    A viewer whose connection died without a clean close used to stay in the
+    registry forever: every newcomer was told about it and every broadcast tried it.
+    """
+    for p in list(peers):
+        if p is exclude:
+            continue
+        if not await _presence_send(p["ws"], payload):
+            with contextlib.suppress(ValueError):
+                peers.remove(p)
 
 
 @router.websocket("/presence/{org_id}/ws")
@@ -314,9 +334,7 @@ async def org_presence_websocket(websocket: WebSocket, org_id: str) -> None:
         )
     peers.append(me)
     joined = {"type": "presence.update", "userId": user_id, "name": me["name"], "section": None}
-    for p in peers:
-        if p is not me:
-            await _presence_send(p["ws"], joined)
+    await _presence_broadcast(peers, joined, exclude=me)
 
     try:
         while True:
@@ -334,17 +352,14 @@ async def org_presence_websocket(websocket: WebSocket, org_id: str) -> None:
                     "name": me["name"],
                     "section": me["section"],
                 }
-                for p in peers:
-                    if p is not me:
-                        await _presence_send(p["ws"], update)
+                await _presence_broadcast(peers, update, exclude=me)
     except WebSocketDisconnect:
         pass
     finally:
         with contextlib.suppress(ValueError):
             peers.remove(me)
         leave = {"type": "presence.leave", "userId": user_id}
-        for p in peers:
-            await _presence_send(p["ws"], leave)
+        await _presence_broadcast(peers, leave)
         if not peers:
             _presence_conns.pop(key, None)
 

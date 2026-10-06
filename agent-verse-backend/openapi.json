@@ -1813,6 +1813,7 @@
         "properties": {
           "color": {
             "default": "#6366f1",
+            "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
             "title": "Color",
             "type": "string"
           },
@@ -9180,6 +9181,37 @@
         "title": "UpdateDepartmentRequest",
         "type": "object"
       },
+      "UpdateFolderRequest": {
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "UpdateFolderRequest",
+        "type": "object"
+      },
       "UpdateGoldenTaskRequest": {
         "description": "Edit a golden task; only the given fields change (a new dataset version).",
         "properties": {
@@ -11968,6 +12000,7 @@
           "comment": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -22799,6 +22832,7 @@
     },
     "/chat/folders": {
       "get": {
+        "description": "The caller's own folders (bounded).",
         "operationId": "list_folders_chat_folders_get",
         "responses": {
           "200": {
@@ -22863,6 +22897,7 @@
     },
     "/chat/folders/{folder_id}": {
       "delete": {
+        "description": "Delete one of the caller's folders; its sessions stay, unfiled.",
         "operationId": "delete_folder_chat_folders__folder_id__delete",
         "parameters": [
           {
@@ -22891,6 +22926,59 @@
           }
         },
         "summary": "Delete Folder",
+        "tags": [
+          "chat"
+        ]
+      },
+      "patch": {
+        "description": "Rename and/or recolor one of the caller's folders.",
+        "operationId": "update_folder_chat_folders__folder_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "folder_id",
+            "required": true,
+            "schema": {
+              "title": "Folder Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Folder Chat Folders  Folder Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Folder",
         "tags": [
           "chat"
         ]
@@ -24074,6 +24162,48 @@
       }
     },
     "/chat/sessions/{session_id}/messages/{message_id}/feedback": {
+      "delete": {
+        "operationId": "clear_feedback_chat_sessions__session_id__messages__message_id__feedback_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Feedback",
+        "tags": [
+          "chat"
+        ]
+      },
       "post": {
         "operationId": "submit_feedback_chat_sessions__session_id__messages__message_id__feedback_post",
         "parameters": [
@@ -24138,6 +24268,7 @@
     },
     "/chat/sessions/{session_id}/move": {
       "post": {
+        "description": "File the caller's session into one of the caller's folders (none: unfile).",
         "operationId": "move_to_folder_chat_sessions__session_id__move_post",
         "parameters": [
           {
@@ -24156,6 +24287,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 64,
                   "type": "string"
                 },
                 {
