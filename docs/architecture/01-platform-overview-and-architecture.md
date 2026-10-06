@@ -475,7 +475,6 @@ See full catalogue in Section 6.
 | `rbac.py` | Role-based access control, custom roles, ABAC conditions |
 | `store.py` | Tenant configuration store |
 | `limits.py` | Per-plan resource limits (goals/hour, agents, connectors) |
-| `domain_role_templates.py` | Domain-specific role templates (legal, healthcare, finance) |
 
 ### 5.20 `app/triggers/` — Scheduled Goals
 

@@ -25,7 +25,6 @@ from app.auth.scope_enforcement import (
     ScopeEnforcementMiddleware,
 )
 from app.tenancy.context import PlanTier, TenantContext
-from app.tenancy.domain_role_templates import DOMAIN_ROLE_TEMPLATES
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -269,44 +268,16 @@ async def test_ip_allowlist_blocks_nonwhitelisted_ip() -> None:
 
 
 async def test_custom_role_creation_and_assignment() -> None:
-    """Custom role templates cover all five domains; permissions are well-formed."""
-    # Verify all five domains are present
-    assert set(DOMAIN_ROLE_TEMPLATES) >= {
-        "healthcare", "legal", "finance", "education", "ecommerce"
-    }
+    """Built-in role scopes are well-formed; unenforceable domain templates are gone.
 
-    known_scopes = {
-        "goals:read", "goals:write", "goals:delete", "goals:execute",
-        "agents:read", "agents:write", "agents:delete",
-        "knowledge:read", "knowledge:write", "knowledge:delete",
-        "governance:read", "governance:write", "governance:approve",
-        "tenancy:read", "tenancy:write",
-        "audit:read", "audit:export",
-        "costs:read", "costs:admin",
-        "mcp:read", "mcp:write",
-    }
+    a10-F250-04 (owner decision): ``app.tenancy.domain_role_templates`` advertised
+    a ``POST /api/auth/roles/from-template`` route that never existed, and its
+    ABAC ``conditions`` (``assigned_only``, ``client_own_matters`` …) were never
+    evaluated, so the module was removed.
+    """
+    import importlib.util
 
-    for domain, roles in DOMAIN_ROLE_TEMPLATES.items():
-        for role in roles:
-            assert "name" in role, f"{domain}/{role} missing 'name'"
-            assert "permissions" in role, f"{domain}/{role} missing 'permissions'"
-            bad = set(role["permissions"]) - known_scopes
-            assert not bad, (
-                f"Unknown permissions {bad} in {domain}/{role['name']}"
-            )
-
-    # Spot-checks: client_portal is read-only
-    cp = next(
-        r for r in DOMAIN_ROLE_TEMPLATES["legal"] if r["name"] == "client_portal"
-    )
-    assert cp["permissions"] == ["goals:read"]
-
-    # Spot-check: phi_reader has no destructive scopes
-    phi = next(
-        r for r in DOMAIN_ROLE_TEMPLATES["healthcare"] if r["name"] == "phi_reader"
-    )
-    assert "goals:delete" not in phi["permissions"]
-    assert "governance:approve" not in phi["permissions"]
+    assert importlib.util.find_spec("app.tenancy.domain_role_templates") is None
 
     # Verify ROLE_SCOPES covers admin (all scopes)
     assert "goals:delete" in ROLE_SCOPES["admin"]
