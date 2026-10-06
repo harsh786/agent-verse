@@ -2917,11 +2917,6 @@ def run_goal(
     except Exception as db_exc:
         logger.warning("DB operation failed (non-fatal): %s", db_exc)
 
-    # GOAL-STALL: keep goals.heartbeat_at fresh while this run owns the goal, so
-    # the beat reaper can tell a dead / wedged runner from a live one. The thread
-    # stops by itself once the goal is no longer active (every early return below
-    # marks it terminal) and is stopped in the main try's finally.
-    _heartbeat = _start_goal_heartbeat(goal_id, tenant_id, _lock, enabled=goal_bridge is not None)
 
     if dry_run:
         _run_async(mark_worker_complete("complete", 0))
@@ -3773,6 +3768,12 @@ def run_goal(
     # goal's side effects) and the slot is never released twice.
     _terminal_recorded: str | None = None
     _slot_released = False
+    # GOAL-STALL: keep goals.heartbeat_at fresh while this run owns the goal, so
+    # the beat reaper can tell a dead / wedged runner from a live one. Started
+    # right here — immediately before the try whose finally stops it — so no early
+    # return can leave the thread running (it exits on its own only once it reads
+    # the goal as terminal, never while the DB is unreachable).
+    _heartbeat = _start_goal_heartbeat(goal_id, tenant_id, _lock, enabled=goal_bridge is not None)
     try:
         # Block fake execution outside development/test — a real LLM provider
         # (the tenant's own key or the platform's) is required. BYOK-3: this used

@@ -926,7 +926,49 @@ export interface ApiKeyResponse {
   expires_at?: string | null;
 }
 
+/** What removing indexed chat transcripts did (owner decision 7). */
+export interface ChatTranscriptRemoval {
+  removed_documents?: number;
+  /** Kept: under an active legal hold. */
+  held_documents?: number;
+  held_document_ids?: string[];
+  /** More remain; a background task continues the removal. */
+  pending?: boolean;
+  continuation?: string;
+}
+
+export interface ChatTranscriptsKnowledgeSetting extends ChatTranscriptRemoval {
+  enabled: boolean;
+}
+
+export interface ChatKnowledgeOptInState extends ChatTranscriptRemoval {
+  /** The workspace switch (an admin's); opting in needs it on. */
+  tenant_enabled?: boolean;
+  opted_in: boolean;
+  opted_in_at: string | null;
+  revoked_at: string | null;
+}
+
+/** Owner decision 7: a person's own opt-in to index their chats as knowledge. */
+export const chatKnowledgeApi = {
+  getOptIn: () => request<ChatKnowledgeOptInState>("/chat/settings/knowledge"),
+  setOptIn: (optedIn: boolean) =>
+    request<ChatKnowledgeOptInState>("/chat/settings/knowledge", {
+      method: "PUT",
+      body: JSON.stringify({ opted_in: optedIn }),
+    }),
+};
+
 export const tenantsApi = {
+  /** Owner decision 7: whether chat transcripts may become knowledge (off by default). */
+  getChatTranscriptsKnowledge: () =>
+    request<ChatTranscriptsKnowledgeSetting>("/tenants/me/chat-transcripts-knowledge"),
+  /** Owner decision 7: enable / disable the chat transcript knowledge kind (admin only). */
+  setChatTranscriptsKnowledge: (enabled: boolean) =>
+    request<ChatTranscriptsKnowledgeSetting>("/tenants/me/chat-transcripts-knowledge", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
   /** D3: whether this tenant's opted-in agents are listed at /.well-known/agents. */
   getA2ADirectory: () => request<{ enabled: boolean }>("/tenants/me/a2a-directory"),
   /** D3: turn the public A2A directory listing on or off (admin only). */

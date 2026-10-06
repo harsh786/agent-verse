@@ -236,6 +236,33 @@ def _refuse_connection_policy(source_type: str, connection_config: Any) -> None:
         ) from exc
 
 
+async def _refuse_disabled_chat_transcripts(
+    request: Request, tenant_id: str, source_type: str, connection_config: Any
+) -> None:
+    """422 when an agent_generated Source lists ``chat_transcript`` while the
+    tenant's switch is off (owner decision 7); 503 when the switch is unreadable."""
+    if source_type != "agent_generated" or not isinstance(connection_config, dict):
+        return
+    kinds = connection_config.get("source_types")
+    if not isinstance(kinds, list) or "chat_transcript" not in kinds:
+        return
+    from app.services.chat_knowledge import ChatKnowledgeUnavailableError, chat_knowledge_for
+
+    try:
+        enabled = await chat_knowledge_for(request.app.state).tenant_enabled(tenant_id)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not enabled:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "agent_generated connection settings refused: chat transcripts are not "
+                "enabled for this workspace (a workspace admin turns them on in Settings; "
+                "each person then opts in for their own chats)"
+            ),
+        )
+
+
 def _refuse_unconfigured_source(source: SourceConfig) -> None:
     """422 with the reason when the Source cannot index anything as configured."""
     problem = configuration_problem(source)
@@ -295,6 +322,9 @@ async def validate_source(
     try:
         _refuse_connection_policy(body.source_type, body.connection_config)
         await _refuse_internal_destinations(body.source_type, body.connection_config)
+        await _refuse_disabled_chat_transcripts(
+            request, tenant.tenant_id, body.source_type, body.connection_config
+        )
     except HTTPException as exc:
         errors.append(str(exc.detail))
     connection: dict | None = None
@@ -357,6 +387,9 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
 
     _refuse_connection_policy(body.source_type, body.connection_config)
     await _refuse_internal_destinations(body.source_type, body.connection_config)
+    await _refuse_disabled_chat_transcripts(
+        request, tenant.tenant_id, body.source_type, body.connection_config
+    )
 
     # Source quota (plan limit) — counted in the DB; it was never enforced.
     enforcer = _get_quota_enforcer(request)
@@ -433,6 +466,9 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
         )
         _refuse_connection_policy(source.source_type, update_data["connection_config"])
         await _refuse_internal_destinations(source.source_type, update_data["connection_config"])
+        await _refuse_disabled_chat_transcripts(
+            request, tenant.tenant_id, source.source_type, update_data["connection_config"]
+        )
     store = _get_source_store(request)
     _forget_agent_generated_listeners(source.source_type, tenant.tenant_id)
     if store is not None:

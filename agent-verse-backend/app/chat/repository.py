@@ -76,13 +76,14 @@ class PostgresChatRepository:
         system_prompt: str | None = None,
         agent_id: str | None = None,
         folder_id: str | None = None,
+        owner_user_id: str | None = None,
     ) -> None:
         async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
             await s.execute(
                 text(
                     "INSERT INTO chat_sessions "
-                    "(id, tenant_id, title, system_prompt, agent_id, folder_id) "
-                    "VALUES (:id, :t, :title, :sp, :aid, :fid)"
+                    "(id, tenant_id, title, system_prompt, agent_id, folder_id, owner_user_id) "
+                    "VALUES (:id, :t, :title, :sp, :aid, :fid, :owner)"
                 ),
                 {
                     "id": session_id,
@@ -91,6 +92,7 @@ class PostgresChatRepository:
                     "sp": system_prompt,
                     "aid": agent_id,
                     "fid": folder_id,
+                    "owner": owner_user_id,
                 },
             )
 
@@ -365,6 +367,16 @@ class PostgresChatRepository:
             result = await s.execute(
                 text("UPDATE chat_messages SET content = :c WHERE id = :id AND tenant_id = :t"),
                 {"c": content, "id": message_id, "t": tenant_id},
+            )
+            # The session changed: its transcript (CHAT-KB) is re-read by the
+            # next sync, whose cursor walks sessions by updated_at.
+            await s.execute(
+                text(
+                    "UPDATE chat_sessions SET updated_at = now() WHERE tenant_id = :t "
+                    "AND id = (SELECT session_id FROM chat_messages "
+                    "WHERE id = :id AND tenant_id = :t)"
+                ),
+                {"id": message_id, "t": tenant_id},
             )
             return (result.rowcount or 0) > 0
 

@@ -115,8 +115,8 @@ class _FakeSession:
 
         if "count(*)" in sql and "AND EXISTS (SELECT 1 FROM legal_holds" in sql:
             return _Result(scalar=0)  # no chunk is under a collection/document hold
-        if "metadata->'origin'" in sql:
-            return _Result(rows=[])  # no goal-derived knowledge in these fakes
+        if "metadata->'origin'" in sql and "ILIKE" not in sql:
+            return _Result(rows=[], scalar=0)  # no goal-derived knowledge or transcripts
         if "count(*)" in sql:
             if table in self.count_raises_for:
                 raise RuntimeError(f"count-failed-{table}")

@@ -1171,6 +1171,63 @@ async def set_a2a_directory(
     return {"enabled": body.enabled}
 
 
+class ChatTranscriptsKnowledgeSetting(BaseModel):
+    enabled: bool
+
+
+@router.get("/me/chat-transcripts-knowledge")
+async def get_chat_transcripts_knowledge(
+    request: Request, ctx: TenantContext = Depends(_require_tenant)
+) -> dict[str, bool]:
+    """Whether chat transcripts may become knowledge in this workspace (owner
+    decision 7). Off by default; each person must also opt in for their own chats."""
+    from app.services.chat_knowledge import ChatKnowledgeUnavailableError, chat_knowledge_for
+
+    try:
+        enabled = await chat_knowledge_for(request.app.state).tenant_enabled(ctx.tenant_id)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": enabled}
+
+
+@router.put("/me/chat-transcripts-knowledge")
+async def set_chat_transcripts_knowledge(
+    body: ChatTranscriptsKnowledgeSetting,
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+    _: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Enable or disable the ``chat_transcript`` knowledge kind (admin only).
+
+    On: an ``agent_generated`` Source may list the kind, and it indexes the chats
+    of the people who opted in. Off: the kind is refused on save, Sources index no
+    transcript, and every transcript already indexed is removed (bounded batches;
+    a document under legal hold is kept and reported).
+    """
+    from app.services.chat_knowledge import ChatKnowledgeUnavailableError, chat_knowledge_for
+
+    settings = chat_knowledge_for(request.app.state)
+    try:
+        await settings.set_tenant_enabled(ctx.tenant_id, body.enabled)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if body.enabled:
+        return {"enabled": True}
+    from app.services.chat_knowledge import remove_transcripts
+
+    try:
+        report = await remove_transcripts(request.app.state, ctx.tenant_id)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Chat transcripts are switched off (nothing more is indexed), but removing "
+                f"the transcripts already indexed failed: {exc}. Retry to finish."
+            ),
+        ) from exc
+    return {"enabled": False, **report}
+
+
 _NOTIFICATION_KEYS = frozenset(
     {"goalComplete", "goalFailed", "budgetAlert", "hitlPending", "weeklyReport"}
 )

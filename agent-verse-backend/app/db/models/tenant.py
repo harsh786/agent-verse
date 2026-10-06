@@ -28,6 +28,11 @@ class Tenant(Base):
     a2a_directory_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("FALSE")
     )
+    # Owner decision 7: chat transcripts may become knowledge (with each person's
+    # own opt-in, ``chat_kb_consents``). Admin-only switch, off by default.
+    chat_transcripts_kb_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

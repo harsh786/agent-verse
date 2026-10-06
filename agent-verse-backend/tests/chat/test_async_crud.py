@@ -16,10 +16,11 @@ class _FakeRepo:
 
     async def create_session(self, *, session_id: str, tenant_id: str, title: str = "New Chat",
                              system_prompt: Any = None, agent_id: Any = None,
-                             folder_id: Any = None) -> None:
+                             folder_id: Any = None, owner_user_id: Any = None) -> None:
         self._rows[session_id] = {
             "id": session_id, "tenant_id": tenant_id, "title": title,
             "system_prompt": system_prompt, "agent_id": agent_id, "folder_id": folder_id,
+            "owner_user_id": owner_user_id,
             "pinned": False, "created_at": datetime.now(UTC), "updated_at": datetime.now(UTC),
         }
 

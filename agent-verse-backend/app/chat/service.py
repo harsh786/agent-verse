@@ -292,6 +292,9 @@ class _Session:
     preferred_model: str | None = None
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
+    # The person (SSO user id) who created the session; None for an API key or a
+    # channel. Only owned sessions can become knowledge (owner decision 7).
+    owner_user_id: str | None = None
 
 
 @dataclass
@@ -457,6 +460,7 @@ class ChatService:
         system_prompt: str | None = None,
         agent_id: str | None = None,
         folder_id: str | None = None,
+        owner_user_id: str | None = None,
     ) -> _Session:
         sid = _hex()
         session = _Session(
@@ -466,6 +470,7 @@ class ChatService:
             system_prompt=system_prompt,
             agent_id=agent_id,
             folder_id=folder_id,
+            owner_user_id=owner_user_id,
         )
         self._sessions[sid] = session
         return session
@@ -625,12 +630,15 @@ class ChatService:
         session_id: str,
         tenant_id: str,
         user_message: str,
+        *,
+        author_user_id: str | None = None,
     ) -> dict[str, Any]:
         """Async, repository-backed dispatch (persistence swap stage 3c).
 
         Mirrors ``dispatch`` but reads history and persists the user message via
         the async a* methods, so a chat turn is durable. Intent is classified
-        before the save, so the stored message carries it.
+        before the save, so the stored message carries it, and the person who
+        wrote it (``metadata.author_user_id``) when one did.
         """
         if await self.aget_session(session_id, tenant_id) is None:
             raise ValueError(f"Session {session_id} not found")
@@ -646,6 +654,7 @@ class ChatService:
         user_msg = await self.asave_message(
             session_id=session_id, tenant_id=tenant_id, role="user",
             content=user_message, intent=intent.value,
+            metadata={"author_user_id": author_user_id} if author_user_id else None,
         )
         result: dict[str, Any] = {
             "intent": intent.value,
@@ -1065,6 +1074,7 @@ class ChatService:
             preferred_model=row.get("preferred_model"),
             created_at=row.get("created_at") or _now(),
             updated_at=row.get("updated_at") or _now(),
+            owner_user_id=row.get("owner_user_id"),
         )
 
     async def acreate_session(
@@ -1074,21 +1084,23 @@ class ChatService:
         system_prompt: str | None = None,
         agent_id: str | None = None,
         folder_id: str | None = None,
+        owner_user_id: str | None = None,
     ) -> _Session:
         if self._repository is None:
             return self.create_session(
                 tenant_id, title=title, system_prompt=system_prompt,
-                agent_id=agent_id, folder_id=folder_id,
+                agent_id=agent_id, folder_id=folder_id, owner_user_id=owner_user_id,
             )
         sid = _hex()
         await self._repository.create_session(
             session_id=sid, tenant_id=tenant_id, title=title,
             system_prompt=system_prompt, agent_id=agent_id, folder_id=folder_id,
+            owner_user_id=owner_user_id,
         )
         row = await self._repository.get_session(sid, tenant_id)
         return self._session_from_row(row) if row else _Session(
             id=sid, tenant_id=tenant_id, title=title, system_prompt=system_prompt,
-            agent_id=agent_id, folder_id=folder_id,
+            agent_id=agent_id, folder_id=folder_id, owner_user_id=owner_user_id,
         )
 
     async def aget_session(self, session_id: str, tenant_id: str) -> _Session | None:
@@ -1153,9 +1165,18 @@ class ChatService:
             message_id=message_id, session_id=session_id, tenant_id=tenant_id,
             role=role, content=content, intent=intent, goal_id=goal_id, metadata=metadata,
         )
+        await self._notify_transcript(tenant_id, session_id)
         return _Message(
             id=message_id, session_id=session_id, tenant_id=tenant_id, role=role,
             content=content, goal_id=goal_id, intent=intent, metadata=metadata or {},
+        )
+
+    async def _notify_transcript(self, tenant_id: str, session_id: str) -> None:
+        """CHAT-KB: a consented session changed — its transcript is re-indexed."""
+        from app.ingestion.agent_generated_events import notify_chat_transcript
+
+        await notify_chat_transcript(
+            tenant_id, session_id, db_factory=getattr(self._repository, "_sf", None)
         )
 
     async def alist_messages(
@@ -1185,6 +1206,7 @@ class ChatService:
         pruned = await self._repository.delete_messages_after(
             str(row["session_id"]), tenant_id, row["created_at"]
         )
+        await self._notify_transcript(tenant_id, str(row["session_id"]))
         row["content"] = new_content
         return self._message_from_row(row), pruned
 
@@ -1195,6 +1217,7 @@ class ChatService:
         tenant_id: str,
         content_bytes: bytes,
         filename: str = "document",
+        author_user_id: str | None = None,
     ) -> _Message | None:
         """Parse an uploaded file and store it as conversation context (Phase 4).
 
@@ -1213,7 +1236,11 @@ class ChatService:
             tenant_id=tenant_id,
             role="user",
             content=context,
-            metadata={"attachment": filename, "kind": "attachment"},
+            metadata={
+                "attachment": filename,
+                "kind": "attachment",
+                **({"author_user_id": author_user_id} if author_user_id else {}),
+            },
         )
 
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────

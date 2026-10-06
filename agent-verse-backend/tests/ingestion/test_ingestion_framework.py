@@ -549,7 +549,7 @@ async def test_agent_generated_validate_connection_reports_an_unreachable_db():
 
 
 @pytest.mark.parametrize("cfg, needle", [
-    ({"source_types": ["goal_output", "chat_transcript"]}, "unsupported source_types"),
+    ({"source_types": ["goal_output", "memory_consolidation"]}, "unsupported source_types"),
     ({"source_types": []}, "non-empty list"),
     ({"min_eval_score": 1.5}, "min_eval_score"),
     ({"min_eval_score": True}, "min_eval_score"),
