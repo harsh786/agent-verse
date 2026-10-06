@@ -138,7 +138,9 @@ class TestGetTenantDetail:
         assert resp.status_code == 200
         assert resp.json()["plan"] == "professional"
 
-    def test_cost_controller_error_yields_empty_usage(self):
+    def test_cost_controller_error_is_reported_not_an_empty_usage(self):
+        # a10-F239-02: a failed read used to be swallowed into usage == {},
+        # indistinguishable from "no spend today".
         app = _make_app()
         app.state.tenant_service = types.SimpleNamespace(
             _tenants={"t1": {"tenant_id": "t1", "plan": "free"}}
@@ -149,7 +151,37 @@ class TestGetTenantDetail:
         client = TestClient(app)
         resp = client.get("/admin/tenants/t1", headers=_ADMIN_HEADERS)
         assert resp.status_code == 200
-        assert resp.json()["usage"] == {}
+        assert resp.json()["usage"] is None
+        assert resp.json()["usage_error"]
+
+    def test_usage_reads_the_cost_tracker_not_the_plain_controller(self):
+        """a10-F239-02: the plain in-memory CostController has no get_budget_status,
+        so usage was always {}. The cost tracker (what /costs shows) is read."""
+        from app.governance.cost import CostController
+
+        app = _make_app()
+        app.state.tenant_service = types.SimpleNamespace(
+            _tenants={"t1": {"tenant_id": "t1", "plan": "free"}}
+        )
+        app.state.cost_controller = CostController()
+        tracker = AsyncMock()
+        tracker.get_budget_status.return_value = {"daily_spent": 1.5, "daily_limit": 10.0}
+        app.state.cost_tracker = tracker
+        resp = TestClient(app).get("/admin/tenants/t1", headers=_ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["usage"] == {"daily_spent": 1.5, "daily_limit": 10.0}
+        tracker.get_budget_status.assert_awaited_once_with("t1")
+
+    def test_no_budget_source_is_reported(self):
+        from app.governance.cost import CostController
+
+        app = _make_app()
+        app.state.tenant_service = types.SimpleNamespace(
+            _tenants={"t1": {"tenant_id": "t1", "plan": "free"}}
+        )
+        app.state.cost_controller = CostController()
+        resp = TestClient(app).get("/admin/tenants/t1", headers=_ADMIN_HEADERS)
+        assert resp.json()["usage"] is None and resp.json()["usage_error"]
 
     def test_no_tenant_service_returns_404(self):
         client = TestClient(_make_app())
