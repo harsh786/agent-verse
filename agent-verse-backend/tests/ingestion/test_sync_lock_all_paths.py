@@ -30,6 +30,11 @@ _ALLOWED = {
     ("app/ingestion/scheduler.py", "_sync_locked"): "runs under tracker.hold (lease + fence)",
     ("app/api/ingestion.py", "preview_source"): "dry run: nothing indexed, no cursor",
     ("app/scaling/tasks.py", "_run"): "delta_reingest_files, under the shared lock",
+    ("app/ingestion/legacy_source_jobs.py", "run_legacy_source_ingest"): (
+        "one-shot legacy ingest job (a04-F067-01): no Source and no cursor; exclusive "
+        "through the ingestion_jobs lease (claim + per-document heartbeat, aborts when "
+        "the lease is lost), so a redelivered task cannot run it twice"
+    ),
 }
 
 
