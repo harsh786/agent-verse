@@ -302,10 +302,12 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
         )
 
     assert results[0].chunk_id == chunk_id
+    # P2-3 added the exact-phrase lexical leg (codes like TJ-5531, exact phrases).
     assert [leg["component"] for leg in evidence] == [
         "vector",
         "fts",
         "trigram",
+        "phrase",
         "bm25",
     ]
     assert all(leg["result_count"] >= 1 for leg in evidence)
@@ -445,6 +447,7 @@ async def test_restricted_postgres_executes_all_five_core_strategies_with_rls(
         "vector",
         "fts",
         "trigram",
+        "phrase",
         "bm25",
     ]
     assert all(
