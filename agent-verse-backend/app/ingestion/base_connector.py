@@ -404,6 +404,18 @@ class BaseConnector(ABC):
         """
         return []
 
+    async def acknowledge(self, raw_doc: RawDocument) -> None:  # noqa: B027
+        """The sync loop has durably handled ``raw_doc`` (indexed, skipped as
+        unchanged, or written to the DLQ).
+
+        Called by the scheduler after each document a :meth:`get_delta` run
+        yielded. Streaming connectors whose source position is a broker-side
+        commit (Kafka consumer-group offsets) commit only acknowledged messages,
+        so a crash between indexing and commit redelivers instead of losing
+        (DEF-4). A caller that never acknowledges (preview, dry run) never moves
+        that position. Default: no-op (cursor-based connectors).
+        """
+
     async def delete_doc(  # noqa: B027  # intentional optional no-op hook, not abstract by design
         self,
         config: SourceConfig,

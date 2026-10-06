@@ -739,6 +739,14 @@ def _sync_lock_ttl() -> int:
     return max(5, int(get_settings().ingestion_sync_lock_ttl_seconds))
 
 
+async def _acknowledge(connector: Any, raw_doc: Any) -> None:
+    """Tell the connector a document is durably handled (DEF-4). Connectors
+    without the hook (cursor-based, test doubles) need nothing."""
+    ack = getattr(connector, "acknowledge", None)
+    if ack is not None:
+        await ack(raw_doc)
+
+
 async def _sync_locked(
     *,
     task: Any,
@@ -907,8 +915,10 @@ async def _sync_locked(
                     indexed_ids.append(str(raw_doc.doc_id))
                     if len(indexed_ids) >= _RESOLVE_BATCH:
                         await _resolve_indexed()
+                    handled = True
                 elif result.status == "skipped":
                     docs_skipped += 1
+                    handled = True
                 else:
                     docs_failed += 1
                     _log.warning(
@@ -918,7 +928,7 @@ async def _sync_locked(
                         getattr(result, "error", None) or getattr(result, "skip_reason", ""),
                     )
                     # DLQ (LAW-17)
-                    await tracker.add_to_dlq(
+                    handled = await tracker.add_to_dlq(
                         source_id=source_id,
                         tenant_id=tenant_id,
                         doc_id=raw_doc.doc_id,
@@ -930,6 +940,11 @@ async def _sync_locked(
                     )
 
                 new_cursor = next_cursor
+                # DEF-4: indexed / skipped / durably DLQ'd — a broker-offset
+                # connector (Kafka) may now commit this message, never before.
+                # A failed DLQ write leaves it unacknowledged (redelivered).
+                if handled:
+                    await _acknowledge(connector, raw_doc)
 
                 # Commit cursor every 100 docs (LAW-14 atomicity), fenced (TG-12).
                 if (docs_indexed + docs_skipped + docs_failed) % 100 == 0:
@@ -948,7 +963,7 @@ async def _sync_locked(
                 )
                 # USR-4: the document goes to the durable retry queue like any
                 # other failure — it used to be counted and then lost.
-                await tracker.add_to_dlq(
+                dlq_written = await tracker.add_to_dlq(
                     source_id=source_id,
                     tenant_id=tenant_id,
                     doc_id=raw_doc.doc_id,
@@ -956,6 +971,9 @@ async def _sync_locked(
                     raw_doc=raw_doc,
                     job_id=job.job_id,
                 )
+                # Only a durable DLQ entry lets the message be committed.
+                if dlq_written:
+                    await _acknowledge(connector, raw_doc)
 
         await _resolve_indexed()
         # CHAT-KB: transcripts whose owner revoked (or whose tenant switched the
