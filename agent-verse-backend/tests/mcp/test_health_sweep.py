@@ -162,8 +162,10 @@ async def test_builtin_and_invalid_configs() -> None:
     await run_health_sweep(
         factory=None, redis=None, persist=persist, probe=_probe, fetch=_Table(rows).fetch,
     )
+    # a02-F034-02: a built-in is not HTTP-probed but gets a readiness snapshot
+    # (GitHub needs credentials this connector does not have).
     assert probed == []
-    assert [s["status"] for s in persist.snapshots] == ["invalid_config"]
+    assert [s["status"] for s in persist.snapshots] == ["degraded", "invalid_config"]
 
 
 def test_snapshot_prune_is_scheduled_on_the_maintenance_queue() -> None:
