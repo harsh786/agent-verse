@@ -4,8 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.intelligence.learning_experiments import ExperimentOutcome, LearningExperimentService
-from app.memory.contracts import ExperimentSpec
 from app.memory.procedural_validator import ProcedureContract, validate_procedure
 from app.memory.prospective import ProspectiveMemory, ProspectiveMemoryService, prospective_id
 
@@ -75,28 +73,3 @@ async def test_prospective_memory_reclaims_with_fencing_and_reauthorizes() -> No
             authorized=False,
             result={},
         )
-
-
-def test_experiment_assignment_is_sticky_and_promotion_requires_samples_and_guardrails() -> None:
-    service = LearningExperimentService()
-    spec = ExperimentSpec(
-        experiment_id="exp",
-        tenant_id="tenant",
-        agent_id="agent",
-        kind="prompt",
-        target_key="planner",
-        control_version="v1",
-        candidate_version="v2",
-        assignment_seed="seed",
-        traffic_percent=50,
-        primary_metric="quality",
-        guardrail_metrics=("cost",),
-        min_samples_per_arm=1,
-        confidence_threshold=0.95,
-        status="running",
-    )
-    service.register(spec)
-    assert service.assign(spec, fingerprint="goal") == service.assign(spec, fingerprint="goal")
-    service.record("tenant", ExperimentOutcome("a", "control", 0.5, True))
-    service.record("tenant", ExperimentOutcome("b", "candidate", 0.8, True))
-    assert service.promotion_ready(spec)

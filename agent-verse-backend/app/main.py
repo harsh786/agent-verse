@@ -1600,7 +1600,6 @@ def create_app(
             from app.memory.reflexion import ReflexionService
 
             app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-            from app.intelligence.learning_experiments import LearningExperimentService
 
             # Durable prospective memory so deferred intentions survive restarts,
             # are recalled into the planner, and can be leased/fired by the scheduler.
@@ -1616,7 +1615,6 @@ def create_app(
             from app.memory.prospective_runtime import set_prospective_service
 
             set_prospective_service(app.state.prospective_memory_service)
-            app.state.learning_experiment_service = LearningExperimentService()
 
             # Grantex tool-grant store (governance enforcement at the executor gate).
             # Postgres-backed so grants persist across restarts; falls back to
@@ -3043,14 +3041,12 @@ def create_app(
     from app.memory.reflexion import ReflexionService
 
     app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-    from app.intelligence.learning_experiments import LearningExperimentService
     from app.memory.prospective import ProspectiveMemoryService
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
     from app.memory.prospective_runtime import set_prospective_service
 
     set_prospective_service(app.state.prospective_memory_service)
-    app.state.learning_experiment_service = LearningExperimentService()
     from app.governance.grants import InMemoryGrantStore
 
     app.state.grant_store = InMemoryGrantStore()
