@@ -3293,7 +3293,6 @@ def run_goal(
         # Production path: Try AgentGraph first (full capabilities)
         try:
             from app.governance.audit import AuditLog
-            from app.governance.cost import CostController, RedisCostController
             from app.governance.hitl import HITLGateway
             from app.intelligence.eval_runner import EvalRunner
             from app.intelligence.guardrails import GuardrailChecker
@@ -3309,31 +3308,12 @@ def run_goal(
             # kept the gate in worker memory, where no approval could reach it.
             _hitl = HITLGateway(db_session_factory=db_factory)
             _hitl._redis = _worker_async_redis()
-            _cost = CostController()
+            _cost = _worker_cost_controller(db_factory)
             _policy = _run_async(_load_worker_policy_engine(db_factory, tenant_id))
             _ltm = _worker_long_term_memory()
             _eval = EvalRunner()
             _exec_mem = ExecutionMemory()
 
-            # Wire Redis into CostController for distributed rate-limiting
-            import os as _os_cw
-
-            _redis_url_cw = _os_cw.getenv("REDIS_URL", "")
-            if _redis_url_cw:
-                try:
-                    import redis.asyncio as _aioredis_cw
-
-                    _cost = RedisCostController(
-                        redis=_aioredis_cw.from_url(
-                            _redis_url_cw,
-                            decode_responses=True,
-                        )
-                    )
-                except Exception:
-                    pass
-            # Workers enforce the tenant's configured budget_configs row too.
-            if db_factory is not None:
-                _cost.set_budget_db(db_factory)
             # Decision calls outside the goal scope (e.g. post-run eval scoring)
             # charge the worker's per-task cost services installed once at
             # worker start (app.scaling.worker_cost) — never a per-run global.
@@ -3611,30 +3591,11 @@ def run_goal(
             # This path — which runs every QUEUED (production) goal — built the
             # graph without either, so grants were never enforced and a HIPAA/SOX
             # "supervised" ceiling never bound a worker goal.
-            _worker_grant_store: Any = None
-            _worker_enforce_grants = False
-            try:
-                from app.services.goal_service import (
-                    _agent_grants_enforced,
-                    clamp_autonomy_mode,
-                )
-
-                # TRUST-05: the ceiling binds first and fails CLOSED (supervised)
-                # on any lookup error or a missing DB, as on the API path — it
-                # used to be skipped, leaving e.g. a fully-autonomous agent of a
-                # HIPAA tenant unclamped during a DB blip.
-                _agent_autonomy_mode = clamp_autonomy_mode(
-                    _agent_autonomy_mode, _worker_compliance_ceiling(db_factory, tenant_id)
-                )
-                _worker_enforce_grants = _agent_grants_enforced()
-                if db_factory is not None:
-                    from app.governance.grants.postgres_store import PostgresGrantStore
-
-                    _worker_grant_store = PostgresGrantStore(db_factory)
-            except Exception as _gov_exc:
-                # Fail toward the restrictive side: no store under enforcement
-                # means tool calls are denied (enforce_tool_call has no grants).
-                logger.warning("worker_governance_wire_failed: %s", _gov_exc)
+            (
+                _agent_autonomy_mode,
+                _worker_grant_store,
+                _worker_enforce_grants,
+            ) = _worker_grant_governance(_agent_autonomy_mode, db_factory, tenant_id)
 
             # MEM-02: the same DB-wired memory services the API path gets
             # (episodic, procedural, tool reliability) — built by one helper.
@@ -4865,6 +4826,66 @@ def _worker_long_term_memory() -> Any:
     store = LongTermMemoryStore()
     store.set_event_redis(_worker_async_redis())
     return store
+
+
+def _worker_cost_controller(db_factory: Any) -> Any:
+    """The goal task's cost controller: Redis-backed whenever Redis is reachable.
+
+    a03-F062-04: it used to swap in ``RedisCostController`` only when the
+    ``REDIS_URL`` env var was set — a worker configured through the Celery broker
+    URL alone (which ``_worker_async_redis`` already falls back to) enforced the
+    per-tenant daily budget in this task's memory only — and swallowed a
+    construction error with ``except Exception: pass``. Both cases are now the
+    shared client or a logged in-process fallback. The tenant's budget_configs
+    row is enforced either way.
+    """
+    from app.governance.cost import CostController, RedisCostController
+
+    redis = _worker_async_redis()
+    cost: Any
+    if redis is not None:
+        cost = RedisCostController(redis=redis)
+    else:
+        logger.warning("worker_cost_controller_in_process", reason="no_redis")
+        cost = CostController()
+    if db_factory is not None:
+        cost.set_budget_db(db_factory)
+    return cost
+
+
+def _worker_grant_governance(
+    autonomy_mode: Any, db_factory: Any, tenant_id: str
+) -> tuple[Any, Any, bool]:
+    """``(clamped autonomy mode, grant store, enforce_grants)`` for a worker goal.
+
+    Fails toward the restrictive side (a03-F055-07): enforcement is decided
+    first (``_agent_grants_enforced`` itself enforces on any error) and is never
+    left off because a later step raised — the old code initialised it to False
+    and set it after the ceiling lookup, so an exception there ran the goal with
+    grants unenforced. An error also clamps the autonomy mode to ``supervised``
+    and leaves no grant store, so under enforcement every tool call is denied.
+    """
+    from app.services.goal_service import _agent_grants_enforced
+
+    enforce = _agent_grants_enforced()
+    store: Any = None
+    try:
+        from app.services.goal_service import clamp_autonomy_mode
+
+        # TRUST-05: the ceiling binds first and fails CLOSED (supervised) on any
+        # lookup error or a missing DB, as on the API path.
+        autonomy_mode = clamp_autonomy_mode(
+            autonomy_mode, _worker_compliance_ceiling(db_factory, tenant_id)
+        )
+        if db_factory is not None:
+            from app.governance.grants.postgres_store import PostgresGrantStore
+
+            store = PostgresGrantStore(db_factory)
+    except Exception as exc:
+        logger.warning("worker_governance_wire_failed: %s", type(exc).__name__)
+        autonomy_mode = "supervised"
+        store = None
+    return autonomy_mode, store, enforce
 
 
 def _worker_async_redis() -> Any:
