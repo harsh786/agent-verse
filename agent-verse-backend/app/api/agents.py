@@ -882,10 +882,29 @@ def _agent_trigger_spec(cfg: dict[str, Any], tenant_ctx: TenantContext) -> Any:
     spec for the tenant's plan (supported type, valid fields, cron plan floor),
     else 422 - before the agent is created.
     """
+    from app.triggers.validation import creatable_error
+
+    try:
+        spec = _build_trigger_spec(cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"trigger_config: {exc}") from exc
+    if spec is None:
+        return None
+    plan = str(getattr(tenant_ctx, "plan", "free") or "free")
+    reason = creatable_error(spec, plan=plan)
+    if reason is not None:
+        raise HTTPException(status_code=422, detail=f"trigger_config: {reason}")
+    return spec
+
+
+def _build_trigger_spec(cfg: dict[str, Any]) -> Any:
+    """``trigger_config`` as a TriggerSpec (``None`` for manual / absent), unvalidated.
+
+    Raises ``ValueError`` for an unknown trigger type or invalid spec fields.
+    """
     import dataclasses
 
     from app.triggers.models import TriggerSpec, TriggerType
-    from app.triggers.validation import creatable_error
 
     trigger_type = str(cfg.get("trigger_type", "") or "").strip()
     if trigger_type in _NO_SCHEDULE_TRIGGERS:
@@ -893,21 +912,12 @@ def _agent_trigger_spec(cfg: dict[str, Any], tenant_ctx: TenantContext) -> Any:
     try:
         ttype = TriggerType(trigger_type)
     except ValueError:
-        raise HTTPException(
-            status_code=422, detail=f"trigger_config: unknown trigger_type {trigger_type!r}"
-        ) from None
+        raise ValueError(f"unknown trigger_type {trigger_type!r}") from None
     names = {f.name for f in dataclasses.fields(TriggerSpec)} - {"trigger_type"}
     try:
-        spec = TriggerSpec(
-            trigger_type=ttype, **{k: v for k, v in cfg.items() if k in names}
-        )
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=f"trigger_config: {exc}") from exc
-    plan = str(getattr(tenant_ctx, "plan", "free") or "free")
-    reason = creatable_error(spec, plan=plan)
-    if reason is not None:
-        raise HTTPException(status_code=422, detail=f"trigger_config: {reason}")
-    return spec
+        return TriggerSpec(trigger_type=ttype, **{k: v for k, v in cfg.items() if k in names})
+    except TypeError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 async def _create_agent_schedule(
@@ -961,6 +971,133 @@ async def _create_agent_schedule(
             "agent_schedule_rollback_failed agent_id=%s: %s", agent_id, exc
         )
     raise HTTPException(status_code=status_code, detail=detail)
+
+
+def _reschedule_needed(current: dict[str, Any], update_data: dict[str, Any]) -> bool:
+    """Whether an update changes what the agent's schedule fires (QA-15).
+
+    The schedule embeds the trigger and the goal template, so a change to either
+    (for a scheduled agent) means the old schedule must be replaced.
+    """
+    old_cfg = dict(current.get("trigger_config") or {})
+    if "trigger_config" in update_data and dict(update_data["trigger_config"]) != old_cfg:
+        return True
+    old_type = str(old_cfg.get("trigger_type", "") or "").strip()
+    return (
+        "goal_template" in update_data
+        and update_data["goal_template"] != (current.get("goal_template") or "")
+        and old_type not in _NO_SCHEDULE_TRIGGERS
+    )
+
+
+async def _restore_agent_schedule(
+    schedule_store: Any, current: dict[str, Any], *, agent_id: str, tenant_ctx: TenantContext
+) -> None:
+    """Best effort: re-create the schedule the agent had before a failed update.
+
+    Not quota- or plan-checked: it is the schedule the agent already had. A
+    failure is logged (the update's own error is what the caller reports).
+    """
+    import logging
+
+    try:
+        spec = _build_trigger_spec(dict(current.get("trigger_config") or {}))
+        if spec is None:
+            return
+        await schedule_store.create_async(
+            goal_id=uuid.uuid4().hex,
+            spec=spec,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+            goal_template=str(current.get("goal_template") or ""),
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "agent_schedule_restore_failed agent_id=%s: %s", agent_id, exc
+        )
+
+
+async def _replace_agent_schedule(
+    request: Request,
+    current: dict[str, Any],
+    spec: Any,
+    *,
+    agent_id: str,
+    goal_template: str,
+    tenant_ctx: TenantContext,
+) -> str | None:
+    """Remove the agent's schedules and create the one *spec* asks for (QA-15).
+
+    Runs BEFORE the agent row is updated. A failure is reported (403 quota /
+    503 outage) with the agent unchanged and its previous schedule restored -
+    never an agent whose stored trigger has no (or the old) schedule. The old
+    schedules go first so replacing one at the PLAN_MAX_TRIGGERS cap works.
+    """
+    from app.triggers.quota import TriggerQuotaExceeded
+    from app.triggers.store import ScheduleStoreUnavailableError
+
+    schedule_store = getattr(request.app.state, "schedule_store", None)
+    if schedule_store is None or not hasattr(schedule_store, "delete_for_agent_async"):
+        if spec is None:
+            return None  # nothing can be scheduled without a store
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Schedules are unavailable; the agent was not updated",
+        )
+    try:
+        await schedule_store.delete_for_agent_async(agent_id, tenant_ctx=tenant_ctx)
+    except ScheduleStoreUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not replace the agent's schedules; the agent was not updated",
+        ) from exc
+    if spec is None:
+        return None
+    status_code, detail = 503, "Schedules are unavailable; the agent was not updated"
+    try:
+        return str(
+            await schedule_store.create_async(
+                goal_id=uuid.uuid4().hex,
+                spec=spec,
+                tenant_ctx=tenant_ctx,
+                agent_id=agent_id,
+                goal_template=goal_template,
+                quota_plan=str(getattr(tenant_ctx, "plan", "free") or "free"),
+            )
+        )
+    except TriggerQuotaExceeded as exc:
+        status_code, detail = 403, str(exc)
+    except ScheduleStoreUnavailableError:
+        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("agent_schedule_replace_failed: %s", exc)
+    await _restore_agent_schedule(
+        schedule_store, current, agent_id=agent_id, tenant_ctx=tenant_ctx
+    )
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+async def _undo_agent_reschedule(
+    request: Request, current: dict[str, Any], *, agent_id: str, tenant_ctx: TenantContext
+) -> None:
+    """The agent row was not updated: drop the new schedule, restore the old one."""
+    import logging
+
+    schedule_store = getattr(request.app.state, "schedule_store", None)
+    if schedule_store is None or not hasattr(schedule_store, "delete_for_agent_async"):
+        return
+    try:
+        await schedule_store.delete_for_agent_async(agent_id, tenant_ctx=tenant_ctx)
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "agent_schedule_undo_failed agent_id=%s: %s", agent_id, exc
+        )
+        return
+    await _restore_agent_schedule(
+        schedule_store, current, agent_id=agent_id, tenant_ctx=tenant_ctx
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1228,14 +1365,46 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
         update_data.update(_merged)
         update_data["pattern_flags"] = _merged
 
-    updated = await store.update_async(agent_id, update_data, tenant_ctx=tenant_ctx)
+    # QA-15: a new trigger / goal template goes through the same gate as create
+    # (422 before anything is written), and the agent's schedule is replaced
+    # BEFORE the row changes; a failed row write puts the old schedule back.
+    reschedule = _reschedule_needed(current, update_data)
+    schedule_id: str | None = None
+    if reschedule:
+        new_cfg = dict(update_data.get("trigger_config", current.get("trigger_config")) or {})
+        new_template = str(update_data.get("goal_template", current.get("goal_template")) or "")
+        spec = _agent_trigger_spec(new_cfg, tenant_ctx)
+        schedule_id = await _replace_agent_schedule(
+            request,
+            current,
+            spec,
+            agent_id=agent_id,
+            goal_template=new_template,
+            tenant_ctx=tenant_ctx,
+        )
+
+    try:
+        updated = await store.update_async(agent_id, update_data, tenant_ctx=tenant_ctx)
+    except Exception:
+        if reschedule:
+            await _undo_agent_reschedule(
+                request, current, agent_id=agent_id, tenant_ctx=tenant_ctx
+            )
+        raise
     if not updated:
+        if reschedule:
+            await _undo_agent_reschedule(
+                request, current, agent_id=agent_id, tenant_ctx=tenant_ctx
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
 
-    return await store.get_async(agent_id, tenant_ctx=tenant_ctx)  # type: ignore[return-value]
+    result = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if schedule_id and result is not None:
+        return {**result, "schedule_id": schedule_id}
+    return result  # type: ignore[return-value]
 
 
 # FIX 5: delete cleans up associated schedules
