@@ -636,8 +636,15 @@ async def receive_alertmanager_event(
         elif getattr(event, "goal_created", False) and getattr(event, "goal_id", None):
             created_goals.append(str(event.goal_id))
 
-    if firing and alert_tenant and failed == len(firing):
-        raise HTTPException(status_code=503, detail="Alert goals could not be created; retry")
+    if alert_tenant and failed:
+        # a07-F154-01: any failed alert fails the delivery. Answering 200 for a
+        # partly failed batch told Alertmanager it was delivered, so the failed
+        # alerts waited for repeat_interval. The retry re-sends the whole batch;
+        # the episodes already turned into goals are deduplicated (message_id).
+        raise HTTPException(
+            status_code=503,
+            detail=f"{failed} of {len(firing)} alert goals could not be created; retry",
+        )
     return {
         "received": len(payload.alerts),
         "goals_created": len(created_goals),
