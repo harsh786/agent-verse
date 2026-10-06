@@ -117,6 +117,8 @@ celery_app = Celery(
         "app.coordination.pattern_runs.tasks",
         # Durable training-data export jobs (POST /intelligence/export-training-data/jobs).
         "app.training_export.tasks",
+        # a06-F099-03: restore messages unacked by dead workers (beat below).
+        "app.scaling.dead_worker_tasks",
     ],
 )
 
@@ -156,6 +158,7 @@ celery_app.conf.update(
         "app.scaling.tasks.record_queue_depths": {"queue": "maintenance"},
         "app.scaling.tasks.detect_stuck_goals": {"queue": "maintenance"},
         "app.scaling.tasks.reap_stale_goal_runners": {"queue": "maintenance"},
+        "app.scaling.dead_worker_tasks.restore_dead_worker_messages": {"queue": "maintenance"},
         "app.scaling.a2a_tasks.reconcile_a2a_tasks": {"queue": "maintenance"},
         "app.scaling.a2a_tasks.deliver_a2a_callback": {"queue": "maintenance"},
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
@@ -266,6 +269,14 @@ celery_app.conf.update(
         # worker) is requeued or failed within ~goal_heartbeat_stale_seconds.
         "reap-stale-goal-runners": {
             "task": "app.scaling.tasks.reap_stale_goal_runners",
+            "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
+        # a06-F099-03: messages a dead worker left unacked go back on their queue
+        # once its heartbeat is older than CELERY_DEAD_WORKER_GRACE_SECONDS,
+        # instead of after the 25 h visibility timeout (which stays the backstop).
+        "restore-dead-worker-messages": {
+            "task": "app.scaling.dead_worker_tasks.restore_dead_worker_messages",
             "schedule": 60.0,
             "options": {"queue": "maintenance"},
         },
@@ -674,6 +685,15 @@ if _SENTINEL_URLS:
 
 # Backwards-compatible alias used by some imports
 app = celery_app
+
+
+# ── Dead-worker liveness (a06-F099-03) ─────────────────────────────────────────
+# Each worker main process heart-beats and records which unacked messages it
+# holds, so the restore-dead-worker-messages beat job can put a dead worker's
+# messages back on their queue (app/scaling/dead_worker_restore.py).
+from app.scaling.dead_worker_restore import connect_worker_liveness  # noqa: E402
+
+connect_worker_liveness(celery_app)
 
 
 # ── Retrieval model warm-up (RERANK-PRELOAD, L-03) ───────────────────────────

@@ -55,6 +55,12 @@ x-common-env: &common-env
   INGESTION_ALLOW_INTERNAL_SOURCES: ${INGESTION_ALLOW_INTERNAL_SOURCES:-false}
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: ${INGESTION_INTERNAL_SOURCE_ALLOWLIST:-}
 
+  # Dead-worker message restore (a06-F099-03): workers heart-beat every grace / 4 s
+  # and a beat job requeues the messages of a worker silent for the grace at once
+  # (the ~25 h broker visibility timeout stays the backstop). Shared by every worker.
+  CELERY_DEAD_WORKER_RESTORE_ENABLED: ${CELERY_DEAD_WORKER_RESTORE_ENABLED:-true}
+  CELERY_DEAD_WORKER_GRACE_SECONDS: ${CELERY_DEAD_WORKER_GRACE_SECONDS:-120}
+
   # OCR parallelism (OCR-PAR): one bounded pool per process shared by every document.
   # 0 = the container's CPUs (quota aware, split between a prefork worker's children);
   # page concurrency 0 = max - 1 (min 2). Shared by the API and every worker.

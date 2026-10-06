@@ -177,6 +177,16 @@ SCHEDULE_FIRE_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+CELERY_DEAD_WORKER_RESTORE_TOTAL = Counter(
+    "agentverse_celery_dead_worker_restore_total",
+    "Unacked Celery messages of dead workers, by outcome of the restorer (a06-F099-03).",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+_DEAD_WORKER_RESTORE_OUTCOMES = frozenset(
+    {"restored", "skipped_sweeper_owned", "unroutable", "lost_race", "error"}
+)
+
 GOAL_EVENT_OUTBOX_TOTAL = Counter(
     "agentverse_goal_event_outbox_total",
     "Goal events whose durable append failed: buffered / replayed / dropped / lost.",
@@ -612,6 +622,14 @@ def record_approval_wait(seconds: float) -> None:
 def record_schedule_fire(status: str) -> None:
     """Record a schedule fire attempt using a bounded status label."""
     SCHEDULE_FIRE_TOTAL.labels(status=_normalize_status_label(status)).inc()
+
+
+def record_dead_worker_restore(outcome: str, count: int = 1) -> None:
+    """Count dead-worker message restorer outcomes (bounded label)."""
+    if count <= 0:
+        return
+    label = outcome if outcome in _DEAD_WORKER_RESTORE_OUTCOMES else "error"
+    CELERY_DEAD_WORKER_RESTORE_TOTAL.labels(outcome=label).inc(count)
 
 
 def record_goal_started(tenant_id: str, priority: str = "normal") -> None:
