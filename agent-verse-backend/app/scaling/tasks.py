@@ -3460,7 +3460,7 @@ def run_goal(
                     build_query_embedder as _build_query_embedder,
                 )
 
-                _embedder_for_graph = _build_query_embedder()
+                _embedder_for_graph = _build_query_embedder(wire_registry_store=True)
             except Exception as _emb_exc:
                 logger.error("worker_embedder_build_failed: %s", _emb_exc)
 
@@ -7533,7 +7533,8 @@ def _canonical_memory_repository(db: Any) -> Any:
     from app.providers.embedder_factory import build_query_embedder
 
     return PostgresMemoryRepository(
-        db, embedder=memory_embedder_from_provider(build_query_embedder())
+        db,
+        embedder=memory_embedder_from_provider(build_query_embedder(wire_registry_store=True)),
     )
 
 
@@ -9092,7 +9093,7 @@ async def re_embed_collection_async(
     progress = reembed.ReembedProgress(redis_client, tenant_id, collection_id, job)
     embedder: Any = None
     try:
-        resolution = resolve_embedder()
+        resolution = resolve_embedder(wire_registry_store=True)
         embedder = resolution.embedder
         if embedder is None:
             raise reembed.ReembedError(f"no embedding provider: {resolution.reason()}")
@@ -9271,7 +9272,7 @@ async def _process_feedback_batch_async(
     try:
         from app.providers.embedder_factory import build_query_embedder
 
-        embedder = build_query_embedder()
+        embedder = build_query_embedder(wire_registry_store=True)
     except Exception as exc:
         logger.warning("feedback_lesson_embedder_unavailable", error=str(exc)[:200])
     # B7-4: stored lessons are published as memory.created (memory_created

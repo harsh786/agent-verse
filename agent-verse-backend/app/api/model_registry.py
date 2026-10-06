@@ -339,9 +339,12 @@ _CAPABILITY_SELECT_TASK = {
 
 _CAPABILITY_NOTES = {
     ModelCapability.EMBEDDING: (
-        "Embeddings use the first model in this order that your embedding endpoint "
-        "serves. There is no runtime failover between embedding models (vectors of "
-        "different models are not comparable); changing the model needs a re-index."
+        "Embeddings use the first eligible model in this order when its provider is "
+        "configured and its vector width matches the index (EMBEDDING_DIM); otherwise "
+        "the deployment's configured embedding endpoint is used. Failover happens only "
+        "between endpoints serving that SAME model id (e.g. NVIDIA then on-prem), "
+        "never to another model: vectors of different models are not comparable, so "
+        "changing the embedding model needs a re-index."
     ),
     ModelCapability.RERANK: (
         "The reranker endpoint serves one provider: the first model of that "
@@ -372,6 +375,24 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         "origin": (m.extra or {}).get("origin", ""),
         "rank": rank,
     }
+
+
+def _annotate_embedding_rows(request: Request, rows: list[dict[str, Any]]) -> None:
+    """Add each embedding row's vector width and whether it fits the index."""
+    from app.providers.embedder_factory import target_embedding_dim
+    from app.providers.registry_embedder import embedding_dimension_status
+
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    target = target_embedding_dim(settings)
+    for row in rows:
+        row.update(
+            embedding_dimension_status(row["provider"], row["model_id"], target, settings)
+        )
+        row["index_dimension"] = target
 
 
 @router.get("/configured/access")
@@ -411,14 +432,26 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
         ordered = order_models(models, cap)
         selected = select_configured_model_id(task)
         preference = model_registry.preference_order(cap)
+        rows = [_configured_dict(m, rank=i + 1) for i, m in enumerate(ordered)]
+        fallback = resolve_fallback_models(task, selected) if selected else []
+        if cap is ModelCapability.EMBEDDING:
+            _annotate_embedding_rows(request, rows)
+            # Embeddings never fail over to another model, only to other
+            # endpoints of the selected one.
+            fallback = []
         group: dict[str, Any] = {
             "capability": cap.value,
             "selected_model_id": selected,
-            "fallback_model_ids": resolve_fallback_models(task, selected) if selected else [],
+            "fallback_model_ids": fallback,
             "order_mode": "preference" if preference else "cost",
             "preference": preference,
-            "models": [_configured_dict(m, rank=i + 1) for i, m in enumerate(ordered)],
+            "models": rows,
         }
+        if cap is ModelCapability.EMBEDDING:
+            # The endpoints (providers) serving the selected model, failover order.
+            group["failover_providers"] = [
+                r["provider"] for r in rows if r["model_id"] == selected and r["provider_ready"]
+            ]
         if cap in _CAPABILITY_NOTES:
             group["note"] = _CAPABILITY_NOTES[cap]
         groups.append(group)

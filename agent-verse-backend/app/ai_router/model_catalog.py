@@ -27,6 +27,23 @@ _VISION = ("text_generation", "vision", "ocr")
 _EMBED = ("embedding",)
 _RERANK = ("rerank",)
 
+# Output width of embedding models whose dimension is known (model id → dims).
+# Vectors of a model whose width differs from the vector index (``EMBEDDING_DIM``)
+# cannot be stored, so registry-driven embedder selection refuses such a model.
+# A model missing here is unknown (``None``) and is not checked.
+# NVIDIA widths verified live against integrate.api.nvidia.com (2048-d each).
+KNOWN_EMBEDDING_DIMENSIONS: dict[str, int] = {
+    "nvidia/nemotron-3-embed-1b": 2048,
+    "nvidia/llama-nemotron-embed-vl-1b-v2": 2048,
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "gemini-embedding-001": 3072,
+    "voyage-3.5": 1024,
+    "voyage-3.5-lite": 1024,
+    "Qwen/Qwen3-Embedding-0.6B": 1024,
+    "nomic-embed-text": 768,
+}
+
 
 @dataclass(frozen=True)
 class CatalogModel:
@@ -36,10 +53,12 @@ class CatalogModel:
     cost_per_1k_output: float = 0.0
     quality_score: float = 0.7
     display_name: str = ""
+    # Embedding output width when known (None = unknown, not checked).
+    dimensions: int | None = None
 
     def endpoint(self, provider: str) -> dict[str, Any]:
         caps = list(self.capabilities)
-        return {
+        out: dict[str, Any] = {
             "provider": provider,
             "model_id": self.model_id,
             "display_name": self.display_name or self.model_id,
@@ -55,6 +74,9 @@ class CatalogModel:
             # until the operator puts it in the preference order.
             "origin": "catalog",
         }
+        if "embedding" in caps:
+            out["dimensions"] = self.dimensions
+        return out
 
 
 @dataclass(frozen=True)
@@ -139,8 +161,8 @@ _STATIC: tuple[CatalogProvider, ...] = (
             _M("gpt-5-mini", _REASON_VISION, 0.00025, 0.002, 0.86),
             _M("gpt-5", _REASON_VISION, 0.00125, 0.01, 0.94),
             _M("gpt-4.1", _REASON_VISION, 0.002, 0.008, 0.88),
-            _M("text-embedding-3-small", _EMBED, 0.00002, 0.0, 0.78),
-            _M("text-embedding-3-large", _EMBED, 0.00013, 0.0, 0.85),
+            _M("text-embedding-3-small", _EMBED, 0.00002, 0.0, 0.78, dimensions=1536),
+            _M("text-embedding-3-large", _EMBED, 0.00013, 0.0, 0.85, dimensions=3072),
         ),
     ),
     CatalogProvider(
@@ -151,7 +173,7 @@ _STATIC: tuple[CatalogProvider, ...] = (
             _M("gemini-2.5-flash-lite", _REASON_VISION, 0.0001, 0.0004, 0.76),
             _M("gemini-2.5-flash", _REASON_VISION, 0.0003, 0.0025, 0.86),
             _M("gemini-2.5-pro", _REASON_VISION, 0.00125, 0.01, 0.93),
-            _M("gemini-embedding-001", _EMBED, 0.00015, 0.0, 0.84),
+            _M("gemini-embedding-001", _EMBED, 0.00015, 0.0, 0.84, dimensions=3072),
         ),
     ),
     CatalogProvider(
@@ -159,8 +181,8 @@ _STATIC: tuple[CatalogProvider, ...] = (
         "Voyage AI",
         "VOYAGE_API_KEY",
         (
-            _M("voyage-3.5-lite", _EMBED, 0.00002, 0.0, 0.80),
-            _M("voyage-3.5", _EMBED, 0.00006, 0.0, 0.86),
+            _M("voyage-3.5-lite", _EMBED, 0.00002, 0.0, 0.80, dimensions=1024),
+            _M("voyage-3.5", _EMBED, 0.00006, 0.0, 0.86, dimensions=1024),
             _M("rerank-2.5-lite", _RERANK, 0.00002, 0.0, 0.80),
             _M("rerank-2.5", _RERANK, 0.00005, 0.0, 0.86),
         ),
@@ -177,6 +199,14 @@ def _settings() -> Any:
         return None
 
 
+def _onprem_embed_dim(s: Any, model_id: str) -> int | None:
+    known = KNOWN_EMBEDDING_DIMENSIONS.get(model_id)
+    if known:
+        return known
+    declared = getattr(s, "onprem_embedding_dim", None)
+    return int(declared) if isinstance(declared, int) and declared > 0 else None
+
+
 def _onprem_provider() -> CatalogProvider:
     s = _settings()
     qwen = str(getattr(s, "onprem_qwen_model", "") or "Qwen/Qwen3.5-4B")
@@ -190,7 +220,9 @@ def _onprem_provider() -> CatalogProvider:
         (
             _M(qwen, _REASON, 0.0, 0.0, 0.74),
             _M(gemma, _REASON, 0.0, 0.0, 0.62),
-            _M(embed, _EMBED, 0.0, 0.0, 0.76),
+            # The deployment declares its on-prem model's width (ONPREM_EMBEDDING_DIM)
+            # when the model is not one of the known ones.
+            _M(embed, _EMBED, 0.0, 0.0, 0.76, dimensions=_onprem_embed_dim(s, embed)),
             _M(rerank, _RERANK, 0.0, 0.0, 0.76),
         ),
     )
@@ -205,8 +237,8 @@ def _ollama_provider() -> CatalogProvider:
         _M(chat, _REASON, 0.0, 0.0, 0.66),
         _M("llama3.1:8b", _REASON, 0.0, 0.0, 0.62),
         _M("qwen3:8b", _REASON, 0.0, 0.0, 0.66),
-        _M(embed, _EMBED, 0.0, 0.0, 0.72),
-        _M("nomic-embed-text", _EMBED, 0.0, 0.0, 0.68),
+        _M(embed, _EMBED, 0.0, 0.0, 0.72, dimensions=KNOWN_EMBEDDING_DIMENSIONS.get(embed)),
+        _M("nomic-embed-text", _EMBED, 0.0, 0.0, 0.68, dimensions=768),
         _M(ocr, _VISION, 0.0, 0.0, 0.70),
         _M("qwen2.5vl:7b", _VISION, 0.0, 0.0, 0.72),
         _M("llama3.2-vision:11b", _VISION, 0.0, 0.0, 0.70),
@@ -239,6 +271,24 @@ def catalog_endpoints(
                 continue
             out.append(m.endpoint(cp.provider))
     return out
+
+
+def catalog_embedding_dimension(model_id: str) -> int | None:
+    """Output width of embedding model *model_id*, or ``None`` when unknown.
+
+    Keyed by model id alone: the same model id served by another provider or
+    endpoint produces vectors of the same width (and in the same space).
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return None
+    if mid in KNOWN_EMBEDDING_DIMENSIONS:
+        return KNOWN_EMBEDDING_DIMENSIONS[mid]
+    for cp in catalog_providers():
+        for m in cp.models:
+            if m.model_id == mid and m.dimensions:
+                return m.dimensions
+    return None
 
 
 # ── Provider readiness ───────────────────────────────────────────────────────
