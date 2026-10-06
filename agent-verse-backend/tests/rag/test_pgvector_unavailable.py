@@ -85,10 +85,21 @@ async def test_vector_leg_raises_strict_when_pgvector_extension_missing() -> Non
         raw = pg.get_connection_url().replace("postgresql+asyncpg://", "")
         conn = await asyncpg.connect(f"postgresql://{raw}")
         try:
+            # Retrieval checks the collection's ownership first (tenant-scoped
+            # collection metadata), so the collection must exist for the tenant;
+            # only then does the vector leg run into the missing extension.
+            await conn.execute(
+                "CREATE TABLE knowledge_collections (id text primary key, "
+                "tenant_id text not null, embedding_dim integer)"
+            )
+            await conn.execute(
+                "INSERT INTO knowledge_collections VALUES ('col-1', 't-pgv', 768)"
+            )
             await conn.execute(
                 """
                 CREATE TABLE knowledge_chunks_768 (
                     id uuid primary key default gen_random_uuid(),
+                    tenant_id text not null default 't-pgv',
                     collection_id text not null,
                     content text not null,
                     metadata jsonb,
@@ -106,11 +117,15 @@ async def test_vector_leg_raises_strict_when_pgvector_extension_missing() -> Non
 
         engine = create_async_engine(f"postgresql+asyncpg://{raw}")
         try:
+            from sqlalchemy import text
             from sqlalchemy.ext.asyncio import AsyncSession
 
             with pytest.raises(RetrievalLegExecutionError, match="vector") as exc_info:
                 async with engine.connect() as connection:
                     async with AsyncSession(bind=connection) as session, session.begin():
+                        await session.execute(
+                            text("SELECT set_config('app.tenant_id', 't-pgv', true)")
+                        )
                         await hybrid_search(
                             session,
                             query="unreachable",
