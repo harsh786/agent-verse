@@ -7,9 +7,14 @@ owning tenant so an inbound message resolves to the right tenant before any
 tenant-scoped work. Each binding carries its OWN inbound secret: the addressee
 selects the binding, the binding's secret authenticates the request.
 
-This class is the OPERATOR fallback, seeded from ``CHANNEL_TENANT_MAP``. Tenant
-bindings are durable rows in ``channel_tenant_mappings`` resolved by
-:class:`app.gateway.binding_store.ChannelBindingStore` (TRG-42), consulted first.
+This class is the OPERATOR fallback, seeded from ``CHANNEL_TENANT_MAP`` —
+DEPRECATED (DEF-3): it is per-process, needs identical env on every replica and
+a redeploy per change, and keeps secrets in plain env. Tenants manage durable,
+verified bindings themselves (``/channels/bindings``, Settings > Gateway); rows
+in ``channel_tenant_mappings`` resolved by
+:class:`app.gateway.binding_store.ChannelBindingStore` are consulted first and
+the env map only for an addressee no tenant has bound. A warning is logged at
+startup while the variable is set.
 """
 
 from __future__ import annotations
@@ -33,6 +38,9 @@ class ChannelBinding:
     # Teams only: the tenant's Bot Framework app id — the audience its inbound
     # JWTs must carry (TRG-42).
     app_id: str = ""
+    # WhatsApp only: the hub.verify_token Meta must echo when subscribing the
+    # binding's webhook URL (DEF-3).
+    verify_token: str = ""
 
 
 class ChannelRegistry:
@@ -45,10 +53,10 @@ class ChannelRegistry:
 
     def register(
         self, channel: str, addressee: str, tenant_id: str, *, org_id: str = "",
-        outbound_token: str = "", secret: str = "",
+        outbound_token: str = "", secret: str = "", verify_token: str = "",
     ) -> None:
         self._map[self._key(channel, addressee)] = ChannelBinding(
-            tenant_id, org_id, outbound_token, secret
+            tenant_id, org_id, outbound_token, secret, verify_token=verify_token
         )
 
     def resolve(self, channel: str, addressee: str) -> ChannelBinding | None:
@@ -73,6 +81,14 @@ class ChannelRegistry:
         """
         reg = cls()
         value = raw if raw is not None else os.getenv("CHANNEL_TENANT_MAP", "")
+        if raw is None and (value or "").strip():
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "CHANNEL_TENANT_MAP is deprecated: move these bindings to tenant-managed "
+                "/channels/bindings (Settings > Gateway); the env map is only a fallback "
+                "for addressees no tenant has bound"
+            )
         for entry in (value or "").split(","):
             entry = entry.strip()
             if not entry:

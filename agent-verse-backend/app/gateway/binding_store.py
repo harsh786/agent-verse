@@ -10,10 +10,16 @@ one-tenant-per-channel table the inbound channel routes use. A binding is a
 ROUTABLE mapping row (``verified`` / ``legacy_unverified``) whose
 ``channel_config`` carries the gateway settings:
 
-* ``secret_enc`` — the binding's inbound credential, vault-encrypted (Telegram
-  ``secret_token``, WhatsApp app secret, generic-webhook HMAC key, the tenant's
-  Slack app signing secret);
-* ``outbound_token_enc`` — the vault-encrypted token used to send replies;
+* ``secret_enc`` — the binding's inbound credential (Telegram ``secret_token``,
+  WhatsApp app secret, generic-webhook HMAC key, the tenant's Slack app
+  signing secret);
+* ``outbound_token_enc`` — the token used to send replies;
+* ``verify_token_enc`` — WhatsApp: the server-generated ``hub.verify_token``
+  Meta echoes when the webhook is subscribed (DEF-3);
+
+Every ``*_enc`` value is sealed with the TENANT's envelope key when it has one
+(``tv1:``, :mod:`app.providers.tenant_vault`), else the platform vault, and is
+re-sealed by ``agentverse tenant-key-compact`` like every other tenant secret;
 * ``app_id`` — the tenant's Bot Framework app id (Teams; the JWT audience);
 * ``org_id``.
 
@@ -46,18 +52,33 @@ def _norm(channel: str, addressee: str) -> tuple[str, str]:
     return channel.strip().lower(), str(addressee).strip()
 
 
-def _decrypt(value: Any) -> str:
+_SEALED_FIELDS = ("secret_enc", "outbound_token_enc", "verify_token_enc")
+
+
+async def seal_binding_secret(tenant_db: Any, tenant_id: str, value: str) -> str:
+    """Seal one binding secret with the tenant's envelope key (``tv1:``) when the
+    tenant has one, else the platform vault. "" stays "". A tenant key that
+    cannot be read raises (never silently falls back to the platform key)."""
     if not value:
         return ""
-    from app.providers.vault import get_vault
+    from app.providers.tenant_vault import ensure_tenant_vault, seal_for_tenant
 
-    return get_vault().decrypt(str(value))
+    return seal_for_tenant(await ensure_tenant_vault(tenant_db, tenant_id), value)
 
 
-def encrypt_secret(value: str) -> str:
-    from app.providers.vault import get_vault
+async def _open_sealed(db: Any, tenant_id: str, config: dict[str, Any]) -> dict[str, str]:
+    """Plaintext of every sealed field (raises when one cannot be opened)."""
+    from app.providers.tenant_vault import (
+        ensure_tenant_vault,
+        is_tenant_encrypted,
+        open_for_tenant,
+    )
 
-    return get_vault().encrypt(value) if value else ""
+    values = {f: str(config.get(f) or "") for f in _SEALED_FIELDS}
+    vault = None
+    if any(is_tenant_encrypted(v) for v in values.values()):
+        vault = await ensure_tenant_vault(db, tenant_id)
+    return {f: (open_for_tenant(vault, v) if v else "") for f, v in values.items()}
 
 
 class ChannelBindingStoreUnavailableError(RuntimeError):
@@ -156,20 +177,21 @@ class ChannelBindingStore:
         config = dict(row[1] or {})
         if not config.get("gateway"):
             return None  # an inbound-only mapping, not a gateway binding
+        tenant_id = str(row[0])
         try:
-            secret = _decrypt(config.get("secret_enc"))
-            outbound = _decrypt(config.get("outbound_token_enc"))
+            opened = await _open_sealed(db, tenant_id, config)
         except Exception as exc:
-            # Undecryptable (rotated master key, corrupt row): refuse, never
-            # route unauthenticated.
+            # Undecryptable (rotated master key, tenant key unreadable, corrupt
+            # row): refuse, never route unauthenticated.
             _log.warning("gateway_binding_secret_undecryptable", channel=channel, error=str(exc))
-            secret, outbound = "", ""
+            opened = dict.fromkeys(_SEALED_FIELDS, "")
         return ChannelBinding(
-            tenant_id=str(row[0]),
+            tenant_id=tenant_id,
             org_id=str(config.get("org_id") or ""),
-            outbound_token=outbound,
-            secret=secret,
+            outbound_token=opened["outbound_token_enc"],
+            secret=opened["secret_enc"],
             app_id=str(config.get("app_id") or ""),
+            verify_token=opened["verify_token_enc"],
         )
 
 

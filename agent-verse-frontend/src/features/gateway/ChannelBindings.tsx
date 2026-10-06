@@ -5,6 +5,10 @@
  * organisation / generic webhook into this tenant. The server proves ownership
  * (bot token checked against the platform) before binding, stores secrets
  * encrypted, and returns a generated secret only once.
+ *
+ * DEF-3: a Telegram binding is registered with setWebhook (URL + secret_token)
+ * when the server knows its public URL, otherwise the page says so honestly; a
+ * WhatsApp binding gets a verify token for Meta's subscription handshake.
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -21,6 +25,12 @@ export interface GatewayBinding {
   app_id?: string;
   webhook_url: string;
   secret?: string;
+  /** WhatsApp: the hub.verify_token to enter in Meta's webhook settings (shown once). */
+  verify_token?: string;
+  has_verify_token?: boolean;
+  /** Telegram: whether the server registered the webhook with setWebhook. */
+  webhook_registered?: boolean;
+  webhook_registration?: string;
 }
 
 const CHANNELS = ['telegram', 'whatsapp', 'slack', 'teams', 'webhook'] as const;
@@ -152,6 +162,22 @@ export function ChannelBindings() {
         <p role="status" className="text-[12px] text-amber-300 mb-3">
           Save this secret now — it will not be shown again: <code>{created.secret}</code>. Webhook URL:{' '}
           <code>{created.webhook_url}</code>
+        </p>
+      )}
+      {created?.verify_token && (
+        <p role="status" className="text-[12px] text-amber-300 mb-3">
+          In Meta's WhatsApp webhook settings use callback URL <code>{created.webhook_url}</code> and verify
+          token <code>{created.verify_token}</code> (shown once).
+        </p>
+      )}
+      {created?.webhook_registered === true && (
+        <p role="status" className="text-[12px] text-emerald-400 mb-3">
+          Telegram webhook registered with its secret token.
+        </p>
+      )}
+      {created?.webhook_registered === false && (
+        <p role="status" className="text-[12px] text-amber-300 mb-3">
+          {created.webhook_registration || 'Telegram webhook not registered.'}
         </p>
       )}
 

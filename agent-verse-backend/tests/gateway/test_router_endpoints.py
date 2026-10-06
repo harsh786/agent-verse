@@ -169,7 +169,7 @@ class TestWhatsAppWebhook:
         client = _client()
         r = client.get(
             "/v1/gateway/org1/whatsapp/webhook",
-            params={"hub_mode": "subscribe", "hub_verify_token": "verify-me", "hub_challenge": "555"},
+            params={"hub.mode": "subscribe", "hub.verify_token": "verify-me", "hub.challenge": "555"},
         )
         assert r.status_code == 200
         assert r.json() == 555
@@ -179,7 +179,7 @@ class TestWhatsAppWebhook:
         client = _client()
         r = client.get(
             "/v1/gateway/org1/whatsapp/webhook",
-            params={"hub_mode": "subscribe", "hub_verify_token": "wrong", "hub_challenge": "555"},
+            params={"hub.mode": "subscribe", "hub.verify_token": "wrong", "hub.challenge": "555"},
         )
         assert r.status_code == 403
 
