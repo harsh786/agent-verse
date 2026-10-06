@@ -1174,14 +1174,18 @@ async def get_benchmarks(
     system_db = getattr(request.app.state, "system_db_session_factory", None)
     if system_db is not None:
         from app.api.insights import (
+            benchmark_cache_for,
             compute_platform_benchmarks,
             compute_platform_eval_benchmarks,
         )
 
-        shared = await compute_platform_benchmarks(system_db)  # 503 on DB error
+        bench_cache = benchmark_cache_for(request.app.state)
+        shared = await compute_platform_benchmarks(system_db, cache=bench_cache)  # 503 on error
         platform_ok = shared.get("data_source") == "live_platform_data"
         if platform_ok:
-            evals = await compute_platform_eval_benchmarks(system_db, dim_names)
+            evals = await compute_platform_eval_benchmarks(
+                system_db, dim_names, cache=bench_cache
+            )
             platform = {
                 "success_rate": shared.get("platform_avg_success_rate"),
                 "cost_usd": shared.get("platform_avg_cost_usd"),
