@@ -457,6 +457,39 @@ def test_k8s_pgbouncer_knows_the_app_role() -> None:
         assert param in ignored  # asyncpg sends them (app/db/session.py)
 
 
+def test_k8s_pgbouncer_knows_the_maintenance_role() -> None:
+    """MAINTENANCE_DATABASE_URL's role is in pgBouncer's auth file too.
+
+    Production points MAINTENANCE_DATABASE_URL at its own BYPASSRLS role
+    (external-secret maintenance-url); the image writes only DB_USER, so that role
+    failed authentication at pgBouncer. The wrapper now adds MAINTENANCE_DB_USER
+    (skipped when it is the owner), read from the same Secret as the DSN.
+    """
+    deploy, _scripts = _pgbouncer()
+    env = {e["name"]: e for e in deploy["spec"]["template"]["spec"]["containers"][0]["env"]}
+    for name in ("MAINTENANCE_DB_USER", "MAINTENANCE_DB_PASSWORD"):
+        ref = env[name]["valueFrom"]["secretKeyRef"]
+        assert ref == {"name": "agentverse-secrets", "key": name, "optional": True}, name
+    script = (INFRA / "pgbouncer" / "add-app-user.sh").read_text()
+    assert "MAINTENANCE_DB_USER" in script and "MAINTENANCE_DB_PASSWORD" in script
+
+    from sqlalchemy.engine import make_url
+
+    dev = next(
+        d for f, d in _k8s_docs()
+        if f == "secrets.yaml" and d["metadata"]["name"] == "agentverse-secrets"
+    )["stringData"]
+    url = make_url(dev["MAINTENANCE_DATABASE_URL"])
+    assert (url.username, url.password) == (
+        dev["MAINTENANCE_DB_USER"],
+        dev["MAINTENANCE_DB_PASSWORD"],
+    )
+    assert url.host == "pgbouncer"
+    external = next(d for f, d in _k8s_docs() if f == "external-secret.yaml")
+    keys = {e["secretKey"] for e in external["spec"]["data"]}
+    assert {"MAINTENANCE_DATABASE_URL", "MAINTENANCE_DB_USER", "MAINTENANCE_DB_PASSWORD"} <= keys
+
+
 def test_k8s_dev_secret_app_dsn_matches_the_app_role() -> None:
     docs = [d for f, d in _k8s_docs() if f == "secrets.yaml"]
     main = next(d for d in docs if d["metadata"]["name"] == "agentverse-secrets")["stringData"]

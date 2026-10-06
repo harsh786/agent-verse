@@ -117,9 +117,9 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
     restart: unless-stopped
-    # Adds APP_DB_USER to the auth file (the image only writes DB_USER), then
-    # runs the image's own /entrypoint.sh. Overriding the entrypoint drops the
-    # image CMD, so it is restated.
+    # Adds APP_DB_USER (and a separate MAINTENANCE_DB_USER) to the auth file
+    # (the image only writes DB_USER), then runs the image's own /entrypoint.sh.
+    # Overriding the entrypoint drops the image CMD, so it is restated.
     entrypoint: ["/bin/sh", "/opt/agentverse/add-app-user.sh"]
     command: ["/usr/bin/pgbouncer", "/etc/pgbouncer/pgbouncer.ini"]
     volumes:
@@ -132,6 +132,11 @@ services:
       DB_NAME: agentverse
       APP_DB_USER: ${APP_DB_USER:-agentverse_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:-agentverse_app}
+      # The BYPASSRLS role every MAINTENANCE_DATABASE_URL below connects as. The
+      # owner by default (already in the auth file); a separate role set in
+      # infra/.env is added by the wrapper, like APP_DB_USER.
+      MAINTENANCE_DB_USER: ${MAINTENANCE_DB_USER:-agentverse}
+      MAINTENANCE_DB_PASSWORD: ${MAINTENANCE_DB_PASSWORD:-agentverse}
       AUTH_TYPE: scram-sha-256
       # Two (database, user) pools now (app role + maintenance owner) share
       # Postgres's default 100 connections; cap the database total below it.
@@ -202,7 +207,7 @@ services:
       # Least-privilege application role (NOSUPERUSER, NOBYPASSRLS): RLS binds.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
       # Cross-tenant system jobs only (app.db.session.get_system_session_factory).
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -339,7 +344,7 @@ services:
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -405,7 +410,7 @@ services:
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -465,7 +470,7 @@ services:
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -513,7 +518,7 @@ services:
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -559,7 +564,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -607,7 +612,7 @@ services:
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
-      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:${MAINTENANCE_DB_PASSWORD:-agentverse}@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
