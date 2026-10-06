@@ -64,3 +64,26 @@ async def test_daily_limit_counter_error_fails_closed() -> None:
     ex = _executor(_DB(rows=[("web_search", "allow", 5, None, None)]))
     ex._app_state = SimpleNamespace(state=SimpleNamespace(_redis=redis))
     assert "failing closed" in (await _call(ex) or "")
+
+
+@pytest.mark.asyncio
+async def test_local_daily_counters_of_past_days_are_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a03-F061-04: the in-process counter keeps only today's keys."""
+    for i in range(50):
+        ap._LOCAL_DAILY[("t", f"a{i}", "web_search", "2020-01-01")] = 3
+    assert await ap.reserve_daily_call(None, "t", "a", "web_search", 5) is True
+    assert all(k[3] != "2020-01-01" for k in ap._LOCAL_DAILY)
+    assert len(ap._LOCAL_DAILY) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_daily_counter_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ap, "_LOCAL_DAILY_MAX_KEYS", 10)
+    for i in range(25):
+        assert await ap.reserve_daily_call(None, "t", f"agent-{i}", "web_search", 5) is True
+    assert len(ap._LOCAL_DAILY) <= 10
+    # The newest counter is kept and still counts.
+    assert await ap.reserve_daily_call(None, "t", "agent-24", "web_search", 2) is True
+    assert await ap.reserve_daily_call(None, "t", "agent-24", "web_search", 2) is False
