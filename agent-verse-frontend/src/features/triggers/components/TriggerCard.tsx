@@ -1,3 +1,4 @@
+import { parseInstant } from '../datetime';
 import { useState } from 'react';
 import { Play, Pause, Trash2, Zap, ChevronRight, Clock, AlertCircle, Repeat, History, Calendar } from 'lucide-react';
 import type { Trigger } from '../types';
@@ -25,7 +26,10 @@ function scheduleSummary(spec: Trigger['spec']): string | null {
     if (s % 60 === 0) return `every ${s / 60}m`;
     return `every ${s}s`;
   }
-  if (spec.fire_at_iso) return `once @ ${new Date(spec.fire_at_iso).toLocaleString()}`;
+  if (spec.event_channel && spec.trigger_type === 'relative_delay')
+    return `${spec.relative_offset_seconds ?? 0}s after each ${spec.event_channel} event`;
+  // B1-9: a zone-less stored time is UTC (as the backend reads it), not local.
+  if (spec.fire_at_iso) return `once @ ${parseInstant(spec.fire_at_iso).toLocaleString()}`;
   if (spec.poll_url) return `poll ${spec.poll_url}`;
   if (spec.webhook_token || spec.webhook_signature_secret) return 'on webhook call';
   if (spec.watch_goal_id) return `watch goal ${spec.watch_goal_id.slice(0, 8)}`;

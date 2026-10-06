@@ -121,6 +121,11 @@ export interface TriggerSpec {
   relative_offset_seconds?: number;
   deadline_field?: string;
   deadline_warning_seconds?: number;
+  catch_up?: 'all' | 'latest' | 'none'; // missed runs after a scheduler outage (B1-5)
+  holidays?: string[]; // business_calendar: local YYYY-MM-DD dates (B1-6)
+  business_days?: number[]; // business_calendar: Monday = 0
+  business_hours_start?: string; // business_calendar: local HH:MM
+  business_hours_end?: string; // business_calendar: local HH:MM, exclusive
   // ── B: Goal / Agent chain ──
   watch_goal_id?: string;
   watch_agent_id?: string;

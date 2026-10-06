@@ -139,3 +139,11 @@ describe('TriggerCard', () => {
     expect(screen.getByRole('button', { name: /fire now/i })).toBeInTheDocument();
   });
 });
+
+describe('TriggerCard once time (B1-9)', () => {
+  test('a zone-less stored once time is shown as the UTC instant the backend fires it at', () => {
+    renderCard({ ...TRIGGER, spec: { trigger_type: 'once', fire_at_iso: '2026-10-06T06:30' } });
+    const expected = new Date('2026-10-06T06:30:00Z').toLocaleString();
+    expect(screen.getByText(`once @ ${expected}`, { exact: false })).toBeInTheDocument();
+  });
+});
