@@ -17,6 +17,12 @@ from app.triggers.circuit_breaker import CircuitBreakerRegistry
 from app.triggers.dedup import derive_idempotency_key
 from app.triggers.dlq import write_to_dlq
 from app.triggers.events import SimulatedTriggerResult, TriggerEvent
+from app.triggers.lineage import (
+    LINEAGE_TRIGGER_TYPES,
+    GoalLineage,
+    loop_guard_reason,
+    read_goal_lineage,
+)
 from app.triggers.models import TriggerSpec
 from app.triggers.quota import TriggerQuotaEnforcer
 from app.triggers.rate_limiter import TriggerGateUnavailableError, TriggerRateLimiter
@@ -148,6 +154,17 @@ class TriggerDispatcher:
         from app.tenancy.plan_resolver import resolve_tenant_plan
 
         return await resolve_tenant_plan(tenant_id, db_factory=self._db_factory)
+
+    async def resolve_goal_lineage(self, tenant_id: str, goal_id: str) -> GoalLineage | None:
+        """A goal's trigger lineage from its row (``None`` = unknown / no DB).
+
+        HITL and memory events carry only the goal id; their consumers read the
+        lineage here so the loop guard sees whether a trigger created that goal
+        (B7). A DB error raises — the firing is not admitted unchecked.
+        """
+        if self._db_factory is None or not goal_id:
+            return None
+        return await read_goal_lineage(self._db_factory, tenant_id, goal_id)
 
     async def dispatch(
         self,
@@ -286,6 +303,16 @@ class TriggerDispatcher:
             message_id=message_id,
             txn_id=txn_id,
         )
+
+        # ── Step 3a: Loop guard (B7) ──────────────────────────────────────────
+        # A platform-event trigger never fires on an event its own goal produced
+        # (unless allow_self_trigger) and never past MAX_CHAIN_DEPTH. Audited.
+        _guard = loop_guard_reason(
+            _trigger_type_value(trigger_spec), str(trigger_id or ""), trigger_spec, payload
+        )
+        if _guard is not None:
+            _log.info("trigger_loop_guard trigger_id=%s reason=%s", trigger_id, _guard)
+            return self._make_skip_event(trigger_id, tenant_id, payload, idempotency_key, _guard)
 
         # ── Step 3b: Expiry (TRG-09) ──────────────────────────────────────────
         # ``expires_at_iso`` was validated on create but never read, so an
@@ -730,10 +757,10 @@ class TriggerDispatcher:
         # Only chained firings carry a depth (keeps the create_goal call shape
         # unchanged for every other trigger family).
         extra: dict[str, Any] = {"trigger_chain_depth": chain_depth} if chain_depth else {}
-        # Goal-event triggers stamp the created goal with their own id; the goal's
-        # lifecycle event carries it back so ChainTriggerConsumer never re-fires
-        # this trigger on a goal it created.
-        if _trigger_type_value(spec) in _GOAL_EVENT_TRIGGER_TYPES:
+        # Platform-event triggers stamp the created goal with their own id; the
+        # goal's lifecycle / approval / memory events carry it back (or it is read
+        # from the goal row) so the trigger never re-fires on a goal it created.
+        if _trigger_type_value(spec) in LINEAGE_TRIGGER_TYPES:
             trigger_id = str(getattr(spec, "trigger_id", "") or "")
             if trigger_id:
                 extra["source_trigger_id"] = trigger_id

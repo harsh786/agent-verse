@@ -1,4 +1,11 @@
+import { useEffect } from 'react';
 import type { TriggerType } from '../../types';
+
+// Defaults the form shows; sent as well, so the saved trigger matches the
+// screen (B7-5: a goal_score_below saved without a threshold could never fire).
+const SHOWN_DEFAULTS: Partial<Record<TriggerType, Record<string, unknown>>> = {
+  goal_score_below: { score_threshold: 0.7 },
+};
 
 interface FamilyFormProps {
   triggerType: TriggerType;
@@ -10,6 +17,15 @@ export function GoalChainFamilyForm({ triggerType, value, onChange }: FamilyForm
   function set(key: string, val: unknown) {
     onChange({ ...value, [key]: val });
   }
+
+  useEffect(() => {
+    const defaults = SHOWN_DEFAULTS[triggerType];
+    if (!defaults) return;
+    const missing = Object.entries(defaults).filter(([k]) => value[k] === undefined);
+    if (missing.length) onChange({ ...value, ...Object.fromEntries(missing) });
+    // Only when the type changes: later edits are the user's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerType]);
 
   return (
     <div className="space-y-4">
@@ -72,6 +88,20 @@ export function GoalChainFamilyForm({ triggerType, value, onChange }: FamilyForm
           />
         </Field>
       )}
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={value.allow_self_trigger === true}
+          onChange={(e) => set('allow_self_trigger', e.target.checked)}
+        />
+        <span>
+          Also fire on events from goals it started
+          <span className="block text-xs text-muted-foreground">
+            Off by default so a trigger cannot loop on its own output. Chains stop after 10 levels either way.
+          </span>
+        </span>
+      </label>
       {triggerType === 'memory_created' && (
         <Field label="Memory Type (optional)" hint="Filter by memory type, e.g. learning, fact">
           <input

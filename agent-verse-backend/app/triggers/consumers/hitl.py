@@ -55,6 +55,8 @@ class HITLTriggerConsumer:
         except Exception:
             return
 
+        if not isinstance(data, dict):
+            return
         trigger_type = "hitl_approved" if "approved" in channel else "hitl_rejected"
         tenant_id = data.get("tenant_id", "")
         if not tenant_id or self._store is None or self._dispatcher is None:
@@ -67,6 +69,20 @@ class HITLTriggerConsumer:
             return
         from app.governance.hitl_queues import matches
         from app.triggers.consumers.tenant_ctx import event_tenant_ctx
+        from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, source_lineage
+
+        # B7 loop guard: the lineage of the goal whose approval this is. A read
+        # error raises, so the stream entry is retried, never fired unchecked.
+        goal_id = str(data.get("goal_id", "") or "")
+        lineage = await source_lineage(self._dispatcher, tenant_id, goal_id, data)
+        if lineage.depth >= MAX_CHAIN_DEPTH:
+            _log.warning("hitl_chain_depth_exceeded depth=%d goal_id=%s", lineage.depth, goal_id)
+            return
+        payload = chained_payload(data, lineage)
+        # One decision is one firing, whichever replica relays it and whatever
+        # else (approver note, plan stamp) differs between the copies.
+        request_id = str(data.get("request_id", "") or "")
+        event_id = f"{request_id}:{channel}" if request_id else ""
 
         # Plan from the tenant record — never from the event payload.
         tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
@@ -76,6 +92,15 @@ class HITLTriggerConsumer:
             if not matches(getattr(spec, "hitl_queue_id", "") or "", data):
                 continue
             try:
-                await self._dispatcher.dispatch(spec, data, tenant_ctx)
+                await self._dispatcher.dispatch(
+                    spec,
+                    payload,
+                    tenant_ctx,
+                    **(
+                        {"source_goal_id": goal_id, "completion_event_id": event_id}
+                        if event_id
+                        else {}
+                    ),
+                )
             except Exception as exc:
                 _log.warning("hitl_dispatch_error: %s", exc)

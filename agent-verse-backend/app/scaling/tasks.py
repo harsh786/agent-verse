@@ -2421,6 +2421,68 @@ async def _current_goal_status(goal_id: str, tenant_id: str) -> str | None:
     return None if status is None else str(status)
 
 
+def _chain_channel_for_worker_event(event: dict[str, Any]) -> str | None:
+    """The goal-lifecycle trigger channel a worker goal event maps to.
+
+    ``goal_complete`` / ``goal_failed`` / ``worker_failed`` as before, plus the
+    worker's own terminal ``worker_complete`` (by its status): a run that ended
+    complete / failed without the graph's own event still fires goal-chain
+    triggers (B7-2). The run_goal path publishes each channel at most once.
+    """
+    from app.triggers.consumers.chain import CHAIN_CHANNEL_FOR_EVENT
+
+    etype = str(event.get("type", ""))
+    if etype == "worker_complete":
+        return {"complete": "goal.completed", "failed": "goal.failed"}.get(
+            str(event.get("status", ""))
+        )
+    return CHAIN_CHANNEL_FOR_EVENT.get(etype)
+
+
+def _publish_goal_failed_chain(goal: dict[str, Any]) -> bool:
+    """Publish ``goal.failed`` for a goal failed outside its runner (B7-2).
+
+    *goal* carries ``tenant_id``, ``goal_id``, ``agent_id``, ``execution_context``
+    and ``dry_run`` (dry runs never fire triggers, as on the runner path). Best
+    effort: the failure itself is already durable; a lost event is logged.
+    """
+    if goal.get("dry_run"):
+        return False
+    try:
+        redis_client = _get_sync_redis()
+        if redis_client is None:
+            return False
+        from app.triggers.bus import publish_trigger_event_sync
+        from app.triggers.consumers.chain import goal_failed_chain_event
+
+        publish_trigger_event_sync(
+            redis_client,
+            "goal.failed",
+            goal_failed_chain_event(
+                tenant_id=str(goal.get("tenant_id", "")),
+                goal_id=str(goal.get("goal_id", "")),
+                agent_id=str(goal.get("agent_id", "") or ""),
+                execution_context=goal.get("execution_context"),
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("goal_failed_publish_failed goal=%s: %s", goal.get("goal_id"), exc)
+        return False
+
+
+def _json_ctx(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        import json as _json
+
+        parsed = _json.loads(value) if value else {}
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from sqlalchemy import update
 
@@ -2439,18 +2501,35 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
             session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
-            await session.execute(
-                update(Goal)
-                .where(
-                    Goal.id == goal_id,
-                    Goal.tenant_id == tenant_id,
-                    # NF-10: never rewrite a goal that completed / was cancelled.
-                    Goal.status.notin_(("complete", "cancelled")),
+            row = (
+                await session.execute(
+                    update(Goal)
+                    .where(
+                        Goal.id == goal_id,
+                        Goal.tenant_id == tenant_id,
+                        # NF-10: never rewrite a goal that completed / was cancelled.
+                        Goal.status.notin_(("complete", "cancelled")),
+                    )
+                    .values(status="failed", error_message=f"Dead lettered: {reason}")
+                    .returning(Goal.agent_id, Goal.execution_context, Goal.dry_run)
                 )
-                .values(status="failed", error_message=f"Dead lettered: {reason}")
-            )
+            ).first()
     except Exception as exc:
         logger.warning("DLQ DB update failed: %s", exc)
+        return
+    if row is not None:
+        # B7-2: goal_failed triggers fire for a dead-lettered goal too (a goal
+        # its runner already failed published the same completion id: the
+        # dispatcher's dedup fires each trigger once).
+        _publish_goal_failed_chain(
+            {
+                "tenant_id": tenant_id,
+                "goal_id": goal_id,
+                "agent_id": str(row[0] or ""),
+                "execution_context": _json_ctx(row[1]),
+                "dry_run": bool(row[2]),
+            }
+        )
 
 
 @celery_app.task(name="app.scaling.tasks.run_goal", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
@@ -2625,7 +2704,7 @@ def run_goal(
             logger.warning("DB status update failed (non-fatal): %s", db_exc)
 
     from app.triggers.bus import publish_trigger_event_sync
-    from app.triggers.consumers.chain import CHAIN_CHANNEL_FOR_EVENT, build_chain_event
+    from app.triggers.consumers.chain import build_chain_event
 
     _chain_published: set[str] = set()
 
@@ -2689,7 +2768,7 @@ def run_goal(
         # ── Goal-chain lifecycle channel (goal.completed / goal.failed) ───────
         # ChainTriggerConsumer listens on these; nothing published them, so goal-
         # chain triggers never fired for worker-run goals.
-        _chain_channel = CHAIN_CHANNEL_FOR_EVENT.get(str(event.get("type", "")))
+        _chain_channel = _chain_channel_for_worker_event(event)
         if _chain_channel and not dry_run and _chain_channel not in _chain_published:
             try:
                 _rc = _get_sync_redis()
@@ -2712,7 +2791,7 @@ def run_goal(
                     _chain_published.add(_chain_channel)
             except Exception as _chain_exc:
                 logger.warning("goal_chain_event_publish_failed: %s", _chain_exc)
-            if _chain_channel == "goal.completed":
+            if _chain_channel == "goal.completed" and event.get("type") != "worker_complete":
                 # A12: the tenant's agent_generated Sources index the answer now.
                 from app.db.session import get_session_factory as _agen_factory
                 from app.ingestion.agent_generated_events import notify_agent_generated
@@ -4679,12 +4758,27 @@ def _publish_worker_score_below(
                 trigger_chain_depth=trigger_chain_depth,
                 score=score,
                 source_trigger_id=source_trigger_id,
+                scores=_dimension_scores(scorecard),
             ),
         )
         return True
     except Exception as exc:
         logger.warning("goal_score_below_publish_failed goal=%s: %s", goal_id, exc)
         return False
+
+
+def _dimension_scores(scorecard: Any) -> dict[str, float] | None:
+    """A scorecard's per-dimension scores (for dimension score_below triggers)."""
+    scores = getattr(scorecard, "scores", None)
+    if not isinstance(scores, dict):
+        return None
+    out: dict[str, float] = {}
+    for key, value in scores.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 def _worker_long_term_memory() -> Any:
@@ -6735,6 +6829,7 @@ async def _reap_stale_goal_runners() -> dict[str, Any]:
             enqueue=_enqueue,
             release_slot=_release_slot,
             publish=_publish,
+            on_failed=_publish_goal_failed_chain,
         )
     finally:
         await engine.dispose()
@@ -6797,9 +6892,22 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
                                     'goal_cancelled'
                                 )
                           )
-                        RETURNING goals.id"""),
+                        RETURNING goals.id, goals.tenant_id, goals.agent_id,
+                                  goals.execution_context, goals.dry_run"""),
             )
-            stuck_ids = [r[0] for r in result.fetchall()]
+            stuck = list(result.fetchall())
+        stuck_ids = [r[0] for r in stuck]
+        # B7-2: goal_failed triggers fire for a goal failed as stuck (after commit).
+        for r in stuck:
+            _publish_goal_failed_chain(
+                {
+                    "tenant_id": str(r[1]),
+                    "goal_id": str(r[0]),
+                    "agent_id": str(r[2] or ""),
+                    "execution_context": _json_ctx(r[3]),
+                    "dry_run": bool(r[4]),
+                }
+            )
         return {"stuck_goals_failed": len(stuck_ids), "goal_ids": stuck_ids[:20]}
     except Exception as exc:
         return {"error": str(exc), "stuck_goals_failed": 0}
@@ -7259,7 +7367,11 @@ async def _announce_parked_goal_failures(parked: list[dict[str, Any]]) -> int:
         redis_client.publish(f"goal_events:{tenant_id}:{goal_id}", _json.dumps(envelope))
 
     return await announce_parked_goal_failures(
-        get_session_factory(), parked, publish=_publish, finalize=_finalize_owning_mission
+        get_session_factory(),
+        parked,
+        publish=_publish,
+        finalize=_finalize_owning_mission,
+        on_failed=_publish_goal_failed_chain,
     )
 
 
@@ -9087,12 +9199,20 @@ async def _process_feedback_batch_async(
         embedder = build_query_embedder()
     except Exception as exc:
         logger.warning("feedback_lesson_embedder_unavailable", error=str(exc)[:200])
-    for tid in tenant_ids:
-        result = await engine_svc.process_feedback_batch(
-            db_session_factory=db, tenant_id=tid, embedder=embedder
-        )
-        total_processed += result.get("processed", 0)
-        total_actions += result.get("actions_derived", 0)
+    # B7-4: stored lessons are published as memory.created (memory_created
+    # triggers); a client bound to this task's loop, closed when it ends.
+    event_redis = _worker_async_redis() if tenant_ids else None
+    try:
+        for tid in tenant_ids:
+            result = await engine_svc.process_feedback_batch(
+                db_session_factory=db, tenant_id=tid, embedder=embedder, event_redis=event_redis
+            )
+            total_processed += result.get("processed", 0)
+            total_actions += result.get("actions_derived", 0)
+    finally:
+        if event_redis is not None:
+            with contextlib.suppress(Exception):
+                await event_redis.aclose()
     return {"processed": total_processed, "actions_derived": total_actions}
 
 

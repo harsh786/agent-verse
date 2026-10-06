@@ -525,6 +525,7 @@ class VerifierMixin:
                             tenant_ctx=tenant_ctx,
                             db=self._db_session_factory,
                             embedder=self._embedder,
+                            goal_id=str(agent_state.goal_id or ""),
                         ),
                         timeout=10.0,
                     )

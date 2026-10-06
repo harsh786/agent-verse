@@ -236,8 +236,12 @@ async def reap_stale_goal_runners(
     publish: PublishFn | None = None,
     stale_s: float | None = None,
     max_requeues: int | None = None,
+    on_failed: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     """Requeue or fail every active goal whose runner heartbeat went stale.
+
+    ``on_failed`` is called with each goal this run failed (B7-2: the worker
+    publishes ``goal.failed`` for goal_failed triggers from it).
 
     ``db_factory`` must be a SYSTEM (BYPASSRLS) session factory: the scan is
     cross-tenant. Each goal is claimed by one conditional UPDATE, so concurrent
@@ -326,6 +330,12 @@ async def reap_stale_goal_runners(
             reason = f"it was already requeued {done} time(s)"
         if await _fail(db_factory, goal, reason, publish, stale):
             failed.append(goal["goal_id"])
+            if on_failed is not None:
+                try:
+                    on_failed(goal)
+                except Exception as exc:
+                    _log.warning("goal_failed_callback_error", goal_id=goal["goal_id"],
+                                 error=str(exc)[:200])
             with contextlib.suppress(Exception):
                 await release_slot(goal["tenant_id"], goal["goal_id"], goal["execution_context"])
     if requeued or failed:

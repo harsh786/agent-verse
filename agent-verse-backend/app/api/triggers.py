@@ -135,6 +135,8 @@ class TriggerSpecRequest(BaseModel):
     watch_goal_id: str | None = None
     watch_agent_id: str | None = None
     score_threshold: float | None = None
+    # B7: let a platform-event trigger fire on its own goals' events (opt-in).
+    allow_self_trigger: bool | None = None
     condition_cel: str | None = None
     webhook_secret: str | None = None
     mqtt_topic: str | None = None
@@ -208,6 +210,7 @@ def _build_spec(req: TriggerSpecRequest) -> TriggerSpec:
         "watch_goal_id": "watch_goal_id",
         "watch_agent_id": "watch_agent_id",
         "score_threshold": "score_threshold",
+        "allow_self_trigger": "allow_self_trigger",
         "condition_cel": "condition_expression",
         "webhook_secret": "webhook_signature_secret",
         "mqtt_topic": "mqtt_topic",
