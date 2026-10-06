@@ -792,7 +792,7 @@ ToolTrustProfile(
 - `app/data_classification/classifier.py`
 - `app/data_classification/schema.py`
 - `app/data_classification/policy.py`
-- `app/data_classification/redaction.py`
+- ~~`app/data_classification/redaction.py`~~ (removed 2026-10-07, a10-F250-03; superseded by guardrails_v2 output screening)
 - `app/data_classification/classification_trace.py`
 
 **Runtime contract:**
