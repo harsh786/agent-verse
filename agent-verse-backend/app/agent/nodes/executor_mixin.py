@@ -3892,6 +3892,22 @@ class ExecutorMixin:
             _tool_outputs_for_grounding = collect_grounding_sources(
                 state.steps, step_context or "", goal=state.goal or ""
             )
+            # Arithmetic in the goal / this step / earlier step outputs, recomputed
+            # deterministically: a correct computed result ("391" for "17*23") is
+            # grounded, a wrong one is not (B7 live open item 1). Not "gathered
+            # evidence": it never decides whether the check runs.
+            from app.agent.arithmetic_evidence import derive_arithmetic, render_evidence
+
+            _arith = derive_arithmetic(
+                [
+                    state.goal or "",
+                    step or "",
+                    *(s.output for s in state.steps if getattr(s, "output", "")),
+                    raw_output or "",
+                ]
+            )
+            if _arith:
+                _tool_outputs_for_grounding.append(render_evidence(_arith))
             # P0-4: high/critical-risk goals get zero ungrounded tolerance.
             _rp_ground = state.context.get("_runtime_profile")
             _risk_ground = str(

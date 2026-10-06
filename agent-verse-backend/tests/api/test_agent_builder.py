@@ -245,7 +245,7 @@ def test_create_agent_request_defaults():
     assert req.system_prompt == ""
     assert req.model_override == ""
     assert req.max_iterations == 15
-    assert req.timeout_seconds == 300
+    assert req.timeout_seconds == 0  # 0 = no agent limit (plan timeout applies)
     assert req.policy_ids == []
     assert req.allowed_collection_ids == []
 

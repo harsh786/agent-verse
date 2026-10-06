@@ -70,6 +70,7 @@ async def verify_grounding(
     attribution: AttributionVerifier | None = None,
     claim_threshold: float = _DEFAULT_CLAIM_THRESHOLD,
     attribution_threshold: float = _DEFAULT_ATTRIBUTION_THRESHOLD,
+    context_evidence: list[str] | None = None,
 ) -> GroundingVerdict:
     """Verify that *answer* is grounded in *evidence_chunks*.
 
@@ -90,6 +91,19 @@ async def verify_grounding(
     claim_threshold / attribution_threshold:
         Minimum claim-support and attribution scores required for
         ``safe_to_emit``.
+    context_evidence:
+        Extra evidence claims may be entailed by but that no citation refers to
+        (e.g. recomputed arithmetic). It is checked FIRST by the claim verifier
+        (which reads a bounded prefix of the evidence) and never shifts the
+        ``[n]`` -> ``evidence_chunks[n-1]`` citation mapping.
+
+    An answer with no atomic claim at all (a fragment such as "ACK", "Done" or
+    "391" — the deterministic decomposer drops sentences of 10 characters or
+    less) asserts nothing the claim check can support: it is vacuously supported
+    (claim score 1.0) unless the NLI checker finds the whole answer contradicted
+    by the evidence. It used to score 0/1 = 0.0 and failed every such answer
+    (B7 live open item 1); its concrete tokens are still checked by the keyword
+    grounding gate.
 
     Returns
     -------
@@ -103,12 +117,15 @@ async def verify_grounding(
     attribution = attribution or AttributionVerifier()
 
     # 1. Decompose + NLI-verify atomic claims against the evidence.
+    claim_evidence = [*(context_evidence or []), *evidence_chunks]
     claim_report = await decomposer.check_answer(
         answer=answer,
-        evidence_chunks=evidence_chunks,
+        evidence_chunks=claim_evidence,
         nli=nli,
         provider=provider,
     )
+    if not claim_report.claims and answer.strip():
+        claim_report = await _fragment_report(answer.strip(), claim_evidence, nli, provider)
 
     # 2. Verify citations resolve to chunks that actually support them.
     attribution_report = attribution.verify(answer, evidence_chunks, citations)
@@ -150,4 +167,29 @@ async def verify_grounding(
         reasons=reasons,
         claim_report=claim_report,
         attribution_report=attribution_report,
+    )
+
+
+async def _fragment_report(
+    answer: str,
+    evidence_chunks: list[str],
+    nli: NLIChecker,
+    provider: LLMProvider | None,
+) -> ClaimVerificationReport:
+    """Claim report for an answer that holds no atomic claim (see verify_grounding).
+
+    Vacuously supported (score 1.0), unless the whole fragment is CONTRADICTED by
+    the evidence ("Done" after a failed delete), which is reported as one
+    contradicted claim.
+    """
+    combined = " ".join(evidence_chunks[:3])[:1500]
+    verdict = (await nli.check_consistency(answer, combined, provider)).verdict
+    contradicted = verdict == "CONTRADICTS"
+    return ClaimVerificationReport(
+        claims=[answer] if contradicted else [],
+        verdicts=[verdict] if contradicted else [],
+        overall_score=0.0 if contradicted else 1.0,
+        unsupported_claims=[],
+        contradicted_claims=[answer] if contradicted else [],
+        evidence_chunks=evidence_chunks,
     )

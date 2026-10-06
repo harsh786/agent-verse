@@ -303,6 +303,11 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
         )
     if v == "goal_score_below" and (reason := score_dimension_error(spec.score_dimension)):
         raise ValueError(reason)
+    if v == "goal_score_below":
+        from app.triggers.score_window import window_error
+
+        if (reason := window_error(spec)) is not None:
+            raise ValueError(reason)
 
     # ── Type-specific required fields ────────────────────────────────────────
     if v == "cron":

@@ -25,6 +25,7 @@ import json
 import logging
 from types import SimpleNamespace
 
+from app.triggers import score_window
 from app.triggers.bus import run_stream_consumer
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx
 from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, lineage_from_context
@@ -108,6 +109,23 @@ def _observed_score(spec: object, data: dict) -> float | None:
     return _as_float(data.get("score"))
 
 
+def _trigger_id(trigger: object, spec: object) -> str:
+    """The stored trigger's id (the record's ``schedule_id`` / the spec's id)."""
+    if isinstance(trigger, dict):
+        for key in ("schedule_id", "trigger_id", "id"):
+            if trigger.get(key):
+                return str(trigger[key])
+    explicit = getattr(spec, "trigger_id", "") or getattr(trigger, "trigger_id", "")
+    if explicit:
+        return str(explicit)
+    # No stored id (never the case for ScheduleStore records): a stable key from
+    # what the trigger watches, so its window still accumulates across events.
+    return "anon:" + ":".join(
+        str(getattr(spec, name, "") or "")
+        for name in ("watch_agent_id", "watch_goal_id", "score_dimension", "score_threshold")
+    )
+
+
 def goal_failed_chain_event(
     *, tenant_id: str, goal_id: str, agent_id: str = "", execution_context: object = None
 ) -> str:
@@ -153,6 +171,10 @@ class ChainTriggerConsumer:
         self._dispatcher = dispatcher
         self._redis = redis
         self._running = False
+        # goal_score_below rolling windows (shared through Redis across replicas).
+        from app.triggers.score_window import ScoreSeries
+
+        self._score_series = ScoreSeries(redis)
 
     async def start(self) -> None:
         """Consume the goal lifecycle stream (consumer group ``GROUP``)."""
@@ -249,20 +271,45 @@ class ChainTriggerConsumer:
                 continue
 
             # GOAL_SCORE_BELOW: the watched score (one dimension, or the overall
-            # average) must be below the threshold; no score, no fire (B7-5).
+            # average) must be below the threshold; no score, no fire (B7-5). A
+            # judged dimension / overall decides on a rolling window of the
+            # watched goals' scores, not one noisy judgement (score_window).
+            window: dict[str, object] | None = None
+            series_key = ""
             if trigger_type == "goal_score_below":
                 observed = _observed_score(spec, data)
                 threshold = _as_float(getattr(spec, "score_threshold", None))
-                if observed is None or threshold is None or observed >= threshold:
+                if observed is None or threshold is None:
                     continue
+                size = score_window.effective_window(spec)
+                if size <= 1:
+                    if observed >= threshold:
+                        continue
+                else:
+                    series_key = score_window.series_key(tenant_id, _trigger_id(trigger, spec))
+                    how = score_window.aggregation(spec)
+                    recent = await self._score_series.observe(
+                        series_key, str(goal_id), observed, size
+                    )
+                    fires, aggregate = score_window.breached(recent, threshold, size, how)
+                    if not fires:
+                        continue
+                    window = {
+                        "size": size,
+                        "aggregation": how,
+                        "value": aggregate,
+                        "scores": recent,
+                    }
 
             # Plan from the tenant record — never from the event payload.
             if tenant_ctx is None:
                 tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
 
             enriched = chained_payload(data, lineage_from_context(data))
+            if window is not None:
+                enriched = {**enriched, "score_window": window}
             try:
-                await self._dispatcher.dispatch(
+                result = await self._dispatcher.dispatch(
                     spec,
                     enriched,
                     tenant_ctx,
@@ -275,3 +322,9 @@ class ChainTriggerConsumer:
                     getattr(trigger, "trigger_id", "?"),
                     exc,
                 )
+                continue
+            skip = getattr(result, "skip_reason", None)
+            if series_key and not (isinstance(skip, str) and skip):
+                # Fired: the next firing needs a full window of fresh goals. A
+                # suppressed fire (rate limit, loop guard, ...) keeps the window.
+                await self._score_series.reset(series_key)

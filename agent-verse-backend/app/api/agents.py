@@ -162,7 +162,7 @@ class AgentStore:
                     system_prompt=record.get("system_prompt", ""),
                     model_override=record.get("model_override", ""),
                     max_iterations=int(record.get("max_iterations", 15)),
-                    timeout_seconds=int(record.get("timeout_seconds", 300)),
+                    timeout_seconds=int(record.get("timeout_seconds", 0) or 0),
                     allowed_collection_ids=list(record.get("allowed_collection_ids", [])),
                     eval_suite_id=record.get("eval_suite_id") or None,
                     policy_ids=list(record.get("policy_ids", [])),
@@ -240,7 +240,7 @@ class AgentStore:
             "system_prompt": getattr(row, "system_prompt", "") or "",
             "model_override": getattr(row, "model_override", "") or "",
             "max_iterations": getattr(row, "max_iterations", 15) or 15,
-            "timeout_seconds": getattr(row, "timeout_seconds", 300) or 300,
+            "timeout_seconds": getattr(row, "timeout_seconds", 0) or 0,
             "allowed_collection_ids": list(getattr(row, "allowed_collection_ids", []) or []),
             "eval_suite_id": getattr(row, "eval_suite_id", None),
             "policy_ids": list(getattr(row, "policy_ids", []) or []),
@@ -657,7 +657,8 @@ class CreateAgentRequest(BaseModel):
     system_prompt: str = ""
     model_override: str = ""
     max_iterations: int = 15
-    timeout_seconds: int = 300
+    # 0 = no agent limit (the plan's goal timeout applies); >0 caps each goal.
+    timeout_seconds: int = Field(default=0, ge=0)
     domain_context: str = "general"
     domain_metadata: dict[str, Any] = {}
     # Reasoning-pattern opt-ins (app.agent.pattern_flags.AGENT_PATTERN_FLAG_KEYS).
@@ -1806,7 +1807,7 @@ async def clone_agent(
         "system_prompt": original.get("system_prompt", ""),
         "model_override": original.get("model_override", ""),
         "max_iterations": original.get("max_iterations", 15),
-        "timeout_seconds": original.get("timeout_seconds", 300),
+        "timeout_seconds": original.get("timeout_seconds", 0),
         "domain_context": original.get("domain_context") or "general",
         "domain_metadata": dict(original.get("domain_metadata") or {}),
     }

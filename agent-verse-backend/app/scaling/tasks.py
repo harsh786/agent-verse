@@ -16,7 +16,7 @@ import time
 import types
 import uuid
 from datetime import UTC
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from celery.signals import task_postrun as _task_postrun
 from celery.signals import task_prerun as _task_prerun
@@ -1272,6 +1272,48 @@ def _worker_reflexion_service(db_factory: Any, embedder_provider: Any) -> Any:
             db_factory,
             embedder=memory_embedder_from_provider(embedder_provider),
         )
+    )
+
+
+class _WorkerAgentConfig(NamedTuple):
+    """The agent columns a worker-run goal honours."""
+
+    autonomy_mode: str
+    max_iterations: int | None
+    system_prompt: str
+    collection_ids: list[str]
+    model_override: str
+    timeout_seconds: int | None
+
+
+async def _lookup_worker_agent_config(
+    db_factory: Any, agent_id: str, tenant_id: str
+) -> _WorkerAgentConfig:
+    """Read the agent's execution settings (tenant-scoped, RLS + explicit predicate)."""
+    from sqlalchemy import text as _sa_text
+
+    from app.db.rls import sqlalchemy_rls_context as _rls
+
+    async with db_factory() as _sess, _rls(_sess, tenant_id):
+        row = (
+            await _sess.execute(
+                _sa_text(
+                    "SELECT autonomy_mode, max_iterations, system_prompt, "
+                    "allowed_collection_ids, model_override, timeout_seconds FROM agents "
+                    "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
+                ),
+                {"aid": agent_id, "tid": tenant_id},
+            )
+        ).fetchone()
+    if not row:
+        return _WorkerAgentConfig("bounded-autonomous", None, "", [], "", None)
+    return _WorkerAgentConfig(
+        autonomy_mode=str(row[0]) if row[0] else "bounded-autonomous",
+        max_iterations=int(row[1]) if row[1] else None,
+        system_prompt=str(row[2]) if row[2] else "",
+        collection_ids=list(row[3] or []) if len(row) > 3 else [],
+        model_override=str(row[4] or "") if len(row) > 4 else "",
+        timeout_seconds=int(row[5]) if len(row) > 5 and row[5] else None,
     )
 
 
@@ -3097,46 +3139,27 @@ def run_goal(
     # The agent's pinned model. Only the API path applied it (GoalService ->
     # ModelRouter.with_override); worker-run goals silently ignored it.
     _agent_model_override: str = ""
+    # The agent's own wall-clock budget (agents.timeout_seconds): it shortens the
+    # plan's goal timeout below (effective = min of the two). It was never read.
+    _agent_timeout_seconds: int | None = None
     if agent_id and db_factory is not None:
         try:
-            from sqlalchemy import text as _sa_text
-
-            from app.db.rls import sqlalchemy_rls_context as _rls
-
-            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str], str]:
-                async with db_factory() as _sess, _rls(_sess, tenant_id):
-                    row = (
-                        await _sess.execute(
-                            _sa_text(
-                                "SELECT autonomy_mode, max_iterations, system_prompt, "
-                                "allowed_collection_ids, model_override FROM agents "
-                                "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
-                            ),
-                            {"aid": agent_id, "tid": tenant_id},
-                        )
-                    ).fetchone()
-                    if row:
-                        mode = str(row[0]) if row[0] else "bounded-autonomous"
-                        iters = int(row[1]) if row[1] else None
-                        sys_prompt = str(row[2]) if row[2] else ""
-                        collection_ids = list(row[3] or []) if len(row) > 3 else []
-                        override = str(row[4] or "") if len(row) > 4 else ""
-                        return mode, iters, sys_prompt, collection_ids, override
-                    return "bounded-autonomous", None, "", [], ""
-
+            _agent_cfg = _run_async(_lookup_worker_agent_config(db_factory, agent_id, tenant_id))
             (
                 _agent_autonomy_mode,
                 _agent_max_iterations,
                 _agent_system_prompt,
                 _agent_collection_ids,
                 _agent_model_override,
-            ) = _run_async(_lookup_agent_config())
+                _agent_timeout_seconds,
+            ) = _agent_cfg
             logger.info(
-                "worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
+                "worker_agent_config goal=%s agent=%s mode=%s max_iter=%s timeout=%s",
                 goal_id,
                 agent_id,
                 _agent_autonomy_mode,
                 _agent_max_iterations,
+                _agent_timeout_seconds,
             )
         except Exception as _ae:
             logger.debug("worker_agent_config_lookup_failed: %s", _ae)
@@ -3921,11 +3944,25 @@ def run_goal(
 
         from app.tenancy.context import PLAN_LIMITS as _PLAN_LIMITS
 
-        goal_timeout_s = (
+        _plan_timeout_s = (
             getattr(_PLAN_LIMITS.get(plan, None), "goal_timeout_seconds", 1800)
             if hasattr(plan, "value")
             else 1800
         )
+        # The agent's timeout_seconds can only shorten the plan's budget.
+        from app.tenancy.limits import effective_goal_timeout
+
+        goal_timeout_s, _timeout_source = effective_goal_timeout(
+            _plan_timeout_s, _agent_timeout_seconds
+        )
+        if _timeout_source == "agent":
+            logger.info(
+                "worker_goal_timeout_from_agent goal=%s agent=%s timeout=%ss plan=%ss",
+                goal_id,
+                agent_id,
+                goal_timeout_s,
+                _plan_timeout_s,
+            )
 
         try:
             # ── Isolation routing ────────────────────────────────────────────────
@@ -4153,7 +4190,12 @@ def run_goal(
                 )
             )
         except TimeoutError:
-            _run_async(mark_worker_failed(TimeoutError(f"Goal timed out after {goal_timeout_s}s")))
+            _timeout_note = " (agent timeout_seconds)" if _timeout_source == "agent" else ""
+            _run_async(
+                mark_worker_failed(
+                    TimeoutError(f"Goal timed out after {goal_timeout_s}s{_timeout_note}")
+                )
+            )
             _run_async(
                 _learn_from_worker_goal(
                     _reflexion_service,
@@ -4168,7 +4210,7 @@ def run_goal(
             return {
                 "status": "failed",
                 "goal_id": goal_id,
-                "reason": f"timeout after {goal_timeout_s}s",
+                "reason": f"timeout after {goal_timeout_s}s{_timeout_note}",
                 "result_scope": "worker_only",
             }
         _run_async(

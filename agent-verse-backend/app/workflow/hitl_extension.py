@@ -262,14 +262,19 @@ class HITLWorkflowGateway:
 
         Only goal approvals (``HITLGateway``) published these, so a HITL trigger
         never fired for a workflow approval gate. Called once, by the decision
-        that won the claim. A workflow approval has no goal (lineage depth 0)
-        and no goal-derived queue (``hitl_queue_ids`` is empty, so only triggers
-        without a queue filter match). A publish failure is logged: the
-        decision itself is already durable.
+        that won the claim. A workflow approval has no goal (lineage depth 0);
+        its queues are ``workflow:<workflow_id>`` and ``risk:<priority>``
+        (``app.governance.hitl_queues.workflow_queue_ids``), so a trigger's
+        ``hitl_queue_id`` filter applies to it like to a goal approval — the
+        list used to be empty and a queue-filtered trigger never fired. A
+        publish failure is logged: the decision itself is already durable.
         """
+        from app.governance.hitl_queues import workflow_queue_ids
+
         channel = {"approved": "hitl.approved", "rejected": "hitl.rejected"}.get(req.status)
         if channel is None or self._event_redis is None or not req.tenant_id:
             return
+        queues = workflow_queue_ids(req.workflow_id, req.priority)
         payload = {
             "tenant_id": req.tenant_id,
             "request_id": req.request_id,
@@ -281,8 +286,9 @@ class HITLWorkflowGateway:
             "action": req.action_taken or "",
             "approver": req.reviewed_by or "",
             "note": req.note,
-            "hitl_queue_ids": [],
-            "hitl_queue_id": "",
+            "risk_level": req.priority,
+            "hitl_queue_ids": queues,
+            "hitl_queue_id": queues[0] if queues else "",
         }
         try:
             from app.triggers.bus import publish_trigger_event

@@ -35,7 +35,10 @@ from tests.triggers.test_b7_trigger_lineage import (
     ],
 )
 async def test_goal_event_at_the_depth_cap_is_audited(ttype: TriggerType, channel: str) -> None:
-    spec = TriggerSpec(trigger_type=ttype, score_threshold=0.9, allow_self_trigger=True)
+    # score_window=1: one goal decides (the rolling window is tested elsewhere).
+    spec = TriggerSpec(
+        trigger_type=ttype, score_threshold=0.9, allow_self_trigger=True, score_window=1
+    )
     store, trigger_id = _store_with(spec)
     disp = _Dispatcher()
     consumer = ChainTriggerConsumer(trigger_store=store, dispatcher=disp)

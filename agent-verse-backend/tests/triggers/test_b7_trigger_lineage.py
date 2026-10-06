@@ -241,7 +241,8 @@ async def test_hitl_trigger_at_the_depth_cap_does_not_fire() -> None:
 async def test_goal_event_self_trigger_is_audited_and_opt_in(
     ttype: TriggerType, channel: str
 ) -> None:
-    spec = TriggerSpec(trigger_type=ttype, score_threshold=0.9)
+    # score_window=1: one goal decides (the rolling window is tested elsewhere).
+    spec = TriggerSpec(trigger_type=ttype, score_threshold=0.9, score_window=1)
     store, trigger_id = _store_with(spec)
     disp = _Dispatcher()
     consumer = ChainTriggerConsumer(trigger_store=store, dispatcher=disp)

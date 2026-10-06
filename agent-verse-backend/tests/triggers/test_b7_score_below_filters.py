@@ -61,8 +61,13 @@ async def _fire(spec: TriggerSpec, **event: Any) -> int:
 
 
 async def test_dimension_threshold_compares_that_dimension() -> None:
+    # score_window=1: one goal decides (accuracy is LLM-judged, so the default is a
+    # rolling window of 3 — tests/triggers/test_b7_score_below_window.py).
     spec = TriggerSpec(
-        trigger_type=TriggerType.GOAL_SCORE_BELOW, score_threshold=0.5, score_dimension="accuracy"
+        trigger_type=TriggerType.GOAL_SCORE_BELOW,
+        score_threshold=0.5,
+        score_dimension="accuracy",
+        score_window=1,
     )
     # Overall is high, accuracy is low: fires on accuracy.
     assert await _fire(spec, score=0.9, scores={"accuracy": 0.2, "latency": 1.0}) == 1
@@ -79,7 +84,10 @@ async def test_missing_dimension_does_not_fire() -> None:
 
 async def test_overall_dimension_uses_the_average() -> None:
     spec = TriggerSpec(
-        trigger_type=TriggerType.GOAL_SCORE_BELOW, score_threshold=0.5, score_dimension="overall"
+        trigger_type=TriggerType.GOAL_SCORE_BELOW,
+        score_threshold=0.5,
+        score_dimension="overall",
+        score_window=1,
     )
     assert await _fire(spec, score=0.4, scores={"accuracy": 0.9}) == 1
 

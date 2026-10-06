@@ -49,8 +49,10 @@ class Agent(Base):
     max_iterations: Mapped[int] = mapped_column(
         Integer, nullable=False, default=15, server_default="15"
     )
+    # 0 = no agent limit (goals get the plan timeout); a positive value caps
+    # each goal run at min(plan timeout, this) — see tenancy.limits.
     timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=300, server_default="300"
+        Integer, nullable=False, default=0, server_default="0"
     )
     allowed_collection_ids: Mapped[list] = mapped_column(
         JSON, nullable=False, default=list, server_default=text("'[]'")

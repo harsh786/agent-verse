@@ -181,7 +181,7 @@ async def test_db_backed_agent_store_sync_from_db_loads_agent() -> None:
     assert agent["system_prompt"] == ""
     assert agent["model_override"] == ""
     assert agent["max_iterations"] == 15
-    assert agent["timeout_seconds"] == 300
+    assert agent["timeout_seconds"] == 0  # 0 = no agent limit
     assert agent["allowed_collection_ids"] == []
     assert agent["eval_suite_id"] is None
     assert agent["policy_ids"] == []

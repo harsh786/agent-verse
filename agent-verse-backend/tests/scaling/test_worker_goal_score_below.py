@@ -101,7 +101,10 @@ async def test_low_scoring_worker_goal_fires_goal_score_below_exactly_once(monke
 
     store = ScheduleStore()
     store.create(
-        spec=TriggerSpec(trigger_type=TriggerType.GOAL_SCORE_BELOW, score_threshold=0.7),
+        # score_window=1: one goal decides (overall defaults to a rolling window).
+        spec=TriggerSpec(
+            trigger_type=TriggerType.GOAL_SCORE_BELOW, score_threshold=0.7, score_window=1
+        ),
         tenant_ctx=CTX, goal_id="", goal_template="investigate the low score",
     )
     gs = _GoalService()
@@ -118,7 +121,10 @@ async def test_high_scoring_worker_goal_does_not_fire(monkeypatch) -> None:
     raws = _publish(monkeypatch, 0.95)
     store = ScheduleStore()
     store.create(
-        spec=TriggerSpec(trigger_type=TriggerType.GOAL_SCORE_BELOW, score_threshold=0.7),
+        # score_window=1: one goal decides (overall defaults to a rolling window).
+        spec=TriggerSpec(
+            trigger_type=TriggerType.GOAL_SCORE_BELOW, score_threshold=0.7, score_window=1
+        ),
         tenant_ctx=CTX, goal_id="", goal_template="x",
     )
     gs = _GoalService()
