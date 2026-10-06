@@ -726,10 +726,27 @@ class TestProviderCircuitBreaker:
 class TestGoalLifecycle:
     """is_valid_transition enforces the goal state machine."""
 
-    def test_pending_to_planning_valid(self) -> None:
+    def test_unknown_statuses_have_no_transitions(self) -> None:
+        """a08-F189-03: "pending" / "paused" are not goal statuses."""
         from app.services.goal_lifecycle import is_valid_transition
 
-        assert is_valid_transition("pending", "planning")
+        assert not is_valid_transition("pending", "planning")
+        assert not is_valid_transition("executing", "paused")
+
+    def test_replan_and_resume_are_valid(self) -> None:
+        from app.services.goal_lifecycle import is_valid_transition
+
+        assert is_valid_transition("verifying", "planning")  # replan
+        assert is_valid_transition("waiting_human", "planning")  # resume, re-plan
+
+    def test_terminal_status_is_final_even_to_another_terminal(self) -> None:
+        from app.services.goal_lifecycle import allowed_predecessors, is_valid_transition
+
+        assert not is_valid_transition("cancelled", "complete")
+        assert not is_valid_transition("complete", "complete")
+        assert allowed_predecessors("cancelled") == frozenset(
+            {"planning", "executing", "verifying", "waiting_human"}
+        )
 
     def test_planning_to_executing_valid(self) -> None:
         from app.services.goal_lifecycle import is_valid_transition
@@ -799,10 +816,12 @@ class TestGoalLifecycle:
 
         assert is_valid_transition("executing", "failed")
 
-    def test_paused_can_resume_to_executing(self) -> None:
+    def test_a_paused_goal_is_waiting_human(self) -> None:
+        """pause_goal writes waiting_human; "paused" is not a stored status."""
         from app.services.goal_lifecycle import is_valid_transition
 
-        assert is_valid_transition("paused", "executing")
+        assert is_valid_transition("waiting_human", "executing")
+        assert not is_valid_transition("paused", "executing")
 
     def test_unknown_source_state_returns_false(self) -> None:
         from app.services.goal_lifecycle import is_valid_transition
@@ -813,28 +832,6 @@ class TestGoalLifecycle:
         from app.services.goal_lifecycle import is_valid_transition
 
         assert not is_valid_transition("planning", "nonexistent")
-
-    def test_goal_transition_enum_values(self) -> None:
-        from app.services.goal_lifecycle import GoalTransition
-
-        assert GoalTransition.COMPLETE == "complete"
-        assert GoalTransition.FAIL == "fail"
-        assert GoalTransition.CANCEL == "cancel"
-        assert GoalTransition.SUBMIT == "submit"
-        assert GoalTransition.AWAIT_HUMAN == "await_human"
-        assert GoalTransition.PAUSE == "pause"
-        assert GoalTransition.RESUME == "resume"
-
-    def test_goal_transition_inherits_str(self) -> None:
-        """GoalTransition(str, Enum) members are str instances; .value gives the string."""
-        from app.services.goal_lifecycle import GoalTransition
-
-        # Members are instances of str (GoalTransition inherits from str)
-        assert isinstance(GoalTransition.COMPLETE, str)
-        # .value is the canonical way to get the string value in Python 3.12
-        assert GoalTransition.FAIL.value == "fail"
-        assert GoalTransition.COMPLETE.value == "complete"
-        assert GoalTransition.CANCEL.value == "cancel"
 
 
 # ─── Collab: CRDT Token Store ─────────────────────────────────────────────────

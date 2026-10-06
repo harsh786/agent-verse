@@ -1,43 +1,47 @@
-"""Goal lifecycle state management utilities.
+"""The goal status state machine, as the runtime really moves goals.
 
-Documents the intended decomposition of GoalService.
-Handles state transitions: submit → planning → executing → verifying → complete/failed
+Statuses are :class:`app.agent.state.GoalStatus`. The non-terminal ones move
+freely between each other — the graph replans (verifying -> planning), a HITL
+gate parks a goal (-> waiting_human) and resume returns it to planning or
+executing — so the one invariant is that **a terminal status is final**:
+complete, failed and cancelled have no outgoing transition (not even to
+another terminal status: a cancel that won a race with the worker's
+"complete" is kept, and vice versa).
+
+:func:`allowed_predecessors` is what every goal status write is conditioned on
+(``GoalService._db_update_goal_status``: ``WHERE status IN (...)``), so the
+rule holds for every writer, not only the ones that remembered to pass
+``only_if_active`` (a08-F189-03). The previous table here described statuses
+that do not exist ("pending", "paused"), forbade real transitions (replan) and
+had no callers.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
+from app.agent.state import GoalStatus
 
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {GoalStatus.COMPLETE.value, GoalStatus.FAILED.value, GoalStatus.CANCELLED.value}
+)
+ACTIVE_STATUSES: frozenset[str] = frozenset(
+    s.value for s in GoalStatus if s.value not in TERMINAL_STATUSES
+)
 
-class GoalTransition(StrEnum):
-    """Valid goal state transitions."""
-
-    SUBMIT = "submit"
-    START_PLANNING = "start_planning"
-    START_EXECUTING = "start_executing"
-    START_VERIFYING = "start_verifying"
-    COMPLETE = "complete"
-    FAIL = "fail"
-    CANCEL = "cancel"
-    PAUSE = "pause"
-    RESUME = "resume"
-    AWAIT_HUMAN = "await_human"
-
-
-# Valid state machine transitions
-_VALID_TRANSITIONS: dict[str, list[str]] = {
-    "pending": ["planning"],
-    "planning": ["executing", "failed", "cancelled"],
-    "executing": ["verifying", "failed", "cancelled", "waiting_human"],
-    "verifying": ["complete", "failed", "executing"],  # re-execute on verify fail
-    "waiting_human": ["executing", "cancelled"],
-    "complete": [],  # terminal
-    "failed": [],  # terminal
-    "cancelled": [],  # terminal
-    "paused": ["executing"],
+_VALID_TRANSITIONS: dict[str, frozenset[str]] = {
+    **{active: frozenset(s.value for s in GoalStatus) for active in ACTIVE_STATUSES},
+    **{terminal: frozenset() for terminal in TERMINAL_STATUSES},
 }
 
 
 def is_valid_transition(from_status: str, to_status: str) -> bool:
-    """Check if a goal state transition is valid."""
-    return to_status in _VALID_TRANSITIONS.get(from_status, [])
+    """True when a goal in ``from_status`` may be written as ``to_status``.
+
+    Re-writing the same non-terminal status (e.g. a second "executing") is
+    allowed; unknown statuses are never valid.
+    """
+    return to_status in _VALID_TRANSITIONS.get(from_status, frozenset())
+
+
+def allowed_predecessors(to_status: str) -> frozenset[str]:
+    """Every status a goal may be in for a write of ``to_status`` to apply."""
+    return frozenset(src for src, dsts in _VALID_TRANSITIONS.items() if to_status in dsts)

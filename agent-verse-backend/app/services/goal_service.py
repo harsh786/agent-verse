@@ -6581,9 +6581,13 @@ class GoalService:
         *iterations* is written only when given (``None`` leaves the column
         alone: every cancel / pause / resume used to reset it to 0).
 
-        *only_if_active* leaves a row that is already terminal untouched (e.g. a
-        worker reporting "cancelled" after a HITL rejection recorded "failed", or
-        a cancel racing the worker's "complete") — the result is then ``False``.
+        The write is always conditioned on the goal state machine
+        (``goal_lifecycle.allowed_predecessors``, a08-F189-03): a row that is
+        already terminal is left untouched (e.g. a worker reporting "cancelled"
+        after a HITL rejection recorded "failed", a cancel racing the worker's
+        "complete", or a late "waiting_human" for a goal that finished) — the
+        result is then ``False``. *only_if_active* is kept for callers that
+        pass it; the guard no longer depends on it.
 
         *raise_on_error* turns a failed write into ``ServiceUnavailableError``
         (503) for callers that report the transition to a user; background
@@ -6606,9 +6610,13 @@ class GoalService:
                 values["error_message"] = error_message
             if status == "complete":
                 values["completed_at"] = datetime.now(UTC)
-            stmt = update(Goal).where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
-            if only_if_active:
-                stmt = stmt.where(Goal.status.notin_([s.value for s in _TERMINAL_STATUSES]))
+            from app.services.goal_lifecycle import allowed_predecessors
+
+            stmt = update(Goal).where(
+                Goal.id == goal_id,
+                Goal.tenant_id == tenant_id,
+                Goal.status.in_(sorted(allowed_predecessors(status))),
+            )
             async with (
                 self._db() as session,
                 session.begin(),
