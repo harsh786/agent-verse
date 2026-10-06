@@ -83,6 +83,9 @@ def test_k8s_every_app_workload_gets_the_ocr_settings_from_the_api_config_map() 
 
 def test_helm_every_app_workload_gets_the_ocr_settings_from_one_config_map() -> None:
     values = _helm_values(HELM_DIR)
+    # tesseractEnabled (OCR_TESSERACT_ENABLED) is not an OCR-PAR limit: default off,
+    # the vision models read every page.
+    assert values["ocr"].pop("tesseractEnabled") is False
     assert values["ocr"] == _HELM_OCR_VALUES
     text = (HELM_DIR / "configmaps.yaml").read_text()
     for key, expr in _HELM_EXPR.items():

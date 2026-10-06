@@ -660,7 +660,11 @@ def _assert_helm_egress_config_map(config_map_text: str) -> None:
 
 def test_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() -> None:
     values = _helm_values(HELM_DIR)
-    assert values["ingestion"] == {"allowInternalSources": False, "internalSourceAllowlist": ""}
+    assert values["ingestion"] == {
+        "allowInternalSources": False,
+        "internalSourceAllowlist": "",
+        "allowPrivateNetworkAccess": True,  # ALLOW_PRIVATE_NETWORK_ACCESS, default on
+    }
     _assert_helm_egress_config_map((HELM_DIR / "configmaps.yaml").read_text())
     blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
     assert {"backend", "worker", "subgoal-worker", "schedule-worker", "beat"} <= set(blocks)

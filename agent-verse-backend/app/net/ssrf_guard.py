@@ -58,6 +58,7 @@ _METADATA_HOSTNAMES = frozenset(
         "metadata.google.internal",
         "metadata.google",
         "instance-data",  # OpenStack
+        "100.100.100.200",  # Alibaba Cloud (inside the carrier-grade 100.64/10 range)
     }
 )
 
@@ -74,6 +75,13 @@ _ALWAYS_BLOCKED = [
     ipaddress.ip_network("fe80::/10"),
     ipaddress.ip_network("::/128"),
     ipaddress.ip_network("fd00:ec2::254/128"),  # AWS IMDS over IPv6
+]
+
+
+# What stays blocked when link-local access is deliberately opened.
+_ALWAYS_BLOCKED_NO_LINK_LOCAL = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::/128"),
 ]
 
 
@@ -113,6 +121,42 @@ def private_network_access_enabled() -> bool:
         except Exception:  # pragma: no cover - settings unavailable: the default
             return True
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def link_local_access_enabled() -> bool:
+    """``ALLOW_LINK_LOCAL_NETWORK_ACCESS`` (default false).
+
+    The one thing ``ALLOW_PRIVATE_NETWORK_ACCESS`` does not open: link-local
+    addresses (169.254.0.0/16, fe80::/10), which is where cloud instance-metadata
+    services (AWS/GCP/Azure 169.254.169.254) live and hand out the node's
+    credentials. On an on-prem LAN nothing legitimate needs them. Set this to true
+    only to reach such an address on purpose (e.g. a metadata-service test double).
+    0.0.0.0 and multicast stay blocked either way.
+    """
+    import os
+
+    return os.getenv("ALLOW_LINK_LOCAL_NETWORK_ACCESS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def is_metadata_host(host: str) -> bool:
+    """True for a literal host that is a cloud-metadata name/address or another
+    never-reachable address (0.0.0.0, and link-local unless it was opened with
+    ``ALLOW_LINK_LOCAL_NETWORK_ACCESS``). DNS is not consulted."""
+    h = (host or "").strip().lower().strip(".")
+    if not h:
+        return True
+    if h in _METADATA_HOSTNAMES and not link_local_access_enabled():
+        return True
+    try:
+        ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return _is_always_blocked_ip(h)
 
 
 def private_access_networks(
@@ -165,8 +209,9 @@ def _is_always_blocked_ip(ip_str: str) -> bool:
     mapped = getattr(addr, "ipv4_mapped", None)
     if mapped is not None:
         addr = mapped
+    blocked = _ALWAYS_BLOCKED_NO_LINK_LOCAL if link_local_access_enabled() else _ALWAYS_BLOCKED
     return addr.is_multicast or any(
-        addr.version == net.version and addr in net for net in _ALWAYS_BLOCKED
+        addr.version == net.version and addr in net for net in blocked
     )
 
 
@@ -215,6 +260,14 @@ def assert_public_url(
     if not url or not isinstance(url, str):
         raise SSRFError(f"SSRF guard [{context}]: empty or non-string URL")
 
+    # ALLOW_PRIVATE_NETWORK_ACCESS (default on): EVERY caller of the guard — tools,
+    # workflow steps, webhooks, triggers, notifications, browsers, connectors —
+    # may reach private / internal addresses, not just the ingestion and connector
+    # paths that used to pass allowed_networks. Off: the caller's own list (or
+    # public-only). Link-local / metadata / 0.0.0.0 stay blocked either way
+    # (see link_local_access_enabled).
+    allowed_networks = private_access_networks(allowed_networks)
+
     # Parse URL
     try:
         parsed = urlparse(url)
@@ -241,7 +294,7 @@ def assert_public_url(
     if allowed_domains:
         for domain in allowed_domains:
             if hostname == domain.lower() or hostname.endswith("." + domain.lower()):
-                if hostname in _METADATA_HOSTNAMES:
+                if hostname in _METADATA_HOSTNAMES and not link_local_access_enabled():
                     raise SSRFError(
                         f"SSRF guard [{context}]: metadata service hostname '{hostname}' blocked"
                     )
@@ -271,7 +324,7 @@ def assert_public_url(
                 return allowed_ips
 
     # Metadata hostname block
-    if hostname in _METADATA_HOSTNAMES:
+    if hostname in _METADATA_HOSTNAMES and not link_local_access_enabled():
         raise SSRFError(f"SSRF guard [{context}]: metadata service hostname '{hostname}' blocked")
 
     # Try to parse hostname as a literal IP

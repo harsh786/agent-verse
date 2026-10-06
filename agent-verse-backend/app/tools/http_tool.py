@@ -59,6 +59,15 @@ def _is_blocked_literal(url: str) -> bool:
         if not host:
             return True
 
+        # ALLOW_PRIVATE_NETWORK_ACCESS (default on): localhost, RFC-1918 and
+        # *.internal / *.local hosts are reachable; only cloud-metadata and the
+        # other never-reachable addresses are refused here (the DNS-resolving
+        # guard in _is_blocked applies the same policy to what a name resolves to).
+        from app.net.ssrf_guard import is_metadata_host, private_network_access_enabled
+
+        if private_network_access_enabled():
+            return is_metadata_host(host)
+
         # Check exact known-bad hostnames
         if host.lower() in _BLOCKED_HOSTS:
             return True
