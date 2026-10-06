@@ -94,7 +94,8 @@ class ScreenResult:
 
     text: str
     pii_detected: bool = False
-    blocked_reason: str = ""  # "" | "pii_rejected" | "guardrail_blocked"
+    # "" | "pii_rejected" | "guardrail_blocked" | "guardrail_review_required"
+    blocked_reason: str = ""
 
 
 # Length no longer gates indexing: a short document with real content (a one-line
@@ -671,17 +672,27 @@ class IngestionPipeline:
                     return ScreenResult(
                         text="", pii_detected=pii_detected, blocked_reason="guardrail_blocked"
                     )
-                if _g2_ingest_result.get("redacted_content") and text != original:
-                    # A redacting rule: apply it to the PII-redacted text, not to
-                    # the original — its output would otherwise undo Stage 6.
-                    _g2_ingest_result = await guardrails_engine.evaluate(
-                        content=text,
-                        layer=GuardrailLayer.RAG_INGEST,
-                        tenant_id=tenant_id,
+                if _g2_ingest_result.get("hitl_required"):
+                    # a03-F063-06: REQUIRE_HITL was ignored here and the document
+                    # was indexed. Ingestion has no human in the loop, so the
+                    # document is withheld (not indexed) for review — like the
+                    # workflow guardrail treats hitl_required.
+                    return ScreenResult(
+                        text="",
+                        pii_detected=pii_detected,
+                        blocked_reason="guardrail_review_required",
                     )
                 _g2_ingest_redacted = _g2_ingest_result.get("redacted_content")
-                if _g2_ingest_redacted and _g2_ingest_redacted != text:
-                    text = _g2_ingest_redacted
+                if _g2_ingest_redacted and _g2_ingest_redacted != original:
+                    # A redacting rule fired. Apply the redaction to the
+                    # PII-redacted text, not the original (its output would undo
+                    # Stage 6) — without a second evaluate(), which recorded every
+                    # violation twice and charged LLM-judge rules twice.
+                    text = (
+                        guardrails_engine.redact_text(text)
+                        if text != original
+                        else _g2_ingest_redacted
+                    )
             except Exception as _g2_ingest_exc:
                 # Fail CLOSED. This used to log and return the text as clean,
                 # so an engine error — including GuardrailRulesUnavailableError
