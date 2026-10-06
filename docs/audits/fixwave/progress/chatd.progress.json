@@ -1,0 +1,9 @@
+{
+  "CHAT-D-1": {"status": "done", "commit": "216f234f1", "note": "folders in Postgres (owner_principal + restrictive RLS, migration f3a9c1e7d5b4), owner-only CRUD + move, UI wired"},
+  "CHAT-D-2": {"status": "done", "commit": "580a2cdcf", "note": "chat_message_feedback (migration a6c2e8f4b0d3), idempotent/editable per user, goal replies feed goal_feedback, UI thumbs + comment"},
+  "CHAT-D-3": {"status": "done", "commit": "c6ccbeb24", "note": "run_goal reads the session via aget_session (DB or memory), fails closed; channel goal actions use the session agent"},
+  "_new_findings": [
+    "ChatService._clarify_rounds (clarify round per session) is process memory: not shared across replicas",
+    "ChatSession ORM declares folder_id ForeignKey(chat_session_folders, SET NULL) but no migration creates that FK (model/DB drift)"
+  ]
+}

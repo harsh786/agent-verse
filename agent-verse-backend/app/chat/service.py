@@ -22,7 +22,7 @@ from typing import Any
 
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
-from app.chat.ownership import SYSTEM_SCOPE, ChatScope
+from app.chat.ownership import SYSTEM_SCOPE, ChatFolderNotFoundError, ChatScope
 from app.observability.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -324,6 +324,27 @@ class _Folder:
     color: str = "#6366f1"
     position: int = 0
     created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
+    # CHAT-D-1: the principal that owns the folder (as for sessions).
+    owner_principal: str | None = None
+
+
+class ChatFolderLimitError(ValueError):
+    """The principal already has the maximum number of chat folders."""
+
+
+@dataclass
+class _Feedback:
+    """One person's feedback on one chat reply (CHAT-D-2)."""
+
+    message_id: str
+    session_id: str
+    tenant_id: str
+    owner_principal: str
+    rating: int
+    comment: str | None = None
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
 
 
 @dataclass
@@ -392,6 +413,8 @@ class ChatService:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
         self._folders: dict[str, _Folder] = {}
+        # In-memory feedback store: (tenant, message_id, principal) -> feedback.
+        self._feedback: dict[tuple[str, str, str], _Feedback] = {}
         self._artifacts: dict[str, _Artifact] = {}
         self._usage: dict[str, _Usage] = {}
         self._router = IntentRouter()
@@ -467,6 +490,8 @@ class ChatService:
         owner_user_id: str | None = None,
         owner_principal: str | None = None,
     ) -> _Session:
+        if folder_id is not None:
+            self._require_folder(folder_id, tenant_id, owner_principal)
         sid = _hex()
         session = _Session(
             id=sid,
@@ -513,6 +538,8 @@ class ChatService:
         s = self.get_session(session_id, tenant_id, scope=scope)
         if not s:
             return None
+        if kwargs.get("folder_id") is not None:
+            self._require_folder(str(kwargs["folder_id"]), tenant_id, s.owner_principal)
         for k, v in kwargs.items():
             if k in self._UPDATABLE:
                 setattr(s, k, v)
@@ -1383,6 +1410,107 @@ class ChatService:
             scope=scope,
         )
 
+    # ── Feedback on replies (CHAT-D-2) ────────────────────────────────────────
+    # Thumbs (-1/0/1) and an optional comment, one per person per reply: rating
+    # again edits it. Durable in chat_message_feedback when a repository is
+    # wired; a reply that carries a goal also feeds goal_feedback (the
+    # self-improvement signal) in the same transaction.
+
+    @staticmethod
+    def _feedback_from_row(row: dict[str, Any]) -> _Feedback:
+        return _Feedback(
+            message_id=str(row["message_id"]),
+            session_id=str(row["session_id"]),
+            tenant_id=str(row["tenant_id"]),
+            owner_principal=str(row["owner_principal"]),
+            rating=int(row["rating"]),
+            comment=row.get("comment"),
+            created_at=row.get("created_at") or _now(),
+            updated_at=row.get("updated_at") or _now(),
+        )
+
+    async def asubmit_feedback(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        tenant_id: str,
+        rating: int,
+        comment: str | None,
+        scope: ChatScope,
+    ) -> _Feedback | None:
+        """Save or edit the caller's feedback; None when the reply is not theirs.
+
+        Raises ChatFeedbackTargetError for a message that is not an assistant
+        reply.
+        """
+        from app.chat.repository import ChatFeedbackTargetError
+
+        if scope.kind != "principal":
+            raise ValueError("feedback is given by a principal")
+        if self._repository is None:
+            msg = await self.aget_message(session_id, message_id, tenant_id, scope=scope)
+            if msg is None:
+                return None
+            if msg.role != "assistant":
+                raise ChatFeedbackTargetError("feedback is given on assistant replies only")
+            key = (tenant_id, message_id, str(scope.principal))
+            fb = self._feedback.get(key)
+            if fb is None:
+                fb = _Feedback(
+                    message_id=message_id, session_id=session_id, tenant_id=tenant_id,
+                    owner_principal=str(scope.principal), rating=rating, comment=comment,
+                )
+                self._feedback[key] = fb
+            else:
+                fb.rating, fb.comment, fb.updated_at = rating, comment, _now()
+            return fb
+        row = await self._repository.upsert_feedback(
+            tenant_id=tenant_id, session_id=session_id, message_id=message_id,
+            rating=rating, comment=comment, scope=scope,
+        )
+        return self._feedback_from_row(row) if row is not None else None
+
+    async def adelete_feedback(
+        self, *, session_id: str, message_id: str, tenant_id: str, scope: ChatScope
+    ) -> bool:
+        if scope.kind != "principal":
+            return False
+        if self._repository is None:
+            key = (tenant_id, message_id, str(scope.principal))
+            fb = self._feedback.get(key)
+            if fb is None or fb.session_id != session_id:
+                return False
+            del self._feedback[key]
+            return True
+        return bool(
+            await self._repository.delete_feedback(
+                tenant_id=tenant_id, session_id=session_id, message_id=message_id, scope=scope
+            )
+        )
+
+    async def alist_feedback(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        message_ids: list[str],
+        scope: ChatScope,
+    ) -> dict[str, _Feedback]:
+        """The caller's feedback on these messages of a session, by message id."""
+        if scope.kind != "principal" or not message_ids:
+            return {}
+        if self._repository is None:
+            found = (
+                self._feedback.get((tenant_id, mid, str(scope.principal)))
+                for mid in message_ids
+            )
+            return {f.message_id: f for f in found if f is not None and f.session_id == session_id}
+        rows = await self._repository.list_feedback(
+            tenant_id=tenant_id, session_id=session_id, message_ids=message_ids, scope=scope
+        )
+        return {str(r["message_id"]): self._feedback_from_row(r) for r in rows}
+
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 
     async def run_goal(
@@ -1397,16 +1525,26 @@ class ChatService:
     ) -> str:
         """Submit a GOAL-intent chat turn to the real GoalService and return its
         ``goal_id``. Binds the conversation via ``execution_context`` so async
-        completion can be delivered back into this thread (Phase 2)."""
+        completion can be delivered back into this thread (Phase 2).
+
+        CHAT-D-3: the goal runs with the session's configured agent, read from
+        the same store the session lives in (the database when a repository is
+        wired — it used to read process memory, find nothing, and let the goal
+        auto-route to another agent). A session that no longer exists fails
+        closed (LookupError) instead of running on a default agent. The caller
+        has already authorized the session, so this read is not owner-narrowed.
+        """
         if self._goal_service is None:
             raise RuntimeError("chat GOAL execution requires a GoalService to be wired")
-        session = self.get_session(session_id, tenant_id)
+        session = await self.aget_session(session_id, tenant_id)
+        if session is None:
+            raise LookupError(f"chat session {session_id} not found")
         result = await self._goal_service.submit_goal(
             goal=user_message,
             priority="normal",
             dry_run=False,
             tenant_ctx=tenant_ctx,
-            agent_id=agent_id or (session.agent_id if session else None),
+            agent_id=agent_id or session.agent_id,
             execution_context={
                 "source": "chat",
                 "conversation_id": session_id,
@@ -2025,7 +2163,9 @@ class ChatService:
                 replies.append(await self._fulfill_remember(act, tenant_id))
                 executed.append("remember")
             elif isinstance(act, GoalAction):
-                replies.append(await self._fulfill_goal(act, tenant_id, tenant_ctx))
+                replies.append(
+                    await self._fulfill_goal(act, tenant_id, tenant_ctx, session_id=session_id)
+                )
                 executed.append("goal")
             elif isinstance(act, QAAction):
                 replies.append(
@@ -2078,14 +2218,35 @@ class ChatService:
             await self._memory_writer(act.fact, tenant_id)
         return f"✅ Got it — I'll remember: {act.fact}"
 
-    async def _fulfill_goal(self, act: Any, tenant_id: str, tenant_ctx: Any) -> str:
+    async def _fulfill_goal(
+        self, act: Any, tenant_id: str, tenant_ctx: Any, *, session_id: str
+    ) -> str:
+        """Submit a goal action of a channel turn with the session's agent (CHAT-D-3).
+
+        Says it started only when the goal was accepted: a failed submit (budget,
+        unknown agent, outage) is reported, never claimed as started.
+        """
         if self._goal_service is None:
-            return f"On it — I'll work on: {act.goal}"
+            return f"I can't run goals here yet, so I couldn't start: {act.goal}"
         ctx = tenant_ctx or self._tenant_ctx(tenant_id)
-        with contextlib.suppress(Exception):
+        try:
+            session = await self.aget_session(session_id, tenant_id)
+            if session is None:
+                raise LookupError(f"chat session {session_id} not found")
             await self._goal_service.submit_goal(
-                goal=act.goal, priority="normal", dry_run=False, tenant_ctx=ctx, agent_id=None,
+                goal=act.goal, priority="normal", dry_run=False, tenant_ctx=ctx,
+                agent_id=session.agent_id,
+                execution_context={
+                    "source": "chat", "conversation_id": session_id, "session_id": session_id,
+                },
             )
+        except Exception as exc:
+            _logger.warning(
+                "chat_goal_action_not_started", session_id=session_id,
+                error=type(exc).__name__,
+            )
+            # The reason stays in the log (a driver error never reaches a channel).
+            return f"⚠️ I could not start: {act.goal}. Please try again later."
         return f"🚀 On it — I've started working on: {act.goal}. I'll follow up here."
 
     @staticmethod
@@ -2140,22 +2301,83 @@ class ChatService:
             return _humanize_value(answer) or answer
         return answer
 
-    # ── Folder CRUD ───────────────────────────────────────────────────────────
+    # ── Folder CRUD (CHAT-D-1) ────────────────────────────────────────────────
+    # Folders are owned like sessions. The sync methods are the in-memory store;
+    # the a* methods use the Postgres repository when one is wired (durable and
+    # shared by every replica), else the in-memory store.
 
-    def create_folder(self, tenant_id: str, name: str, color: str = "#6366f1") -> _Folder:
-        f = _Folder(id=_hex(), tenant_id=tenant_id, name=name, color=color)
+    def _require_folder(self, folder_id: str, tenant_id: str, owner: str | None) -> _Folder:
+        """The folder a session of ``owner`` may be filed into, or ChatFolderNotFoundError."""
+        f = self._folders.get(folder_id)
+        if f is None or f.tenant_id != tenant_id or f.owner_principal != owner:
+            raise ChatFolderNotFoundError(folder_id)
+        return f
+
+    def create_folder(
+        self,
+        tenant_id: str,
+        name: str,
+        color: str = "#6366f1",
+        *,
+        owner_principal: str | None = None,
+    ) -> _Folder:
+        from app.chat.repository import MAX_FOLDERS_PER_OWNER
+
+        mine = [
+            f for f in self._folders.values()
+            if f.tenant_id == tenant_id and f.owner_principal == owner_principal
+        ]
+        if len(mine) >= MAX_FOLDERS_PER_OWNER:
+            raise ChatFolderLimitError(f"at most {MAX_FOLDERS_PER_OWNER} folders")
+        f = _Folder(
+            id=_hex(), tenant_id=tenant_id, name=name, color=color,
+            position=max((m.position for m in mine), default=-1) + 1,
+            owner_principal=owner_principal,
+        )
         self._folders[f.id] = f
         return f
 
-    def list_folders(self, tenant_id: str) -> list[_Folder]:
-        return [f for f in self._folders.values() if f.tenant_id == tenant_id]
+    def list_folders(self, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE) -> list[_Folder]:
+        folders = [
+            f for f in self._folders.values()
+            if f.tenant_id == tenant_id and scope.allows(f.owner_principal)
+        ]
+        return sorted(folders, key=lambda f: (f.position, f.created_at, f.id))
 
-    def delete_folder(self, folder_id: str, tenant_id: str) -> bool:
+    def _visible_folder(
+        self, folder_id: str, tenant_id: str, scope: ChatScope
+    ) -> _Folder | None:
         f = self._folders.get(folder_id)
-        if not f or f.tenant_id != tenant_id:
+        if f is None or f.tenant_id != tenant_id or not scope.allows(f.owner_principal):
+            return None
+        return f
+
+    def update_folder(
+        self,
+        folder_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> _Folder | None:
+        f = self._visible_folder(folder_id, tenant_id, scope)
+        if f is None:
+            return None
+        if name is not None:
+            f.name = name
+        if color is not None:
+            f.color = color
+        f.updated_at = _now()
+        return f
+
+    def delete_folder(
+        self, folder_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> bool:
+        if self._visible_folder(folder_id, tenant_id, scope) is None:
             return False
         del self._folders[folder_id]
-        # Unassign sessions in this folder
+        # Unfile its sessions (the database does this with ON DELETE SET NULL).
         for s in self._sessions.values():
             if s.folder_id == folder_id:
                 s.folder_id = None
@@ -2169,7 +2391,81 @@ class ChatService:
         *,
         scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Session | None:
+        """File a session into a folder of its own owner (None unfiles it).
+
+        None when the session is not the caller's; ChatFolderNotFoundError when
+        the folder is not the session owner's.
+        """
         return self.update_session(session_id, tenant_id, scope=scope, folder_id=folder_id)
+
+    @staticmethod
+    def _folder_from_row(row: dict[str, Any]) -> _Folder:
+        return _Folder(
+            id=str(row["id"]),
+            tenant_id=str(row["tenant_id"]),
+            name=str(row.get("name") or ""),
+            color=str(row.get("color") or "#6366f1"),
+            position=int(row.get("position") or 0),
+            created_at=row.get("created_at") or _now(),
+            updated_at=row.get("updated_at") or row.get("created_at") or _now(),
+            owner_principal=row.get("owner_principal"),
+        )
+
+    async def acreate_folder(
+        self, tenant_id: str, name: str, color: str = "#6366f1", *, scope: ChatScope
+    ) -> _Folder:
+        """Create a folder owned by the caller's principal (a principal scope only)."""
+        if scope.kind != "principal":
+            raise ValueError("a chat folder is created by a principal")
+        if self._repository is None:
+            return self.create_folder(tenant_id, name, color, owner_principal=scope.principal)
+        row = await self._repository.create_folder(
+            folder_id=_hex(), tenant_id=tenant_id, name=name, color=color, scope=scope
+        )
+        if row is None:
+            from app.chat.repository import MAX_FOLDERS_PER_OWNER
+
+            raise ChatFolderLimitError(f"at most {MAX_FOLDERS_PER_OWNER} folders")
+        return self._folder_from_row(row)
+
+    async def alist_folders(self, tenant_id: str, *, scope: ChatScope) -> list[_Folder]:
+        if self._repository is None:
+            return self.list_folders(tenant_id, scope=scope)
+        rows = await self._repository.list_folders(tenant_id, scope=scope)
+        return [self._folder_from_row(r) for r in rows]
+
+    async def aupdate_folder(
+        self,
+        folder_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> _Folder | None:
+        if self._repository is None:
+            return self.update_folder(folder_id, tenant_id, scope=scope, name=name, color=color)
+        row = await self._repository.update_folder(
+            folder_id, tenant_id, scope=scope, name=name, color=color
+        )
+        return self._folder_from_row(row) if row is not None else None
+
+    async def adelete_folder(self, folder_id: str, tenant_id: str, *, scope: ChatScope) -> bool:
+        if self._repository is None:
+            return self.delete_folder(folder_id, tenant_id, scope=scope)
+        return bool(await self._repository.delete_folder(folder_id, tenant_id, scope=scope))
+
+    async def amove_session_to_folder(
+        self, session_id: str, tenant_id: str, folder_id: str | None, *, scope: ChatScope
+    ) -> _Session | None:
+        """Durable :meth:`move_session_to_folder` (same None / error contract)."""
+        if self._repository is None:
+            return self.move_session_to_folder(session_id, tenant_id, folder_id, scope=scope)
+        if not await self._repository.update_session(
+            session_id, tenant_id, scope=scope, folder_id=folder_id
+        ):
+            return None
+        return await self.aget_session(session_id, tenant_id, scope=scope)
 
     # ── Artifact CRUD ─────────────────────────────────────────────────────────
 

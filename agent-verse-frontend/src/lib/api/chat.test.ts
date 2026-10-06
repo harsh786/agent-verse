@@ -280,3 +280,48 @@ describe('chatApi SSO parity', () => {
     expect(c.headers['X-API-Key']).toBeUndefined();
   });
 });
+
+describe('chatApi folders (CHAT-D-1)', () => {
+  test('updateFolder PATCHes the folder with the new name', async () => {
+    const spy = mockFetch({ id: 'f1', name: 'Clients', color: '#112233' });
+    const out = await chatApi.updateFolder('f1', { name: 'Clients' });
+    const c = lastCall(spy);
+    expect(c.url).toBe(`${BASE}/chat/folders/f1`);
+    expect(c.method).toBe('PATCH');
+    expect(c.body).toEqual({ name: 'Clients' });
+    expect(out.name).toBe('Clients');
+  });
+
+  test('moveToFolder POSTs the encoded folder id, and none to unfile', async () => {
+    const spy = mockFetch({ id: 's1', folder_id: 'f 1' });
+    await chatApi.moveToFolder('s1', 'f 1');
+    expect(lastCall(spy).url).toBe(`${BASE}/chat/sessions/s1/move?folder_id=f%201`);
+    expect(lastCall(spy).method).toBe('POST');
+    await chatApi.moveToFolder('s1', null);
+    expect(lastCall(spy).url).toBe(`${BASE}/chat/sessions/s1/move`);
+  });
+
+  test('a 404 for another owner\'s folder surfaces as an error', async () => {
+    mockFetch({ detail: 'Folder not found' }, 404);
+    await expect(chatApi.moveToFolder('s1', 'f-theirs')).rejects.toThrow('HTTP 404');
+  });
+});
+
+describe('chatApi feedback (CHAT-D-2)', () => {
+  test('submitFeedback POSTs the rating and comment', async () => {
+    const spy = mockFetch({ message_id: 'm1', rating: -1, comment: 'off', updated_at: 'x' });
+    const out = await chatApi.submitFeedback('s1', 'm1', -1, 'off');
+    const c = lastCall(spy);
+    expect(c.url).toBe(`${BASE}/chat/sessions/s1/messages/m1/feedback`);
+    expect(c.method).toBe('POST');
+    expect(c.body).toEqual({ rating: -1, comment: 'off' });
+    expect(out.rating).toBe(-1);
+  });
+
+  test('clearFeedback DELETEs it and tolerates 204', async () => {
+    const spy = mockFetch(null, 204);
+    await chatApi.clearFeedback('s1', 'm1');
+    expect(lastCall(spy).method).toBe('DELETE');
+    expect(lastCall(spy).url).toBe(`${BASE}/chat/sessions/s1/messages/m1/feedback`);
+  });
+});

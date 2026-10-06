@@ -29,6 +29,17 @@ export interface ChatMessage {
   branch_id: string | null;
   parent_message_id: string | null;
   created_at: string;
+  /**
+   * The caller's saved feedback on this reply (CHAT-D-2). Present (null or an
+   * object) on messages loaded from the server; absent on local optimistic ones.
+   */
+  feedback?: ChatMessageFeedback | null;
+}
+
+export interface ChatMessageFeedback {
+  rating: -1 | 0 | 1;
+  comment: string | null;
+  updated_at: string;
 }
 
 export interface ChatFolder {

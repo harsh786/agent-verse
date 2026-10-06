@@ -6,7 +6,20 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,8 +38,15 @@ class ChatSessionFolder(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     color: Mapped[str] = mapped_column(String(20), nullable=False, default="#6366f1")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The principal that owns the folder (CHAT-D-1, migration f3a9c1e7d5b4), like
+    # ``ChatSession.owner_principal``: only it lists, renames, deletes or files
+    # into the folder.
+    owner_principal: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
     sessions: Mapped[list[ChatSession]] = relationship(
@@ -105,6 +125,36 @@ class ChatMessage(Base):
     )
 
     session: Mapped[ChatSession] = relationship("ChatSession", back_populates="messages")
+
+
+class ChatMessageFeedback(Base):
+    """One person's feedback on one chat reply (CHAT-D-2, migration a6c2e8f4b0d3)."""
+
+    __tablename__ = "chat_message_feedback"
+    __table_args__ = (
+        UniqueConstraint("message_id", "owner_principal", name="uq_chat_message_feedback_rater"),
+        CheckConstraint("rating BETWEEN -1 AND 1", name="ck_chat_message_feedback_rating"),
+        CheckConstraint(
+            "comment IS NULL OR char_length(comment) <= 4000",
+            name="ck_chat_message_feedback_comment",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    message_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_principal: Mapped[str] = mapped_column(String(256), nullable=False)
+    rating: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ChatMessageUsage(Base):
