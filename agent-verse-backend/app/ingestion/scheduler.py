@@ -883,97 +883,101 @@ async def _sync_locked(
         cursor = config.cursor_value or None
         new_cursor = cursor
 
-        async for raw_doc, next_cursor in connector.get_delta(config, cursor):  # type: ignore[misc]
-            # KB-15: an operator cancel (POST /sources/{id}/sync/cancel) stops the
-            # loop between documents; indexed work and the cursor are kept.
-            if await tracker.is_cancel_requested(tenant_id, job.job_id) is True:
-                cancelled = True
-                break
-            lease.check()  # TG-12: stop at once if this run lost the Source's lock
-            try:
-                from app.core.config import get_settings
-                from app.tenancy.context import PlanTier, TenantContext
+        # DEF-4: close the stream as soon as the loop ends (break, error or
+        # done) so a broker-offset connector commits what was acknowledged
+        # now, not whenever the generator is garbage-collected.
+        async with contextlib.aclosing(connector.get_delta(config, cursor)) as delta:
+            async for raw_doc, next_cursor in delta:  # type: ignore[attr-defined]
+                # KB-15: an operator cancel (POST /sources/{id}/sync/cancel) stops the
+                # loop between documents; indexed work and the cursor are kept.
+                if await tracker.is_cancel_requested(tenant_id, job.job_id) is True:
+                    cancelled = True
+                    break
+                lease.check()  # TG-12: stop at once if this run lost the Source's lock
+                try:
+                    from app.core.config import get_settings
+                    from app.tenancy.context import PlanTier, TenantContext
 
-                _settings = get_settings()
-                _tenant_ctx = TenantContext(
-                    tenant_id=tenant_id,
-                    api_key_id="scheduler",
-                    plan=PlanTier.FREE,
-                )
-
-                _note_move(moves, raw_doc)
-                result = await pipeline.ingest(raw_doc, config)
-
-                # PipelineResult exposes a ``status`` string, not success/skipped
-                # booleans — the old attributes raised AttributeError on the first
-                # document, killing every scheduled sync.
-                # Tokens/chunks feed ingestion_jobs → GET /ingestion/cost.
-                job.tokens_consumed += int(getattr(result, "tokens_consumed", 0) or 0)
-                job.chunks_created += int(getattr(result, "chunks_created", 0) or 0)
-                if result.status == "indexed":
-                    docs_indexed += 1
-                    indexed_ids.append(str(raw_doc.doc_id))
-                    if len(indexed_ids) >= _RESOLVE_BATCH:
-                        await _resolve_indexed()
-                    handled = True
-                elif result.status == "skipped":
-                    docs_skipped += 1
-                    handled = True
-                else:
-                    docs_failed += 1
-                    _log.warning(
-                        "pipeline failed: source=%s doc=%s error=%s",
-                        source_id,
-                        raw_doc.doc_id,
-                        getattr(result, "error", None) or getattr(result, "skip_reason", ""),
+                    _settings = get_settings()
+                    _tenant_ctx = TenantContext(
+                        tenant_id=tenant_id,
+                        api_key_id="scheduler",
+                        plan=PlanTier.FREE,
                     )
-                    # DLQ (LAW-17)
-                    handled = await tracker.add_to_dlq(
+
+                    _note_move(moves, raw_doc)
+                    result = await pipeline.ingest(raw_doc, config)
+
+                    # PipelineResult exposes a ``status`` string, not success/skipped
+                    # booleans — the old attributes raised AttributeError on the first
+                    # document, killing every scheduled sync.
+                    # Tokens/chunks feed ingestion_jobs → GET /ingestion/cost.
+                    job.tokens_consumed += int(getattr(result, "tokens_consumed", 0) or 0)
+                    job.chunks_created += int(getattr(result, "chunks_created", 0) or 0)
+                    if result.status == "indexed":
+                        docs_indexed += 1
+                        indexed_ids.append(str(raw_doc.doc_id))
+                        if len(indexed_ids) >= _RESOLVE_BATCH:
+                            await _resolve_indexed()
+                        handled = True
+                    elif result.status == "skipped":
+                        docs_skipped += 1
+                        handled = True
+                    else:
+                        docs_failed += 1
+                        _log.warning(
+                            "pipeline failed: source=%s doc=%s error=%s",
+                            source_id,
+                            raw_doc.doc_id,
+                            getattr(result, "error", None) or getattr(result, "skip_reason", ""),
+                        )
+                        # DLQ (LAW-17)
+                        handled = await tracker.add_to_dlq(
+                            source_id=source_id,
+                            tenant_id=tenant_id,
+                            doc_id=raw_doc.doc_id,
+                            error=getattr(result, "error", None)
+                            or getattr(result, "skip_reason", "")
+                            or "pipeline_failure",
+                            raw_doc=raw_doc,
+                            job_id=job.job_id,
+                        )
+
+                    new_cursor = next_cursor
+                    # DEF-4: indexed / skipped / durably DLQ'd — a broker-offset
+                    # connector (Kafka) may now commit this message, never before.
+                    # A failed DLQ write leaves it unacknowledged (redelivered).
+                    if handled:
+                        await _acknowledge(connector, raw_doc)
+
+                    # Commit cursor every 100 docs (LAW-14 atomicity), fenced (TG-12).
+                    if (docs_indexed + docs_skipped + docs_failed) % 100 == 0:
+                        await tracker.update_cursor(
+                            job, new_cursor or "", config, fence=lease.fence
+                        )
+
+                except (SyncLockLostError, IngestionPersistenceError):
+                    # NF-12: a failed cursor commit stops the run; it is not a
+                    # document failure (that path used to swallow it into the DLQ).
+                    raise
+                except Exception as doc_exc:
+                    docs_failed += 1
+                    _log.exception(
+                        "unhandled error processing doc in source=%s: %s", source_id, doc_exc
+                    )
+                    # USR-4: the document goes to the durable retry queue like any
+                    # other failure — it used to be counted and then lost.
+                    dlq_written = await tracker.add_to_dlq(
                         source_id=source_id,
                         tenant_id=tenant_id,
                         doc_id=raw_doc.doc_id,
-                        error=getattr(result, "error", None)
-                        or getattr(result, "skip_reason", "")
-                        or "pipeline_failure",
+                        error=f"{type(doc_exc).__name__}: {doc_exc}"[:2000],
                         raw_doc=raw_doc,
                         job_id=job.job_id,
                     )
-
-                new_cursor = next_cursor
-                # DEF-4: indexed / skipped / durably DLQ'd — a broker-offset
-                # connector (Kafka) may now commit this message, never before.
-                # A failed DLQ write leaves it unacknowledged (redelivered).
-                if handled:
-                    await _acknowledge(connector, raw_doc)
-
-                # Commit cursor every 100 docs (LAW-14 atomicity), fenced (TG-12).
-                if (docs_indexed + docs_skipped + docs_failed) % 100 == 0:
-                    await tracker.update_cursor(
-                        job, new_cursor or "", config, fence=lease.fence
-                    )
-
-            except (SyncLockLostError, IngestionPersistenceError):
-                # NF-12: a failed cursor commit stops the run; it is not a
-                # document failure (that path used to swallow it into the DLQ).
-                raise
-            except Exception as doc_exc:
-                docs_failed += 1
-                _log.exception(
-                    "unhandled error processing doc in source=%s: %s", source_id, doc_exc
-                )
-                # USR-4: the document goes to the durable retry queue like any
-                # other failure — it used to be counted and then lost.
-                dlq_written = await tracker.add_to_dlq(
-                    source_id=source_id,
-                    tenant_id=tenant_id,
-                    doc_id=raw_doc.doc_id,
-                    error=f"{type(doc_exc).__name__}: {doc_exc}"[:2000],
-                    raw_doc=raw_doc,
-                    job_id=job.job_id,
-                )
-                # Only a durable DLQ entry lets the message be committed.
-                if dlq_written:
-                    await _acknowledge(connector, raw_doc)
+                    # Only a durable DLQ entry lets the message be committed.
+                    if dlq_written:
+                        await _acknowledge(connector, raw_doc)
 
         await _resolve_indexed()
         # CHAT-KB: transcripts whose owner revoked (or whose tenant switched the
