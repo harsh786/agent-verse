@@ -1333,6 +1333,30 @@ async def _retry_one_dlq_entry(
         await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
         return "permanent"
 
+    from app.ingestion.url_ingest_replay import url_ingest_dlq_payload
+
+    url_payload = url_ingest_dlq_payload(entry.get("raw_doc_json"))
+    if url_payload is not None:
+        # A failed single-URL ingest (POST /knowledge/ingest/url): fetch and
+        # index it again through the route's own code.
+        from app.ingestion.url_ingest_replay import (
+            UrlReplayPermanentError,
+            replay_url_ingest,
+        )
+
+        try:
+            await replay_url_ingest(url_payload, tenant_id=tenant_id, pipeline=pipeline)
+        except UrlReplayPermanentError as exc:
+            _log.info("retry_dlq: dlq=%s url ingest failed permanently: %s", dlq_id, exc)
+            await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc)[:300])
+            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+            return "permanent"
+        except Exception as exc:
+            await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc)[:300])
+            return "still_failed"
+        await tracker.resolve_dlq_entry(dlq_id, tenant_id)
+        return "succeeded"
+
     raw_doc = raw_document_from_dlq_json(
         entry.get("raw_doc_json"),
         source_id=source_id,

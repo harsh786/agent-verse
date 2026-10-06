@@ -25,7 +25,7 @@ def test_repo_ingest_failure_is_dead_lettered() -> None:
         store.fail_ingestion_job_async = AsyncMock()
 
         tracker = MagicMock()
-        tracker.add_to_dlq = AsyncMock()
+        tracker.dead_letter_sourceless = AsyncMock(return_value="dlq-1")
 
         await _ingest_repo_background(
             job_id="job-dlq-1",
@@ -43,12 +43,14 @@ def test_repo_ingest_failure_is_dead_lettered() -> None:
 
         # Job was marked failed AND dead-lettered with the retry payload.
         store.fail_ingestion_job_async.assert_awaited()
-        tracker.add_to_dlq.assert_awaited_once()
-        kwargs = tracker.add_to_dlq.await_args.kwargs
+        tracker.dead_letter_sourceless.assert_awaited_once()
+        kwargs = tracker.dead_letter_sourceless.await_args.kwargs
         assert kwargs["doc_id"] == "job-dlq-1"
         assert kwargs["tenant_id"] == "tid-dlq"
-        assert kwargs["source_id"] == "repo:https://github.com/example/repo"
-        raw = kwargs["raw_doc"]
+        # No invented source id (it violated the FK to source_configs).
+        assert "source_id" not in kwargs
+        raw = kwargs["payload"]
+        assert raw["kind"] == "repository"
         assert raw["repo_url"] == "https://github.com/example/repo"
         assert raw["collection_id"] == "coll-1"
         assert raw["branch"] == "main"
