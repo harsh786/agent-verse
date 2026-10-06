@@ -114,8 +114,9 @@ class RPAResult:
 def rpa_allowed_domains_from_env() -> list[str] | None:
     """SSRF egress allowlist for RPA navigation (``RPA_SSRF_ALLOWED_DOMAINS``).
 
-    Empty by default → public-only (metadata/loopback/RFC-1918 blocked). A
-    comma-separated list permits specific internal hosts per deployment.
+    Empty by default → the shared policy (private hosts reachable while
+    ALLOW_PRIVATE_NETWORK_ACCESS is on; cloud metadata / link-local never). A
+    comma-separated list permits specific internal hosts when the flag is off.
     """
     raw = os.environ.get("RPA_SSRF_ALLOWED_DOMAINS", "")
     return [d.strip() for d in raw.split(",") if d.strip()] or None

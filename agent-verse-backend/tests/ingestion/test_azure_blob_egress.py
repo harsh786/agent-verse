@@ -127,3 +127,66 @@ async def test_public_connection_string_reaches_sdk(monkeypatch: pytest.MonkeyPa
         health = await AzureBlobConnector().validate_connection(_config({"connection_string": cs}))
     client_cls.from_connection_string.assert_called_once_with(cs)
     assert health.ok is True
+
+
+# ── DEC-SSRF: development storage follows ALLOW_PRIVATE_NETWORK_ACCESS ───────
+# The Azurite emulator (UseDevelopmentStorage=true -> 127.0.0.1:10000) used to be
+# refused outright. With the flag on it is a private endpoint like any other: it
+# goes through the egress guard and is pinned; metadata stays blocked.
+
+
+@pytest.mark.asyncio
+async def test_development_storage_reaches_sdk_with_private_access_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_PRIVATE_NETWORK_ACCESS", "true")
+    cs = "UseDevelopmentStorage=true"
+    assert azure_blob_endpoints({"connection_string": cs}) == [
+        "http://127.0.0.1:10000/devstoreaccount1"
+    ]
+    mods, client_cls = _fake_azure()
+    with patch.dict(sys.modules, mods):
+        health = await AzureBlobConnector().validate_connection(_config({"connection_string": cs}))
+    client_cls.from_connection_string.assert_called_once_with(cs)
+    assert health.ok is True
+
+
+def test_private_blob_endpoint_allowed_with_private_access_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ingestion.connector_egress import pin_source_urls_sync
+
+    monkeypatch.setenv("ALLOW_PRIVATE_NETWORK_ACCESS", "true")
+    cs = "BlobEndpoint=http://192.168.63.104:10000/devstoreaccount1;AccountName=a"
+    endpoints = azure_blob_endpoints({"connection_string": cs})
+    with pin_source_urls_sync(endpoints, context="azure_blob"):
+        pass
+
+
+@pytest.mark.parametrize(
+    "cs",
+    [
+        "UseDevelopmentStorage=true;DevelopmentStorageProxyUri=http://169.254.169.254",
+        "BlobEndpoint=http://169.254.169.254/;SharedAccessSignature=sv=1",
+    ],
+)
+def test_metadata_stays_blocked_with_private_access_on(
+    monkeypatch: pytest.MonkeyPatch, cs: str
+) -> None:
+    from app.ingestion.connector_egress import pin_source_urls_sync
+
+    monkeypatch.setenv("ALLOW_PRIVATE_NETWORK_ACCESS", "true")
+    endpoints = azure_blob_endpoints({"connection_string": cs})
+    with (
+        pytest.raises(ConnectorEgressBlockedError),
+        pin_source_urls_sync(endpoints, context="azure_blob"),
+    ):
+        pass
+
+
+def test_development_storage_refused_with_private_access_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALLOW_PRIVATE_NETWORK_ACCESS", "false")
+    with pytest.raises(ConnectorEgressBlockedError, match="development storage"):
+        azure_blob_endpoints({"connection_string": "UseDevelopmentStorage=true"})

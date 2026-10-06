@@ -7,8 +7,9 @@ just an API call. Selected via the ``hosted`` rerank strategy when a URL is
 configured.
 
 Contract:
-  * **SSRF-guarded** — the endpoint URL is validated (public, https) before any
-    request, blocking metadata/loopback/RFC-1918 targets.
+  * **SSRF-guarded** — the endpoint URL is validated before any request: cloud
+    metadata / link-local are always refused; private / internal hosts follow
+    ``ALLOW_PRIVATE_NETWORK_ACCESS`` (default on).
   * **Honest failure** — network/parse/auth errors raise ``HostedRerankerError``;
     callers (RerankPolicy) degrade to the local path rather than dropping results.
   * **Injectable client** — an httpx-compatible async client can be passed in for

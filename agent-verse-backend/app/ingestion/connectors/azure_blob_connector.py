@@ -24,6 +24,7 @@ from app.ingestion.connector_egress import (
 )
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking
+from app.net.ssrf_guard import private_network_access_enabled
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -34,6 +35,8 @@ _log = logging.getLogger(__name__)
 # (``10.0.0.5/``, ``x@127.0.0.1#``) could rewrite the host of the derived URL.
 _ACCOUNT_NAME = re.compile(r"^[a-z0-9]{3,24}$")
 _ENDPOINT_SUFFIX = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
+# What azure-storage-blob dials for ``UseDevelopmentStorage=true`` (Azurite).
+_DEV_STORAGE_BLOB_ENDPOINT = "http://127.0.0.1:10000/devstoreaccount1"
 
 
 def _parse_connection_string(conn_str: str) -> dict[str, str]:
@@ -67,7 +70,8 @@ def azure_blob_endpoints(connection_config: Mapping[str, Any]) -> list[str]:
     ``BlobServiceClient.from_connection_string`` honours ``BlobEndpoint``,
     ``BlobSecondaryEndpoint``, ``UseDevelopmentStorage`` (127.0.0.1:10000) and
     ``DevelopmentStorageProxyUri``, or derives ``<AccountName>.blob.<EndpointSuffix>``.
-    Development storage is refused outright; every URL-valued key is returned
+    Development storage is returned as its loopback endpoint (refused outright
+    when ALLOW_PRIVATE_NETWORK_ACCESS is off); every URL-valued key is returned
     so none can slip past the check.
     """
     conn_str = str(connection_config.get("connection_string", "") or "")
@@ -75,13 +79,19 @@ def azure_blob_endpoints(connection_config: Mapping[str, Any]) -> list[str]:
         return [_account_url(str(connection_config.get("account_name", "") or ""))]
 
     parts = _parse_connection_string(conn_str)
-    if parts.get("usedevelopmentstorage", "").lower() == "true" or (
-        "developmentstorageproxyuri" in parts
-    ):
+    dev_storage = parts.get("usedevelopmentstorage", "").lower() == "true"
+    # The Azurite emulator lives on loopback: reachable only while
+    # ALLOW_PRIVATE_NETWORK_ACCESS is on (the endpoints below still go through
+    # the egress guard and are pinned). Off: refused outright, as before.
+    if (
+        dev_storage or "developmentstorageproxyuri" in parts
+    ) and not private_network_access_enabled():
         raise ConnectorEgressBlockedError(
             "SSRF guard [azure_blob]: development storage (loopback emulator) is blocked"
         )
     endpoints: list[str] = []
+    if dev_storage:
+        endpoints.append(_DEV_STORAGE_BLOB_ENDPOINT)
     if parts.get("blobendpoint"):
         endpoints.append(parts["blobendpoint"])
     elif parts.get("accountname"):
