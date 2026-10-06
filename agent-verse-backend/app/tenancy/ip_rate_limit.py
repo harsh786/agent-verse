@@ -83,7 +83,27 @@ async def enforce_ip_rate_limit(
     detail: str = "Too many requests. Please wait before trying again.",
 ) -> None:
     """Raise HTTP 429 when this client IP exceeded *limit* hits per *window_s*."""
-    key = f"{bucket}:{_client_ip(request)}"
+    await enforce_key_rate_limit(
+        f"{bucket}:{_client_ip(request)}",
+        bucket=bucket,
+        limit=limit,
+        window_s=window_s,
+        redis=redis,
+        detail=detail,
+    )
+
+
+async def enforce_key_rate_limit(
+    key: str,
+    *,
+    bucket: str,
+    limit: int,
+    window_s: float,
+    redis: Any = None,
+    detail: str = "Too many requests. Please wait before trying again.",
+) -> None:
+    """Raise HTTP 429 when *key* (e.g. ``"<bucket>:<tenant_id>"``) exceeded *limit*
+    hits per *window_s* — the same Redis window (in-process without Redis)."""
     count: int
     if redis is not None:
         try:

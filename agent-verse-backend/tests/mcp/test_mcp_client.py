@@ -176,7 +176,9 @@ async def test_jira_rest_connector_exposes_search_tool() -> None:
 
     tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
 
-    assert [tool.name for tool in tools] == ["jira_search_issues"]
+    assert [tool.name for tool in tools] == [
+        "jira_search_issues", "jira_get_issue", "jira_list_projects"
+    ]
 
 
 @pytest.mark.asyncio
@@ -196,7 +198,9 @@ async def test_jira_rest_connector_exposes_search_tool_without_url_protocol() ->
 
     tools = await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
 
-    assert [tool.name for tool in tools] == ["jira_search_issues"]
+    assert [tool.name for tool in tools] == [
+        "jira_search_issues", "jira_get_issue", "jira_list_projects"
+    ]
 
 
 @pytest.mark.asyncio

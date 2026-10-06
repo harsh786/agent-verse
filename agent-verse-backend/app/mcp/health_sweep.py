@@ -77,29 +77,167 @@ def classify_health(status_code: int) -> str:
     return "unhealthy"
 
 
+_MCP_PROTOCOL_VERSION = "2025-03-26"
+_FALLBACK_TO_ROOT = frozenset({404, 405})
+
+
+def _http_error(status_code: int) -> str:
+    if status_code in (401, 403):
+        return (
+            f"HTTP {status_code}: the server is up but refused the unauthenticated probe"
+        )
+    return f"HTTP {status_code}"
+
+
+def _mcp_initialize() -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": f"health-{secrets.token_hex(4)}",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": _MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "agentverse-health-probe", "version": "1"},
+        },
+    }
+
+
+def _jsonrpc_error(resp: Any) -> str | None:
+    """The JSON-RPC error of a JSON initialize answer (None for a result / SSE)."""
+    if "json" not in str(resp.headers.get("content-type", "")).lower():
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        return "initialize answered with invalid JSON"
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        return f"MCP error: {str(body['error'].get('message') or body['error'])[:160]}"
+    if isinstance(body, dict) and "result" in body:
+        return None
+    return "initialize answered without a JSON-RPC result"
+
+
 async def probe_connector(cfg: Any) -> dict[str, Any]:
-    """SSRF-guarded GET {base}/health on the connector (pinned client)."""
+    """SSRF-guarded liveness probe of one connector (pinned client).
+
+    a02-F034-01: it was always ``GET {base}/health``, and a standard MCP server
+    (which has no such route) answered 404 and was recorded ``degraded``. Now an
+    MCP endpoint (``…/mcp``) gets the protocol's own ``initialize`` request (any
+    session it opens is closed again), and a REST/OpenAPI connector gets
+    ``GET {base}/health``, falling back to ``GET {base}`` when the server has no
+    health route (404/405).
+    """
+    from app.mcp.client import _absolute_http_url, _is_mcp_endpoint
     from app.net.ssrf_guard import private_access_networks, public_async_client, request_public
 
-    base = (cfg.base_url or cfg.url or "").rstrip("/")
+    base = _absolute_http_url((cfg.base_url or cfg.url or "").rstrip("/"))
     t0 = time.monotonic()
     nets = private_access_networks()
     # Private networks only when ALLOW_PRIVATE_NETWORK_ACCESS is on; otherwise the
     # call is exactly the public-only probe it always was.
     net_kw: dict[str, Any] = {"allowed_networks": nets} if nets is not None else {}
+    protocol_error: str | None = None
     try:
         async with public_async_client(timeout=PROBE_TIMEOUT_S, **net_kw) as client:
-            resp = await request_public(
-                client, "GET", f"{base}/health", context="mcp health check", **net_kw
-            )
+            if _is_mcp_endpoint(base):
+                resp = await request_public(
+                    client,
+                    "POST",
+                    base,
+                    context="mcp health check",
+                    json=_mcp_initialize(),
+                    headers={
+                        "Accept": "application/json, text/event-stream",
+                        "Content-Type": "application/json",
+                    },
+                    **net_kw,
+                )
+                if resp.status_code < 400:
+                    protocol_error = _jsonrpc_error(resp)
+                session = resp.headers.get("mcp-session-id")
+                if session:
+                    try:  # best effort: do not leave the probe's session open
+                        await request_public(
+                            client,
+                            "DELETE",
+                            base,
+                            context="mcp health check",
+                            headers={"Mcp-Session-Id": session},
+                            **net_kw,
+                        )
+                    except Exception as exc:
+                        logger.debug("mcp_health_session_close_failed error=%s", exc)
+            else:
+                resp = await request_public(
+                    client, "GET", f"{base}/health", context="mcp health check", **net_kw
+                )
+                if resp.status_code in _FALLBACK_TO_ROOT:
+                    resp = await request_public(
+                        client, "GET", base, context="mcp health check", **net_kw
+                    )
     except Exception as exc:
         return {"status": "unreachable", "latency_ms": None, "error": str(exc)[:200]}
     status = classify_health(resp.status_code)
+    error: str | None = None if status == "healthy" else _http_error(resp.status_code)
+    if status == "healthy" and protocol_error:
+        status, error = "degraded", protocol_error
     return {
         "status": status,
         "latency_ms": round((time.monotonic() - t0) * 1000),
-        "error": None if status == "healthy" else f"HTTP {resp.status_code}",
+        "error": error,
     }
+
+
+def builtin_readiness(cfg: Any) -> dict[str, Any]:
+    """In-process readiness of a built-in (``builtin://``) connector (a02-F034-02).
+
+    Built-ins have no URL of their own to probe, so the sweep skipped them and
+    they never had a snapshot. Without calling the vendor API (that needs the
+    tenant's secrets, and is what the connector test does), the sweep now
+    records whether the connector can run here: ``disabled`` (operator kill
+    switch), ``unhealthy`` (no built-in handler for its type), ``degraded`` (the
+    vendor API needs credentials the connector does not have) or ``ready``
+    (handler present, enabled, credentials configured or none needed).
+    """
+    from app.mcp.builtin_kill_switch import disabled_reason
+    from app.mcp.servers.registry_wiring import (
+        builtin_config_for_type,
+        builtin_type_of,
+        has_tenant_credentials,
+        infer_builtin_type_from_name,
+    )
+
+    declared = builtin_type_of(cfg)
+    url = (cfg.base_url or cfg.url or "").strip()
+    url_type = url.removeprefix("builtin://").split("/", 1)[0] if url else ""
+    spec = (
+        (builtin_config_for_type(declared) if declared else None)
+        or (builtin_config_for_type(url_type) if url_type else None)
+        or (
+            builtin_config_for_type(inferred)
+            if (inferred := infer_builtin_type_from_name(str(cfg.name or "")))
+            else None
+        )
+    )
+    if spec is None:
+        return {
+            "status": "unhealthy",
+            "latency_ms": None,
+            "error": f"no built-in handler for {declared or url_type or cfg.name!r}",
+        }
+    builtin_type = str(spec["server_id"])
+    reason = disabled_reason(builtin_type)
+    if reason is not None:
+        return {"status": "disabled", "latency_ms": None, "error": reason}
+    required = tuple(spec.get("requires_env", []) or ())
+    credentials = cfg.auth_config if isinstance(cfg.auth_config, dict) else {}
+    if required and not has_tenant_credentials(credentials, required):
+        return {
+            "status": "degraded",
+            "latency_ms": None,
+            "error": f"credentials not configured for {builtin_type}",
+        }
+    return {"status": "ready", "latency_ms": 0, "error": None}
 
 
 def _probe_target(config: dict[str, Any]) -> Any | None:
@@ -108,9 +246,18 @@ def _probe_target(config: dict[str, Any]) -> Any | None:
 
     cfg = MCPServerConfig.model_validate(config)
     base = (cfg.base_url or cfg.url or "").strip()
-    if not base or base.startswith("builtin://"):
+    if not base and not _is_builtin(cfg):
         return None
     return cfg
+
+
+def _is_builtin(cfg: Any) -> bool:
+    """Dispatched by an in-process handler (a built-in type wins over its URL,
+    exactly as in ``MCPClient._call_tool_impl``)."""
+    from app.mcp.servers.registry_wiring import builtin_type_of
+
+    base = (cfg.base_url or cfg.url or "").strip()
+    return base.startswith("builtin://") or bool(builtin_type_of(cfg))
 
 
 async def _probe_row(row: Row, probe: Probe, sem: asyncio.Semaphore) -> dict[str, Any] | None:
@@ -124,6 +271,12 @@ async def _probe_row(row: Row, probe: Probe, sem: asyncio.Semaphore) -> dict[str
         }
     if cfg is None:
         return None
+    if _is_builtin(cfg):
+        try:
+            outcome = builtin_readiness(cfg)
+        except Exception as exc:
+            outcome = {"status": "unhealthy", "latency_ms": None, "error": str(exc)[:200]}
+        return {"tenant_id": tenant_id, "server_id": server_id, **outcome}
     async with sem:
         try:
             outcome = await asyncio.wait_for(probe(cfg), timeout=PROBE_TIMEOUT_S + 1)
@@ -277,6 +430,7 @@ async def prune_health_snapshots(
 __all__ = [
     "CURSOR_KEY",
     "LOCK_KEY",
+    "builtin_readiness",
     "classify_health",
     "fetch_connector_page",
     "probe_connector",

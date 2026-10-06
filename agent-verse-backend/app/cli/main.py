@@ -296,6 +296,46 @@ def list_connectors() -> None:
         typer.echo(f"{sid}  {name}  {status_str}")
 
 
+@app.command(name="connectors-certify")
+def connectors_certify(
+    connector: str = typer.Option("", "--connector", "-c", help="Manifest key (all if empty)"),
+    level: str = typer.Option("static", "--level", help="static | mocked"),
+    server_id: str = typer.Option("", "--server-id", help="Your connector id (mocked)"),
+) -> None:
+    """Certify connectors (POST /connectors/certification/run, a02-F031-02).
+
+    ``--level static`` checks the certification manifest; ``--level mocked``
+    discovers ``--server-id`` and runs the manifest's read-only tool on it.
+    Exits 1 when any certification fails.
+    """
+    if level not in ("static", "mocked"):
+        typer.echo("Error: --level must be static or mocked", err=True)
+        raise typer.Exit(2)
+    if level == "mocked" and not (connector and server_id):
+        typer.echo("Error: --level mocked needs --connector and --server-id", err=True)
+        raise typer.Exit(2)
+    base, key = _base_url(), _api_key()
+    names = (
+        [connector]
+        if connector
+        else [str(t["connector"]) for t in _get(f"{base}/connectors/certification/targets", key)]
+    )
+    failed = 0
+    for name in names:
+        body: dict[str, str] = {"connector": name, "level": level}
+        if server_id:
+            body["server_id"] = server_id
+        result = _post(f"{base}/connectors/certification/run", key, body)
+        ok = result.get("status") == "passed"
+        failed += 0 if ok else 1
+        checks = ", ".join(f"{c['name']}={c['status']}" for c in result.get("checks", []))
+        typer.echo(f"{'PASS' if ok else 'FAIL'}  {name:<16} {level:<7} {checks}")
+        for warning in result.get("warnings", []):
+            typer.echo(f"      {warning}")
+    if failed:
+        raise typer.Exit(1)
+
+
 @app.command(name="eval")
 def eval_goal(goal_id: str = typer.Argument(..., help="Goal ID to evaluate")) -> None:
     """Show eval scorecard for a completed goal."""

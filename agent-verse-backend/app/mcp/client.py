@@ -13,6 +13,7 @@ import contextvars
 import inspect
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -21,6 +22,7 @@ from typing import Any, cast
 
 import httpx
 
+from app.mcp.bounded_cache import BoundedTTLCache
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
@@ -33,6 +35,23 @@ from app.tenancy.context import TenantContext
 _IDEMPOTENCY_KEY: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "mcp_idempotency_key", default=None
 )
+
+
+# a02-F032-02/06: inside strict discovery, discover_tools raises the transport /
+# protocol error instead of answering [] (an error must not read as "no tools").
+_STRICT_DISCOVERY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "mcp_strict_discovery", default=False
+)
+
+
+@contextlib.contextmanager
+def strict_discovery() -> Any:
+    """Within this block a failing ``discover_tools`` raises instead of returning []."""
+    token = _STRICT_DISCOVERY.set(True)
+    try:
+        yield
+    finally:
+        _STRICT_DISCOVERY.reset(token)
 
 
 def current_idempotency_key() -> str | None:
@@ -63,6 +82,23 @@ logger = get_logger(__name__)
 SecretResolver = Callable[..., str | None | Awaitable[str | None]]
 
 
+_BREAKER_CACHE_MAX = 4096
+_BREAKER_IDLE_TTL_S = 3600.0
+_SCHEMA_CACHE_MAX = 1024
+_SCHEMA_CACHE_TTL_S = 300.0
+
+
+def _config_fingerprint(cfg: Any) -> str:
+    """Digest of a connector's stored config (never logged; secrets are refs)."""
+    import hashlib
+
+    try:
+        raw = cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else repr(cfg)
+    except Exception:
+        raw = repr(cfg)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
 class CircuitBreakerOpenError(Exception):
     """Raised when a circuit breaker is open and the call cannot proceed."""
 
@@ -76,6 +112,22 @@ class ToolDefinition:
     server_name: str = ""
 
 
+DISCOVERY_CONCURRENCY = 8
+DISCOVERY_TIMEOUT_S = 20.0
+
+
+@dataclass
+class DiscoveryReport:
+    """Tools of every connector that answered, and why the others did not."""
+
+    tools: list[ToolDefinition] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return not self.errors
+
+
 @dataclass
 class ToolCallResult:
     tool_name: str
@@ -86,6 +138,31 @@ class ToolCallResult:
     # True when ``output`` is a cached result served because the connector's
     # circuit is open — not a live call (MCPCLI-05).
     stale: bool = False
+
+
+def stale_result_notice(result: Any) -> str:
+    """The notice a consumer must show with a stale result ("" for a live one).
+
+    A result served from the read cache because the connector's circuit is open
+    is ``success=True`` (it holds real, earlier data) but it is not a live call
+    (a02-F030-04): every consumer that hands the output to a model or a person
+    prefixes this notice and flags the call ``stale``.
+    """
+    if getattr(result, "stale", False) is not True:
+        return ""
+    server = getattr(result, "server_id", "") or "the connector"
+    return (
+        f"[STALE CACHED RESULT] {server} is unavailable (circuit open); this is an "
+        "earlier cached result of the same call, not live data. It may be out of date."
+    )
+
+
+def with_stale_notice(result: Any, text: Any) -> Any:
+    """``text`` prefixed with :func:`stale_result_notice` when ``result`` is stale."""
+    notice = stale_result_notice(result)
+    if not notice:
+        return text
+    return f"{notice}\n\n{text}" if text not in (None, "") else notice
 
 
 def _is_caller_argument_error(error: str | None) -> bool:
@@ -213,6 +290,80 @@ def _is_jira_rest_endpoint(cfg: MCPServerConfig) -> bool:
     return "jira" in name or "atlassian.net" in url
 
 
+# The tools a user-registered Jira REST connector exposes (a02-F030-05). One
+# table drives discovery AND dispatch, so a discovered tool is always callable
+# and anything else is refused with the list of supported tools. Read-only: a
+# connector that must write uses the built-in Jira connector.
+_JIRA_ISSUE_KEY = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_]*-\d+|\d+)$")
+_JIRA_DEFAULT_FIELDS = [
+    "summary",
+    "status",
+    "assignee",
+    "priority",
+    "created",
+    "updated",
+    "issuetype",
+]
+_JIRA_REST_TOOLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "jira_search_issues": (
+        "Search Jira issues using JQL (Jira Query Language)",
+        {
+            "type": "object",
+            "properties": {
+                "jql": {"type": "string"},
+                "max_results": {"type": "integer", "default": 50},
+                "start_at": {"type": "integer", "default": 0},
+                "fields": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["jql"],
+        },
+    ),
+    "jira_get_issue": (
+        "Get one Jira issue by key (e.g. PROJ-123) or id",
+        {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string"},
+                "fields": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["issue_key"],
+        },
+    ),
+    "jira_list_projects": (
+        "List the Jira projects visible to the connector's account",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+}
+
+
+def _jira_issue_summary(issue: dict[str, Any]) -> dict[str, Any]:
+    fields = issue.get("fields") or {}
+    return {
+        "id": issue.get("id", ""),
+        "key": issue.get("key", ""),
+        "summary": fields.get("summary", ""),
+        "status": (fields.get("status") or {}).get("name", ""),
+        "priority": (fields.get("priority") or {}).get("name", ""),
+        "assignee": (fields.get("assignee") or {}).get("displayName", ""),
+        "issue_type": (fields.get("issuetype") or {}).get("name", ""),
+        "created": fields.get("created", ""),
+        "updated": fields.get("updated", ""),
+    }
+
+
+def _jira_max_results(arguments: dict[str, Any]) -> int:
+    try:
+        return max(1, min(int(arguments.get("max_results", 50)), 100))
+    except (TypeError, ValueError):
+        return 50
+
+
 def _jsonrpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "jsonrpc": "2.0",
@@ -283,8 +434,14 @@ class MCPClient:
             "SecretResolver", secret_resolver or resolve_connector_secret_ref
         )
         self._secret_resolver_accepts_tenant = self._accepts_tenant_context(self._secret_resolver)
-        # Circuit breaker support — wired externally by setting _redis
-        self._circuit_breakers: dict[str, Any] = {}
+        # Circuit breaker support — wired externally by setting _redis.
+        # Bounded (a02-F030-11): it was a plain dict that grew by one breaker per
+        # tenant x connector ever called. An entry idle for an hour is dropped (a
+        # Redis-backed breaker keeps its state in Redis; a local one idle that
+        # long is past its cooldown anyway).
+        self._circuit_breakers: Any = BoundedTTLCache[str, Any](
+            maxsize=_BREAKER_CACHE_MAX, ttl_s=_BREAKER_IDLE_TTL_S, sliding=True
+        )
         self._redis: Any = redis
         # LLM provider for self-healing tool argument repair
         self._provider: Any = llm_provider
@@ -301,9 +458,13 @@ class MCPClient:
         # key would hand tenant A's Mcp-Session-Id to tenant B's calls against
         # the same nominal server. Scoping by tenant closes that off entirely.
         self._mcp_sessions: dict[str, str] = {}
-        # Per-session tool schema cache: server_id → list[ToolDefinition]
-        # Avoids calling discover_tools() on every call_tool() invocation
-        self._schema_cache: dict[str, list[Any]] = {}
+        # Tool schema cache: avoids calling discover_tools() on every call_tool().
+        # Keyed by server x tenant x a fingerprint of the connector config, so an
+        # edited connector is rediscovered on every replica; bounded and expiring
+        # (a02-F030-11 — it was an unbounded dict never invalidated).
+        self._schema_cache: Any = BoundedTTLCache[str, list[Any]](
+            maxsize=_SCHEMA_CACHE_MAX, ttl_s=_SCHEMA_CACHE_TTL_S
+        )
         # Tool result cache (ToolResultCache or None) — wired externally
         self._tool_cache: Any = None
 
@@ -383,39 +544,34 @@ class MCPClient:
     def _get_circuit_breaker(self, server_id: str, tenant_id: str = "") -> Any:
         """Get or create a per-tenant circuit breaker for a server."""
         cb_key = f"{tenant_id}:{server_id}"
-        if cb_key not in self._circuit_breakers:
-            if self._redis is not None:
-                try:
-                    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
+        existing = self._circuit_breakers.get(cb_key)
+        if existing is not None:
+            return existing
+        from app.reliability.circuit_breaker import CircuitBreaker
 
-                    self._circuit_breakers[cb_key] = RedisCircuitBreaker(
-                        redis_client=self._redis,
-                        tenant_id=tenant_id,
-                        tool_name=f"mcp:{server_id}",
-                        failure_threshold=5,
-                        cooldown_seconds=60.0,
-                    )
-                except Exception as exc:
-                    # A process-local breaker, never none at all (MCPCLI-04).
-                    logger.error(
-                        "circuit_breaker_redis_init_failed server_id=%s error=%s",
-                        server_id,
-                        exc,
-                    )
-                    from app.reliability.circuit_breaker import CircuitBreaker
+        breaker: Any = None
+        if self._redis is not None:
+            try:
+                from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
-                    self._circuit_breakers[cb_key] = CircuitBreaker(
-                        failure_threshold=5,
-                        cooldown_seconds=60.0,
-                    )
-            else:
-                from app.reliability.circuit_breaker import CircuitBreaker
-
-                self._circuit_breakers[cb_key] = CircuitBreaker(
+                breaker = RedisCircuitBreaker(
+                    redis_client=self._redis,
+                    tenant_id=tenant_id,
+                    tool_name=f"mcp:{server_id}",
                     failure_threshold=5,
                     cooldown_seconds=60.0,
                 )
-        return self._circuit_breakers[cb_key]
+            except Exception as exc:
+                # A process-local breaker, never none at all (MCPCLI-04).
+                logger.error(
+                    "circuit_breaker_redis_init_failed server_id=%s error=%s",
+                    server_id,
+                    exc,
+                )
+        if breaker is None:
+            breaker = CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self._circuit_breakers[cb_key] = breaker
+        return breaker
 
     async def _resolve_auth_value(self, value: Any, tenant_ctx: TenantContext | None) -> str:
         if is_connector_secret_ref(value):
@@ -603,25 +759,17 @@ class MCPClient:
 
         # ── Non-builtin Jira REST connector ───────────────────────────────────
         # A user-registered Jira connector (e.g. the "PineLabs JIRA" record)
-        # exposes a synthetic jira_search_issues tool via the Jira REST API.
+        # exposes synthetic read tools over the Jira REST API (_JIRA_REST_TOOLS).
         if _is_jira_rest_endpoint(cfg):
             return [
                 ToolDefinition(
-                    name="jira_search_issues",
-                    description="Search Jira issues using JQL (Jira Query Language)",
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "jql": {"type": "string"},
-                            "max_results": {"type": "integer", "default": 50},
-                            "start_at": {"type": "integer", "default": 0},
-                            "fields": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["jql"],
-                    },
+                    name=name,
+                    description=description,
+                    input_schema=json.loads(json.dumps(schema)),
                     server_id=server_id,
                     server_name=cfg.name,
                 )
+                for name, (description, schema) in _JIRA_REST_TOOLS.items()
             ]
 
         headers = await self._build_auth_headers(cfg, tenant_ctx=tenant_ctx, server_id=server_id)
@@ -691,20 +839,71 @@ class MCPClient:
                     if t.get("name")
                 ]
         except Exception:
+            if _STRICT_DISCOVERY.get():
+                raise
             return []
 
+    async def discover_all_tools_report(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        concurrency: int = DISCOVERY_CONCURRENCY,
+        timeout_s: float = DISCOVERY_TIMEOUT_S,
+    ) -> DiscoveryReport:
+        """Discover every connector of the tenant, each on its own (a02-F032-06).
+
+        The listing failing raises (the caller decides how to answer). One
+        connector failing — SSRF block, unresolvable secret, transport error,
+        timeout — is recorded in ``errors`` and the others still run, with
+        bounded concurrency and a per-connector timeout (they ran serially).
+        """
+        import asyncio
+
+        records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _one(server_id: str) -> tuple[list[ToolDefinition], str | None]:
+            async with sem:
+                try:
+                    with strict_discovery():
+                        tools = await asyncio.wait_for(
+                            self.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx),
+                            timeout=timeout_s,
+                        )
+                except TimeoutError:
+                    return [], f"discovery timed out after {timeout_s:g}s"
+                except Exception as exc:
+                    return [], (str(exc) or type(exc).__name__)[:300]
+            return list(tools or []), None
+
+        ids = [str(sid) for sid, _ in records]
+        outcomes = await asyncio.gather(*(_one(sid) for sid in ids))
+        report = DiscoveryReport()
+        for server_id, (tools, error) in zip(ids, outcomes, strict=True):
+            report.tools.extend(tools)
+            if error is not None:
+                report.errors.append({"connector_id": server_id, "error": error})
+        return report
+
     async def discover_all_tools(self, *, tenant_ctx: TenantContext) -> list[ToolDefinition]:
-        """Discover all tools across all registered servers for this tenant."""
-        all_tools: list[ToolDefinition] = []
+        """Discover all tools across all registered servers for this tenant.
+
+        Best effort for callers that only want a tool list: a failing connector
+        no longer aborts the others (a02-F032-06) and every failure is logged.
+        Callers that must report incompleteness use :meth:`discover_all_tools_report`.
+        """
         try:
-            # Use public API instead of accessing private _redis directly.
-            records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
-            for sid_str, _ in records:
-                tools = await self.discover_tools(server_id=sid_str, tenant_ctx=tenant_ctx)
-                all_tools.extend(tools)
+            report = await self.discover_all_tools_report(tenant_ctx=tenant_ctx)
         except Exception as exc:
             logger.warning("discover_all_tools failed: %s", exc)
-        return all_tools
+            return []
+        for err in report.errors:
+            logger.warning(
+                "discover_all_tools_connector_failed server=%s error=%s",
+                err["connector_id"],
+                err["error"],
+            )
+        return report.tools
 
     async def _dispatch_builtin_tool(
         self,
@@ -1038,82 +1237,98 @@ class MCPClient:
         arguments: dict[str, Any],
         tenant_ctx: TenantContext,
     ) -> ToolCallResult:
-        if tool_name != "jira_search_issues":
+        def _fail(error: str) -> ToolCallResult:
             return ToolCallResult(
-                tool_name=tool_name,
-                success=False,
-                error="Unsupported Jira REST tool",
-                server_id=server_id,
+                tool_name=tool_name, success=False, error=error, server_id=server_id
             )
+
+        if tool_name not in _JIRA_REST_TOOLS:
+            return _fail(
+                f"Unsupported Jira REST tool {tool_name!r}; this connector supports "
+                f"{', '.join(sorted(_JIRA_REST_TOOLS))} (use the built-in Jira "
+                "connector for write operations)"
+            )
+        base_url = _absolute_http_url(server.url or server.base_url).rstrip("/")
+        request: tuple[str, str, dict[str, Any]]
+        if tool_name == "jira_search_issues":
+            jql = arguments.get("jql")
+            if not isinstance(jql, str) or not jql.strip():
+                return _fail("jira_search_issues requires a non-empty 'jql' string")
+            payload: dict[str, Any] = {
+                "jql": jql,
+                "maxResults": _jira_max_results(arguments),
+                "fields": arguments.get("fields") or _JIRA_DEFAULT_FIELDS,
+            }
+            if arguments.get("next_page_token"):
+                payload["nextPageToken"] = arguments["next_page_token"]
+            request = ("POST", f"{base_url}/rest/api/3/search/jql", {"json": payload})
+        elif tool_name == "jira_get_issue":
+            key = str(arguments.get("issue_key") or arguments.get("key") or "").strip()
+            if not _JIRA_ISSUE_KEY.match(key):
+                return _fail("jira_get_issue requires 'issue_key' like PROJ-123 (or an id)")
+            fields = arguments.get("fields") or _JIRA_DEFAULT_FIELDS
+            request = (
+                "GET",
+                f"{base_url}/rest/api/3/issue/{key}",
+                {"params": {"fields": ",".join(str(f) for f in fields)}},
+            )
+        else:  # jira_list_projects
+            params: dict[str, Any] = {"maxResults": _jira_max_results(arguments)}
+            if arguments.get("query"):
+                params["query"] = str(arguments["query"])
+            request = ("GET", f"{base_url}/rest/api/3/project/search", {"params": params})
 
         headers = await self._build_auth_headers(server, tenant_ctx=tenant_ctx, server_id=server_id)
-        default_fields = [
-            "summary",
-            "status",
-            "assignee",
-            "priority",
-            "created",
-            "updated",
-            "issuetype",
-        ]
-        payload: dict[str, Any] = {
-            "jql": arguments["jql"],
-            "maxResults": arguments.get("max_results", 50),
-            "fields": arguments.get("fields", default_fields),
-        }
-        if arguments.get("next_page_token"):
-            payload["nextPageToken"] = arguments["next_page_token"]
-
+        method, url, kwargs = request
         try:
-            base_url = _absolute_http_url(server.url or server.base_url).rstrip("/")
             async with self._http_client() as client:
-                resp = await client.post(
-                    f"{base_url}/rest/api/3/search/jql",
-                    json=payload,
-                    headers=headers,
-                )
+                if method == "POST":
+                    resp = await client.post(url, headers=headers, **kwargs)
+                else:
+                    resp = await client.get(url, headers=headers, **kwargs)
                 resp.raise_for_status()
                 data = resp.json()
-            issues = data.get("issues", [])
-            return ToolCallResult(
-                tool_name=tool_name,
-                success=True,
-                output={
-                    "total": data.get("total", len(issues)),
-                    "start_at": data.get("startAt", 0),
-                    "max_results": data.get("maxResults", 50),
-                    "issues": [
-                        {
-                            "id": issue.get("id", ""),
-                            "key": issue.get("key", ""),
-                            "summary": (issue.get("fields") or {}).get("summary", ""),
-                            "status": ((issue.get("fields") or {}).get("status") or {}).get(
-                                "name", ""
-                            ),
-                            "priority": ((issue.get("fields") or {}).get("priority") or {}).get(
-                                "name", ""
-                            ),
-                            "assignee": ((issue.get("fields") or {}).get("assignee") or {}).get(
-                                "displayName", ""
-                            ),
-                            "issue_type": ((issue.get("fields") or {}).get("issuetype") or {}).get(
-                                "name", ""
-                            ),
-                            "created": (issue.get("fields") or {}).get("created", ""),
-                            "updated": (issue.get("fields") or {}).get("updated", ""),
-                        }
-                        for issue in issues
-                    ],
-                },
-                server_id=server_id,
-            )
         except Exception as exc:
-            return ToolCallResult(
-                tool_name=tool_name,
-                success=False,
-                error=str(exc),
-                server_id=server_id,
-            )
+            return _fail(str(exc))
+
+        output: dict[str, Any]
+        if tool_name == "jira_search_issues":
+            issues = data.get("issues", [])
+            output = {
+                "total": data.get("total", len(issues)),
+                "start_at": data.get("startAt", 0),
+                "max_results": data.get("maxResults", 50),
+                "issues": [_jira_issue_summary(issue) for issue in issues],
+            }
+            if data.get("nextPageToken"):
+                output["next_page_token"] = data["nextPageToken"]
+        elif tool_name == "jira_get_issue":
+            fields = data.get("fields") or {}
+            description = fields.get("description")
+            output = {
+                **_jira_issue_summary(data),
+                "reporter": (fields.get("reporter") or {}).get("displayName", ""),
+                "labels": list(fields.get("labels") or []),
+                "description": description if isinstance(description, str | dict) else "",
+            }
+        else:
+            projects = data.get("values", []) if isinstance(data, dict) else list(data or [])
+            output = {
+                "total": data.get("total", len(projects)) if isinstance(data, dict) else len(
+                    projects
+                ),
+                "projects": [
+                    {
+                        "id": p.get("id", ""),
+                        "key": p.get("key", ""),
+                        "name": p.get("name", ""),
+                        "type": p.get("projectTypeKey", ""),
+                    }
+                    for p in projects
+                    if isinstance(p, dict)
+                ],
+            }
+        return ToolCallResult(tool_name=tool_name, success=True, output=output, server_id=server_id)
 
     async def _call_tool_impl(
         self,
@@ -1496,14 +1711,17 @@ class MCPClient:
             ):
                 try:
                     # Check per-session schema cache first
-                    _cache_key = f"{server_id}:{tenant_ctx.tenant_id}"
-                    if _cache_key not in self._schema_cache:
+                    _cache_key = (
+                        f"{server_id}:{tenant_ctx.tenant_id}:{_config_fingerprint(cfg)}"
+                    )
+                    _cached_tools = self._schema_cache.get(_cache_key)
+                    if _cached_tools is None:
                         _live_tools = await self.discover_tools(
                             server_id=server_id, tenant_ctx=tenant_ctx
                         )
                         self._schema_cache[_cache_key] = _live_tools
                     else:
-                        _live_tools = self._schema_cache[_cache_key]
+                        _live_tools = _cached_tools
                     for _lt in _live_tools:
                         if _lt.name == tool_name:
                             _tool_schema = _lt.input_schema or {}

@@ -3393,6 +3393,16 @@ class ExecutorMixin:
                                 if _approved_result.success
                                 else str(_approved_result.error)
                             )
+                            if _approved_result.success and (
+                                getattr(_approved_result, "stale", False) is True
+                            ):
+                                # a02-F030-04: cached while the circuit is open.
+                                from app.mcp.client import with_stale_notice
+
+                                raw_output = with_stale_notice(
+                                    _approved_result,
+                                    self._sanitize_tool_raw_output(raw_output),
+                                )
                             raw_output_sanitized = False
                             if state.steps:
                                 # GRD-1: the approved call is this step's evidence
@@ -3415,6 +3425,7 @@ class ExecutorMixin:
                                             else ""
                                         ),
                                         "approved": True,
+                                        "stale": getattr(_approved_result, "stale", False) is True,
                                     }
                                 )
                             record_tool_call(
@@ -3637,6 +3648,16 @@ class ExecutorMixin:
                                     except Exception:
                                         pass  # injection scan must never block execution
 
+                                # a02-F030-04: a cached result served while the
+                                # connector's circuit is open is not live data.
+                                _stale = getattr(result, "stale", False) is True
+                                if result.success and _stale:
+                                    from app.mcp.client import with_stale_notice
+
+                                    raw_result_output = with_stale_notice(
+                                        result, raw_result_output
+                                    )
+
                                 # ── C4 Fix: Populate StepResult.tool_calls ─────────────
                                 # This allows the verifier's [TOOL FAILED] markers to fire.
                                 if state.steps:
@@ -3651,6 +3672,7 @@ class ExecutorMixin:
                                                 if result.output
                                                 else ""
                                             ),
+                                            "stale": _stale,
                                         }
                                     )
 
@@ -3670,6 +3692,7 @@ class ExecutorMixin:
                                         "tool": tool_ref.name,
                                         "server_id": tool_ref.server_id,
                                         "success": result.success,
+                                        "stale": _stale,
                                         "output": self._sanitize_tool_event_value(result.output),
                                         "error": self._sanitize_tool_event_value(result.error),
                                         # tool_output preserves the raw structured dict for result_artifacts.py  # noqa: E501
@@ -4324,6 +4347,7 @@ class ExecutorMixin:
                         "success": result.success,
                         "error": result.error or "",
                         "output": str(result.output)[:300] if result.output else "",
+                        "stale": getattr(result, "stale", False) is True,
                     }
                 )
             await self._emit(
@@ -4332,12 +4356,18 @@ class ExecutorMixin:
                     "tool": tool_ref.name,
                     "server_id": tool_ref.server_id,
                     "success": result.success,
+                    "stale": getattr(result, "stale", False) is True,
                     "parallel": True,
                 }
             )
             out = self._sanitize_tool_raw_output(
                 result.output if result.success else result.error
             )
+            if result.success:
+                # a02-F030-04: a cached result served while the circuit is open.
+                from app.mcp.client import with_stale_notice
+
+                out = with_stale_notice(result, out)
             return (tool_ref.name, out)
 
         results = await _asyncio.gather(

@@ -400,9 +400,18 @@ class WorkflowExecutor:
                     )
                     raise RuntimeError(f"tool '{step.tool}' failed: {_err or 'error'}")
                 output = getattr(result, "output", result)
+                from app.mcp.client import with_stale_notice
+
+                # a02-F030-04: a cached result served while the circuit is open.
+                output_text = str(with_stale_notice(result, str(output)))
                 step.status = "complete"
-                step.result = str(output)
-                return {"status": "complete", "output": str(output), "tool": step.tool}
+                step.result = output_text
+                done: dict[str, Any] = {
+                    "status": "complete", "output": output_text, "tool": step.tool
+                }
+                if getattr(result, "stale", False) is True:
+                    done["stale"] = True
+                return done
 
             # Fall back to LLM completion
             if self._provider is not None:
@@ -583,13 +592,19 @@ class WorkflowExecutor:
             tenant_ctx=tenant_ctx,
         )
         if bool(getattr(result, "success", False)):
-            return {
+            executed: dict[str, Any] = {
                 "status": "executed",
                 "tool": tool.name,
                 "server_id": tool.server_id,
                 "success": True,
                 "output": getattr(result, "output", None),
             }
+            if getattr(result, "stale", False) is True:
+                # a02-F030-04: cached while the connector's circuit is open.
+                from app.mcp.client import stale_result_notice
+
+                executed.update(stale=True, notice=stale_result_notice(result))
+            return executed
         return {
             "status": "tool_call_failed",
             "tool": tool.name,

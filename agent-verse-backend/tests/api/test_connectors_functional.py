@@ -971,3 +971,24 @@ async def test_secret_resolver_resolves_via_tenant_scoped_store() -> None:
     resolve = connectors_module._secret_resolver(request)
     result = await resolve("vault://connectors/srv-1/token")
     assert result == "plaintext-token"
+
+
+def test_test_connector_stale_cached_result_is_not_a_pass() -> None:
+    """a02-F030-04: a stale cache copy served while the circuit is open is a failed test."""
+    from app.mcp.client import ToolCallResult
+
+    registry = _make_registry()
+    app = _make_app(registry)
+    stale = ToolCallResult(tool_name="linear_list_issues", success=True, output=[], stale=True)
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=stale)
+    app.state.mcp_client = mock_client
+    client = TestClient(app, raise_server_exceptions=False)
+
+    created = _register(client, _KEY_A, name="linear", auth_config={"api_key": "lin_1"})
+    resp = client.post(f"/connectors/{created['server_id']}/test", headers={"X-API-Key": _KEY_A})
+
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert body["reachable"] is False
+    assert "circuit open" in body["error"]

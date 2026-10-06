@@ -175,21 +175,20 @@ def test_list_capabilities_db_error_is_503() -> None:
     assert resp.status_code == 503
 
 
-def test_search_capabilities() -> None:
+def test_search_capabilities_without_mcp_client_is_503() -> None:
+    """a02-F032-02: no MCP client is an error, never an empty result."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/connectors/capabilities/search?q=github", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "results" in body or isinstance(body, dict)
+    assert resp.status_code == 503
 
 
-def test_missing_capabilities() -> None:
+def test_missing_capabilities_without_mcp_client_is_503() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get(
         "/connectors/capabilities/missing?goal=deploy+to+github",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
