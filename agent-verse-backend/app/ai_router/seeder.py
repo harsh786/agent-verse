@@ -142,9 +142,16 @@ def _load_overrides(reg: ModelRegistry) -> None:
             caps = [ModelCapability(c) for c in (e.get("capabilities") or []) if c]
             if not e.get("model_id") or not caps:
                 continue
+            provider = str(e.get("provider") or _provider_for_model(str(e["model_id"])))
+            # The same model the deployment is configured with (e.g. a catalog
+            # import of the env NVIDIA model) keeps that model's standing: always
+            # eligible and never demoted as a catalog import.
+            seeded = reg.get_configured(provider, str(e["model_id"]))
+            from_env = seeded is not None and (seeded.extra or {}).get("source") == "env"
+            origin = "deployment" if from_env else str(e.get("origin") or "manual")
             reg.register_configured(
                 ModelEndpoint(
-                    provider=str(e.get("provider") or _provider_for_model(str(e["model_id"]))),
+                    provider=provider,
                     model_id=str(e["model_id"]),
                     display_name=str(e.get("display_name") or e["model_id"]),
                     capabilities=caps,
@@ -157,7 +164,7 @@ def _load_overrides(reg: ModelRegistry) -> None:
                     ),
                     quality_score=float(e.get("quality_score", 0.7) or 0.7),
                     is_available=bool(e.get("is_available", True)),
-                    extra={"source": "override", "origin": str(e.get("origin") or "manual")},
+                    extra={"source": "env" if from_env else "override", "origin": origin},
                 )
             )
     except Exception as exc:  # pragma: no cover - defensive

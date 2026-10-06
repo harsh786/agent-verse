@@ -283,3 +283,28 @@ def test_embedding_group_explains_there_is_no_cross_model_failover(monkeypatch):
     groups = client.get("/models/configured", headers=_ADMIN).json()["capabilities"]
     emb = next(g for g in groups if g["capability"] == "embedding")
     assert "re-index" in emb["note"]
+
+
+def test_importing_the_deployments_own_model_does_not_demote_it(monkeypatch):
+    """Live S5: importing the NVIDIA catalog re-registered the env NVIDIA model as a
+    catalog import, demoting it, and a cheaper catalog model became active."""
+    from app.ai_router import seeder
+
+    monkeypatch.setattr(
+        seeder, "_reasoning_model_ids", lambda: ["nvidia/nemotron-3-super-120b-a12b"]
+    )
+    monkeypatch.setattr(seeder, "_provider_for_model", lambda mid: "nvidia")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-nvidia-key")
+    client = _client(monkeypatch)
+    seeder.seed_registry_from_config()
+    before = client.get("/models/configured", headers=_ADMIN).json()
+    tg = next(g for g in before["capabilities"] if g["capability"] == "text_generation")
+    assert tg["selected_model_id"] == "nvidia/nemotron-3-super-120b-a12b"
+
+    r = client.post("/models/catalog/import", headers=_ADMIN, json={"providers": ["nvidia"]})
+    assert r.status_code == 200, r.text
+    after = client.get("/models/configured", headers=_ADMIN).json()
+    tg = next(g for g in after["capabilities"] if g["capability"] == "text_generation")
+    assert tg["selected_model_id"] == "nvidia/nemotron-3-super-120b-a12b"
+    own = next(m for m in tg["models"] if m["model_id"] == "nvidia/nemotron-3-super-120b-a12b")
+    assert own["origin"] == "deployment" and own["source"] == "env"
