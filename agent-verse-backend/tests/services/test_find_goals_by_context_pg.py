@@ -45,7 +45,9 @@ async def test_context_lookup_is_tenant_scoped_on_the_app_role(pg_url: str) -> N
                 )
             ).scalars()
         )
-    assert {"ix_goals_batch_id", "ix_goals_builder_project_id"} <= indexes
+    assert {
+        "ix_goals_batch_id", "ix_goals_builder_project_id", "ix_goals_agent_runtime_trace_id"
+    } <= indexes
 
     app_eng = await app_role_engine(pg_url, ["goals"])
     sessions = sessionmaker_for(app_eng)
@@ -53,7 +55,7 @@ async def test_context_lookup_is_tenant_scoped_on_the_app_role(pg_url: str) -> N
         (t1, "g-1", "complete", {"batch_id": "batch_1"}),
         (t1, "g-2", "executing", {"batch_id": "batch_1", "other": 1}),
         (t1, "g-3", "planning", {"batch_id": "batch_2"}),
-        (t1, "g-4", "planning", {"builder_project_id": "p-1"}),
+        (t1, "g-4", "planning", {"builder_project_id": "p-1", "agent_runtime_trace_id": "tr-1"}),
         (t2, "g-5", "planning", {"batch_id": "batch_1"}),  # same id, other tenant
     ]
     from app.db.rls import sqlalchemy_rls_context
@@ -79,6 +81,8 @@ async def test_context_lookup_is_tenant_scoped_on_the_app_role(pg_url: str) -> N
         ]
         project = await svc.find_goals_by_context(ctx1, "builder_project_id", "p-1")
         assert [g["goal_id"] for g in project] == [f"g-4-{t1}"]
+        trace = await svc.find_goals_by_context(ctx1, "agent_runtime_trace_id", "tr-1")
+        assert [g["goal_id"] for g in trace] == [f"g-4-{t1}"]
         assert await svc.find_goals_by_context(ctx1, "batch_id", "batch_missing") == []
         with pytest.raises(ValueError):
             await svc.find_goals_by_context(ctx1, "goal_text", "x")

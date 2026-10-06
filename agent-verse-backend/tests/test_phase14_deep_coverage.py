@@ -165,10 +165,9 @@ def test_agent_runtime_plan_tenant_isolation():
     client = _make_full_app()
     create = client.post(
         "/agent-runtime/plans",
-        json={
-            "goal_id": "isolated-goal",
-            "steps": [{"description": "Private step"}],
-        },
+        # No goal_id: a goal-linked plan needs the tenant's goal to exist
+        # (a10-F237-04), and this app wires no goal service.
+        json={"steps": [{"description": "Private step"}]},
         headers=_HDRS_A,
     )
     assert create.status_code == 200

@@ -138,6 +138,18 @@ def _certified_rag_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.api.rag_platform.get_strategy_registry", lambda: registry)
 
 
+class _GoalsOfTheTenant:
+    """GoalService stand-in: every goal id exists for the caller (POST /agent-runtime
+    plans/traces now 404 a goal that is not the tenant's, a10-F237-04)."""
+
+    async def get_goal_outcome(self, goal_id: str, tenant_ctx: object) -> dict:
+        return {"goal_id": goal_id, "status": "executing", "created_at": "",
+                "completed_at": None, "failure_reason": None}
+
+    async def find_goals_by_context(self, *_a: object, **_kw: object) -> list:
+        return []
+
+
 def _make_app():
     app = FastAPI()
 
@@ -149,6 +161,7 @@ def _make_app():
     app.include_router(rag_router)
     app.include_router(runtime_router)
     app.state.retrieval_gateway = _Gateway()
+    app.state.goal_service = _GoalsOfTheTenant()
     return app
 
 
