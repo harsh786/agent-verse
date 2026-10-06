@@ -11,24 +11,30 @@ Run with:
 
 from __future__ import annotations
 
-import os
 
 import pytest
-from dotenv import load_dotenv
 
-from tests._paths import BACKEND_ROOT
+from tests._paths import BACKEND_ROOT  # noqa: F401
+from tests._real_env import applied_dotenv, real_env
 
 # ---------------------------------------------------------------------------
 # Environment bootstrap — must happen before any app imports
 # ---------------------------------------------------------------------------
 
-load_dotenv(BACKEND_ROOT / ".env")
 
-OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_KEY = real_env("OPENAI_API_KEY", "")
 if not OPENAI_KEY:
     pytest.skip("OPENAI_API_KEY not set", allow_module_level=True)
 
 pytestmark = [pytest.mark.slow, pytest.mark.real_openai]
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _real_dotenv():
+    """The real .env applies only while this module's tests run (never at import)."""
+    with applied_dotenv():
+        yield
+
 
 # ---------------------------------------------------------------------------
 # Shared tenant context
@@ -160,9 +166,7 @@ async def test_code_generation_and_review():
     assert "validate_payment_request" in output, (
         f"Function name not found in output. Output: {output[:400]}"
     )
-    assert "amount" in output, (
-        f"'amount' not found in output. Output: {output[:400]}"
-    )
+    assert "amount" in output, f"'amount' not found in output. Output: {output[:400]}"
 
 
 # ---------------------------------------------------------------------------
