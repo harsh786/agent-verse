@@ -36,14 +36,21 @@ class _Result:
 
 
 class _Session:
-    def __init__(self) -> None:
+    def __init__(self, idempotency_key: str | None = None) -> None:
         self.updates: list[dict[str, Any]] = []
+        self.statements: list[str] = []
+        # None = a row dead-lettered before trigger_dlq.idempotency_key existed.
+        self.idempotency_key = idempotency_key
 
     async def execute(self, stmt: Any, params: dict[str, Any]) -> _Result:
         if str(stmt).lstrip().upper().startswith("SELECT"):
-            return _Result(("trg-1", {"marker": "retry-me"}, 0))
+            return _Result(("trg-1", {"marker": "retry-me"}, 0, self.idempotency_key))
         self.updates.append(params)
+        self.statements.append(str(stmt))
         return _Result(None)
+
+    def resolved(self) -> bool:
+        return any("resolved_at = NOW()" in s for s in self.statements)
 
     def begin(self) -> contextlib.AbstractAsyncContextManager[None]:
         return contextlib.nullcontext()  # type: ignore[return-value]
@@ -62,7 +69,7 @@ class _Store:
         return {"schedule_id": schedule_id, "spec": spec, "agent_id": "", "goal_template": ""}
 
 
-def _client(dispatcher: Any) -> tuple[TestClient, _Session]:
+def _client(dispatcher: Any, idempotency_key: str | None = None) -> tuple[TestClient, _Session]:
     app = FastAPI()
 
     @app.middleware("http")
@@ -71,7 +78,7 @@ def _client(dispatcher: Any) -> tuple[TestClient, _Session]:
         return await call_next(request)
 
     app.include_router(router)
-    session = _Session()
+    session = _Session(idempotency_key)
     app.state.db_session_factory = lambda: session
     app.state.trigger_dispatcher = dispatcher
     app.state.schedule_store = _Store()
@@ -124,9 +131,11 @@ def test_retry_redispatches_with_real_signature() -> None:
     assert spec.trigger_id == "trg-1"
     assert payload == {"marker": "retry-me"}
     assert tenant_ctx.tenant_id == TENANT
-    # a distinct per-attempt message id so the durable dedup gate does not
-    # swallow the retry as a replay of the original (failed) firing
+    # a row dead-lettered before the key was recorded keeps the old
+    # per-attempt message id
     assert call.kwargs["message_id"] == "dlq-retry:dlq-1:1"
+    assert "idempotency_key" not in call.kwargs
+    assert session.resolved()  # it ran: nothing left to retry
 
 
 def test_retry_dispatch_failure_is_surfaced() -> None:
@@ -153,3 +162,49 @@ def test_retry_skip_is_reported_not_queued() -> None:
     assert r.json()["status"] == "skipped"
     assert r.json()["skip_reason"] == "rate_limit"
     assert r.json()["dispatched"] is False
+
+
+# ── B2-OPEN-2: the retry replays the ORIGINAL firing under its dedup key ──────
+
+
+def test_retry_dispatches_under_the_original_firings_key() -> None:
+    dispatcher = create_autospec(TriggerDispatcher, instance=True)
+    dispatcher.dispatch.return_value = _event()
+    client, session = _client(dispatcher, idempotency_key="orig-key-123")
+
+    r = client.post("/triggers/dlq/dlq-1/retry")
+
+    assert r.status_code == 202, r.text
+    call = dispatcher.dispatch.await_args
+    assert call.kwargs["idempotency_key"] == "orig-key-123"
+    assert "message_id" not in call.kwargs
+    # A throttled retry is not dead-lettered again: this entry stays open.
+    assert call.kwargs["dead_letter_throttled"] is False
+    assert r.json()["status"] == "dispatched"
+    assert session.resolved()
+
+
+def test_retry_after_the_sender_redelivered_is_a_resolved_no_op() -> None:
+    dispatcher = create_autospec(TriggerDispatcher, instance=True)
+    dispatcher.dispatch.return_value = _event(goal_created=False, goal_id=None, skip_reason="dedup")
+    client, session = _client(dispatcher, idempotency_key="orig-key-123")
+
+    r = client.post("/triggers/dlq/dlq-1/retry")
+
+    assert r.status_code == 202, r.text
+    assert r.json()["status"] == "already_delivered"
+    assert r.json()["dispatched"] is False
+    assert session.resolved()
+
+
+def test_throttled_retry_keeps_the_entry_open() -> None:
+    dispatcher = create_autospec(TriggerDispatcher, instance=True)
+    dispatcher.dispatch.return_value = _event(
+        goal_created=False, goal_id=None, skip_reason="rate_limit"
+    )
+    client, session = _client(dispatcher, idempotency_key="orig-key-123")
+
+    r = client.post("/triggers/dlq/dlq-1/retry")
+
+    assert r.json()["status"] == "skipped"
+    assert not session.resolved()

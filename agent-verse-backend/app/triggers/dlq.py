@@ -39,8 +39,14 @@ async def write_to_dlq(
     error_message: str,
     raw_payload: dict,
     retry_count: int = 0,
+    idempotency_key: str | None = None,
 ) -> None:
     """Write a failed trigger firing to the trigger_dlq table.
+
+    ``idempotency_key`` is the dedup key the firing was dispatched under. A DLQ
+    retry replays it under that same key (B2-OPEN-2): it used to get its own
+    per-attempt key, so retrying a throttled delivery that the sender had also
+    redelivered successfully ran it twice.
 
     The INSERT runs inside :func:`sqlalchemy_rls_context` so ``app.tenant_id`` is
     set for the statement. ``trigger_dlq`` is RLS-protected (and, since migration
@@ -72,10 +78,10 @@ async def write_to_dlq(
                 text(
                     "INSERT INTO trigger_dlq "
                     "(id, tenant_id, trigger_id, failed_at, created_at, failure_type, "
-                    " error_message, raw_payload, retry_count) "
+                    " error_message, raw_payload, retry_count, idempotency_key) "
                     "VALUES (:id, :tenant_id, :trigger_id, :failed_at, :created_at, "
                     "        :failure_type, :error_message, CAST(:raw_payload AS json), "
-                    "        :retry_count)"
+                    "        :retry_count, :idempotency_key)"
                 ),
                 {
                     "id": str(uuid.uuid4()),
@@ -90,6 +96,7 @@ async def write_to_dlq(
                     # asyncpg binds a JSON column from a JSON string, not a raw dict.
                     "raw_payload": json.dumps(raw_payload),
                     "retry_count": retry_count,
+                    "idempotency_key": idempotency_key or None,
                 },
             )
             await db_session.commit()  # type: ignore[attr-defined]

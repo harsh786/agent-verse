@@ -476,6 +476,13 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
     ``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by
     ``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible
     and answers 404 rather than reporting a retry that never happened.
+
+    The retry is dispatched under the dedup key the original firing had
+    (``trigger_dlq.idempotency_key``, B2-OPEN-2), so it is idempotent with a
+    sender redelivery of the same firing: after a successful redelivery the
+    retry is a ``dedup`` no-op, and a redelivery after the retry is deduped.
+    Either way the entry is resolved. A throttled retry is not dead-lettered
+    again — this entry stays open for the next retry.
     """
     from datetime import UTC, datetime, timedelta
 
@@ -498,7 +505,8 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         row = (
             await session.execute(
                 text(
-                    "SELECT trigger_id, raw_payload, retry_count FROM trigger_dlq "
+                    "SELECT trigger_id, raw_payload, retry_count, idempotency_key "
+                    "FROM trigger_dlq "
                     "WHERE id = :id AND tenant_id = :tid AND resolved_at IS NULL "
                     "FOR UPDATE"
                 ),
@@ -511,6 +519,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         trigger_id = str(row[0])
         raw_payload = row[1] if isinstance(row[1], dict) else {}
         attempt = int(row[2] or 0) + 1
+        original_key = str(row[3] or "")
         # Exponential backoff; attempts past the table stay on the last delay.
         delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS)) - 1]
         next_retry_at = datetime.now(UTC) + timedelta(seconds=delay)
@@ -526,8 +535,16 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
     # Re-dispatch with the dispatcher's real signature (spec, payload, tenant_ctx).
     # The old call passed tenant_id=/payload= keywords, raised a TypeError that
     # contextlib.suppress swallowed, and answered "queued" without ever firing.
-    # A per-attempt message_id gives the retry its own idempotency key so the
-    # durable dedup gate does not drop it as a replay of the original firing.
+    # The retry replays the ORIGINAL firing under its own dedup key (B2-OPEN-2).
+    # That key was never claimed by the throttled / failed attempt (the gates run
+    # before the claim; a failed enqueue releases it), so the retry fires unless
+    # the sender's redelivery already did. Entries written before the key was
+    # recorded fall back to a per-attempt message id (the old behaviour).
+    dispatch_identity: dict[str, Any] = (
+        {"idempotency_key": original_key}
+        if original_key
+        else {"message_id": f"dlq-retry:{dlq_id}:{attempt}"}
+    )
     dispatched = False
     status_str = "scheduled"  # attempt recorded; nothing to re-fire right now
     skip_reason: str | None = None
@@ -542,7 +559,8 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
                 raw_payload,
                 tenant_ctx,
                 caller_role=role,
-                message_id=f"dlq-retry:{dlq_id}:{attempt}",
+                dead_letter_throttled=False,  # this entry stays open instead
+                **dispatch_identity,
             )
         except Exception as exc:
             raise HTTPException(
@@ -553,6 +571,11 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         goal_id = getattr(event, "goal_id", None)
         dispatched = bool(getattr(event, "goal_created", False))
         status_str = "skipped" if skip_reason else ("dispatched" if dispatched else "failed")
+        # The firing ran now, or already ran (a redelivery under the same key;
+        # an identical goal already in progress): nothing left to retry.
+        if dispatched or (original_key and skip_reason in ("dedup", "goal_in_progress")):
+            await _resolve_dlq_entry(db, tenant_ctx.tenant_id, dlq_id, skip_reason or "retried")
+            status_str = "dispatched" if dispatched else "already_delivered"
 
     return {
         "status": status_str,
@@ -564,6 +587,22 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         "goal_id": goal_id,
         "skip_reason": skip_reason,
     }
+
+
+async def _resolve_dlq_entry(db: Any, tenant_id: str, dlq_id: str, outcome: str) -> None:
+    """Mark a DLQ entry resolved after its retry ran (or found the firing done)."""
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        await session.execute(
+            text(
+                "UPDATE trigger_dlq SET resolved_at = NOW(), resolved_by = :by "
+                "WHERE id = :id AND tenant_id = :tid AND resolved_at IS NULL"
+            ),
+            {"by": f"retry:{outcome}"[:200], "id": dlq_id, "tid": tenant_id},
+        )
 
 
 # ── Per-trigger routes ────────────────────────────────────────────────────────
