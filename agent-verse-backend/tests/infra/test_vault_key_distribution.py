@@ -592,3 +592,131 @@ def test_compose_dev_every_app_service_reads_the_backend_env_file() -> None:
         env = svc.get("environment") or {}
         # An explicit value would override ../.env on some services only.
         assert not set(env) & set(VAULT_KEY_NAMES), name
+
+
+# ── EGRESS-CFG: the operator egress allowlist reaches every app workload ──────
+#
+# app.ingestion.connector_egress reads INGESTION_ALLOW_INTERNAL_SOURCES +
+# INGESTION_INTERNAL_SOURCE_ALLOWLIST (operator-only; tenant config can never
+# widen them). Ingestion runs on the API (validate_connection) AND on the
+# workers / beat-queued tasks, so each app workload must get both settings from
+# the SAME place the API does, and every deployment must ship them OFF.
+
+EGRESS_KEYS = ("INGESTION_ALLOW_INTERNAL_SOURCES", "INGESTION_INTERNAL_SOURCE_ALLOWLIST")
+_EGRESS_HELM_VALUES = {
+    "INGESTION_ALLOW_INTERNAL_SOURCES": "{{ .Values.ingestion.allowInternalSources | quote }}",
+    "INGESTION_INTERNAL_SOURCE_ALLOWLIST": (
+        "{{ .Values.ingestion.internalSourceAllowlist | quote }}"
+    ),
+}
+
+
+def _config_map_refs(container_or_block: dict[str, Any] | str) -> list[str]:
+    if isinstance(container_or_block, str):
+        return [m.strip() for m in re.findall(r"- configMapRef:\s+name: (.+)", container_or_block)]
+    return [
+        (r.get("configMapRef") or {})["name"]
+        for r in container_or_block.get("envFrom") or []
+        if r.get("configMapRef")
+    ]
+
+
+def test_k8s_every_app_workload_gets_the_egress_settings_from_the_api_config_map() -> None:
+    docs = _k8s_docs()
+    config_maps = {
+        d["metadata"]["name"]: dict(d.get("data") or {})
+        for f, d in docs
+        if d.get("kind") == "ConfigMap" and f in _kustomized()
+    }
+    secret_keys = _secret_keys(docs, _kustomized())
+    workloads = [w for w in _k8s_app_workloads() if w[1] != "agentverse-db-migration"]
+    api = next(c for _f, n, c in workloads if n == "agentverse-backend")
+    api_maps = _config_map_refs(api)
+    carrying = [m for m in api_maps if set(EGRESS_KEYS) <= set(config_maps.get(m, {}))]
+    assert len(carrying) == 1, f"API config maps {api_maps}: none/several carry {EGRESS_KEYS}"
+    source = config_maps[carrying[0]]
+    # Default OFF, empty allowlist.
+    assert source["INGESTION_ALLOW_INTERNAL_SOURCES"] == "false"
+    assert source["INGESTION_INTERNAL_SOURCE_ALLOWLIST"] == ""
+    # No Secret competes with the config map for the same names.
+    for name, keys in secret_keys.items():
+        assert not keys & set(EGRESS_KEYS), f"secret {name} also sets {EGRESS_KEYS}"
+    names = {n for _f, n, _c in workloads}
+    assert {"agentverse-worker", "agentverse-subgoal-worker", "agentverse-beat"} <= names
+    for fname, name, container in workloads:
+        assert carrying[0] in _config_map_refs(container), f"{fname}:{name} lacks {carrying[0]}"
+        explicit = {e["name"] for e in container.get("env") or []} & set(EGRESS_KEYS)
+        assert not explicit, f"{fname}:{name} overrides the shared value: {explicit}"
+
+
+def _helm_values(chart: Path) -> dict[str, Any]:
+    return dict(yaml.safe_load((chart.parent / "values.yaml").read_text()))
+
+
+def _assert_helm_egress_config_map(config_map_text: str) -> None:
+    for key, expr in _EGRESS_HELM_VALUES.items():
+        assert re.search(rf"^\s+{key}: {re.escape(expr)}\s*$", config_map_text, re.M), key
+
+
+def test_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() -> None:
+    values = _helm_values(HELM_DIR)
+    assert values["ingestion"] == {"allowInternalSources": False, "internalSourceAllowlist": ""}
+    _assert_helm_egress_config_map((HELM_DIR / "configmaps.yaml").read_text())
+    blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
+    assert {"backend", "worker", "subgoal-worker", "schedule-worker", "beat"} <= set(blocks)
+    shared = '{{ include "agentverse.fullname" . }}-config'
+    for comp, block in blocks.items():
+        # The main container (after initContainers) reads the shared config map.
+        main = block.split("\n      containers:\n", 1)[-1]
+        assert shared in _config_map_refs(main), comp
+        for key in EGRESS_KEYS:
+            assert f"- name: {key}" not in block, f"{comp} overrides {key}"
+    # backend.env is rendered into the same config map; a duplicate key there
+    # would make the rendered YAML ambiguous.
+    assert not set(values["backend"].get("env") or {}) & set(EGRESS_KEYS)
+
+
+def test_legacy_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() -> None:
+    values = _helm_values(LEGACY_HELM_DIR)
+    assert values["ingestion"] == {"allowInternalSources": False, "internalSourceAllowlist": ""}
+    _assert_helm_egress_config_map((LEGACY_HELM_DIR / "configmap.yaml").read_text())
+    for fname in (
+        "deployment.yaml",
+        "worker-deployment.yaml",
+        "subgoal-worker-deployment.yaml",
+        "schedule-worker-deployment.yaml",
+        "beat-deployment.yaml",
+    ):
+        text = (LEGACY_HELM_DIR / fname).read_text()
+        assert _config_map_refs(text) == ["agentverse-config"], fname
+        for key in EGRESS_KEYS:
+            assert f"- name: {key}" not in text, f"{fname} overrides {key}"
+
+
+def test_compose_prod_every_app_service_gets_the_egress_settings_off_by_default() -> None:
+    services = {n: s for n, s in _compose("docker-compose.prod.yml").items() if _is_app_service(s)}
+    assert {"backend", "worker", "schedule-worker", "subgoal-worker", "beat"} <= set(services)
+    expected = {
+        "INGESTION_ALLOW_INTERNAL_SOURCES": "${INGESTION_ALLOW_INTERNAL_SOURCES:-false}",
+        "INGESTION_INTERNAL_SOURCE_ALLOWLIST": "${INGESTION_INTERNAL_SOURCE_ALLOWLIST:-}",
+    }
+    for name, svc in services.items():
+        env = svc["environment"]
+        assert {k: env.get(k) for k in EGRESS_KEYS} == expected, name
+
+
+def test_compose_dev_never_pins_the_egress_settings_per_service() -> None:
+    """Dev compose: every app service reads ../.env (asserted above); an explicit
+    value on one service would make that service's egress policy differ."""
+    services = {n: s for n, s in _compose("docker-compose.yml").items() if _is_app_service(s)}
+    for name, svc in services.items():
+        assert not set(svc.get("environment") or {}) & set(EGRESS_KEYS), name
+
+
+def test_env_example_documents_the_egress_settings_off() -> None:
+    text = (INFRA.parent / ".env.example").read_text()
+    for key in EGRESS_KEYS:
+        lines = [ln for ln in text.splitlines() if re.match(rf"#?\s*{key}=", ln)]
+        assert lines, f".env.example does not document {key}"
+        assert all(ln.startswith("#") for ln in lines), f"{key} must ship commented (off)"
+    assert "# INGESTION_ALLOW_INTERNAL_SOURCES=false" in text
