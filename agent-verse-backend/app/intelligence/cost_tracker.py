@@ -201,7 +201,9 @@ class CostTracker:
 
     Redis keys
     ----------
-    cost:daily:{tenant_id}:{YYYY-MM-DD}  — daily spend counter (INCRBYFLOAT)
+    cost:daily:{tenant_id}:{YYYY-MM-DD}  — daily spend counter (INCRBYFLOAT; shared
+                                           with RedisCostController — see
+                                           ``count_daily_spend``)
     cost:goal:{goal_id}                  — per-goal spend counter (INCRBYFLOAT)
     cost_ewma:{tenant_id}:{agent_id|tenant}  — EWMA anomaly state (JSON)
 
@@ -217,9 +219,18 @@ class CostTracker:
         self,
         redis: Any = None,
         db_factory: Any = None,
+        *,
+        count_daily_spend: bool = True,
     ) -> None:
         self._redis = redis
         self._db = db_factory
+        # ``cost:daily:{tenant}:{day}`` is ALSO the RedisCostController's budget
+        # counter (same key, same Redis), which its atomic check_and_record
+        # increments for every charged LLM call. When such a controller owns it,
+        # the tracker must not INCRBYFLOAT it as well — that billed every call
+        # twice against the tenant's daily budget. It still READS it
+        # (get_budget_status), so the dashboard shows the enforced figure.
+        self._count_daily_spend = count_daily_spend
 
     # ------------------------------------------------------------------
     # Helpers
@@ -329,10 +340,11 @@ class CostTracker:
         # 1. Increment Redis counters (atomic INCRBYFLOAT)
         if self._redis is not None:
             try:
-                daily_key = self._daily_key(tenant_id)
                 goal_key = self._goal_key(goal_id)
-                await self._redis.incrbyfloat(daily_key, cost_usd)
-                await self._redis.expire(daily_key, 90_000)  # ~25 h buffer past midnight
+                if self._count_daily_spend:
+                    daily_key = self._daily_key(tenant_id)
+                    await self._redis.incrbyfloat(daily_key, cost_usd)
+                    await self._redis.expire(daily_key, 90_000)  # ~25 h past midnight
                 await self._redis.incrbyfloat(goal_key, cost_usd)
                 await self._redis.expire(goal_key, 86_400)
             except Exception as exc:

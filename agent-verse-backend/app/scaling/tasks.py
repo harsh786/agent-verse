@@ -3623,6 +3623,7 @@ def run_goal(
             from app.governance import permissions as _permissions_mod
 
             _worker_permission_matrix = _permissions_mod.build_default_permission_matrix()
+            from app.scaling.worker_cost import WorkerCostTracker
 
             _worker_graph_services: dict[str, Any] = dict(
                 **_worker_memory_services,
@@ -3648,7 +3649,9 @@ def run_goal(
                 long_term_memory=_ltm,
                 embedder=_embedder_for_graph,
                 eval_runner=_eval,
-                cost_tracker=None,
+                # The token ledger (cost_ledger rows + CostTracker Redis counters)
+                # for every goal LLM call; resolved per event loop at call time.
+                cost_tracker=WorkerCostTracker(),
                 llm_response_cache=_llm_response_cache,
                 semantic_cache=_semantic_cache_worker,
                 knowledge_store=_knowledge_store_worker,
