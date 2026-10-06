@@ -1096,7 +1096,15 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             if prev and _time.time() < grace_until:
                 candidates.append(prev)
             verified = False
-            if sig_header:
+            # Jira Connect apps send "Authorization: JWT ..." instead of a body
+            # signature header (DEF-5).
+            jira_jwt = webhook_type == "jira" and request.headers.get(
+                "authorization", ""
+            ).startswith("JWT ")
+            if sig_header or jira_jwt:
+                path = request.url.path
+                mount = path.find("/triggers/webhooks/")
+                paths = (path, path[mount:]) if mount > 0 else (path,)
                 for candidate in candidates:
                     if await verifier.verify_for_type(
                         webhook_type,
@@ -1104,6 +1112,9 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                         sig_header,
                         candidate,
                         headers=request.headers,
+                        method=request.method,
+                        paths=paths,
+                        query=request.url.query,
                     ):
                         verified = True
                         break

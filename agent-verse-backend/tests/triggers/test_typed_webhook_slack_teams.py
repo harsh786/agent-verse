@@ -41,6 +41,11 @@ def _slack_headers(body: bytes, *, secret: str = SLACK_SECRET, ts: int | None = 
     }
 
 
+def _now_iso() -> str:
+    # Teams activities carry a signed timestamp; DEF-5 requires it to be fresh.
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+
+
 def _teams_headers(body: bytes, *, secret: str = TEAMS_SECRET) -> dict:
     mac = hmac.new(base64.b64decode(secret), body, hashlib.sha256).digest()
     return {"Authorization": "HMAC " + base64.b64encode(mac).decode()}
@@ -108,7 +113,9 @@ def test_unsigned_slack_challenge_is_rejected_when_a_secret_is_set() -> None:
 def test_signed_teams_message_is_accepted() -> None:
     disp = _Dispatcher()
     client = _app(_Store({"t1": [_spec(TOK, TEAMS_SECRET)]}), disp, caller=None)
-    body = json.dumps({"type": "message", "text": "<at>Bot</at> deploy"}).encode()
+    body = json.dumps(
+        {"type": "message", "text": "<at>Bot</at> deploy", "timestamp": _now_iso()}
+    ).encode()
 
     r = client.post(
         f"/triggers/webhooks/teams/{TOK}",
@@ -140,7 +147,7 @@ def test_tampered_teams_message_is_rejected() -> None:
 
 def test_verifier_units() -> None:
     v = WebhookSignatureVerifier()
-    body = b'{"a":1}'
+    body = json.dumps({"a": 1, "timestamp": _now_iso()}).encode()
     h: Any = _slack_headers(body)
     assert v.verify_slack(
         body, h["X-Slack-Signature"], h["X-Slack-Request-Timestamp"], SLACK_SECRET

@@ -41,6 +41,8 @@ TOKEN = "vendor_" + "v" * 40
 SECRET = "whsec-vendor-test-secret"
 # Teams shows the outgoing-webhook security token base64-encoded.
 TEAMS_SECRET = base64.b64encode(b"teams-outgoing-webhook-key-012345").decode()
+# DEF-5: a Teams activity's signed timestamp must be fresh (replay window).
+_NOW_ISO = time.strftime("%Y-%m-%dT%H:%M:%S.0000000Z", time.gmtime())
 
 Signer = Callable[[bytes, str], dict[str, str]]
 
@@ -143,7 +145,7 @@ VENDORS: list[tuple[str, str, TriggerType, str, Signer, dict[str, Any]]] = [
         # Teams outgoing webhook: "Authorization: HMAC <base64 HMAC-SHA256>" keyed
         # by the base64-decoded security token.
         "teams", "teams", TriggerType.TEAMS_WEBHOOK, TEAMS_SECRET, _teams,
-        {"type": "message", "id": "1485983408511", "timestamp": "2026-09-30T10:00:00.000Z",
+        {"type": "message", "id": "1485983408511", "timestamp": _NOW_ISO,
          "text": "<at>AgentVerse</at> status", "from": {"id": "29:1abc", "name": "Ada"},
          "conversation": {"id": "19:abc@thread.skype"}, "channelData": {"tenant": {"id": "t"}}},
     ),
