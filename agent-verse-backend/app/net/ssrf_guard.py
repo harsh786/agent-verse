@@ -75,6 +75,7 @@ _ALWAYS_BLOCKED = [
     ipaddress.ip_network("fe80::/10"),
     ipaddress.ip_network("::/128"),
     ipaddress.ip_network("fd00:ec2::254/128"),  # AWS IMDS over IPv6
+    ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata (not link-local)
 ]
 
 
@@ -82,6 +83,9 @@ _ALWAYS_BLOCKED = [
 _ALWAYS_BLOCKED_NO_LINK_LOCAL = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("::/128"),
+    # Alibaba Cloud metadata is inside 100.64/10 (opened as "private"), not link-local:
+    # ALLOW_LINK_LOCAL_NETWORK_ACCESS must not open it, by name OR by resolved address.
+    ipaddress.ip_network("100.100.100.200/32"),
 ]
 
 

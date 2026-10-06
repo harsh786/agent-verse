@@ -179,3 +179,17 @@ def test_the_agent_http_tool_reaches_a_private_host(on, local_server):
     out = asyncio.run(HttpRequestTool().execute(url=local_server))
     assert "error" not in out, out
     assert "hello from a private host" in str(out)
+
+
+def test_alibaba_metadata_stays_blocked_by_address_even_when_link_local_is_opened(
+    on, monkeypatch
+):
+    monkeypatch.setenv("ALLOW_LINK_LOCAL_NETWORK_ACCESS", "true")
+    with pytest.raises(SSRFError):
+        assert_public_url("http://100.100.100.200/latest/meta-data/", context="x")
+    # a NAME that resolves to it is refused too (checked on the resolved address)
+    monkeypatch.setattr(ssrf_guard, "_resolve_host", lambda h: ["100.100.100.200"])
+    with pytest.raises(SSRFError):
+        assert_public_url("http://innocent-looking.example/", context="x")
+    # neighbours in the carrier-grade range remain ordinary private addresses
+    assert assert_public_url("http://100.100.100.201/", context="x")
