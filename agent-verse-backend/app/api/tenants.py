@@ -1431,25 +1431,24 @@ async def update_notifications(request: Request) -> dict:
 
 
 @router.get("/me/sessions")
-async def list_sessions(request: Request) -> None:
-    """List login sessions — not implemented (501).
+async def list_sessions(request: Request) -> list[dict[str, Any]]:
+    """The caller's live login (SSO) sessions — same data as ``GET /auth/sessions``.
 
-    This always returned ``[]`` although nothing records sessions, so the UI
-    showed "no other sessions" as if that were verified. See app/api/sessions.py.
+    409 for an API-key caller (it holds no login session); see app/api/sessions.py.
     """
-    from app.api.sessions import raise_sessions_not_implemented
+    from app.api.sessions import list_caller_sessions
 
     _require_tenant(request)
-    raise_sessions_not_implemented(request)
+    return await list_caller_sessions(request)
 
 
-@router.delete("/me/sessions/{session_id}")
-async def revoke_tenant_session(session_id: str, request: Request) -> None:
-    """Revoke a login session — not implemented (501); the UI calls this path."""
-    from app.api.sessions import raise_sessions_not_implemented
+@router.delete("/me/sessions/{session_id}", status_code=204)
+async def revoke_tenant_session(session_id: str, request: Request) -> Response:
+    """Revoke one of the caller's own login sessions (the UI calls this path)."""
+    from app.api.sessions import revoke_caller_session
 
     _require_tenant(request)
-    raise_sessions_not_implemented(request)
+    return await revoke_caller_session(request, session_id)
 
 
 # ── Data export ───────────────────────────────────────────────────────────────

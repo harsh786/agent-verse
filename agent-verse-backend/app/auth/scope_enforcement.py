@@ -86,6 +86,14 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     # can do in Slack is re-checked against the key's live scopes per action).
     # goals:read is held by every role, including approver keys, which are
     # otherwise barred from unregistered writes outside /approvals.
+    # a10-F240-01: a signed-in person lists / revokes ITS OWN login sessions
+    # (the routes only ever touch the caller's sessions). Any role may, so the
+    # unregistered-write rule (viewers refused) and "DELETE /tenants/me" ->
+    # tenancy:write (admins only) must not apply; goals:read is held by every role.
+    ("GET", "/auth/sessions"): "goals:read",
+    ("DELETE", "/auth/sessions"): "goals:read",
+    ("GET", "/tenants/me/sessions"): "goals:read",
+    ("DELETE", "/tenants/me/sessions"): "goals:read",
     ("GET", "/channels/identities"): "goals:read",
     ("POST", "/channels/identities"): "goals:read",
     ("DELETE", "/channels/identities"): "goals:read",

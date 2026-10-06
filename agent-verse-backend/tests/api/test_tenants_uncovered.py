@@ -509,10 +509,11 @@ def test_update_notifications_malformed_body_is_422() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_sessions_is_honestly_not_implemented() -> None:
+def test_list_sessions_for_an_api_key_caller_is_409() -> None:
+    # a10-F240-01: sessions are real now (SAML-01); an API key holds none.
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/tenants/me/sessions", headers=H)
-    assert resp.status_code == 501
+    assert resp.status_code == 409
 
 
 def test_list_sessions_requires_auth() -> None:
