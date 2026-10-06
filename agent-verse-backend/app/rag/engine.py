@@ -865,7 +865,11 @@ def _fts_statement(
         or_query = "(" + " || ".join(or_parts) + ")"
     else:
         or_query = and_query
-    tsv = "to_tsvector('english', content)"
+    # ``knowledge_fts_vector`` (migration d4e6f8a0b2c3) = the english tsvector
+    # plus whole-code tokens: "TJ-5531" also indexes "tj", "5531" and "tj5531",
+    # so the bare number / spaced / joined spellings match in full text. The
+    # expression is exactly the GIN index's (idx_<table>_fts_codes).
+    tsv = "knowledge_fts_vector(content)"
     scope = f"collection_id = :cid {metadata_clause} {live_chunk_clause}"
     sql = text(f"""
         WITH candidates AS (
@@ -874,8 +878,8 @@ def _fts_statement(
             (SELECT id FROM {table} WHERE {scope} AND {tsv} @@ {or_query} LIMIT :cap)
         )
         SELECT c.id, c.content, c.metadata,
-               ts_rank_cd(to_tsvector('english', c.content), {or_query}, 32)
-               + CASE WHEN to_tsvector('english', c.content) @@ {and_query}
+               ts_rank_cd(knowledge_fts_vector(c.content), {or_query}, 32)
+               + CASE WHEN knowledge_fts_vector(c.content) @@ {and_query}
                       THEN 1.0 ELSE 0.0 END AS score
           FROM {table} c
           JOIN candidates USING (id)

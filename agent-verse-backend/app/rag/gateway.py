@@ -588,7 +588,8 @@ def _build_persistence_capability_sql() -> str:
         f"     AND indexdef ILIKE '%gin_trgm_ops%') = {n} "
         "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
         "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
-        f"     AND indexdef ILIKE '%to_tsvector%') = {n} "
+        # The full-text leg's expression (migration d4e6f8a0b2c3).
+        f"     AND indexdef ILIKE '%knowledge_fts_vector%') = {n} "
         " AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
         "      WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
         f"      AND indexdef ILIKE '%metadata jsonb_path_ops%') = {n}"

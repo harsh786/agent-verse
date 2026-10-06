@@ -420,7 +420,8 @@ class TestQueryShapingEdgeCases:
             top_k=5,
         )
         fts_call = next(c for c in session.calls if "ts_rank_cd" in c[0])
-        assert "to_tsvector('english'" in fts_call[0]
+        # knowledge_fts_vector = to_tsvector('english', ...) + code tokens.
+        assert "knowledge_fts_vector(content)" in fts_call[0]
         assert "plainto_tsquery('english'" in fts_call[0]
 
     @pytest.mark.asyncio

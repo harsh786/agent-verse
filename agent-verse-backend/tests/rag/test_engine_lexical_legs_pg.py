@@ -322,3 +322,85 @@ async def test_identifier_match_is_word_bounded(world: dict[str, Any]) -> None:
     evidence: list[dict[str, Any]] = []
     await _search(world, world["receipts"], "TJ-553", mode="lexical", evidence=evidence)
     assert _leg(evidence, "phrase")["result_count"] == 0, "TJ-553 must not match TJ-5531"
+
+
+# ── FTS tokenization of hyphenated codes (migration d4e6f8a0b2c3) ─────────────
+# Postgres' parser reads "TJ-5531" as 'tj' + '-5531', so the full-text leg
+# missed the bare number, the spaced and the joined spellings. The FTS
+# expression (knowledge_fts_vector) also indexes 'tj', '5531' and 'tj5531'.
+
+
+@pytest.mark.parametrize("query", ["5531", "TJ 5531", "TJ5531", "TJ-5531", "tj\u20115531"])
+async def test_fts_leg_matches_a_hyphenated_code_in_any_spelling(
+    world: dict[str, Any], query: str
+) -> None:
+    evidence: list[dict[str, Any]] = []
+    await _search(world, world["receipts"], query, mode="lexical", evidence=evidence)
+    fts = _leg(evidence, "fts")["component_scores"]
+    right = world["receipt_ids"]["TJ-5531"]
+    assert right in fts, (query, fts)
+    # The near-identical codes are not full-text hits for the number.
+    assert world["receipt_ids"]["TJ-5534"] not in fts or query.casefold().startswith("tj ")
+    assert max(fts.items(), key=lambda item: item[1])[0] == right
+
+
+async def test_fts_vector_tokens_and_index(world: dict[str, Any]) -> None:
+    async with world["factory"]() as s:
+        tokens = (
+            await s.execute(
+                text("SELECT knowledge_fts_vector('Towage job TJ-5531, ref 2024\u2013001.')::text")
+            )
+        ).scalar_one()
+        for token in ("'tj'", "'5531'", "'tj5531'", "'2024001'", "'001'"):
+            assert token in tokens, tokens
+        assert "'towag'" in tokens  # the english stemmed vector is still there
+        # The old expression really missed it (the bug this guards against).
+        old_hit = (
+            await s.execute(
+                text("SELECT to_tsvector('english', 'job TJ-5531') @@ plainto_tsquery('5531')")
+            )
+        ).scalar_one()
+        assert old_hit is False
+        indexdefs = (
+            await s.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes WHERE tablename = :t "
+                    "AND indexdef ILIKE '%gin%' AND indexdef ILIKE '%fts_vector%'"
+                ),
+                {"t": f"knowledge_chunks_{_DIM}"},
+            )
+        ).scalars().all()
+        assert len(indexdefs) == 1, indexdefs
+        # Every chunk table (2048 included) carries only the new FTS index.
+        fts_indexes = (
+            await s.execute(
+                text(
+                    "SELECT tablename, indexdef FROM pg_indexes "
+                    "WHERE tablename LIKE 'knowledge_chunks\\_%' AND indexdef ILIKE '%gin%' "
+                    "AND (indexdef ILIKE '%to_tsvector%' OR indexdef ILIKE '%fts_vector%')"
+                )
+            )
+        ).all()
+        from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
+
+        assert sorted(t for t, _ in fts_indexes) == sorted(
+            f"knowledge_chunks_{d}" for d in SUPPORTED_EMBEDDING_DIMENSIONS
+        ), fts_indexes
+        assert all("knowledge_fts_vector" in d for _, d in fts_indexes), fts_indexes
+        # The retrieval gateway's readiness probe accepts the migrated schema.
+        from app.rag.gateway import _PERSISTENCE_CAPABILITY_SQL
+
+        assert (await s.scalar(text(_PERSISTENCE_CAPABILITY_SQL))) is True
+        # The FTS leg's predicate can use that index.
+        await s.execute(text("SET LOCAL enable_seqscan = off"))
+        plan = "\n".join(
+            (
+                await s.execute(
+                    text(
+                        f"EXPLAIN SELECT id FROM knowledge_chunks_{_DIM} "
+                        "WHERE knowledge_fts_vector(content) @@ plainto_tsquery('english', '5531')"
+                    )
+                )
+            ).scalars().all()
+        )
+        assert f"idx_knowledge_chunks_{_DIM}_fts_codes" in plan, plan
