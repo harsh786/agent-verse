@@ -108,10 +108,29 @@ def test_catalog_filters_and_provider_readiness(monkeypatch):
     assert groq and {e["provider"] for e in groq} == {"groq"}
     one = catalog_endpoints(model_ids=["groq/openai/gpt-oss-120b"])
     assert [(e["provider"], e["model_id"]) for e in one] == [("groq", "openai/gpt-oss-120b")]
-    both = catalog_endpoints(model_ids=["openai/gpt-oss-120b"])  # plain id: every provider
+    both = catalog_endpoints(model_ids=["openai/gpt-oss-20b"])  # plain id: every provider
     assert {e["provider"] for e in both} == {"nvidia", "groq"}
 
     assert provider_ready("groq") is False
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     assert provider_ready("groq") is True
     assert provider_ready("custom") is True
+
+
+def test_vision_timeout_defaults_to_the_generation_timeout_and_is_configurable(monkeypatch):
+    from app.providers.guarded_completion import vision_timeout_seconds
+
+    monkeypatch.delenv("AGENTVERSE_VISION_CALL_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS", "60")
+    assert vision_timeout_seconds() == 60.0
+    monkeypatch.setenv("AGENTVERSE_VISION_CALL_TIMEOUT_SECONDS", "240")
+    assert vision_timeout_seconds() == 240.0
+
+
+def test_nvidia_catalog_keeps_the_slow_90b_out_of_ocr():
+    nvidia = {e["model_id"]: e for e in catalog_endpoints(["nvidia"])}
+    assert "ocr" not in nvidia["meta/llama-3.2-90b-vision-instruct"]["capabilities"]
+    assert "ocr" in nvidia["meta/llama-3.2-11b-vision-instruct"]["capabilities"]
+    # retired on NVIDIA's hosted API (410) - must not be offered
+    assert "meta/llama-3.3-70b-instruct" not in nvidia
+    assert "meta/llama-4-maverick-17b-128e-instruct" not in nvidia

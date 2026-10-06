@@ -598,7 +598,7 @@ class OcrEngine:
             )
             from app.providers.guarded_completion import (
                 complete_decision,
-                generation_timeout_seconds,
+                vision_timeout_seconds,
             )
 
             response = await complete_decision(
@@ -606,7 +606,7 @@ class OcrEngine:
                 req,
                 role="ocr_vision",
                 tenant_id=tenant_id,
-                timeout_seconds=generation_timeout_seconds(),
+                timeout_seconds=vision_timeout_seconds(),
                 # Another configured vision model takes over when this one is down,
                 # times out or answers empty (it used to be a single-model call).
                 fallback_models=_ocr_fallback_models(req.model),

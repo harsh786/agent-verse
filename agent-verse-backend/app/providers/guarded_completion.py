@@ -169,6 +169,24 @@ def generation_timeout_seconds() -> float:
         return 60.0
 
 
+def vision_timeout_seconds() -> float:
+    """Per-model timeout for a vision / OCR call (image in, text out).
+
+    ``AGENTVERSE_VISION_CALL_TIMEOUT_SECONDS``, else the general generation
+    timeout (60s). Large hosted vision models can be far slower than chat
+    models (NVIDIA's hosted Llama 3.2 90B Vision answered in ~200s on
+    2026-10-06), so this is its own knob: raise it to keep a slow preferred
+    model, or leave it and the next model in the OCR / vision order takes over.
+    """
+    raw = os.getenv("AGENTVERSE_VISION_CALL_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return generation_timeout_seconds()
+    try:
+        return float(raw)
+    except ValueError:
+        return generation_timeout_seconds()
+
+
 def _tenant(tenant_ctx: Any, tenant_id: str | None) -> Any:
     if tenant_ctx is not None:
         return tenant_ctx
