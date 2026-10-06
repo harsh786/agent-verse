@@ -15,3 +15,11 @@ data:
   OTEL_SERVICE_NAME: "agentverse"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
   OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+  # Connector egress escape hatch (operator-only, never tenant-settable). Every app
+  # workload (API, workers, beat) reads this one ConfigMap, so ingestion on the API
+  # and on the workers enforce the same policy. To allow your own internal sources
+  # (e.g. a MinIO on a private IP) set the flag to "true" AND list the hosts
+  # (hostnames or IP literals, comma-separated); the list alone does nothing.
+  # Enforced by tests/infra/test_vault_key_distribution.py (EGRESS-CFG).
+  INGESTION_ALLOW_INTERNAL_SOURCES: "false"
+  INGESTION_INTERNAL_SOURCE_ALLOWLIST: ""

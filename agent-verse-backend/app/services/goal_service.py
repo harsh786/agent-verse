@@ -3291,6 +3291,7 @@ class GoalService:
                         "goal.score_below",
                         tenant_ctx,
                         score=float(scorecard.average_score()),
+                        scores=getattr(scorecard, "scores", None),
                     )
                     # Trigger self-optimizer when score falls below threshold.
                     if scorecard.average_score() < 0.7:
@@ -3498,6 +3499,7 @@ class GoalService:
         tenant_ctx: TenantContext | None,
         *,
         score: float | None = None,
+        scores: dict[str, float] | None = None,
     ) -> None:
         """Publish a goal lifecycle event for ChainTriggerConsumer, once per record.
 
@@ -3526,6 +3528,7 @@ class GoalService:
             trigger_chain_depth=int(record.execution_context.get("trigger_chain_depth", 0) or 0),
             score=score,
             source_trigger_id=str(record.execution_context.get("source_trigger_id", "") or ""),
+            scores=scores if isinstance(scores, dict) else None,
         )
         try:
             # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.

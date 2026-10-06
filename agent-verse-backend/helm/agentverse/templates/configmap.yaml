@@ -12,3 +12,7 @@ data:
   CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otlpEndpoint | quote }}
   METRICS_ENABLED: {{ .Values.config.metricsEnabled | quote }}
+  # EGRESS-CFG: operator-only connector egress escape hatch (values: ingestion.*).
+  # Every app workload (API, workers, beat) reads this one ConfigMap.
+  INGESTION_ALLOW_INTERNAL_SOURCES: {{ .Values.ingestion.allowInternalSources | quote }}
+  INGESTION_INTERNAL_SOURCE_ALLOWLIST: {{ .Values.ingestion.internalSourceAllowlist | quote }}

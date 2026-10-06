@@ -61,6 +61,20 @@ describe('GoalChainFamilyForm', () => {
       expect(lastArg(onChange)).toEqual({ score_dimension: 'latency' });
     });
 
+    // B7-5: the field showed 0.7 but sent nothing, so the trigger was saved with
+    // 0.0 and no score could ever be below it.
+    test('sends the threshold it shows when the user does not edit it', () => {
+      const onChange = vi.fn();
+      render(<GoalChainFamilyForm triggerType="goal_score_below" value={{ description: 'x' }} onChange={onChange} />);
+      expect(onChange).toHaveBeenCalledWith({ description: 'x', score_threshold: 0.7 });
+    });
+
+    test('keeps a threshold the user already set', () => {
+      const onChange = vi.fn();
+      render(<GoalChainFamilyForm triggerType="goal_score_below" value={{ score_threshold: 0.2 }} onChange={onChange} />);
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
     test('shows a passed score threshold value', () => {
       render(<GoalChainFamilyForm triggerType="goal_score_below" value={{ score_threshold: 0.2 }} onChange={vi.fn()} />);
       expect(screen.getByDisplayValue('0.2')).toBeInTheDocument();
@@ -84,6 +98,21 @@ describe('GoalChainFamilyForm', () => {
       fireEvent.change(screen.getByPlaceholderText('agent:<agent_id> or risk:high'), { target: { value: 'risk:high' } });
       expect(lastArg(onChange)).toEqual({ hitl_queue_id: 'risk:high' });
     });
+  });
+
+  // B7-1: a platform-event trigger never fires on its own goals unless opted in.
+  describe('allow_self_trigger', () => {
+    test.each(['goal_completed', 'goal_failed', 'goal_score_below', 'hitl_approved', 'hitl_rejected', 'memory_created'] as const)(
+      '%s offers the opt-in, off by default',
+      (tt) => {
+        const onChange = vi.fn();
+        render(<GoalChainFamilyForm triggerType={tt} value={{ score_threshold: 0.5 }} onChange={onChange} />);
+        const box = screen.getByRole('checkbox', { name: /fire on events from goals it started/i });
+        expect(box).not.toBeChecked();
+        fireEvent.click(box);
+        expect(lastArg(onChange)).toEqual({ score_threshold: 0.5, allow_self_trigger: true });
+      },
+    );
   });
 
   describe('memory_created', () => {

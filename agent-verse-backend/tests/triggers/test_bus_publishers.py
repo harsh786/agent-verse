@@ -146,7 +146,7 @@ def test_run_goal_lifecycle_publish_uses_the_bus_helper() -> None:
     from app.scaling import tasks
 
     source = inspect.getsource(tasks)
-    start = source.index("_chain_channel = CHAIN_CHANNEL_FOR_EVENT.get(")
+    start = source.index("_chain_channel = _chain_channel_for_worker_event(")
     block = source[start : source.index("_chain_published.add(_chain_channel)", start)]
     assert "publish_trigger_event" in block
     assert "_rc.publish(" not in block

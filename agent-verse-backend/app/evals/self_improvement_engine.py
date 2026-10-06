@@ -129,6 +129,7 @@ class SelfImprovementEngine:
         batch_size: int = 100,
         max_rows: int = FEEDBACK_MAX_ROWS_PER_RUN,
         embedder: Any = None,
+        event_redis: Any = None,
     ) -> dict[str, int]:
         """Read unprocessed rows from ``goal_feedback`` and derive improvement actions.
 
@@ -140,6 +141,8 @@ class SelfImprovementEngine:
         row, so re-processing a row whose outer commit failed rewrites the same
         lesson instead of storing a duplicate. ``embedder`` (the platform's
         shared embedder) gives lessons a vector for semantic recall.
+        ``event_redis`` publishes each stored lesson as ``memory.created`` so
+        memory_created triggers fire for it (B7-4).
 
         Returns a summary dict: ``{"processed": N, "actions_derived": M}``.
         """
@@ -190,6 +193,7 @@ class SelfImprovementEngine:
                                     goal_id=str(row.goal_id),
                                     lesson=feedback_text[:500],
                                     embedder=embedder,
+                                    event_redis=event_redis,
                                 )
                                 actions_derived += 1
                             await session.execute(
@@ -233,6 +237,7 @@ async def _store_feedback_lesson(
     goal_id: str,
     lesson: str,
     embedder: Any = None,
+    event_redis: Any = None,
 ) -> str:
     """Persist a low-rating correction as a ``failure_pattern`` LTM lesson.
 
@@ -244,6 +249,9 @@ async def _store_feedback_lesson(
 
     store = LongTermMemoryStore()
     store._db_factory = db_session_factory
+    if event_redis is not None:
+        # B7-4: a bare store published nothing, so lessons never fired triggers.
+        store.set_event_redis(event_redis)
     memory = LongTermMemory(
         content=f"[User feedback correction] {lesson}",
         source_goal_id=goal_id,

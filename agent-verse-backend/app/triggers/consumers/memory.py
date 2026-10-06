@@ -52,6 +52,8 @@ class MemoryTriggerConsumer:
         except Exception:
             return
 
+        if not isinstance(data, dict):
+            return
         tenant_id = data.get("tenant_id", "")
         if not tenant_id or self._store is None or self._dispatcher is None:
             return
@@ -62,6 +64,22 @@ class MemoryTriggerConsumer:
         if not triggers:
             return
         from app.triggers.consumers.tenant_ctx import event_tenant_ctx
+        from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, source_lineage
+
+        # B7 loop guard: the lineage of the goal that wrote this memory (a
+        # trigger-started goal writes a learning when it completes). A read
+        # error raises, so the stream entry is retried, never fired unchecked.
+        source_goal_id = str(data.get("source_goal_id") or data.get("goal_id") or "")
+        lineage = await source_lineage(self._dispatcher, tenant_id, source_goal_id, data)
+        if lineage.depth >= MAX_CHAIN_DEPTH:
+            _log.warning(
+                "memory_chain_depth_exceeded depth=%d goal_id=%s", lineage.depth, source_goal_id
+            )
+            return
+        payload = chained_payload(data, lineage)
+        # One memory is one firing, however often it is (re)published.
+        memory_id = str(data.get("memory_id", "") or "")
+        event_id = f"{memory_id}:memory.created" if memory_id else ""
 
         # Plan from the tenant record — never from the event payload.
         tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
@@ -72,6 +90,15 @@ class MemoryTriggerConsumer:
             if watch_type and watch_type != data.get("memory_type", ""):
                 continue
             try:
-                await self._dispatcher.dispatch(spec, data, tenant_ctx)
+                await self._dispatcher.dispatch(
+                    spec,
+                    payload,
+                    tenant_ctx,
+                    **(
+                        {"source_goal_id": source_goal_id, "completion_event_id": event_id}
+                        if event_id
+                        else {}
+                    ),
+                )
             except Exception as exc:
                 _log.warning("memory_dispatch_error: %s", exc)

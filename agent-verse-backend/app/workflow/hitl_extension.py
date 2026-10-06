@@ -236,9 +236,13 @@ class HITLWorkflowGateway:
         notification_service: Any | None = None,
         resume_callback: Any | None = None,
         approval_store: Any | None = None,
+        event_redis: Any | None = None,
     ) -> None:
         self._base = base_gateway
         self._redis = redis_client
+        # Redis the decisions are published to as hitl.approved / hitl.rejected
+        # for HITL triggers (B7-3; bound by the API lifespan).
+        self._event_redis = event_redis
         self._notify = notification_service
         self._resume_callback = resume_callback
         # Durable, cross-process store (Postgres, RLS). When set, a pending
@@ -249,6 +253,47 @@ class HITLWorkflowGateway:
         self._store: dict[str, WorkflowHITLRequest] = {}
         # Serialises decide() check-and-set when there is no durable store.
         self._decide_lock = asyncio.Lock()
+
+    def set_event_redis(self, redis: Any) -> None:
+        self._event_redis = redis
+
+    async def _publish_trigger_event(self, req: WorkflowHITLRequest) -> None:
+        """Publish an approve / reject decision for HITLTriggerConsumer (B7-3).
+
+        Only goal approvals (``HITLGateway``) published these, so a HITL trigger
+        never fired for a workflow approval gate. Called once, by the decision
+        that won the claim. A workflow approval has no goal (lineage depth 0)
+        and no goal-derived queue (``hitl_queue_ids`` is empty, so only triggers
+        without a queue filter match). A publish failure is logged: the
+        decision itself is already durable.
+        """
+        channel = {"approved": "hitl.approved", "rejected": "hitl.rejected"}.get(req.status)
+        if channel is None or self._event_redis is None or not req.tenant_id:
+            return
+        payload = {
+            "tenant_id": req.tenant_id,
+            "request_id": req.request_id,
+            "goal_id": "",
+            "source": "workflow",
+            "workflow_run_id": req.run_id,
+            "workflow_id": req.workflow_id,
+            "step_id": req.step_id,
+            "action": req.action_taken or "",
+            "approver": req.reviewed_by or "",
+            "note": req.note,
+            "hitl_queue_ids": [],
+            "hitl_queue_id": "",
+        }
+        try:
+            from app.triggers.bus import publish_trigger_event
+
+            await publish_trigger_event(self._event_redis, channel, payload)
+        except Exception as exc:
+            _log.warning(
+                "workflow_hitl_trigger_event_publish_failed",
+                request_id=req.request_id,
+                error=str(exc)[:200],
+            )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -373,6 +418,9 @@ class HITLWorkflowGateway:
                     current, "The workflow run is no longer waiting for this approval"
                 )
             return self._already_decided(current or req, action, actor_id, idempotent)
+
+        # The decision is durable and this call won it: fire HITL triggers once.
+        await self._publish_trigger_event(req)
 
         # Resume the workflow
         if self._resume_callback:

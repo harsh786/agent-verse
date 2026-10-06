@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -9,6 +11,15 @@ from fastapi.testclient import TestClient
 from app.mcp.connector_store import ConnectorConflictError
 from app.mcp.registry import MCPRegistry
 from tests.api.test_connectors_comprehensive2 import _VALID_KEY, _make_app, _make_registry
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outbound HTTP is mocked here; never depend on real DNS (see tests/_dns.py)."""
+    from tests._dns import stub_public_dns
+
+    stub_public_dns(monkeypatch)
+
 
 _H = {"X-API-Key": _VALID_KEY}
 

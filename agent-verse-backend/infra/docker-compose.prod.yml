@@ -45,6 +45,12 @@ x-common-env: &common-env
   VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:?set VAULT_MASTER_KEY (the same value on every service)}
   VAULT_PREVIOUS_MASTER_KEYS: ${VAULT_PREVIOUS_MASTER_KEYS:-}
 
+  # Connector egress escape hatch (EGRESS-CFG) — operator-only, default off. Set the
+  # flag AND list your own internal hosts (hostnames or IP literals, comma-separated);
+  # the list alone does nothing. Shared by the API and every worker / beat.
+  INGESTION_ALLOW_INTERNAL_SOURCES: ${INGESTION_ALLOW_INTERNAL_SOURCES:-false}
+  INGESTION_INTERNAL_SOURCE_ALLOWLIST: ${INGESTION_INTERNAL_SOURCE_ALLOWLIST:-}
+
   # Observability — export traces/metrics to the in-stack otel-collector.
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
 

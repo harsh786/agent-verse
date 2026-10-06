@@ -27,10 +27,17 @@ from types import SimpleNamespace
 
 from app.triggers.bus import run_stream_consumer
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx
+from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, lineage_from_context
 
 _log = logging.getLogger(__name__)
 
-MAX_CHAIN_DEPTH = 10
+__all__ = [
+    "CHAIN_CHANNEL_FOR_EVENT",
+    "MAX_CHAIN_DEPTH",
+    "ChainTriggerConsumer",
+    "build_chain_event",
+    "goal_failed_chain_event",
+]
 
 # Goal event type → lifecycle channel this consumer listens on. Published by
 # GoalService._dispatch_event (in-process goals) and the run_goal worker.
@@ -52,6 +59,7 @@ def build_chain_event(
     trigger_chain_depth: int = 0,
     score: float | None = None,
     source_trigger_id: str = "",
+    scores: dict[str, float] | None = None,
 ) -> str:
     """JSON payload for a goal lifecycle channel.
 
@@ -71,9 +79,56 @@ def build_chain_event(
     }
     if score is not None:
         payload["score"] = score
+    if scores:
+        # Per-dimension scores, for triggers that watch one dimension (B7-5).
+        numeric = {str(k): _as_float(v) for k, v in scores.items()}
+        payload["scores"] = {k: v for k, v in numeric.items() if v is not None}
     if source_trigger_id:
         payload["source_trigger_id"] = source_trigger_id
     return json.dumps(payload)
+
+
+def _as_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _observed_score(spec: object, data: dict) -> float | None:
+    """The score a goal_score_below trigger compares: its ``score_dimension``
+    from the event's per-dimension scores, else (blank / ``overall``) the
+    overall average. ``None`` when the event does not carry it."""
+    dimension = str(getattr(spec, "score_dimension", "") or "").strip()
+    if dimension and dimension.lower() != "overall":
+        scores = data.get("scores")
+        return _as_float(scores.get(dimension)) if isinstance(scores, dict) else None
+    return _as_float(data.get("score"))
+
+
+def goal_failed_chain_event(
+    *, tenant_id: str, goal_id: str, agent_id: str = "", execution_context: object = None
+) -> str:
+    """``goal.failed`` payload for a goal failed outside its runner (B7-2).
+
+    The stuck-goal detector, the stale-runner watchdog, the HITL-expiry sweep and
+    the DLQ fail goals by a DB update; this builds the same event the runner
+    would publish, with the goal's trigger lineage from its execution_context
+    (so the loop guard holds) and the deterministic completion id (so a goal
+    whose runner also published ``goal.failed`` still fires each trigger once).
+    """
+    lineage = lineage_from_context(execution_context)
+    return build_chain_event(
+        channel="goal.failed",
+        tenant_id=tenant_id,
+        goal_id=goal_id,
+        agent_id=agent_id or "",
+        status="failed",
+        trigger_chain_depth=lineage.depth,
+        source_trigger_id=lineage.source_trigger_id,
+    )
 
 
 class ChainTriggerConsumer:
@@ -126,9 +181,11 @@ class ChainTriggerConsumer:
             data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
         except Exception:
             return
+        if not isinstance(data, dict):
+            return
 
         # Enforce chain depth limit
-        chain_depth = data.get("trigger_chain_depth", 0)
+        chain_depth = lineage_from_context(data).depth
         if chain_depth >= MAX_CHAIN_DEPTH:
             _log.warning(
                 "chain_depth_exceeded depth=%d goal_id=%s",
@@ -157,8 +214,6 @@ class ChainTriggerConsumer:
         tenant_id = data.get("tenant_id", "")
         goal_id = data.get("goal_id", "")
         agent_id = data.get("agent_id", "")
-        score = data.get("score", 1.0)
-        source_trigger_id = str(data.get("source_trigger_id", "") or "")
 
         # Find all enabled triggers of this type for this tenant
         try:
@@ -187,14 +242,8 @@ class ChainTriggerConsumer:
             # HITLTriggerConsumer / MemoryTriggerConsumer) fixes the extraction.
             spec = trigger.get("spec", trigger) if isinstance(trigger, dict) else trigger
 
-            # Self-chain guard: never fire a trigger on a goal it created itself.
-            trigger_id = str(
-                getattr(spec, "trigger_id", "")
-                or (trigger.get("schedule_id", "") if isinstance(trigger, dict) else "")
-                or ""
-            )
-            if source_trigger_id and trigger_id == source_trigger_id:
-                continue
+            # The self-chain guard (a trigger never fires on a goal it created,
+            # unless allow_self_trigger) runs in the dispatcher, which audits it.
 
             # Filter by watch_agent_id / watch_goal_id if set. watch_agent_id is
             # the SOURCE filter (whose goals to watch); the agent the trigger
@@ -204,17 +253,19 @@ class ChainTriggerConsumer:
             if getattr(spec, "watch_goal_id", "") and spec.watch_goal_id != goal_id:
                 continue
 
-            # Filter by score threshold for GOAL_SCORE_BELOW
+            # GOAL_SCORE_BELOW: the watched score (one dimension, or the overall
+            # average) must be below the threshold; no score, no fire (B7-5).
             if trigger_type == "goal_score_below":
-                threshold = getattr(spec, "score_threshold", 0.8)
-                if score >= threshold:
+                observed = _observed_score(spec, data)
+                threshold = _as_float(getattr(spec, "score_threshold", None))
+                if observed is None or threshold is None or observed >= threshold:
                     continue
 
             # Plan from the tenant record — never from the event payload.
             if tenant_ctx is None:
                 tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
 
-            enriched = {**data, "trigger_chain_depth": chain_depth + 1}
+            enriched = chained_payload(data, lineage_from_context(data))
             try:
                 await self._dispatcher.dispatch(
                     spec,
