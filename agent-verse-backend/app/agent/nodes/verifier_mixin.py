@@ -970,6 +970,10 @@ class VerifierMixin:
                     # truthful; the experiment only samples scored goals.
                     import asyncio as _asyncio
 
+                    # One record per goal: a later terminal failure (e.g. budget
+                    # exhausted after this verdict) must not record it again
+                    # (AgentGraph._record_failed_experiment_goal, a05-F087-02).
+                    agent_state.context["_experiment_outcome_recorded"] = True
                     _v2_task = _asyncio.create_task(
                         _self_opt_v2.on_goal_completed(
                             tenant_id=tenant_ctx.tenant_id,
