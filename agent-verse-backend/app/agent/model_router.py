@@ -192,6 +192,15 @@ class ModelRouter:
         # (set_role_map — see app/ai_router/deployment_roles.py).
         if self._override:
             return self._override
+        # The operator's saved reasoning order (Model Registry) is explicit intent
+        # too: it wins over the env pins and the automatic deployment role map,
+        # which every NVIDIA / on-prem deployment has — the model ranked first
+        # used to run only as a fallback (app/ai_router/role_preference.py).
+        from app.ai_router.role_preference import preferred_role_model
+
+        _preferred = preferred_role_model(task_type)
+        if _preferred:
+            return _preferred
         _role = _ROLE_ALIASES.get(task_type, task_type)
         if self._role_map.get(_role):
             return self._role_map[_role]

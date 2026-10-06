@@ -555,6 +555,13 @@ class ModelOrchestratorAdapter:
             # every self-hosted model costs 0.
             if self._override:
                 return self._capped(self._override, task_type)
+            # The saved reasoning order wins over the automatic role map (see
+            # app/ai_router/role_preference.py); the plan-tier cap still applies.
+            from app.ai_router.role_preference import preferred_role_model
+
+            _preferred = preferred_role_model(task_type)
+            if _preferred:
+                return self._capped(_preferred, task_type)
             from app.ai_router.deployment_roles import ROLE_ALIASES
 
             _role = ROLE_ALIASES.get(task_type, task_type)
