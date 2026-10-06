@@ -35,6 +35,7 @@ Live sequence (STATUS.md items):
 | 4 | A5 MongoDB (ingestion + MCP) / Redis / Elasticsearch | COMPLETE (33/33 live) |
 | 5 | A10 HTTP URL / web crawl | COMPLETE (11/11 live) |
 | 6 | A12 Agent-generated knowledge | COMPLETE (memory consolidations → P6) |
+| 7 | B1 Time triggers (cron, interval, once, relative_delay, deadline, business_calendar) | COMPLETE, pushed |
 
 Fix batches (all merged + pushed): user's 7 ingestion items (USR-1..7), MongoDB audit (49 items + NF-1..5, MCP,
 ingestion, frontend), owner decisions D1–D5, BYOK (vault key on every workload, workflows use tenant BYOK, no fake LLM
@@ -105,7 +106,8 @@ agent redeploys — rerun it. Behaviour changes made on purpose → update the o
 2. Scan `git log -p origin/main..main` added lines for provider-key patterns (Stripe `[srp]k_(live|test)_`, Slack
    `xox[abpr]-`, GitHub `gh[pousr]_`, `AIza`, `glpat-`, `AKIA` (except AWS's documented `AKIAIOSFODNN7EXAMPLE`),
    `nvapi-`) and for any PASS/SECRET/KEY/TOKEN value from `/private/tmp/claude-501/rw/**/*.env|*.json`
-   (paths starting with `/` are not secrets).
+   (paths starting with `/` are not secrets; values already present on `origin/main` — e.g. the MinIO dev default
+   `minioadmin` in docker-compose — are not a new disclosure: skip them with `git grep -q -F <v> origin/main`).
 3. Only then `git push origin main`. GitHub push protection once rejected a fake `sk_live_...` test literal; if that
    happens, rewrite the unpushed range (filter-branch tree-filter to split the literal) — never use the bypass URL.
 
@@ -113,12 +115,22 @@ agent redeploys — rerun it. Behaviour changes made on purpose → update the o
 
 | Item | Branch / worktree | State |
 |---|---|---|
-| **7. B1 time triggers** (live) | `live/p3-b1-time-triggers` · `.claude/worktrees/p3b1` | ~29 commits ahead of main; it already merged main (incl. chat durability) with an alembic merge revision. Was finishing final live checks (cron, interval, once, relative_delay, deadline, business_calendar; catch-up, 2 beats exactly-once, DST/timezones, plan floor, CEL conditions, scheduler scale). Expect its report `docs/audits/fixwave/live/p3-b1-time-triggers.md` + STATUS item. If its agent is gone: check `git -C .claude/worktrees/p3b1 status`, WIP-commit, verify the report exists, run its live scenarios once more, then §3.2. |
+| B1 | — | DONE and pushed (`4706ef8be`). |
+| **8. B2 webhook / rest / event** (live) | `live/p3-b2-ingress-triggers` · `.claude/worktrees/p3b2` | Started from main 8f6621d5e. Scope: signed webhooks (HMAC, replay window, dedup, size cap, mapping, filters, tenant isolation, quotas, audit, DLQ, token rotation, indexed lookup), REST trigger, event-bus triggers (reconnect after Redis error, exactly-once), dispatcher order (rate limit before dedup claim; caller role not defaulting to operator). If its agent is gone: WIP-commit in the worktree, check `docs/audits/fixwave/live/p3-b2-ingress-triggers.md`, continue. |
+
+Note: the live stack currently mounts the p3b1/p3b2 worktree; B1 added a `schedule-worker` service. The launchd
+`run_forever.py` starts its own beat whenever compose's beat disappears (even briefly during redeploy) — owner decision pending.
+
+Parallel code tracks (code + tests only, live-verified later in their queue slot):
+- `fix/b7-platform-events` · `.claude/worktrees/b7code` — B7 platform-event trigger fixes (loop guard, memory.created
+  published, goal_score_below on worker goals). Progress: `progress/b7code.progress.json`.
+- `fix/deferred-channels-kafka` · `.claude/worktrees/deferredcode` — DEF-1 Teams JWT/tenant binding, DEF-2 Slack
+  team_id binding, DEF-3 self-service channel binding (Telegram/WhatsApp/Slack/Teams/webhook, vault secrets), DEF-4
+  Kafka commit-after-index, DEF-5 GitHub/Stripe/Jira/Teams signature schemes. Progress: `progress/deferredcode.progress.json`.
 
 ## 5. Queue (strict order)
 
-1. **8. B2** webhook / rest / event triggers (live).
-2. **9. B7** platform events (live): goal_completed/goal_failed self-loop, goal_score_below, hitl_approved/rejected,
+1. **9. B7** platform events (live): goal_completed/goal_failed self-loop, goal_score_below, hitl_approved/rejected,
    memory_created (worker never publishes it).
 3. **Live re-checks** of code fixes already pushed: P2 retrieval/grounding, P4 workflows/HITL, P5 agent core, P7 evals,
    P8 guardrails/grants (each: redeploy, run the scenarios, fix, merge, push).
