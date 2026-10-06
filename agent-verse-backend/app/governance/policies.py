@@ -2,7 +2,8 @@
 
 Policies layer on top of the permission matrix:
   - A policy declares lists of denied tools.
-  - Multiple policies stack (most restrictive wins).
+  - Multiple policies stack: the highest-priority matching policy decides; among
+    equal priorities the most restrictive wins (deny > require_approval > allow).
   - Tool matching supports exact names or glob prefixes.
 
 v2 additions (migration 0056):
@@ -58,6 +59,8 @@ class Policy:
     # Supplementary fields populated when reloading from DB
     action: str = ""
     tool_pattern: str = ""
+    # Among the policies matching a tool the highest priority decides (QA-9).
+    priority: int = 0
 
 
 @dataclass
@@ -72,6 +75,22 @@ class GovernancePolicy:
     action: str
     tool_pattern: str = ""
     tenant_id: str = ""
+
+
+# Among equal-priority matches the most restrictive result wins (QA-9).
+_RESULT_SEVERITY: dict[PolicyResult, int] = {
+    PolicyResult.DENY: 0,
+    PolicyResult.REQUIRE_APPROVAL: 1,
+    PolicyResult.ALLOW: 2,
+}
+
+
+def _row_priority(row: Any) -> int:
+    """The ``priority`` column (5th) of a governance_policies row; 0 if NULL/absent."""
+    try:
+        return int(row[4] or 0)
+    except (IndexError, TypeError, ValueError):
+        return 0
 
 
 def _time_windows_by_name(
@@ -240,16 +259,30 @@ class PolicyEngine:
         from app.mcp.tool_naming import governance_names
 
         names = governance_names(tool_name)
+        # QA-9: the first match in list order used to decide, so the result
+        # depended on creation / reload order. The highest-priority matching
+        # policy decides; ties go to the most restrictive result.
+        matches: list[tuple[int, PolicyResult]] = []
         for policy in applicable_policies:
             if not self._is_within_time_window(policy):
                 continue  # Time window not active, skip this policy
-            for pattern in policy.denied_tools:
-                if any(fnmatch.fnmatch(name, pattern) for name in names):
-                    return PolicyResult.DENY
-            for pattern in policy.approval_tools:
-                if any(fnmatch.fnmatch(name, pattern) for name in names):
-                    return PolicyResult.REQUIRE_APPROVAL
-        return PolicyResult.ALLOW
+            result = self._match(policy, names)
+            if result is not None:
+                matches.append((int(getattr(policy, "priority", 0) or 0), result))
+        if not matches:
+            return PolicyResult.ALLOW
+        return min(matches, key=lambda m: (-m[0], _RESULT_SEVERITY[m[1]]))[1]
+
+    @staticmethod
+    def _match(policy: Policy, names: tuple[str, ...]) -> PolicyResult | None:
+        """What *policy* says about a tool known by *names* (``None``: no match)."""
+        for pattern in policy.denied_tools:
+            if any(fnmatch.fnmatch(name, pattern) for name in names):
+                return PolicyResult.DENY
+        for pattern in policy.approval_tools:
+            if any(fnmatch.fnmatch(name, pattern) for name in names):
+                return PolicyResult.REQUIRE_APPROVAL
+        return None
 
     async def reload_from_db(
         self,
@@ -287,8 +320,9 @@ class PolicyEngine:
                     rows = (
                         await session.execute(
                             text(
-                                "SELECT name, action, tools_pattern, tenant_id "
-                                "FROM governance_policies WHERE tenant_id=:tid"
+                                "SELECT name, action, tools_pattern, tenant_id, priority "
+                                "FROM governance_policies WHERE tenant_id=:tid "
+                                "ORDER BY priority DESC NULLS LAST, name"
                             ),
                             {"tid": tenant_id},
                         )
@@ -321,7 +355,8 @@ class PolicyEngine:
                 self._policies = [
                     policy for policy in self._policies if policy.tenant_id != tenant_id
                 ]
-                for name, action, tools_pattern, policy_tenant_id in rows:
+                for row in rows:
+                    name, action, tools_pattern, policy_tenant_id = row[0], row[1], row[2], row[3]
                     hours, weekdays = windows.get(name, (None, None))
                     self._policies.append(
                         Policy(
@@ -335,6 +370,7 @@ class PolicyEngine:
                             tool_pattern=tools_pattern or "*",
                             allowed_hours_utc=hours,
                             allowed_weekdays=weekdays,
+                            priority=_row_priority(row),
                         )
                     )
                 if isinstance(settings_row, list):
@@ -354,8 +390,9 @@ class PolicyEngine:
                         rows = (
                             await session.execute(
                                 text(
-                                    "SELECT name, action, tools_pattern, tenant_id "
-                                    "FROM governance_policies WHERE tenant_id=:tid"
+                                    "SELECT name, action, tools_pattern, tenant_id, priority "
+                                    "FROM governance_policies WHERE tenant_id=:tid "
+                                    "ORDER BY priority DESC NULLS LAST, name"
                                 ),
                                 {"tid": tenant_id},
                             )
@@ -368,15 +405,16 @@ class PolicyEngine:
                         rows = (
                             await session.execute(
                                 text(
-                                    "SELECT name, action, tools_pattern, tenant_id "
-                                    "FROM governance_policies"
+                                    "SELECT name, action, tools_pattern, tenant_id, priority "
+                                    "FROM governance_policies "
+                                    "ORDER BY priority DESC NULLS LAST, name"
                                 )
                             )
                         ).fetchall()
                         self._policies = []
 
                     for row in rows:
-                        name, action, tools_pattern, pol_tenant_id = row
+                        name, action, tools_pattern, pol_tenant_id = row[0], row[1], row[2], row[3]
                         # "*" not ".*": patterns are fnmatch globs, and ".*" only
                         # matches names starting with "." — a pattern-less deny
                         # policy reloaded as deny-NOTHING (fail-open).
@@ -392,6 +430,7 @@ class PolicyEngine:
                             tenant_id=pol_tenant_id or "",
                             action=action,
                             tool_pattern=tools_pattern or "*",
+                            priority=_row_priority(row),
                         )
                         self._policies.append(p)
                 return len(rows)

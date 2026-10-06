@@ -373,6 +373,9 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         else None,  # type: ignore[arg-type]
         allowed_weekdays=body.allowed_weekdays,
         tenant_id=tenant_ctx.tenant_id,
+        action=body.action,
+        tool_pattern=body.tools_pattern,
+        priority=body.priority,
     )
 
     record: dict[str, Any] = {

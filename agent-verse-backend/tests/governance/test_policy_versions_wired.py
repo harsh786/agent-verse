@@ -65,7 +65,7 @@ class _DB:
             return _Res(scalar=3)
         if "FROM policy_versions" in sql and "version_number = :ver" in sql:
             return _Res([self.target] if self.target else [])
-        if "SELECT name, action, tools_pattern, tenant_id FROM governance_policies" in sql:
+        if "SELECT name, action, tools_pattern, tenant_id, priority FROM governance_policies" in sql:
             return _Res(self.policies_rows)
         return _Res()
 
@@ -135,7 +135,7 @@ async def test_versions_listing_db_error_is_503() -> None:
 async def test_rollback_restores_governance_policies_and_engine_and_publishes() -> None:
     rules = [{"tools_pattern": "delete_*", "action": "deny", "priority": 5}]
     db = _DB(target=("v1", "no-delete", "old", rules, 1, None))
-    db.policies_rows = [("no-delete", "deny", "delete_*", "t-gov")]
+    db.policies_rows = [("no-delete", "deny", "delete_*", "t-gov", 5)]
     app = _app(db)
     redis = MagicMock()
     redis.publish = AsyncMock()
