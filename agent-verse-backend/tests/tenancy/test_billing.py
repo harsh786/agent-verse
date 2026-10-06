@@ -14,6 +14,11 @@ from app.tenancy.billing import (
     TenantBilling,
     billing_service,
 )
+from app.tenancy.context import PLAN_LIMITS, PlanTier
+
+_FREE = PLAN_LIMITS[PlanTier.FREE]
+# compute_overage approximates a month as 30 days of the daily goal limit.
+_FREE_MONTHLY = _FREE.goals_per_day * 30
 
 
 class TestPlanCatalog:
@@ -24,8 +29,8 @@ class TestPlanCatalog:
     def test_free_plan_limits(self):
         limits = PLAN_CATALOG[BillingPlan.FREE]
         assert limits.max_orgs == 1
-        assert limits.max_agents_per_org == 5
-        assert limits.max_missions_per_day == 2
+        assert limits.max_agents_per_org == _FREE.max_agents
+        assert limits.max_missions_per_day == _FREE.goals_per_day
         assert limits.channels_allowed == ["rest"]
         assert limits.mcp_enabled is False
         assert limits.sso_enabled is False
@@ -36,6 +41,21 @@ class TestPlanCatalog:
         assert limits.max_orgs == 999_999
         assert limits.sso_enabled is True
         assert limits.mcp_enabled is True
+
+    @pytest.mark.parametrize(
+        ("plan", "tier"),
+        [
+            (BillingPlan.FREE, PlanTier.FREE),
+            (BillingPlan.STARTER, PlanTier.STARTER),
+            (BillingPlan.PRO, PlanTier.PROFESSIONAL),
+            (BillingPlan.ENTERPRISE, PlanTier.ENTERPRISE),
+        ],
+    )
+    def test_catalog_limits_are_the_enforced_plan_limits(self, plan, tier):
+        """QA-17: no third, conflicting copy of the agent / daily-goal limits."""
+        limits = PLAN_CATALOG[plan]
+        assert limits.max_agents_per_org == PLAN_LIMITS[tier].max_agents
+        assert limits.max_missions_per_day == PLAN_LIMITS[tier].goals_per_day
 
     def test_pro_plan_has_mcp(self):
         limits = PLAN_CATALOG[BillingPlan.PRO]
@@ -57,7 +77,7 @@ class TestTenantBilling:
 
     def test_plan_limits_property(self):
         billing = TenantBilling(tenant_id="t1", plan=BillingPlan.PRO)
-        assert billing.plan_limits.max_agents_per_org == 100
+        assert billing.plan_limits.max_agents_per_org == PLAN_LIMITS[PlanTier.PROFESSIONAL].max_agents
 
     def test_plan_limits_falls_back_to_free_for_unknown_plan(self):
         billing = TenantBilling(tenant_id="t1")
@@ -71,10 +91,9 @@ class TestTenantBilling:
 
     def test_compute_overage_missions_above_limit(self):
         billing = TenantBilling(tenant_id="t1", plan=BillingPlan.FREE)
-        # FREE: max_missions_per_day=2 -> monthly approx = 60
-        billing.usage_this_period = {"missions_used": 70, "tokens_1k": 0}
+        billing.usage_this_period = {"missions_used": _FREE_MONTHLY + 10, "tokens_1k": 0}
         overage = billing.compute_overage()
-        assert overage == pytest.approx((70 - 60) * OVERAGE_RATES["extra_mission_usd"])
+        assert overage == pytest.approx(10 * OVERAGE_RATES["extra_mission_usd"])
 
     def test_compute_overage_tokens_always_charged(self):
         billing = TenantBilling(tenant_id="t1", plan=BillingPlan.PRO)
@@ -84,9 +103,9 @@ class TestTenantBilling:
 
     def test_compute_overage_combines_missions_and_tokens(self):
         billing = TenantBilling(tenant_id="t1", plan=BillingPlan.FREE)
-        billing.usage_this_period = {"missions_used": 70, "tokens_1k": 10}
+        billing.usage_this_period = {"missions_used": _FREE_MONTHLY + 10, "tokens_1k": 10}
         overage = billing.compute_overage()
-        expected = (70 - 60) * OVERAGE_RATES["extra_mission_usd"] + 10 * OVERAGE_RATES[
+        expected = 10 * OVERAGE_RATES["extra_mission_usd"] + 10 * OVERAGE_RATES[
             "extra_1k_tokens_usd"
         ]
         assert overage == pytest.approx(expected)
@@ -273,7 +292,7 @@ class TestInvoices:
     @pytest.mark.asyncio
     async def test_create_invoice_includes_overage(self, service: BillingService):
         await service.upgrade_plan("tenant-1", BillingPlan.FREE)
-        await service.record_usage("tenant-1", missions_delta=1000)
+        await service.record_usage("tenant-1", missions_delta=_FREE_MONTHLY + 1)
         invoice = await service.create_invoice("tenant-1")
         assert invoice["overage_charge"] > 0
 
@@ -319,11 +338,13 @@ class TestCheckPlanLimit:
         assert service.check_plan_limit("tenant-1", "orgs", 1) is False
 
     def test_within_agents_limit(self, service: BillingService):
-        assert service.check_plan_limit("tenant-1", "agents", 4) is True
+        assert service.check_plan_limit("tenant-1", "agents", _FREE.max_agents - 1) is True
+        assert service.check_plan_limit("tenant-1", "agents", _FREE.max_agents) is False
 
     def test_missions_per_day_limit(self, service: BillingService):
-        assert service.check_plan_limit("tenant-1", "missions_per_day", 2) is False
-        assert service.check_plan_limit("tenant-1", "missions_per_day", 1) is True
+        daily = _FREE.goals_per_day
+        assert service.check_plan_limit("tenant-1", "missions_per_day", daily) is False
+        assert service.check_plan_limit("tenant-1", "missions_per_day", daily - 1) is True
 
     def test_unknown_resource_defaults_to_generous_limit(self, service: BillingService):
         assert service.check_plan_limit("tenant-1", "unknown_resource", 999_998) is True

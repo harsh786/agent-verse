@@ -326,10 +326,11 @@ def test_list_plans(client: TestClient) -> None:
     assert resp.status_code == 200
     data = resp.json()
     plan_ids = {p["plan_id"] for p in data}
-    assert plan_ids == {"starter", "professional", "enterprise"}
+    assert plan_ids == {"free", "starter", "professional", "enterprise"}
     starter = next(p for p in data if p["plan_id"] == "starter")
     assert starter["prices"]["monthly_inr"] == 29.0
-    assert starter["limits"]["agents"] == 5
+    # QA-17: the enforced PLAN_LIMITS value, not a separate display table.
+    assert starter["limits"]["agents"] == 10
 
 
 def test_list_plans_requires_auth() -> None:

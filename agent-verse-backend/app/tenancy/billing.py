@@ -5,11 +5,13 @@ Supports pluggable payment providers per spec:
   razorpay  — India (INR, UPI, cards, net banking)
   paddle    — Europe + global (tax handling)
 
-Plan comparison:
-  FREE:       1 org, 5 agents, 2 missions/day, no channels, no MCP
-  STARTER:    3 orgs, 20 agents, 30 missions/day, Telegram + REST
-  PRO:        10 orgs, 100 agents, unlimited missions, all channels, MCP
-  ENTERPRISE: unlimited, SSO, on-premise option, SLA, dedicated support
+Plan comparison (agents and missions/day are the ENFORCED
+``app.tenancy.context.PLAN_LIMITS`` values - max_agents / goals_per_day - never
+a separate copy, QA-17):
+  FREE:       1 org, REST only, no MCP
+  STARTER:    3 orgs, Telegram + REST
+  PRO:        10 orgs, all channels, MCP
+  ENTERPRISE: unlimited orgs, SSO, on-premise option, SLA, dedicated support
 
 Usage-based billing (additional to flat plan):
   Per token above plan limit
@@ -26,6 +28,7 @@ from enum import StrEnum
 from typing import Any
 
 from app.observability.logging import get_logger
+from app.tenancy.context import PLAN_LIMITS, PlanTier
 
 _log = get_logger(__name__)
 
@@ -67,8 +70,8 @@ class PlanLimits:
 PLAN_CATALOG: dict[str, PlanLimits] = {
     BillingPlan.FREE: PlanLimits(
         max_orgs=1,
-        max_agents_per_org=5,
-        max_missions_per_day=2,
+        max_agents_per_org=PLAN_LIMITS[PlanTier.FREE].max_agents,
+        max_missions_per_day=PLAN_LIMITS[PlanTier.FREE].goals_per_day,
         channels_allowed=["rest"],
         mcp_enabled=False,
         sso_enabled=False,
@@ -78,8 +81,8 @@ PLAN_CATALOG: dict[str, PlanLimits] = {
     ),
     BillingPlan.STARTER: PlanLimits(
         max_orgs=3,
-        max_agents_per_org=20,
-        max_missions_per_day=30,
+        max_agents_per_org=PLAN_LIMITS[PlanTier.STARTER].max_agents,
+        max_missions_per_day=PLAN_LIMITS[PlanTier.STARTER].goals_per_day,
         channels_allowed=["rest", "telegram"],
         mcp_enabled=False,
         sso_enabled=False,
@@ -89,8 +92,8 @@ PLAN_CATALOG: dict[str, PlanLimits] = {
     ),
     BillingPlan.PRO: PlanLimits(
         max_orgs=10,
-        max_agents_per_org=100,
-        max_missions_per_day=10_000,
+        max_agents_per_org=PLAN_LIMITS[PlanTier.PROFESSIONAL].max_agents,
+        max_missions_per_day=PLAN_LIMITS[PlanTier.PROFESSIONAL].goals_per_day,
         channels_allowed=[
             "rest",
             "telegram",
@@ -109,8 +112,8 @@ PLAN_CATALOG: dict[str, PlanLimits] = {
     ),
     BillingPlan.ENTERPRISE: PlanLimits(
         max_orgs=999_999,
-        max_agents_per_org=999_999,
-        max_missions_per_day=999_999,
+        max_agents_per_org=PLAN_LIMITS[PlanTier.ENTERPRISE].max_agents,
+        max_missions_per_day=PLAN_LIMITS[PlanTier.ENTERPRISE].goals_per_day,
         channels_allowed=["all"],
         mcp_enabled=True,
         sso_enabled=True,

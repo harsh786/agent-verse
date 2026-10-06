@@ -10,11 +10,8 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface PlanLimits {
-  goals?: number;
-  tokens?: number;
-  tool_calls?: number;
-}
+/** The limits a plan ENFORCES, as served by the API (QA-17) — never hard-coded here. */
+type PlanLimits = Record<string, number>;
 
 interface UsageData {
   goals?: number;
@@ -74,20 +71,19 @@ function PlanBadge({ plan }: { plan: string }) {
   );
 }
 
-function UsageBar({ label, used, limit }: { label: string; used: number; limit: number }) {
-  const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
-  const color = pct > 85 ? 'bg-destructive' : pct > 60 ? 'bg-amber-500' : 'bg-primary';
+/**
+ * A usage figure for the period. The plan's limits are per day (goals) or absent
+ * (tokens, tool calls), so they are shown as a note next to the period total rather
+ * than as a bar that would compare a 30-day total with a daily cap.
+ */
+function UsageStat({ label, used, note }: { label: string; used: number; note: string }) {
   return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-sm">
-        <span className="text-foreground">{label}</span>
-        <span className="text-muted-foreground">
-          {used.toLocaleString()} / {limit > 0 ? limit.toLocaleString() : '∞'}
-        </span>
-      </div>
-      <div className="h-2 rounded-full bg-muted overflow-hidden">
-        <div className={`h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${color}`} style={{ width: `${pct}%` }} />
-      </div>
+    <div className="flex items-baseline justify-between gap-4 text-sm">
+      <span className="text-foreground">{label}</span>
+      <span className="text-right">
+        <span className="font-medium text-foreground">{used.toLocaleString()}</span>
+        <span className="block text-xs text-muted-foreground">{note}</span>
+      </span>
     </div>
   );
 }
@@ -395,13 +391,15 @@ export default function BillingPage() {
   const currentPlan = subscription?.plan ?? 'free';
   const totalCost = subscription?.total_cost_usd ?? 0;
 
-  // Derive usage limits from the matching Razorpay plan, or fall back to defaults
+  // The enforced daily goal limit, from the API only (subscription, else the plan
+  // list). No invented fallback: without one, none is shown.
   const matchingPlan = plans.find((p) => p.plan_id === currentPlan);
-  const usageLimits = {
-    goals:      subscription?.limits?.goals      ?? matchingPlan?.limits?.goals_per_day      ?? 1_000,
-    tokens:     subscription?.limits?.tokens     ?? matchingPlan?.limits?.tokens_per_month   ?? 1_000_000,
-    tool_calls: subscription?.limits?.tool_calls ?? matchingPlan?.limits?.tool_calls_per_day ?? 10_000,
-  };
+  const goalsPerDay =
+    subscription?.limits?.goals_per_day ?? matchingPlan?.limits?.goals_per_day;
+  const goalsNote =
+    goalsPerDay === undefined
+      ? 'Last 30 days'
+      : `Last 30 days · Plan limit: ${goalsPerDay.toLocaleString()} goals/day`;
 
   const handleUpgrade = (planId: string) => {
     setUpgradeModalPlan(planId);
@@ -448,9 +446,17 @@ export default function BillingPage() {
           <EmptySection message="Usage data not available" />
         ) : usage ? (
           <div className="space-y-4">
-            <UsageBar label="Goals"      used={usage.usage?.goals      ?? 0} limit={usageLimits.goals} />
-            <UsageBar label="LLM Tokens" used={usage.usage?.llm_tokens ?? 0} limit={usageLimits.tokens} />
-            <UsageBar label="Tool Calls" used={usage.usage?.tool_calls ?? 0} limit={usageLimits.tool_calls} />
+            <UsageStat label="Goals" used={usage.usage?.goals ?? 0} note={goalsNote} />
+            <UsageStat
+              label="LLM Tokens"
+              used={usage.usage?.llm_tokens ?? 0}
+              note="Last 30 days · Not limited by plan"
+            />
+            <UsageStat
+              label="Tool Calls"
+              used={usage.usage?.tool_calls ?? 0}
+              note="Last 30 days · Not limited by plan"
+            />
           </div>
         ) : (
           <div className="space-y-4 animate-pulse">
@@ -470,7 +476,7 @@ export default function BillingPage() {
         {plansError ? (
           <EmptySection message="Plan information not available" />
         ) : plans.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {plans.map((plan) => (
               <div
                 key={plan.plan_id}
@@ -504,7 +510,7 @@ export default function BillingPage() {
                   <span className="mt-3 block text-center text-xs text-primary font-medium">
                     Current Plan
                   </span>
-                ) : (
+                ) : plan.prices.monthly_paise <= 0 ? null : (
                   <button
                     onClick={() => handleUpgrade(plan.plan_id)}
                     className="mt-3 w-full text-center text-xs py-1.5 rounded border border-border text-foreground hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"

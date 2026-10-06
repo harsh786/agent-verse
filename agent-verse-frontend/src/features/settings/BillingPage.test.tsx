@@ -9,10 +9,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import BillingPage from './BillingPage';
 
+// Limits as the API serves them: the enforced plan limits (QA-17).
 const PLANS = [
-  { plan_id: 'free', name: 'Free', prices: { monthly_inr: 0, annual_inr: 0, monthly_paise: 0, annual_paise: 0 }, limits: { goals_per_day: 100 }, razorpay_key_id: 'rzp_test' },
-  { plan_id: 'starter', name: 'Starter', prices: { monthly_inr: 29, annual_inr: 278, monthly_paise: 2900, annual_paise: 27840 }, limits: { goals_per_day: 1000, tokens_per_month: 1000000 }, razorpay_key_id: 'rzp_test' },
-  { plan_id: 'professional', name: 'Professional', prices: { monthly_inr: 99, annual_inr: 948, monthly_paise: 9900, annual_paise: 94800 }, limits: { goals_per_day: 5000 }, razorpay_key_id: 'rzp_test' },
+  { plan_id: 'free', name: 'Free', prices: { monthly_inr: 0, annual_inr: 0, monthly_paise: 0, annual_paise: 0 }, limits: { goals_per_day: 25, agents: 3 }, razorpay_key_id: 'rzp_test' },
+  { plan_id: 'starter', name: 'Starter', prices: { monthly_inr: 29, annual_inr: 278, monthly_paise: 2900, annual_paise: 27840 }, limits: { goals_per_day: 100, agents: 10 }, razorpay_key_id: 'rzp_test' },
+  { plan_id: 'professional', name: 'Professional', prices: { monthly_inr: 99, annual_inr: 948, monthly_paise: 9900, annual_paise: 94800 }, limits: { goals_per_day: 1000, agents: 50 }, razorpay_key_id: 'rzp_test' },
 ];
 
 interface Overrides {
@@ -87,8 +88,34 @@ describe('BillingPage', () => {
     expect(await screen.findByText('Goals')).toBeInTheDocument();
     expect(screen.getByText('LLM Tokens')).toBeInTheDocument();
     expect(screen.getByText('Tool Calls')).toBeInTheDocument();
-    // Goals used=42 against the starter plan's 1000/day limit.
-    expect(screen.getByText(/42 \/ 1,000/)).toBeInTheDocument();
+    expect(screen.getByText('42')).toBeInTheDocument();
+    expect(screen.getByText('12,000')).toBeInTheDocument();
+  });
+
+  test('shows the enforced daily goal limit from the subscription, not a made-up number', async () => {
+    mockFetch({
+      subscription: { plan: 'starter', limits: { goals_per_day: 100, agents: 10 }, total_cost_usd: 0 },
+      usage: { usage: { goals: 42, llm_tokens: 12000, tool_calls: 7 } },
+    });
+    renderPage();
+    expect(await screen.findByText(/Plan limit: 100 goals\/day/)).toBeInTheDocument();
+    // Tokens and tool calls are not capped by any plan: no invented limit.
+    expect(screen.queryByText(/1,000,000/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/10,000/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Not limited by plan/).length).toBe(2);
+  });
+
+  test('falls back to the plan list for the daily goal limit', async () => {
+    mockFetch({ subscription: { plan: 'professional', total_cost_usd: 0 } });
+    renderPage();
+    expect(await screen.findByText(/Plan limit: 1,000 goals\/day/)).toBeInTheDocument();
+  });
+
+  test('without any API limit no goal limit is invented', async () => {
+    mockFetch({ subscription: { plan: 'mystery', total_cost_usd: 0 } });
+    renderPage();
+    expect(await screen.findByText('Goals')).toBeInTheDocument();
+    expect(screen.queryByText(/Plan limit:/)).not.toBeInTheDocument();
   });
 
   test('renders a usage-not-available message when the usage request fails', async () => {
@@ -104,6 +131,18 @@ describe('BillingPage', () => {
     expect(await within(plansCard).findByText('Professional')).toBeInTheDocument();
     expect(within(plansCard).getByText('Current Plan')).toBeInTheDocument();
     expect(within(plansCard).getAllByRole('button', { name: /^Select$/i }).length).toBeGreaterThan(0);
+  });
+
+  test('the free plan is listed with its limits but cannot be bought', async () => {
+    mockFetch({ subscription: { plan: 'starter', limits: {}, total_cost_usd: 0 } });
+    renderPage();
+    const plansCard = (await screen.findByRole('heading', { name: 'Available Plans' })).closest('div.rounded-lg') as HTMLElement;
+    const freeCard = (await within(plansCard).findByRole('heading', { name: 'Free' })).parentElement as HTMLElement;
+    expect(within(freeCard).getByText(/goals per day: 25/)).toBeInTheDocument();
+    expect(within(freeCard).queryByRole('button', { name: /^Select$/i })).not.toBeInTheDocument();
+    // Professional is still purchasable.
+    const proCard = within(plansCard).getByRole('heading', { name: 'Professional' }).parentElement as HTMLElement;
+    expect(within(proCard).getByRole('button', { name: /^Select$/i })).toBeInTheDocument();
   });
 
   test('renders a plan-not-available message when the plans request fails', async () => {

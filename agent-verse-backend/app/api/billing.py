@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.tenancy.context import TenantContext
+from app.tenancy.context import PLAN_LIMITS, PlanTier, TenantContext
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 _log = logging.getLogger(__name__)
@@ -28,29 +28,34 @@ PLAN_PRICES = {
     "enterprise": {"monthly": 49900, "annual": 479040},  # INR paise (₹499 / ₹4790.40)
 }
 
-PLAN_FEATURES: dict[str, dict[str, Any]] = {
-    "starter": {
-        "goals_per_day": 50,
-        "tokens_per_month": 5_000_000,
-        "tool_calls_per_day": 500,
-        "agents": 5,
-        "connectors": 10,
-    },
-    "professional": {
-        "goals_per_day": 500,
-        "tokens_per_month": 50_000_000,
-        "tool_calls_per_day": 5000,
-        "agents": 50,
-        "connectors": 100,
-    },
-    "enterprise": {
-        "goals_per_day": -1,
-        "tokens_per_month": -1,
-        "tool_calls_per_day": -1,
-        "agents": -1,
-        "connectors": -1,
-    },
-}
+
+def plan_limits(plan: str | PlanTier) -> dict[str, int]:
+    """The limits *plan* ENFORCES, for display (QA-17).
+
+    Derived from the tables enforcement reads - ``PLAN_LIMITS`` (goals/day,
+    agents, knowledge collections, API keys, requests/minute, goal timeout) and
+    the trigger quota - so the billing page can never advertise a number the
+    platform does not apply. (A hard-coded copy used to show starter 50
+    goals/day / 5 agents while 100 / 10 were enforced, plus limits nothing
+    enforced.) ``{}`` for an unknown plan.
+    """
+    from app.triggers.quota import PLAN_MAX_TRIGGERS
+
+    try:
+        tier = PlanTier(str(plan))
+    except ValueError:
+        return {}
+    lim = PLAN_LIMITS[tier]
+    return {
+        "goals_per_day": lim.goals_per_day,
+        "agents": lim.max_agents,
+        "knowledge_collections": lim.max_knowledge_collections,
+        "triggers": PLAN_MAX_TRIGGERS.get(tier.value, PLAN_MAX_TRIGGERS["free"]),
+        "api_keys": lim.max_api_keys,
+        "requests_per_minute": lim.requests_per_minute,
+        "goal_timeout_seconds": lim.goal_timeout_seconds,
+    }
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -154,6 +159,7 @@ async def get_subscription(request: Request) -> dict[str, Any]:
         "stripe_configured": bool(settings.stripe_api_key),
         "razorpay_configured": bool(settings.razorpay_key_secret),
         "checkout_url": "/billing/checkout",
+        "limits": plan_limits(plan),
     }
 
 
@@ -318,26 +324,28 @@ async def list_invoices(request: Request) -> list[dict[str, Any]]:
 
 @router.get("/plans")
 async def list_plans(request: Request) -> list[dict[str, Any]]:
-    """Return available billing plans with Razorpay pricing info."""
+    """Every plan tier (free included) with its price and ENFORCED limits."""
     _require_tenant(request)
     from app.core.config import get_settings
 
     settings = get_settings()
+    free = {"monthly": 0, "annual": 0}
 
     return [
         {
-            "plan_id": plan,
-            "name": plan.title(),
+            "plan_id": tier.value,
+            "name": tier.value.title(),
             "prices": {
                 "monthly_inr": price["monthly"] / 100,
                 "annual_inr": price["annual"] / 100,
                 "monthly_paise": price["monthly"],
                 "annual_paise": price["annual"],
             },
-            "limits": PLAN_FEATURES[plan],
+            "limits": plan_limits(tier),
             "razorpay_key_id": settings.razorpay_key_id,
         }
-        for plan, price in PLAN_PRICES.items()
+        for tier in PlanTier
+        for price in [PLAN_PRICES.get(tier.value, free)]
     ]
 
 
@@ -644,7 +652,7 @@ def _upgrade_result(order: _Order, payment_id: str) -> dict[str, Any]:
         "payment_id": payment_id,
         "order_id": order.order_id,
         "message": f"Successfully upgraded to {order.plan.title()} plan!",
-        "limits": PLAN_FEATURES.get(order.plan, {}),
+        "limits": plan_limits(order.plan),
     }
 
 
