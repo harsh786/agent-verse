@@ -44,7 +44,7 @@ class TestSaveSnapshotToDb:
         await _save_snapshot_to_db(snapshot, None, "tenant1")
 
     @pytest.mark.asyncio
-    async def test_logs_exception_when_db_fails(self):
+    async def test_raises_when_db_fails(self):
         snapshot = {"snapshot_id": "s1", "agent_id": "a1", "version": 1}
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -58,8 +58,10 @@ class TestSaveSnapshotToDb:
         mock_session.execute = AsyncMock(side_effect=RuntimeError("db error"))
 
         mock_db = MagicMock(return_value=mock_session)
-        # Should not raise — exception is logged
-        await _save_snapshot_to_db(snapshot, mock_db, "tenant1")
+        # a10-F236-01: a failed write raises (the route answers 503); it used to
+        # be logged and the route reported a snapshot that was never stored.
+        with pytest.raises(RuntimeError):
+            await _save_snapshot_to_db(snapshot, mock_db, "tenant1")
 
 
 class TestLoadSnapshotsFromDb:
@@ -69,15 +71,16 @@ class TestLoadSnapshotsFromDb:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_exception(self):
+    async def test_raises_on_exception(self):
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(side_effect=RuntimeError("connection error"))
 
         mock_db = MagicMock(return_value=mock_session)
-        result = await _load_snapshots_from_db("tenant1", "agent1", mock_db)
-        assert result == []
+        # a10-F236-01: [] on error reset version numbering; it now raises.
+        with pytest.raises(RuntimeError):
+            await _load_snapshots_from_db("tenant1", "agent1", mock_db)
 
 
 # ── AgentStore methods ─────────────────────────────────────────────────────────
@@ -174,6 +177,11 @@ class TestAgentStore:
         store = AgentStore(db_session_factory=lambda: AsyncContext(session))
         store._data[(_CTX.tenant_id, "aid1")] = {"agent_id": "aid1", "name": "Original"}
 
+        # The DB-first agent lookup is served from the record (a fake session
+        # cannot build an Agent row; get_async no longer falls back on error).
+        store.get_async = AsyncMock(  # type: ignore[method-assign]
+            return_value=store._data[(_CTX.tenant_id, "aid1")]
+        )
         with patch("app.db.rls.sqlalchemy_rls_context", return_value=AsyncContext()):
             updated = await store.update_async(
                 "aid1",

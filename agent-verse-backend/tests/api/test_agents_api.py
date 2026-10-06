@@ -209,8 +209,9 @@ def test_create_agent_surfaces_db_persistence_failure() -> None:
         headers={"X-API-Key": _VALID_KEY},
     )
 
-    assert resp.status_code == 500
-    assert resp.json() == {"detail": "Agent persistence failed"}
+    # The plan-limit COUNT is the first DB read: with the DB down it is now a
+    # retryable 503 (a10-F236-05) rather than a count of this replica's cache.
+    assert resp.status_code == 503
     assert store.list_all(tenant_ctx=_CTX) == []
 
 

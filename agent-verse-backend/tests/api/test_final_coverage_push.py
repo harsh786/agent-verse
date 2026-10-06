@@ -108,6 +108,9 @@ class TestAgentsExtra:
         ctx = TenantContext(tenant_id="upd-t", plan=PlanTier.FREE, api_key_id="k")
         # Insert record
         store._data[("upd-t", "ag2")] = {"agent_id": "ag2", "tenant_id": "upd-t"}
+        # The DB-first lookup is served from the record (get_async no longer
+        # falls back to the cache on a DB error, a10-F236-03).
+        store.get_async = AsyncMock(return_value=store._data[("upd-t", "ag2")])  # type: ignore[method-assign]
         # Pass data with no allowed fields
         result = await store.update_async("ag2", {"unknown_field": "val"}, tenant_ctx=ctx)
         assert result is True
@@ -2515,7 +2518,10 @@ class TestAgentsWave4:
             "__aenter__": AsyncMock(return_value=None),
             "__aexit__": AsyncMock(return_value=False),
         })())
-        mock_session.execute = AsyncMock()
+        # The INSERT allocates the version and RETURNs it (a10-F236-04).
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one=MagicMock(return_value=1))
+        )
 
         def _db():
             return mock_session
@@ -2536,7 +2542,7 @@ class TestAgentsWave4:
         from app.api.agents import _load_snapshots_from_db
 
         snapshot_data = {"snapshot_id": "s1", "agent_id": "a1", "version": 1}
-        mock_rows = [(json.dumps(snapshot_data),)]
+        mock_rows = [(json.dumps(snapshot_data), 1)]  # (snapshot, version column)
 
         mock_result = MagicMock()
         mock_result.fetchall = MagicMock(return_value=mock_rows)

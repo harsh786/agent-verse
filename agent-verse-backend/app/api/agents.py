@@ -35,67 +35,128 @@ _AGENT_SNAPSHOTS: dict[str, list[dict[str, Any]]] = {}
 # ---------------------------------------------------------------------------
 
 
-async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str) -> None:
-    """Persist an agent snapshot to the agent_snapshots table WITH RLS context."""
-    if db is None:
-        return
-    try:
-        from sqlalchemy import text
+_SNAPSHOT_INSERT_SQL = """
+    WITH nxt AS (
+        SELECT COALESCE(MAX(version), 0) + 1 AS v
+        FROM agent_snapshots
+        WHERE tenant_id = :tid AND agent_id = :aid
+    )
+    INSERT INTO agent_snapshots (id, tenant_id, agent_id, version, snapshot, snapshotted_at)
+    SELECT :id, :tid, :aid, nxt.v,
+           jsonb_set(CAST(:snap AS jsonb), '{version}', to_jsonb(nxt.v)), NOW()
+    FROM nxt
+    RETURNING version
+"""
+_SNAPSHOT_VERSION_RETRIES = 5
 
-        from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
-            await session.execute(
-                text(
-                    """INSERT INTO agent_snapshots
-                       (id, tenant_id, agent_id, version, snapshot, snapshotted_at)
-                       VALUES (:id, :tid, :aid, :version, CAST(:snap AS jsonb), NOW())
-                       ON CONFLICT (id) DO NOTHING"""
-                ),
-                {
-                    "id": snapshot["snapshot_id"],
-                    "tid": tenant_id,
-                    "aid": snapshot["agent_id"],
-                    "version": snapshot["version"],
-                    "snap": json.dumps(snapshot),
-                },
-            )
-    except Exception as exc:
-        import logging
+def _snapshot_store_unavailable(action: str, exc: Exception) -> HTTPException:
+    import logging
 
-        logging.getLogger(__name__).warning("snapshot_persist_failed: %s", exc)
+    logging.getLogger(__name__).warning("snapshot_%s_failed: %s", action, type(exc).__name__)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Agent snapshots temporarily unavailable; retry",
+    )
+
+
+async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str) -> int:
+    """Persist an agent snapshot WITH RLS context; return the version it got.
+
+    The version is allocated in the INSERT itself (MAX + 1 for the agent) and
+    the unique ``(tenant_id, agent_id, version)`` constraint (migration
+    e2b6d4f8a1c3) turns a concurrent duplicate into a conflict that is retried.
+    It used to be ``len(existing) + 1`` from a separate read, so two snapshots
+    racing got the same number. A failure raises (the route answers 503): the
+    old helper logged a warning and the route reported a snapshot that was never
+    stored.
+    """
+    if db is None:  # no database: the caller keeps the in-memory copy
+        return int(snapshot.get("version") or 0)
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    for attempt in range(_SNAPSHOT_VERSION_RETRIES):
+        try:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                version = (
+                    await session.execute(
+                        text(_SNAPSHOT_INSERT_SQL),
+                        {
+                            "id": snapshot["snapshot_id"],
+                            "tid": tenant_id,
+                            "aid": snapshot["agent_id"],
+                            "snap": json.dumps(snapshot),
+                        },
+                    )
+                ).scalar_one()
+            return int(version)
+        except IntegrityError:
+            if attempt == _SNAPSHOT_VERSION_RETRIES - 1:
+                raise
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 async def _load_snapshots_from_db(tenant_id: str, agent_id: str, db: Any) -> list[dict[str, Any]]:
-    """Load agent snapshots from DB ordered by version ascending."""
+    """Load agent snapshots from DB ordered by version ascending (a DB error raises).
+
+    It used to return [] on any error: the versions list looked empty and the
+    next snapshot restarted at version 1.
+    """
     if db is None:
         return []
-    try:
-        from sqlalchemy import text
+    from sqlalchemy import text
 
-        from app.db.rls import sqlalchemy_rls_context
+    from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, sqlalchemy_rls_context(session, tenant_id):
-            result = await session.execute(
-                text(
-                    "SELECT snapshot FROM agent_snapshots "
-                    "WHERE tenant_id = :tid AND agent_id = :aid "
-                    "ORDER BY version ASC"
-                ),
-                {"tid": tenant_id, "aid": agent_id},
-            )
-            rows = result.fetchall()
-        return [(json.loads(r[0]) if isinstance(r[0], str) else r[0]) for r in rows]
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("snapshot_load_failed: %s", exc)
-        return []
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        result = await session.execute(
+            text(
+                "SELECT snapshot, version FROM agent_snapshots "
+                "WHERE tenant_id = :tid AND agent_id = :aid "
+                "ORDER BY version ASC"
+            ),
+            {"tid": tenant_id, "aid": agent_id},
+        )
+        rows = result.fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        snap = json.loads(r[0]) if isinstance(r[0], str) else dict(r[0])
+        snap["version"] = int(r[1])  # the column is authoritative
+        out.append(snap)
+    return out
 
 
 # ---------------------------------------------------------------------------
 # In-memory AgentStore
 # ---------------------------------------------------------------------------
+
+
+def _agent_store_unavailable(op: str, tenant_ctx: TenantContext, exc: Exception) -> Exception:
+    """With a database configured, a failed agent read is a retryable 503.
+
+    get/list/count used to fall back to this replica's in-memory cache: an agent
+    deleted on another replica was still served (and runnable), one created
+    elsewhere was a 404, a list showed a partial set, and plan limits counted the
+    cache. Same rule as routing_candidates (RV-02). An HTTPException like the
+    store's write paths, so it is a 503 on every router (no app handler needed).
+    """
+    from app.observability.logging import get_logger
+
+    get_logger(__name__).warning(
+        f"agent_{op}_db_failed", tenant_id=tenant_ctx.tenant_id, error=type(exc).__name__
+    )
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Agent store temporarily unavailable; retry",
+        headers={"Retry-After": "5"},
+    )
 
 
 # The routing document (CORE-33); identical to the ix_agents_routing_fts index
@@ -288,9 +349,7 @@ class AgentStore:
                 self._data.pop((tenant_ctx.tenant_id, agent_id), None)
                 return None
             except Exception as exc:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("agent_get_db_failed", error=str(exc))
+                raise _agent_store_unavailable("get", tenant_ctx, exc) from exc
 
         return self._data.get((tenant_ctx.tenant_id, agent_id))
 
@@ -336,9 +395,7 @@ class AgentStore:
                     self._data[(tenant_ctx.tenant_id, a["agent_id"])] = a
                 return agents
             except Exception as exc:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("agent_list_db_failed", error=str(exc))
+                raise _agent_store_unavailable("list", tenant_ctx, exc) from exc
 
         rows_mem = self.list_all(tenant_ctx=tenant_ctx)
         if limit is not None:
@@ -457,9 +514,7 @@ class AgentStore:
                         ).scalar_one()
                     )
             except Exception as exc:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("agent_count_db_failed", error=str(exc))
+                raise _agent_store_unavailable("count", tenant_ctx, exc) from exc
         return len(self.list_all(tenant_ctx=tenant_ctx))
 
     def list_all(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
@@ -1644,20 +1699,26 @@ async def remove_knowledge_collection(request: Request, agent_id: str, knowledge
 
 @router.get("/{agent_id}/versions")
 async def list_agent_versions(request: Request, agent_id: str) -> list[dict[str, Any]]:
-    """List all saved version snapshots of an agent."""
+    """List all saved version snapshots of an agent (503 when the store is down)."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
     db = getattr(store, "_db", None)
 
-    # Try DB first; fall back to in-memory module dict
     if db is not None:
-        return await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+        try:
+            return await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+        except Exception as exc:
+            raise _snapshot_store_unavailable("load", exc) from exc
     return _AGENT_SNAPSHOTS.get(f"{tenant.tenant_id}:{agent_id}", [])
 
 
 @router.post("/{agent_id}/snapshot")
 async def snapshot_agent(request: Request, agent_id: str) -> dict[str, Any]:
-    """Save a version snapshot of the current agent config."""
+    """Save a version snapshot of the current agent config.
+
+    With a database the snapshot is stored (and numbered) before it is
+    returned; a failure is a 503, never a snapshot that does not exist.
+    """
     tenant = _require_tenant(request)
     store = _agent_store(request)
     agent = await store.get_async(agent_id, tenant_ctx=tenant)
@@ -1665,25 +1726,23 @@ async def snapshot_agent(request: Request, agent_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     db = getattr(store, "_db", None)
-
-    # Determine next version number
-    if db is not None:
-        existing = await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
-    else:
-        existing = _AGENT_SNAPSHOTS.get(f"{tenant.tenant_id}:{agent_id}", [])
-
-    snapshot = {
+    snapshot: dict[str, Any] = {
         **agent,
         "snapshot_id": uuid.uuid4().hex,
         "snapshotted_at": datetime.now(UTC).isoformat(),
-        "version": len(existing) + 1,
     }
 
     if db is not None:
-        await _save_snapshot_to_db(snapshot, db, tenant.tenant_id)
+        snapshot["version"] = 0  # allocated by the INSERT
+        try:
+            snapshot["version"] = await _save_snapshot_to_db(snapshot, db, tenant.tenant_id)
+        except Exception as exc:
+            raise _snapshot_store_unavailable("persist", exc) from exc
     else:
         key = f"{tenant.tenant_id}:{agent_id}"
-        _AGENT_SNAPSHOTS.setdefault(key, []).append(snapshot)
+        existing = _AGENT_SNAPSHOTS.setdefault(key, [])
+        snapshot["version"] = max((int(s.get("version", 0)) for s in existing), default=0) + 1
+        existing.append(snapshot)
 
     return snapshot
 
@@ -1691,13 +1750,16 @@ async def snapshot_agent(request: Request, agent_id: str) -> dict[str, Any]:
 # FIX 3: rollback now persists to DB via update_async
 @router.post("/{agent_id}/rollback/{snapshot_id}")
 async def rollback_agent(request: Request, agent_id: str, snapshot_id: str) -> dict[str, Any]:
-    """Roll back agent to a previous snapshot."""
+    """Roll back agent to a previous snapshot (404 when the agent is gone)."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
     db = getattr(store, "_db", None)
 
     if db is not None:
-        snapshots = await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+        try:
+            snapshots = await _load_snapshots_from_db(tenant.tenant_id, agent_id, db)
+        except Exception as exc:
+            raise _snapshot_store_unavailable("load", exc) from exc
     else:
         key = f"{tenant.tenant_id}:{agent_id}"
         snapshots = _AGENT_SNAPSHOTS.get(key, [])
@@ -1712,8 +1774,13 @@ async def rollback_agent(request: Request, agent_id: str, snapshot_id: str) -> d
         if k not in ("snapshot_id", "snapshotted_at", "version", "agent_id", "tenant_id")
     }
 
-    # Persist rollback to DB (and update in-memory cache)
-    await store.update_async(agent_id, restore_data, tenant_ctx=tenant)
+    # Persist rollback to DB (and update in-memory cache). update_async answers
+    # False when the agent no longer exists (deleted since the snapshot): that
+    # used to be reported as "rolled_back" anyway.
+    if not await store.update_async(agent_id, restore_data, tenant_ctx=tenant):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent {agent_id} not found"
+        )
     return {"agent_id": agent_id, "restored_from": snapshot_id, "status": "rolled_back"}
 
 
@@ -1818,8 +1885,9 @@ async def clone_agent(
     # Check agent limit before creating the clone
     from app.tenancy.limits import check_agent_limit
 
-    existing = store.list_all(tenant_ctx=tenant_ctx)
-    check_agent_limit(tenant_ctx, len(existing))
+    # The durable COUNT (every replica's agents), not this replica's cache —
+    # the cache let a clone exceed the plan limit (create already uses it).
+    check_agent_limit(tenant_ctx, await store.count_async(tenant_ctx=tenant_ctx))
 
     clone_id = await _create_agent_record(store, clone_data, tenant_ctx=tenant_ctx)
     return {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
