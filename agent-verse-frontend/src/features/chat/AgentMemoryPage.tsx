@@ -8,6 +8,7 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { getAuthHeader } from '@/stores/auth';
 import { API_BASE, errorMessageFromBody } from '@/lib/api/client';
+import { ChatKnowledgeOptIn } from './ChatKnowledgeOptIn';
 
 interface Memory {
   id: string;
@@ -107,6 +108,8 @@ export default function AgentMemoryPage(): JSX.Element {
       <p className="text-sm text-muted-foreground/70 mb-6">
         Memories help the agent personalise its responses across sessions.
       </p>
+
+      <ChatKnowledgeOptIn />
 
       {/* Add new */}
       {adding ? (

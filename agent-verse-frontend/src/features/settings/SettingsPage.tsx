@@ -13,6 +13,7 @@ import { toast } from '@/stores/toast';
 import { apiFetch as apiClient, ApiError, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
 import { A2ADirectorySetting } from './A2ADirectorySetting';
+import { ChatTranscriptsKnowledgeSetting } from './ChatTranscriptsKnowledgeSetting';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -656,6 +657,8 @@ function SecurityTab() {
       </div>
 
       <A2ADirectorySetting />
+
+      <ChatTranscriptsKnowledgeSetting />
 
       <div>
         <h3 className="text-base font-semibold">API Key Management</h3>
