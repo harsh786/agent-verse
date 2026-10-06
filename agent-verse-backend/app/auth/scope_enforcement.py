@@ -124,6 +124,13 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     # A tenant's OWN routing policy is not a registry mutation: operators set it
     # (longest prefix wins over the "/models" rule above).
     ("PUT", "/models/routing-policies"): "goals:write",
+    # Training-data export (/intelligence/export-training-data…): a bulk copy of
+    # the tenant's goal transcripts. It had no entry, so every GET (preview, job
+    # status, the job download) passed for any key, including one minted with
+    # explicit scopes that exclude goal data. Reads need goals:read; starting an
+    # export (sync stream or durable job) needs goals:write (operator/admin).
+    ("GET", "/intelligence/export-training-data"): "goals:read",
+    ("POST", "/intelligence/export-training-data"): "goals:write",
     # Schedules
     ("GET", "/schedules"): "goals:read",
     ("POST", "/schedules"): "goals:write",
