@@ -18,6 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.models import Base
@@ -79,6 +80,17 @@ class Agent(Base):
     )
     a2a_skills: Mapped[list[str]] = mapped_column(
         JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
+    # QA-14: domain identity (migration 0053 created both columns). The agent
+    # identity service reads domain_context from here for domain checks.
+    domain_context: Mapped[str] = mapped_column(
+        Text, nullable=False, default="general", server_default="general"
+    )
+    domain_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

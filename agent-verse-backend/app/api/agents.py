@@ -168,6 +168,8 @@ class AgentStore:
                     policy_ids=list(record.get("policy_ids", [])),
                     pattern_flags=normalize_pattern_flags(record.get("pattern_flags")),
                     cloned_from=record.get("cloned_from") or None,
+                    domain_context=str(record.get("domain_context") or "general"),
+                    domain_metadata=dict(record.get("domain_metadata") or {}),
                 )
             )
 
@@ -248,6 +250,8 @@ class AgentStore:
             "a2a_public": bool(getattr(row, "a2a_public", False)),
             "a2a_description": getattr(row, "a2a_description", "") or "",
             "a2a_skills": list(getattr(row, "a2a_skills", None) or []),
+            "domain_context": getattr(row, "domain_context", None) or "general",
+            "domain_metadata": dict(getattr(row, "domain_metadata", None) or {}),
         }
 
     # ── async DB reads ─────────────────────────────────────────────────────────
@@ -568,6 +572,8 @@ class AgentStore:
                     "a2a_public",
                     "a2a_description",
                     "a2a_skills",
+                    "domain_context",
+                    "domain_metadata",
                 }
                 updates = {k: v for k, v in data.items() if k in allowed}
                 if not updates:
@@ -668,9 +674,17 @@ class CreateAgentRequest(BaseModel):
     @model_validator(mode="after")
     def _validate_domain_metadata(self) -> CreateAgentRequest:
         """Legal agents must have bar_number in domain_metadata."""
-        if self.domain_context == "legal" and "bar_number" not in self.domain_metadata:
-            raise ValueError("Legal agents require 'bar_number' in domain_metadata")
+        error = _domain_metadata_error(self.domain_context, self.domain_metadata)
+        if error is not None:
+            raise ValueError(error)
         return self
+
+
+def _domain_metadata_error(domain_context: str, domain_metadata: dict[str, Any]) -> str | None:
+    """Why this domain identity is invalid, or ``None`` (shared by create and update)."""
+    if domain_context == "legal" and "bar_number" not in domain_metadata:
+        return "Legal agents require 'bar_number' in domain_metadata"
+    return None
 
 
 # FIX 2: new update request model
@@ -687,6 +701,9 @@ class UpdateAgentRequest(BaseModel):
     model_override: str | None = None
     max_iterations: int | None = None
     timeout_seconds: int | None = None
+    # QA-14: the merged result is validated like create (legal needs bar_number).
+    domain_context: str | None = None
+    domain_metadata: dict[str, Any] | None = None
     enable_cot: bool | None = None
     enable_reflection: bool | None = None
     enable_goal_tree: bool | None = None
@@ -1195,6 +1212,15 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
 
     # Build update dict (only non-None fields)
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+    # QA-14: the domain identity being WRITTEN must be valid, judged on the merge
+    # of the given fields over the stored ones (e.g. legal keeps its bar_number).
+    if "domain_context" in update_data or "domain_metadata" in update_data:
+        domain_error = _domain_metadata_error(
+            str(update_data.get("domain_context", current.get("domain_context")) or "general"),
+            dict(update_data.get("domain_metadata", current.get("domain_metadata")) or {}),
+        )
+        if domain_error is not None:
+            raise HTTPException(status_code=422, detail=domain_error)
     # Pattern flags are stored as one map: merge the given ones over the current.
     _given_flags = {k: update_data[k] for k in AGENT_PATTERN_FLAG_KEYS if k in update_data}
     if _given_flags:
@@ -1612,6 +1638,8 @@ async def clone_agent(
         "model_override": original.get("model_override", ""),
         "max_iterations": original.get("max_iterations", 15),
         "timeout_seconds": original.get("timeout_seconds", 300),
+        "domain_context": original.get("domain_context") or "general",
+        "domain_metadata": dict(original.get("domain_metadata") or {}),
     }
     _clone_flags = normalize_pattern_flags(pattern_flags_from_record(original))
     clone_data.update(_clone_flags)
