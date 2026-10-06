@@ -9,6 +9,10 @@ data:
   SMTP_HOST: {{ include "agentverse.fullname" . }}-mailpit
   SMTP_PORT: "1025"
   SMTP_TLS: "false"
+  # EGRESS-CFG: operator-only connector egress escape hatch (values: ingestion.*).
+  # Every app workload (API, workers, beat) reads this one ConfigMap.
+  INGESTION_ALLOW_INTERNAL_SOURCES: {{ .Values.ingestion.allowInternalSources | quote }}
+  INGESTION_INTERNAL_SOURCE_ALLOWLIST: {{ .Values.ingestion.internalSourceAllowlist | quote }}
   {{- range $k, $v := .Values.backend.env }}
   {{ $k }}: {{ $v | quote }}
   {{- end }}

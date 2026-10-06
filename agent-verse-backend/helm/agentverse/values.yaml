@@ -187,6 +187,17 @@ externalSecrets:
       remoteRef:
         key: agentverse/app-db-password
 
+# EGRESS-CFG: connector egress escape hatch — OPERATOR-ONLY, never tenant-settable.
+# Connectors refuse private / loopback / link-local / metadata addresses. To let them
+# reach your own internal infrastructure (e.g. a MinIO on 192.168.63.104) set
+# allowInternalSources: true AND list each host in internalSourceAllowlist
+# (comma-separated hostnames or IP literals, e.g. "192.168.63.104,minio.internal").
+# The list alone does nothing. Rendered into the shared config map, so the API and
+# every worker / beat enforce the same policy.
+ingestion:
+  allowInternalSources: false
+  internalSourceAllowlist: ""
+
 # ── Non-secret config ─────────────────────────────────────────────────────────
 config:
   corsOrigins: "https://agentverse.example.com"

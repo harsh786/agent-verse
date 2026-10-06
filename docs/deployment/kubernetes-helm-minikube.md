@@ -288,6 +288,33 @@ For production:
 - Run migrations as a one-shot Job or a controlled release step before scaling the
   backend above one replica.
 
+### Allowing your own internal sources (e.g. MinIO on a private IP)
+
+Ingestion connectors refuse private, loopback, link-local and cloud-metadata
+addresses. If a knowledge source lives on your own network (say a MinIO at
+`192.168.63.104`), the operator opens exactly those hosts with two settings:
+
+| Setting | Helm value (both charts) | Default |
+|---------|--------------------------|---------|
+| `INGESTION_ALLOW_INTERNAL_SOURCES` | `ingestion.allowInternalSources` | `false` |
+| `INGESTION_INTERNAL_SOURCE_ALLOWLIST` | `ingestion.internalSourceAllowlist` | `""` |
+
+```bash
+helm upgrade --install agentverse infra/helm/agentverse \
+  --set ingestion.allowInternalSources=true \
+  --set-string ingestion.internalSourceAllowlist='192.168.63.104\,minio.internal'
+```
+
+- Both are needed: the allowlist does nothing while the flag is off.
+- Entries are comma-separated hostnames or IP literals. Only the listed hosts open;
+  every other private, metadata or neighbouring address stays blocked.
+- They are operator-only. A tenant's `connection_config` can never set or widen them.
+- They are rendered into the shared app config map, so the API and every worker and
+  beat enforce the same policy (ingestion runs on the workers too).
+- Raw manifests: edit `INGESTION_*` in `agent-verse-backend/infra/k8s/configmap.yaml`
+  (the `agentverse-config` ConfigMap). Docker Compose: set them in the backend `.env`
+  (see `.env.example`); the production compose file passes them to every app service.
+
 ## GitHub Actions Pipelines
 
 The repository contains separate pipelines for each stage:
