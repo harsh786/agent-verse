@@ -61,6 +61,9 @@ scoring/report code; `uv run pytest tests/real_world --collect-only` checks coll
 | WF-COMPLEX-PIPELINE, WF-FAILURE-RECOVERY | `test_wf_complex.py` | the stack must reach the fixture server (`RW_FIXTURE_PUBLIC_URL`) — skipped when the HTTP step's SSRF guard refuses it |
 | WF-CANCEL-AND-APPROVAL | `test_wf_complex.py` | – |
 | TRIGGER-CHAIN, TRIGGER-SIGNED-WEBHOOK | `test_trigger_chain.py` | – |
+| TIME-CRON-TZ (a cron in Asia/Kolkata and one in America/New_York fire once at the same UTC minute, never for a slot before creation; unknown zones 422), TIME-INTERVAL (one goal per minute, ~60 s apart), TIME-ONE-SHOTS (once / deadline warning / fixed-base relative_delay fire once at their instant; a past once fires late with catch_up=all, never with none), TIME-RELATIVE-EVENT (relative_delay counted from each event on a channel and from a payload timestamp: one goal per event with the payload in its text, a redelivered event arms once, another tenant's event arms nothing, a deleted trigger never fires), TIME-BUSINESS-CALENDAR (business-hours slot fires; holiday / non-business day do not), TIME-LIFECYCLE (pause: no fire; resume: no backlog; edit: new cron only; delete: no fire after), TIME-PLAN-FLOOR (free 900 s vs enterprise 60 s on create / PATCH / NL), TIME-NL (IANA zone, "in 20 minutes", "tomorrow at 8am"), TIME-SCALE-DUE-INDEX (hundreds of far-future schedules are not re-read every tick) | `test_time_triggers.py` | `RW_ENTERPRISE_*` (60 s floor); `RW_SECOND_TENANT_*` (free tenant, isolation); docker access to the worker / schedule-worker logs |
+| TIME-CATCH-UP (stops the beat ~4 min; missed slots replay per catch_up all / latest / none) | `test_time_triggers.py` | `RW_ALLOW_BEAT_RESTART=1` (+ `RW_BEAT_CONTAINER`) |
+| TIME-EXACTLY-ONCE (two beats + two schedule workers: one goal per slot) | `test_time_triggers.py` | `RW_SECOND_BEAT_CONTAINER`, `RW_SECOND_SCHEDULE_WORKER_CONTAINER` running |
 | SCHED-CRUD, SCHED-PLAN-FLOOR, SCHED-NL | `test_sched_realistic.py` | – |
 | SCHED-FIRES-GOAL, SCHED-FIRES-WORKFLOW | `test_sched_realistic.py` | plan floor ≤ `RW_SCHEDULE_MAX_WAIT`, or `RW_ENTERPRISE_API_KEY` |
 | GOAL-MULTISTEP-RAG | `test_goal_complex.py` | – (uses web search for the tool step without `RW_FIXTURE_PUBLIC_URL`) |
@@ -142,6 +145,11 @@ concurrently running session.
 | `RW_GOAL_TIMEOUT` | `480` | seconds to wait for a goal |
 | `RW_GATE_TIMEOUT`, `RW_FINISH_TIMEOUT` | `300`, `240` | workflow: reach the approval gate / finish |
 | `RW_SCHEDULE_MAX_WAIT` | `960` | longest schedule wait before a firing scenario skips |
+| `RW_ALIGNED_LATENESS_S`, `RW_ONE_SHOT_LATENESS_S` | `45`, `100` | TIME-*: how late a minute-aligned slot / a mid-minute one-shot may fire |
+| `RW_WORKER_CONTAINER`, `RW_SCHEDULE_WORKER_CONTAINER`, `RW_BEAT_CONTAINER` | `agentverse-backend-worker-1`, `-schedule-worker-1`, `-beat-1` | TIME-*: plan evidence (worker log), tick evidence, the beat TIME-CATCH-UP stops |
+| `RW_ALLOW_BEAT_RESTART` | – | `1` lets TIME-CATCH-UP stop and restart the beat |
+| `RW_SECOND_BEAT_CONTAINER`, `RW_SECOND_SCHEDULE_WORKER_CONTAINER` | – | TIME-EXACTLY-ONCE: an extra beat and schedule worker running next to compose's |
+| `RW_SCALE_SCHEDULES` | `300` | TIME-SCALE-DUE-INDEX: far-future schedules created |
 | `RW_HITL_PERSIST`, `RW_PERSIST_DELAY` | `1`, `45` | WF-HITL-RESTART toggle / pause length |
 | `RW_EVAL_TIMEOUT`, `RW_EVAL_PASS_MIN` | `1500`, `0.7` | eval run wait; min share of golden tasks passing |
 | `RW_GRANTS_ENFORCED` | – | `1` when the stack enforces agent grants |
