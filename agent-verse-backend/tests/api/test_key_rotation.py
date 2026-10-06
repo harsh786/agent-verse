@@ -34,6 +34,8 @@ def _make_app(fake_service: AsyncMock) -> FastAPI:
 def test_rotate_key_creates_new_revokes_old() -> None:
     """POST /tenants/me/keys/{id}/rotate returns 201, new key data, and revokes old."""
     svc = AsyncMock()
+    # QA-20: the rotated key must exist for the tenant.
+    svc.list_api_keys.return_value = [{"key_id": "kid-old", "is_active": True}]
     svc.create_api_key.return_value = {
         "key_id": "kid-new",
         "raw_key": "av_starter_newkey",
@@ -61,6 +63,8 @@ def test_rotate_key_creates_new_revokes_old() -> None:
 def test_rotate_key_without_revoke_keeps_old() -> None:
     """When revoke_old=False the old key is NOT revoked."""
     svc = AsyncMock()
+    # QA-20: the rotated key must exist for the tenant.
+    svc.list_api_keys.return_value = [{"key_id": "kid-old", "is_active": True}]
     svc.create_api_key.return_value = {
         "key_id": "kid-new2",
         "raw_key": "av_starter_key2",
@@ -86,6 +90,8 @@ def test_rotate_key_without_revoke_keeps_old() -> None:
 def test_rotate_key_default_revoke_is_true() -> None:
     """Omitting revoke_old defaults to True."""
     svc = AsyncMock()
+    # QA-20: the rotated key must exist for the tenant.
+    svc.list_api_keys.return_value = [{"key_id": "kid-old", "is_active": True}]
     svc.create_api_key.return_value = {
         "key_id": "kid-new3",
         "raw_key": "av_starter_key3",

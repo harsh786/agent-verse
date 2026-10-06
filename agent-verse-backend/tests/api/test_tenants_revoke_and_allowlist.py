@@ -137,6 +137,7 @@ def test_rotate_reports_old_key_not_revoked_on_failure() -> None:
     svc = AsyncMock()
     svc.create_api_key.return_value = {"key_id": "new", "raw_key": "r"}
     svc.revoke_api_key.side_effect = KeyStoreUnavailableError("down")
+    svc.list_api_keys.return_value = [{"key_id": "old", "is_active": True}]
     client = TestClient(_app(svc), raise_server_exceptions=False)
     resp = client.post(
         "/tenants/me/keys/old/rotate", json={"revoke_old": True}, headers={"X-API-Key": _KEY}

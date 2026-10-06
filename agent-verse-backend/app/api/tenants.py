@@ -246,6 +246,21 @@ async def rotate_key(
     The newly created key's raw secret is returned **once** in this response.
     """
     svc = _get_tenant_service(request)
+    # The key being rotated must exist for THIS tenant before anything is minted:
+    # the replacement used to be created first and the revoke's NotFoundError was
+    # swallowed, so any made-up (or another tenant's) key id yielded a fresh key
+    # and 201 old_revoked=false. Applies with revoke_old=false too.
+    try:
+        tenant_keys = await svc.list_api_keys(ctx.tenant_id)
+    except PlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+    if isinstance(tenant_keys, dict):  # tolerate a {"keys": [...]} envelope
+        tenant_keys = tenant_keys.get("keys", [])
+    if not any(k.get("key_id") == key_id for k in tenant_keys):
+        return JSONResponse(
+            NotFoundError(f"API key not found: {key_id}").to_dict(), status_code=404
+        )
+
     limited = await _api_key_limit_denial(svc, ctx, replacing=key_id if body.revoke_old else None)
     if limited is not None:
         return limited
