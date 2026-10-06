@@ -112,9 +112,13 @@ export const chatApi = {
       headers: headers(),
     }).then((r) => _json<ChatSession>(r)),
 
+  // File a session into one of the caller's folders (null: unfile it). CHAT-D-1:
+  // folders are durable and private; another person's folder is a 404.
   moveToFolder: (sessionId: string, folderId: string | null): Promise<ChatSession> =>
     fetch(
-      `${API_BASE}/chat/sessions/${sessionId}/move${folderId ? `?folder_id=${folderId}` : ''}`,
+      `${API_BASE}/chat/sessions/${sessionId}/move${
+        folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''
+      }`,
       { method: 'POST', headers: headers() },
     ).then((r) => _json<ChatSession>(r)),
 
@@ -209,6 +213,16 @@ export const chatApi = {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify({ name, color }),
+    }).then((r) => _json<ChatFolder>(r)),
+
+  updateFolder: (
+    folderId: string,
+    payload: { name?: string; color?: string },
+  ): Promise<ChatFolder> =>
+    fetch(`${API_BASE}/chat/folders/${folderId}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify(payload),
     }).then((r) => _json<ChatFolder>(r)),
 
   deleteFolder: (folderId: string): Promise<void> =>

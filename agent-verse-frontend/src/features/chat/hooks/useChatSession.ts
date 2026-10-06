@@ -87,9 +87,11 @@ export function useRenameSession() {
   });
 }
 
+export const FOLDER_KEYS = { list: ['chat', 'folders'] as const };
+
 export function useFolders() {
   return useQuery({
-    queryKey: ['chat', 'folders'],
+    queryKey: FOLDER_KEYS.list,
     queryFn: () => chatApi.listFolders().then((r) => r.folders),
     staleTime: 60_000,
   });
@@ -100,6 +102,43 @@ export function useCreateFolder() {
   return useMutation({
     mutationFn: ({ name, color }: { name: string; color?: string }) =>
       chatApi.createFolder(name, color),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['chat', 'folders'] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: FOLDER_KEYS.list }),
+    onError: onMutationError('Create folder'),
+  });
+}
+
+export function useRenameFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ folderId, name }: { folderId: string; name: string }) =>
+      chatApi.updateFolder(folderId, { name }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: FOLDER_KEYS.list }),
+    onError: onMutationError('Rename folder'),
+  });
+}
+
+export function useDeleteFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (folderId: string) => chatApi.deleteFolder(folderId),
+    onSuccess: () => {
+      // The folder's chats are unfiled server-side: refresh both lists.
+      qc.invalidateQueries({ queryKey: FOLDER_KEYS.list });
+      qc.invalidateQueries({ queryKey: SESSION_KEYS.list });
+    },
+    onError: onMutationError('Delete folder'),
+  });
+}
+
+export function useMoveSessionToFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, folderId }: { sessionId: string; folderId: string | null }) =>
+      chatApi.moveToFolder(sessionId, folderId),
+    onSuccess: (_s, { sessionId }) => {
+      qc.invalidateQueries({ queryKey: SESSION_KEYS.list });
+      qc.invalidateQueries({ queryKey: SESSION_KEYS.detail(sessionId) });
+    },
+    onError: onMutationError('Move chat'),
   });
 }

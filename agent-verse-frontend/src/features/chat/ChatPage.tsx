@@ -32,7 +32,19 @@ import { ConnectedServicesPanel } from './ConnectedServicesPanel';
 import { ChatUsageModal } from './ChatUsageModal';
 import { ChatScheduleCard } from './ChatScheduleCard';
 import { mergeChatMessages } from './mergeMessages';
-import { useSessions, useCreateSession, useDeleteSession, usePinSession, useRenameSession, useUpdateSession, useFolders } from './hooks/useChatSession';
+import {
+  useSessions,
+  useCreateSession,
+  useDeleteSession,
+  usePinSession,
+  useRenameSession,
+  useUpdateSession,
+  useFolders,
+  useCreateFolder,
+  useRenameFolder,
+  useDeleteFolder,
+  useMoveSessionToFolder,
+} from './hooks/useChatSession';
 import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
@@ -107,6 +119,10 @@ export default function ChatPage() {
   const pinSession = usePinSession();
   const renameSession = useRenameSession();
   const updateSession = useUpdateSession(sessionId ?? '');
+  const createFolder = useCreateFolder();
+  const renameFolder = useRenameFolder();
+  const deleteFolder = useDeleteFolder();
+  const moveSession = useMoveSessionToFolder();
 
   // Messages
   const { data: dbMessages = [] } = useChatHistory(sessionId);
@@ -526,6 +542,10 @@ export default function ChatPage() {
         onDeleteSession={handleDeleteSession}
         onPinSession={handlePinSession}
         onRenameSession={(id, title) => void renameSession.mutateAsync({ sessionId: id, title })}
+        onCreateFolder={(name) => createFolder.mutate({ name })}
+        onRenameFolder={(folderId, name) => renameFolder.mutate({ folderId, name })}
+        onDeleteFolder={(folderId) => deleteFolder.mutate(folderId)}
+        onMoveSession={(id, folderId) => moveSession.mutate({ sessionId: id, folderId })}
         isLoading={sessionsLoading}
       />
 

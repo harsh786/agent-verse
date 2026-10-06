@@ -141,6 +141,13 @@ async def test_erasure_deletes_a_persons_chats_and_their_transcripts(pg_url: str
         )
     await admin_exec(
         pg_url,
+        "INSERT INTO chat_session_folders (id, tenant_id, name, owner_principal) VALUES "
+        "(:a, :t, 'mine', 'user:' || :p), (:b, :t, 'theirs', 'user:' || :o)",
+        {"a": uuid.uuid4().hex, "b": uuid.uuid4().hex, "t": tid, "p": person,
+         "o": other_person},
+    )
+    await admin_exec(
+        pg_url,
         "INSERT INTO chat_kb_consents (tenant_id, user_id, opted_in) VALUES "
         "(:t, :p, true), (:t, :o, true)",
         {"t": tid, "p": person, "o": other_person},
@@ -174,6 +181,7 @@ async def test_erasure_deletes_a_persons_chats_and_their_transcripts(pg_url: str
         assert receipt.per_store["chat_sessions"] == 1
         assert receipt.per_store["chat_messages"] == 2  # own chat + note in theirs
         assert receipt.per_store["chat_kb_consents"] == 1
+        assert receipt.per_store["chat_session_folders"] == 1
         assert receipt.notes["knowledge_chunks_held"].startswith("1 knowledge chunk(s) kept")
         assert receipt.verified is True
         assert await _remaining(pg_url, tid) == {"my held transcript", "their transcript"}
@@ -186,5 +194,8 @@ async def test_erasure_deletes_a_persons_chats_and_their_transcripts(pg_url: str
         consents = await admin_exec(
             pg_url, "SELECT user_id FROM chat_kb_consents WHERE tenant_id = :t", {"t": tid})
         assert [r[0] for r in consents] == [other_person]
+        folders = await admin_exec(
+            pg_url, "SELECT name FROM chat_session_folders WHERE tenant_id = :t", {"t": tid})
+        assert [r[0] for r in folders] == ["theirs"]
     finally:
         await engine.dispose()

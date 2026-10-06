@@ -69,6 +69,12 @@ _DIRECT_STORES: tuple[tuple[str, str, str], ...] = (
         "OR metadata->>'author_user_id' = :subj)",
     ),
     ("chat_sessions", "chat_sessions", "tenant_id = :tid AND owner_user_id = :subj"),
+    # CHAT-D-1: the person's own chat folders (their names are theirs).
+    (
+        "chat_session_folders",
+        "chat_session_folders",
+        "tenant_id = :tid AND owner_principal = 'user:' || :subj",
+    ),
     ("chat_kb_consents", "chat_kb_consents", "tenant_id = :tid AND user_id = :subj"),
 )
 # Tables whose rows are not keyed by an ``id`` column.

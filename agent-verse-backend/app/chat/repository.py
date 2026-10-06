@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.chat.ownership import SYSTEM_SCOPE, ChatScope
+from app.chat.ownership import SYSTEM_SCOPE, ChatFolderNotFoundError, ChatScope
 from app.db.rls import sqlalchemy_rls_context
 
 # Bounded defaults so list queries never walk an unbounded history (must scale past
@@ -32,6 +32,15 @@ from app.db.rls import sqlalchemy_rls_context
 # regression while the SQL is now LIMIT-bounded and keyset-pageable.
 _DEFAULT_MESSAGE_LIMIT = 1000
 _DEFAULT_SESSION_LIMIT = 500
+# A principal's folders (CHAT-D-1): the list is bounded, and so is how many one
+# principal may create (the sidebar renders them all).
+MAX_FOLDERS_PER_OWNER = 500
+
+# The folder a session is filed into must belong to the session's own owner.
+_FOLDER_OF_OWNER = (
+    "SELECT 1 FROM chat_session_folders WHERE id = :fid AND tenant_id = :t "
+    "AND owner_principal IS NOT DISTINCT FROM :fowner FOR KEY SHARE"
+)
 
 
 def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
@@ -101,6 +110,13 @@ class PostgresChatRepository:
     ) -> None:
         scope = ChatScope.of(owner_principal) if owner_principal else ChatScope("unowned")
         async with self._tx(tenant_id, scope) as s:
+            if folder_id is not None and (
+                await s.execute(
+                    text(_FOLDER_OF_OWNER),
+                    {"fid": folder_id, "t": tenant_id, "fowner": owner_principal},
+                )
+            ).fetchone() is None:
+                raise ChatFolderNotFoundError(folder_id)
             await s.execute(
                 text(
                     "INSERT INTO chat_sessions (id, tenant_id, title, system_prompt, "
@@ -177,6 +193,26 @@ class PostgresChatRepository:
         set_clause = ", ".join(f"{col} = :{col}" for col in updates)
         pred, pp = scope.predicate()
         async with self._tx(tenant_id, scope) as s:
+            if updates.get("folder_id") is not None:
+                # CHAT-D-1: file only into a folder of the session's own owner.
+                owner = (
+                    await s.execute(
+                        text(
+                            "SELECT owner_principal FROM chat_sessions WHERE id = :id "
+                            f"AND tenant_id = :t{pred} FOR UPDATE"
+                        ),
+                        {"id": session_id, "t": tenant_id, **pp},
+                    )
+                ).fetchone()
+                if owner is None:
+                    return False
+                if (
+                    await s.execute(
+                        text(_FOLDER_OF_OWNER),
+                        {"fid": updates["folder_id"], "t": tenant_id, "fowner": owner[0]},
+                    )
+                ).fetchone() is None:
+                    raise ChatFolderNotFoundError(str(updates["folder_id"]))
             result = await s.execute(
                 text(
                     f"UPDATE chat_sessions SET {set_clause}, updated_at = now() "
@@ -185,6 +221,110 @@ class PostgresChatRepository:
                 {**updates, "id": session_id, "t": tenant_id, **pp},
             )
             return (result.rowcount or 0) > 0
+
+    # ── Folders (chat_session_folders, CHAT-D-1) ──────────────────────────────
+    # Owned like sessions: every query carries the owner predicate of the scope
+    # and the restrictive ``chat_session_folders_owner`` policy enforces it.
+
+    async def create_folder(
+        self, *, folder_id: str, tenant_id: str, name: str, color: str, scope: ChatScope
+    ) -> dict[str, Any] | None:
+        """Create a folder owned by the scope's principal; None at the per-owner cap."""
+        if scope.kind != "principal":
+            raise ValueError("a chat folder is created by a principal")
+        params = {
+            "id": folder_id, "t": tenant_id, "name": name, "color": color,
+            "p": scope.principal, "max": MAX_FOLDERS_PER_OWNER,
+        }
+        async with self._tx(tenant_id, scope) as s:
+            row = (
+                await s.execute(
+                    text(
+                        "INSERT INTO chat_session_folders "
+                        "(id, tenant_id, name, color, owner_principal, position) "
+                        "SELECT CAST(:id AS varchar), CAST(:t AS varchar), "
+                        "CAST(:name AS varchar), CAST(:color AS varchar), "
+                        "CAST(:p AS varchar), "
+                        "coalesce((SELECT max(position) + 1 FROM chat_session_folders "
+                        "WHERE tenant_id = :t AND owner_principal = :p), 0) "
+                        "WHERE (SELECT count(*) FROM chat_session_folders "
+                        "WHERE tenant_id = :t AND owner_principal = :p) < :max "
+                        "RETURNING *"
+                    ),
+                    params,
+                )
+            ).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+    async def list_folders(
+        self, tenant_id: str, *, scope: ChatScope, limit: int = MAX_FOLDERS_PER_OWNER
+    ) -> list[dict[str, Any]]:
+        pred, pp = scope.predicate()
+        async with self._tx(tenant_id, scope) as s:
+            rows = (
+                await s.execute(
+                    text(
+                        f"SELECT * FROM chat_session_folders WHERE tenant_id = :t{pred} "
+                        "ORDER BY position, created_at, id LIMIT :lim"
+                    ),
+                    {"t": tenant_id, "lim": max(1, min(limit, MAX_FOLDERS_PER_OWNER)), **pp},
+                )
+            ).mappings().all()
+            return [dict(r) for r in rows]
+
+    async def update_folder(
+        self,
+        folder_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Rename/recolor a folder of the scope; None when it is not the caller's."""
+        pred, pp = scope.predicate()
+        async with self._tx(tenant_id, scope) as s:
+            row = (
+                await s.execute(
+                    text(
+                        "UPDATE chat_session_folders SET name = coalesce(:name, name), "
+                        "color = coalesce(:color, color), updated_at = now() "
+                        f"WHERE id = :id AND tenant_id = :t{pred} RETURNING *"
+                    ),
+                    {"name": name, "color": color, "id": folder_id, "t": tenant_id, **pp},
+                )
+            ).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+    async def delete_folder(self, folder_id: str, tenant_id: str, *, scope: ChatScope) -> bool:
+        """Delete a folder of the scope and unfile its sessions, in one transaction.
+
+        The DELETE waits for any filing that holds the folder row (``FOR KEY
+        SHARE``), and the unfiling statement runs after it, so a session filed
+        concurrently is unfiled too (idx_chat_sessions_folder). The sessions
+        keep their ``updated_at``: unfiling is not chat activity.
+        """
+        pred, pp = scope.predicate()
+        async with self._tx(tenant_id, scope) as s:
+            owner = (
+                await s.execute(
+                    text(
+                        "DELETE FROM chat_session_folders WHERE id = :id AND tenant_id = :t"
+                        f"{pred} RETURNING owner_principal"
+                    ),
+                    {"id": folder_id, "t": tenant_id, **pp},
+                )
+            ).fetchone()
+            if owner is None:
+                return False
+            await s.execute(
+                text(
+                    "UPDATE chat_sessions SET folder_id = NULL WHERE folder_id = :id "
+                    "AND tenant_id = :t AND owner_principal IS NOT DISTINCT FROM :owner"
+                ),
+                {"id": folder_id, "t": tenant_id, "owner": owner[0]},
+            )
+            return True
 
     async def assign_unowned_session(
         self, session_id: str, tenant_id: str, *, owner_user_id: str

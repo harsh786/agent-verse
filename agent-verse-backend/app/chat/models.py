@@ -25,8 +25,15 @@ class ChatSessionFolder(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     color: Mapped[str] = mapped_column(String(20), nullable=False, default="#6366f1")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The principal that owns the folder (CHAT-D-1, migration f3a9c1e7d5b4), like
+    # ``ChatSession.owner_principal``: only it lists, renames, deletes or files
+    # into the folder.
+    owner_principal: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
     sessions: Mapped[list[ChatSession]] = relationship(

@@ -22,7 +22,7 @@ from typing import Any
 
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
-from app.chat.ownership import SYSTEM_SCOPE, ChatScope
+from app.chat.ownership import SYSTEM_SCOPE, ChatFolderNotFoundError, ChatScope
 from app.observability.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -324,6 +324,13 @@ class _Folder:
     color: str = "#6366f1"
     position: int = 0
     created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
+    # CHAT-D-1: the principal that owns the folder (as for sessions).
+    owner_principal: str | None = None
+
+
+class ChatFolderLimitError(ValueError):
+    """The principal already has the maximum number of chat folders."""
 
 
 @dataclass
@@ -467,6 +474,8 @@ class ChatService:
         owner_user_id: str | None = None,
         owner_principal: str | None = None,
     ) -> _Session:
+        if folder_id is not None:
+            self._require_folder(folder_id, tenant_id, owner_principal)
         sid = _hex()
         session = _Session(
             id=sid,
@@ -513,6 +522,8 @@ class ChatService:
         s = self.get_session(session_id, tenant_id, scope=scope)
         if not s:
             return None
+        if kwargs.get("folder_id") is not None:
+            self._require_folder(str(kwargs["folder_id"]), tenant_id, s.owner_principal)
         for k, v in kwargs.items():
             if k in self._UPDATABLE:
                 setattr(s, k, v)
@@ -2173,22 +2184,83 @@ class ChatService:
             return _humanize_value(answer) or answer
         return answer
 
-    # ── Folder CRUD ───────────────────────────────────────────────────────────
+    # ── Folder CRUD (CHAT-D-1) ────────────────────────────────────────────────
+    # Folders are owned like sessions. The sync methods are the in-memory store;
+    # the a* methods use the Postgres repository when one is wired (durable and
+    # shared by every replica), else the in-memory store.
 
-    def create_folder(self, tenant_id: str, name: str, color: str = "#6366f1") -> _Folder:
-        f = _Folder(id=_hex(), tenant_id=tenant_id, name=name, color=color)
+    def _require_folder(self, folder_id: str, tenant_id: str, owner: str | None) -> _Folder:
+        """The folder a session of ``owner`` may be filed into, or ChatFolderNotFoundError."""
+        f = self._folders.get(folder_id)
+        if f is None or f.tenant_id != tenant_id or f.owner_principal != owner:
+            raise ChatFolderNotFoundError(folder_id)
+        return f
+
+    def create_folder(
+        self,
+        tenant_id: str,
+        name: str,
+        color: str = "#6366f1",
+        *,
+        owner_principal: str | None = None,
+    ) -> _Folder:
+        from app.chat.repository import MAX_FOLDERS_PER_OWNER
+
+        mine = [
+            f for f in self._folders.values()
+            if f.tenant_id == tenant_id and f.owner_principal == owner_principal
+        ]
+        if len(mine) >= MAX_FOLDERS_PER_OWNER:
+            raise ChatFolderLimitError(f"at most {MAX_FOLDERS_PER_OWNER} folders")
+        f = _Folder(
+            id=_hex(), tenant_id=tenant_id, name=name, color=color,
+            position=max((m.position for m in mine), default=-1) + 1,
+            owner_principal=owner_principal,
+        )
         self._folders[f.id] = f
         return f
 
-    def list_folders(self, tenant_id: str) -> list[_Folder]:
-        return [f for f in self._folders.values() if f.tenant_id == tenant_id]
+    def list_folders(self, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE) -> list[_Folder]:
+        folders = [
+            f for f in self._folders.values()
+            if f.tenant_id == tenant_id and scope.allows(f.owner_principal)
+        ]
+        return sorted(folders, key=lambda f: (f.position, f.created_at, f.id))
 
-    def delete_folder(self, folder_id: str, tenant_id: str) -> bool:
+    def _visible_folder(
+        self, folder_id: str, tenant_id: str, scope: ChatScope
+    ) -> _Folder | None:
         f = self._folders.get(folder_id)
-        if not f or f.tenant_id != tenant_id:
+        if f is None or f.tenant_id != tenant_id or not scope.allows(f.owner_principal):
+            return None
+        return f
+
+    def update_folder(
+        self,
+        folder_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> _Folder | None:
+        f = self._visible_folder(folder_id, tenant_id, scope)
+        if f is None:
+            return None
+        if name is not None:
+            f.name = name
+        if color is not None:
+            f.color = color
+        f.updated_at = _now()
+        return f
+
+    def delete_folder(
+        self, folder_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> bool:
+        if self._visible_folder(folder_id, tenant_id, scope) is None:
             return False
         del self._folders[folder_id]
-        # Unassign sessions in this folder
+        # Unfile its sessions (the database does this with ON DELETE SET NULL).
         for s in self._sessions.values():
             if s.folder_id == folder_id:
                 s.folder_id = None
@@ -2202,7 +2274,81 @@ class ChatService:
         *,
         scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Session | None:
+        """File a session into a folder of its own owner (None unfiles it).
+
+        None when the session is not the caller's; ChatFolderNotFoundError when
+        the folder is not the session owner's.
+        """
         return self.update_session(session_id, tenant_id, scope=scope, folder_id=folder_id)
+
+    @staticmethod
+    def _folder_from_row(row: dict[str, Any]) -> _Folder:
+        return _Folder(
+            id=str(row["id"]),
+            tenant_id=str(row["tenant_id"]),
+            name=str(row.get("name") or ""),
+            color=str(row.get("color") or "#6366f1"),
+            position=int(row.get("position") or 0),
+            created_at=row.get("created_at") or _now(),
+            updated_at=row.get("updated_at") or row.get("created_at") or _now(),
+            owner_principal=row.get("owner_principal"),
+        )
+
+    async def acreate_folder(
+        self, tenant_id: str, name: str, color: str = "#6366f1", *, scope: ChatScope
+    ) -> _Folder:
+        """Create a folder owned by the caller's principal (a principal scope only)."""
+        if scope.kind != "principal":
+            raise ValueError("a chat folder is created by a principal")
+        if self._repository is None:
+            return self.create_folder(tenant_id, name, color, owner_principal=scope.principal)
+        row = await self._repository.create_folder(
+            folder_id=_hex(), tenant_id=tenant_id, name=name, color=color, scope=scope
+        )
+        if row is None:
+            from app.chat.repository import MAX_FOLDERS_PER_OWNER
+
+            raise ChatFolderLimitError(f"at most {MAX_FOLDERS_PER_OWNER} folders")
+        return self._folder_from_row(row)
+
+    async def alist_folders(self, tenant_id: str, *, scope: ChatScope) -> list[_Folder]:
+        if self._repository is None:
+            return self.list_folders(tenant_id, scope=scope)
+        rows = await self._repository.list_folders(tenant_id, scope=scope)
+        return [self._folder_from_row(r) for r in rows]
+
+    async def aupdate_folder(
+        self,
+        folder_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope,
+        name: str | None = None,
+        color: str | None = None,
+    ) -> _Folder | None:
+        if self._repository is None:
+            return self.update_folder(folder_id, tenant_id, scope=scope, name=name, color=color)
+        row = await self._repository.update_folder(
+            folder_id, tenant_id, scope=scope, name=name, color=color
+        )
+        return self._folder_from_row(row) if row is not None else None
+
+    async def adelete_folder(self, folder_id: str, tenant_id: str, *, scope: ChatScope) -> bool:
+        if self._repository is None:
+            return self.delete_folder(folder_id, tenant_id, scope=scope)
+        return bool(await self._repository.delete_folder(folder_id, tenant_id, scope=scope))
+
+    async def amove_session_to_folder(
+        self, session_id: str, tenant_id: str, folder_id: str | None, *, scope: ChatScope
+    ) -> _Session | None:
+        """Durable :meth:`move_session_to_folder` (same None / error contract)."""
+        if self._repository is None:
+            return self.move_session_to_folder(session_id, tenant_id, folder_id, scope=scope)
+        if not await self._repository.update_session(
+            session_id, tenant_id, scope=scope, folder_id=folder_id
+        ):
+            return None
+        return await self.aget_session(session_id, tenant_id, scope=scope)
 
     # ── Artifact CRUD ─────────────────────────────────────────────────────────
 

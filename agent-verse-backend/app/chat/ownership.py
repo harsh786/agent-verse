@@ -88,6 +88,10 @@ class ChatScope:
         )
 
 
+class ChatFolderNotFoundError(LookupError):
+    """The folder does not exist for this caller (another owner's is the same: absent)."""
+
+
 SYSTEM_SCOPE = ChatScope("system")
 UNOWNED_SCOPE = ChatScope("unowned")
 
