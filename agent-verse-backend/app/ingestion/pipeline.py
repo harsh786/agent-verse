@@ -754,12 +754,14 @@ class IngestionPipeline:
                 is_meaningful_text,
             )
 
-            if len(text.strip()) < SHORT_TEXT_CHARS:
+            short = len(text.strip()) < SHORT_TEXT_CHARS
+            checker = QualityChecker(min_length=1 if short else SHORT_TEXT_CHARS)
+            score = float(checker.check(text).quality_score)
+            if short:
                 # Too short for a noise ratio to mean anything: real content
                 # passes, boilerplate / noise does not.
                 return 1.0 if is_meaningful_text(text) else 0.0
-            checker = QualityChecker(min_length=SHORT_TEXT_CHARS)
-            return float(checker.check(text).quality_score)
+            return score
         except Exception as exc:
             _log.warning("pipeline_stage=quality checker_failed: %s", exc)
             return 0.0

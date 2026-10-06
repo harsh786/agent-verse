@@ -105,11 +105,23 @@ async def _sync(source_type: str, connection_config: dict[str, Any]) -> Any:
     tracker = IngestionJobTracker()
     pipeline = IngestionPipeline(dry_run=True)
     store = _Store(config)
+    real_ingest = IngestionPipeline.ingest
+
+    async def _ingest(self: IngestionPipeline, raw: Any, cfg: Any, **kw: Any) -> Any:
+        # The harness pipeline is dry-run: a document parsed to the end counts
+        # as indexed. (A short record such as ``{"id": 1, "title": "a"}`` used
+        # to be skipped as too short; it is indexed now.)
+        result = await real_ingest(self, raw, cfg, **kw)
+        if result.status == "dry_run":
+            result.status = "indexed"
+        return result
+
     with (
         patch(
             "app.ingestion.scheduler._build_worker_ingestion",
             return_value=(tracker, pipeline, store),
         ),
+        patch.object(IngestionPipeline, "ingest", _ingest),
         contextlib.suppress(_RetriedError),
     ):
         await _sync_source_async(
