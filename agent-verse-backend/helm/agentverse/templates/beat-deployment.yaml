@@ -19,6 +19,17 @@ spec:
         component: beat
     spec:
       terminationGracePeriodSeconds: 30
+      # NF-16: wait in Init — not CrashLoopBackOff — until the schema, read as the
+      # app role (DATABASE_URL), is at this image's alembic head
+      # (app/db/wait_for_schema.py). The migrate Job (migrate-job.yaml) or, with
+      # migrations.enabled=false, the API's start-up migration brings it there.
+      initContainers:
+        - name: wait-for-schema
+          image: {{ include "agentverse.workerImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          env:
+            {{- include "agentverse.appSecretEnv" . | nindent 12 }}
       containers:
         - name: beat
           image: {{ include "agentverse.workerImage" . }}

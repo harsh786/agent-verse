@@ -523,7 +523,9 @@ def test_k8s_app_pods_wait_for_the_migrated_schema() -> None:
 def test_legacy_helm_roles() -> None:
     api = _legacy_env("deployment.yaml")
     assert api["MAINTENANCE_DATABASE_URL"] == ("agentverse-secrets", "maintenance-database-url")
-    # The legacy API image migrates on start (owner DSN, API only).
+    # Owner DSN on the API only for migrations.enabled=false (the image CMD then
+    # migrates on start); by default the migrate Job holds it
+    # (tests/infra/test_helm_chart.py renders both branches).
     assert api["MIGRATION_DATABASE_URL"] == ("agentverse-secrets", "migration-database-url")
     for fname in ("worker-deployment.yaml", "subgoal-worker-deployment.yaml",
                   "beat-deployment.yaml"):

@@ -24,10 +24,28 @@ spec:
         component: backend
     spec:
       terminationGracePeriodSeconds: 60
+      {{- if .Values.migrations.enabled }}
+      # NF-16: the migrate Job (migrate-job.yaml) migrates as the schema owner; the
+      # API waits in Init — not CrashLoopBackOff — until the schema, read as the
+      # app role, is at this image's alembic head (app/db/wait_for_schema.py).
+      initContainers:
+        - name: wait-for-schema
+          image: {{ include "agentverse.backendImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          env:
+            {{- include "agentverse.appSecretEnv" . | nindent 12 }}
+      {{- end }}
       containers:
         - name: backend
           image: {{ include "agentverse.backendImage" . }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- if .Values.migrations.enabled }}
+          # The image CMD runs `alembic upgrade head` before uvicorn: every replica
+          # raced the others to migrate, and the app role cannot run DDL. The
+          # migrate Job migrates instead, so the API only serves.
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+          {{- end }}
           ports:
             - containerPort: 8000
               name: http
@@ -36,7 +54,10 @@ spec:
                 name: agentverse-config
           env:
             {{- include "agentverse.appSecretEnv" . | nindent 12 }}
+            {{- if not .Values.migrations.enabled }}
+            {{- /* Legacy: the image CMD migrates on start, so the API needs the owner DSN. */}}
             {{- include "agentverse.migrationEnv" . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:
