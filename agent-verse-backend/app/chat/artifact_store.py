@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.chat.ownership import SYSTEM_SCOPE, ChatScope
+
 # A generated document larger than this is refused rather than stored.
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 # Generated documents are kept this long, then purged.
@@ -43,6 +45,8 @@ class StoredArtifact:
     mime: str
     content: bytes
     expires_at: datetime | None = None
+    # The chat session it was generated in (None: not tied to one).
+    session_id: str | None = None
 
 
 class ChatArtifactStore:
@@ -97,6 +101,7 @@ class ChatArtifactStore:
                 content=content,
                 session_id=session_id,
                 expires_at=expires_at,
+                scope=SYSTEM_SCOPE,
             )
             return artifact_id
         self._items[artifact_id] = StoredArtifact(
@@ -106,14 +111,22 @@ class ChatArtifactStore:
             mime=mime,
             content=content,
             expires_at=expires_at,
+            session_id=session_id,
         )
         while len(self._items) > self._memory_entries:
             self._items.popitem(last=False)
         return artifact_id
 
-    async def get(self, artifact_id: str, tenant_id: str) -> StoredArtifact | None:
+    async def get(
+        self, artifact_id: str, tenant_id: str, *, scope: ChatScope
+    ) -> StoredArtifact | None:
+        """A live document. One generated in a chat session is returned only
+        within that session's scope (CHAT-SEC-1); the caller re-checks the
+        session in memory mode, where this store does not know its owner."""
         if self._repo is not None:
-            row = await self._repo.get_artifact(artifact_id, tenant_id, kind="document")
+            row = await self._repo.get_artifact(
+                artifact_id, tenant_id, scope=scope, kind="document"
+            )
             if row is None:
                 return None
             return StoredArtifact(
@@ -123,6 +136,7 @@ class ChatArtifactStore:
                 mime=str(row["mime"]),
                 content=bytes(row["content"]),
                 expires_at=row.get("expires_at"),
+                session_id=row.get("session_id"),
             )
         art = self._items.get(artifact_id)
         if art is None or art.tenant_id != tenant_id:

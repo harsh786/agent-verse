@@ -1,0 +1,3 @@
+{
+  "CHAT-SEC-1": {"status": "done", "commit": null, "note": "chat sessions owned by their creator principal (user:/key:); owner predicate + restrictive RLS; unowned = admin-only audited routes; frontend filters to own"}
+}

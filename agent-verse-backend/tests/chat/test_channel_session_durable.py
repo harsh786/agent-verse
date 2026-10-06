@@ -40,7 +40,9 @@ class _SharedRepo:
         self.sessions_created += 1
         self.sessions[session_id] = {"id": session_id, "tenant_id": tenant_id, **kw}
 
-    async def get_session(self, session_id: str, tenant_id: str) -> dict[str, Any] | None:
+    async def get_session(
+        self, session_id: str, tenant_id: str, **_kw: Any
+    ) -> dict[str, Any] | None:
         await asyncio.sleep(0)
         row = self.sessions.get(session_id)
         return dict(row) if row and row["tenant_id"] == tenant_id else None

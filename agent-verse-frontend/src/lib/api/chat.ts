@@ -64,16 +64,27 @@ export const chatApi = {
       body: JSON.stringify(payload),
     }).then((r) => _json<ChatSession>(r)),
 
-  // TODO(scale): GET /chat/sessions returns every session for the tenant with no
+  // TODO(scale): GET /chat/sessions returns the caller's own sessions with no
   // server-side limit/offset/search params (verified against the chat router).
   // We cap the rendered set client-side to `limit` (most-recent first, the order
   // the backend already returns) so the sidebar DOM stays bounded, and the
   // ChatSidebar search runs over this loaded page only. Needs a backend
   // limit/offset/cursor + search param to page/search the full history.
+  //
+  // CHAT-SEC-1: chats are private. The server returns only the caller's own
+  // sessions and names the caller (`principal`); as defence in depth the list
+  // also drops any session owned by someone else before it reaches the sidebar.
   listSessions: (limit = 100): Promise<{ sessions: ChatSession[] }> =>
     fetch(`${API_BASE}/chat/sessions`, { headers: headers() })
-      .then((r) => _json<{ sessions: ChatSession[] }>(r))
-      .then((data) => ({ sessions: (data.sessions ?? []).slice(0, limit) })),
+      .then((r) => _json<{ sessions?: ChatSession[]; principal?: string | null }>(r))
+      .then((data) => {
+        const all = data.sessions ?? [];
+        const own =
+          typeof data.principal === 'string'
+            ? all.filter((s) => s.owner_principal === data.principal)
+            : all;
+        return { sessions: own.slice(0, limit) };
+      }),
 
   getSession: (sessionId: string): Promise<ChatSession> =>
     fetch(`${API_BASE}/chat/sessions/${sessionId}`, { headers: headers() }).then((r) =>

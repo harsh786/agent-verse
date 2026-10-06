@@ -80,6 +80,7 @@ class _FakeRacyRepository:
         agent_id: str | None = None,
         folder_id: str | None = None,
         owner_user_id: str | None = None,
+        owner_principal: str | None = None,
     ) -> None:
         self.create_calls += 1
         await asyncio.sleep(0.01)  # simulate DB latency — forces interleaving
@@ -92,7 +93,7 @@ class _FakeRacyRepository:
             "folder_id": folder_id,
         }
 
-    async def get_session(self, session_id: str, tenant_id: str) -> dict | None:
+    async def get_session(self, session_id: str, tenant_id: str, **_kw: object) -> dict | None:
         await asyncio.sleep(0)
         row = self._rows.get(session_id)
         if row is None or row["tenant_id"] != tenant_id:

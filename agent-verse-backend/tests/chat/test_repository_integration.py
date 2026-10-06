@@ -17,6 +17,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from app.chat.ownership import SYSTEM_SCOPE
 from app.chat.repository import PostgresChatRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
@@ -46,11 +47,11 @@ async def test_session_and_message_round_trip(repo: PostgresChatRepository) -> N
     sid = uuid.uuid4().hex
 
     await repo.create_session(session_id=sid, tenant_id=tenant, title="Planning", agent_id="a1")
-    got = await repo.get_session(sid, tenant)
+    got = await repo.get_session(sid, tenant, scope=SYSTEM_SCOPE)
     assert got is not None and got["title"] == "Planning" and got["agent_id"] == "a1"
 
     await repo.save_message(
-        message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user", content="hi"
+        message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user", content="hi", scope=SYSTEM_SCOPE
     )
     await repo.save_message(
         message_id=uuid.uuid4().hex,
@@ -58,18 +59,18 @@ async def test_session_and_message_round_trip(repo: PostgresChatRepository) -> N
         tenant_id=tenant,
         role="assistant",
         content="hello there",
-        intent="QA",
+        intent="QA", scope=SYSTEM_SCOPE,
     )
-    msgs = await repo.list_messages(sid, tenant)
+    msgs = await repo.list_messages(sid, tenant, scope=SYSTEM_SCOPE)
     assert [m["role"] for m in msgs] == ["user", "assistant"]  # created_at order
     assert msgs[1]["content"] == "hello there" and msgs[1]["intent"] == "QA"
 
-    assert await repo.update_session(sid, tenant, title="Renamed", pinned=True) is True
-    assert (await repo.get_session(sid, tenant))["title"] == "Renamed"
+    assert await repo.update_session(sid, tenant, title="Renamed", pinned=True, scope=SYSTEM_SCOPE) is True
+    assert (await repo.get_session(sid, tenant, scope=SYSTEM_SCOPE))["title"] == "Renamed"
 
-    assert await repo.delete_session(sid, tenant) is True
-    assert await repo.get_session(sid, tenant) is None
-    assert await repo.list_messages(sid, tenant) == []
+    assert await repo.delete_session(sid, tenant, scope=SYSTEM_SCOPE) is True
+    assert await repo.get_session(sid, tenant, scope=SYSTEM_SCOPE) is None
+    assert await repo.list_messages(sid, tenant, scope=SYSTEM_SCOPE) == []
 
 
 async def test_edit_and_branch_prune_round_trip(repo: PostgresChatRepository) -> None:
@@ -79,32 +80,32 @@ async def test_edit_and_branch_prune_round_trip(repo: PostgresChatRepository) ->
 
     u1 = uuid.uuid4().hex
     await repo.save_message(
-        message_id=u1, session_id=sid, tenant_id=tenant, role="user", content="q1"
+        message_id=u1, session_id=sid, tenant_id=tenant, role="user", content="q1", scope=SYSTEM_SCOPE
     )
     await repo.save_message(
         message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant,
-        role="assistant", content="a1",
+        role="assistant", content="a1", scope=SYSTEM_SCOPE,
     )
     await repo.save_message(
-        message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user", content="q2"
+        message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user", content="q2", scope=SYSTEM_SCOPE
     )
 
-    row = await repo.get_message(u1, tenant)
+    row = await repo.get_message(u1, tenant, scope=SYSTEM_SCOPE)
     assert row is not None and row["role"] == "user"
 
-    assert await repo.update_message_content(u1, tenant, "q1-edited") is True
-    pruned = await repo.delete_messages_after(sid, tenant, row["created_at"])
+    assert await repo.update_message_content(u1, tenant, "q1-edited", scope=SYSTEM_SCOPE) is True
+    pruned = await repo.delete_messages_after(sid, tenant, row["created_at"], scope=SYSTEM_SCOPE)
     assert len(pruned) == 2
 
-    msgs = await repo.list_messages(sid, tenant)
+    msgs = await repo.list_messages(sid, tenant, scope=SYSTEM_SCOPE)
     assert [m["content"] for m in msgs] == ["q1-edited"]
 
     # Cross-tenant: another tenant cannot read or mutate this message.
     other = f"t-{uuid.uuid4().hex[:8]}"
-    assert await repo.get_message(u1, other) is None
-    assert await repo.update_message_content(u1, other, "hacked") is False
+    assert await repo.get_message(u1, other, scope=SYSTEM_SCOPE) is None
+    assert await repo.update_message_content(u1, other, "hacked", scope=SYSTEM_SCOPE) is False
 
-    await repo.delete_session(sid, tenant)
+    await repo.delete_session(sid, tenant, scope=SYSTEM_SCOPE)
 
 
 async def test_messages_are_limit_bounded_and_keyset_pageable(
@@ -119,23 +120,23 @@ async def test_messages_are_limit_bounded_and_keyset_pageable(
             session_id=sid,
             tenant_id=tenant,
             role="user",
-            content=f"m{i}",
+            content=f"m{i}", scope=SYSTEM_SCOPE,
         )
 
     # Newest page, bounded: last 2 messages, returned oldest-first.
-    page1 = await repo.list_messages(sid, tenant, limit=2)
+    page1 = await repo.list_messages(sid, tenant, limit=2, scope=SYSTEM_SCOPE)
     assert [m["content"] for m in page1] == ["m3", "m4"]
 
     # Keyset back into history using the oldest row of the page as the cursor.
     oldest = page1[0]
     cursor = f"{oldest['created_at'].isoformat()}|{oldest['id']}"
-    page2 = await repo.list_messages(sid, tenant, limit=2, before=cursor)
+    page2 = await repo.list_messages(sid, tenant, limit=2, before=cursor, scope=SYSTEM_SCOPE)
     assert [m["content"] for m in page2] == ["m1", "m2"]
 
     # A malformed cursor falls back to the newest page (no error).
-    assert await repo.list_messages(sid, tenant, limit=2, before="garbage") == page1
+    assert await repo.list_messages(sid, tenant, limit=2, before="garbage", scope=SYSTEM_SCOPE) == page1
 
-    await repo.delete_session(sid, tenant)
+    await repo.delete_session(sid, tenant, scope=SYSTEM_SCOPE)
 
 
 async def test_sessions_are_tenant_scoped(repo: PostgresChatRepository) -> None:
@@ -144,9 +145,9 @@ async def test_sessions_are_tenant_scoped(repo: PostgresChatRepository) -> None:
     await repo.create_session(session_id=s1, tenant_id=t1, title="tenant-1 only")
 
     # Same session id must be invisible to another tenant.
-    assert await repo.get_session(s1, t2) is None
-    assert all(s["id"] != s1 for s in await repo.list_sessions(t2))
-    assert any(s["id"] == s1 for s in await repo.list_sessions(t1))
+    assert await repo.get_session(s1, t2, scope=SYSTEM_SCOPE) is None
+    assert all(s["id"] != s1 for s in await repo.list_sessions(t2, scope=SYSTEM_SCOPE))
+    assert any(s["id"] == s1 for s in await repo.list_sessions(t1, scope=SYSTEM_SCOPE))
 
 
 async def test_sessions_are_limit_bounded_and_keyset_pageable(
@@ -158,46 +159,46 @@ async def test_sessions_are_limit_bounded_and_keyset_pageable(
         await repo.create_session(session_id=sid, tenant_id=tenant, title=f"s{i}")
 
     # Newest page, bounded: last-created 2 sessions, newest first.
-    page1 = await repo.list_sessions(tenant, limit=2)
+    page1 = await repo.list_sessions(tenant, limit=2, scope=SYSTEM_SCOPE)
     assert [s["title"] for s in page1] == ["s4", "s3"]
 
     # Keyset further back using the oldest row of the page as the cursor.
     oldest = page1[-1]
     cursor = f"{oldest['updated_at'].isoformat()}|{oldest['id']}"
-    page2 = await repo.list_sessions(tenant, limit=2, before=cursor)
+    page2 = await repo.list_sessions(tenant, limit=2, before=cursor, scope=SYSTEM_SCOPE)
     assert [s["title"] for s in page2] == ["s2", "s1"]
 
     # A malformed cursor falls back to the newest page (no error).
-    assert await repo.list_sessions(tenant, limit=2, before="garbage") == page1
+    assert await repo.list_sessions(tenant, limit=2, before="garbage", scope=SYSTEM_SCOPE) == page1
 
     for sid in ids:
-        await repo.delete_session(sid, tenant)
+        await repo.delete_session(sid, tenant, scope=SYSTEM_SCOPE)
 
 
 async def test_delete_session_returns_false_when_missing(
     repo: PostgresChatRepository,
 ) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    assert await repo.delete_session(uuid.uuid4().hex, tenant) is False
+    assert await repo.delete_session(uuid.uuid4().hex, tenant, scope=SYSTEM_SCOPE) is False
 
 
 async def test_update_session_returns_false_when_missing(
     repo: PostgresChatRepository,
 ) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    assert await repo.update_session(uuid.uuid4().hex, tenant, title="x") is False
+    assert await repo.update_session(uuid.uuid4().hex, tenant, title="x", scope=SYSTEM_SCOPE) is False
 
 
 async def test_update_message_content_returns_false_when_missing(
     repo: PostgresChatRepository,
 ) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    assert await repo.update_message_content(uuid.uuid4().hex, tenant, "x") is False
+    assert await repo.update_message_content(uuid.uuid4().hex, tenant, "x", scope=SYSTEM_SCOPE) is False
 
 
 async def test_get_message_returns_none_when_missing(repo: PostgresChatRepository) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    assert await repo.get_message(uuid.uuid4().hex, tenant) is None
+    assert await repo.get_message(uuid.uuid4().hex, tenant, scope=SYSTEM_SCOPE) is None
 
 
 async def test_full_text_search_is_tenant_and_session_scoped(
@@ -217,15 +218,15 @@ async def test_full_text_search_is_tenant_and_session_scoped(
     ):
         await repo.save_message(
             message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user",
-            content=content,
+            content=content, scope=SYSTEM_SCOPE,
         )
-    hits = await repo.search_messages(t1, "vault")
+    hits = await repo.search_messages(t1, "vault", scope=SYSTEM_SCOPE)
     assert {h["session_id"] for h in hits} == {s1, s2}
     assert all(h["tenant_id"] == t1 for h in hits)
-    scoped = await repo.search_messages(t1, "vault", session_id=s1)
+    scoped = await repo.search_messages(t1, "vault", session_id=s1, scope=SYSTEM_SCOPE)
     assert [h["session_id"] for h in scoped] == [s1]
-    assert await repo.search_messages(t1, "nonexistentword") == []
-    assert len(await repo.search_messages(t1, "vault", limit=1)) == 1
+    assert await repo.search_messages(t1, "nonexistentword", scope=SYSTEM_SCOPE) == []
+    assert len(await repo.search_messages(t1, "vault", limit=1, scope=SYSTEM_SCOPE)) == 1
 
 
 async def test_count_messages_counts_one_tenants_session(repo: PostgresChatRepository) -> None:
@@ -236,10 +237,10 @@ async def test_count_messages_counts_one_tenants_session(repo: PostgresChatRepos
     await repo.create_session(session_id=s2, tenant_id=t2)
     for _ in range(3):
         await repo.save_message(
-            message_id=uuid.uuid4().hex, session_id=s1, tenant_id=t1, role="user", content="x"
+            message_id=uuid.uuid4().hex, session_id=s1, tenant_id=t1, role="user", content="x", scope=SYSTEM_SCOPE
         )
     await repo.save_message(
-        message_id=uuid.uuid4().hex, session_id=s2, tenant_id=t2, role="user", content="y"
+        message_id=uuid.uuid4().hex, session_id=s2, tenant_id=t2, role="user", content="y", scope=SYSTEM_SCOPE
     )
-    assert await repo.count_messages(s1, t1) == 3
-    assert await repo.count_messages(s1, t2) == 0
+    assert await repo.count_messages(s1, t1, scope=SYSTEM_SCOPE) == 3
+    assert await repo.count_messages(s1, t2, scope=SYSTEM_SCOPE) == 0

@@ -53,6 +53,9 @@ class ChatSession(Base):
     # The person who created the session (CHAT-KB, migration c3e8a1f5b7d2); None
     # for an API key, a channel or an older session — never indexed as knowledge.
     owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The principal that owns it (CHAT-SEC-1, migration d4f2b8c6a9e1):
+    # ``user:<id>`` or ``key:<api key id>``; None = no owner (admin routes only).
+    owner_principal: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -22,6 +22,7 @@ from typing import Any
 
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
+from app.chat.ownership import SYSTEM_SCOPE, ChatScope
 from app.observability.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -295,6 +296,9 @@ class _Session:
     # The person (SSO user id) who created the session; None for an API key or a
     # channel. Only owned sessions can become knowledge (owner decision 7).
     owner_user_id: str | None = None
+    # The principal that owns the session (CHAT-SEC-1: ``user:<id>`` or
+    # ``key:<api key id>``); None for a channel or an older session (admin only).
+    owner_principal: str | None = None
 
 
 @dataclass
@@ -461,6 +465,7 @@ class ChatService:
         agent_id: str | None = None,
         folder_id: str | None = None,
         owner_user_id: str | None = None,
+        owner_principal: str | None = None,
     ) -> _Session:
         sid = _hex()
         session = _Session(
@@ -471,32 +476,53 @@ class ChatService:
             agent_id=agent_id,
             folder_id=folder_id,
             owner_user_id=owner_user_id,
+            owner_principal=owner_principal,
         )
         self._sessions[sid] = session
         return session
 
-    def get_session(self, session_id: str, tenant_id: str) -> _Session | None:
+    def get_session(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> _Session | None:
         s = self._sessions.get(session_id)
-        if s and s.tenant_id == tenant_id:
+        if s and s.tenant_id == tenant_id and scope.allows(s.owner_principal):
             return s
         return None
 
-    def list_sessions(self, tenant_id: str) -> list[_Session]:
-        sessions = [s for s in self._sessions.values() if s.tenant_id == tenant_id]
+    def list_sessions(
+        self, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> list[_Session]:
+        sessions = [
+            s
+            for s in self._sessions.values()
+            if s.tenant_id == tenant_id and scope.allows(s.owner_principal)
+        ]
         return sorted(sessions, key=lambda s: s.updated_at, reverse=True)
 
-    def update_session(self, session_id: str, tenant_id: str, **kwargs: Any) -> _Session | None:
-        s = self.get_session(session_id, tenant_id)
+    # Fields a caller may change (owner fields never: see assign_unowned_session).
+    _UPDATABLE = frozenset(
+        {
+            "title", "pinned", "ttl_days", "system_prompt", "agent_id", "folder_id",
+            "show_reasoning", "proactive_suggestions", "preferred_model",
+        }
+    )
+
+    def update_session(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE, **kwargs: Any
+    ) -> _Session | None:
+        s = self.get_session(session_id, tenant_id, scope=scope)
         if not s:
             return None
         for k, v in kwargs.items():
-            if hasattr(s, k):
+            if k in self._UPDATABLE:
                 setattr(s, k, v)
         s.updated_at = _now()
         return s
 
-    def delete_session(self, session_id: str, tenant_id: str) -> bool:
-        s = self.get_session(session_id, tenant_id)
+    def delete_session(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> bool:
+        s = self.get_session(session_id, tenant_id, scope=scope)
         if not s:
             return False
         del self._sessions[session_id]
@@ -540,7 +566,18 @@ class ChatService:
             self._sessions[session_id].updated_at = _now()
         return msg
 
-    def list_messages(self, session_id: str, tenant_id: str, limit: int = 100) -> list[_Message]:
+    def list_messages(
+        self,
+        session_id: str,
+        tenant_id: str,
+        limit: int = 100,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
+    ) -> list[_Message]:
+        if self.get_session(session_id, tenant_id, scope=scope) is None and (
+            scope.kind != "system"
+        ):
+            return []
         msgs = [
             m
             for m in self._messages.values()
@@ -549,7 +586,12 @@ class ChatService:
         return sorted(msgs, key=lambda m: m.created_at)[-limit:]
 
     def edit_message(
-        self, message_id: str, tenant_id: str, new_content: str
+        self,
+        message_id: str,
+        tenant_id: str,
+        new_content: str,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> tuple[_Message | None, list[str]]:
         """Edit a user message and return (updated_message, pruned_message_ids).
 
@@ -557,6 +599,8 @@ class ChatService:
         """
         msg = self._messages.get(message_id)
         if not msg or msg.tenant_id != tenant_id or msg.role != "user":
+            return None, []
+        if self.get_session(msg.session_id, tenant_id, scope=scope) is None:
             return None, []
 
         msg.content = new_content
@@ -576,11 +620,25 @@ class ChatService:
 
         return msg, pruned
 
-    def delete_message(self, message_id: str, tenant_id: str) -> bool:
+    def delete_message(
+        self,
+        message_id: str,
+        tenant_id: str,
+        *,
+        session_id: str | None = None,
+        scope: ChatScope = SYSTEM_SCOPE,
+    ) -> bool:
         msg = self._messages.get(message_id)
         if not msg or msg.tenant_id != tenant_id:
             return False
+        if session_id is not None and msg.session_id != session_id:
+            return False
+        session = self.get_session(msg.session_id, tenant_id, scope=scope)
+        if session is None and scope.kind != "system":
+            return False
         del self._messages[message_id]
+        if session is not None:
+            session.updated_at = _now()
         return True
 
     # ── Usage tracking ────────────────────────────────────────────────────────
@@ -632,6 +690,7 @@ class ChatService:
         user_message: str,
         *,
         author_user_id: str | None = None,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> dict[str, Any]:
         """Async, repository-backed dispatch (persistence swap stage 3c).
 
@@ -640,12 +699,12 @@ class ChatService:
         before the save, so the stored message carries it, and the person who
         wrote it (``metadata.author_user_id``) when one did.
         """
-        if await self.aget_session(session_id, tenant_id) is None:
+        if await self.aget_session(session_id, tenant_id, scope=scope) is None:
             raise ValueError(f"Session {session_id} not found")
 
         history = [
             {"role": m.role, "content": m.content}
-            for m in await self.alist_messages(session_id, tenant_id, limit=1000)
+            for m in await self.alist_messages(session_id, tenant_id, limit=1000, scope=scope)
         ]
         clarify_round = self._clarify_rounds.get(session_id, 0)
         intent = self._router.classify(
@@ -655,6 +714,7 @@ class ChatService:
             session_id=session_id, tenant_id=tenant_id, role="user",
             content=user_message, intent=intent.value,
             metadata={"author_user_id": author_user_id} if author_user_id else None,
+            scope=scope,
         )
         result: dict[str, Any] = {
             "intent": intent.value,
@@ -1075,6 +1135,7 @@ class ChatService:
             created_at=row.get("created_at") or _now(),
             updated_at=row.get("updated_at") or _now(),
             owner_user_id=row.get("owner_user_id"),
+            owner_principal=row.get("owner_principal"),
         )
 
     async def acreate_session(
@@ -1085,48 +1146,75 @@ class ChatService:
         agent_id: str | None = None,
         folder_id: str | None = None,
         owner_user_id: str | None = None,
+        owner_principal: str | None = None,
     ) -> _Session:
         if self._repository is None:
             return self.create_session(
                 tenant_id, title=title, system_prompt=system_prompt,
                 agent_id=agent_id, folder_id=folder_id, owner_user_id=owner_user_id,
+                owner_principal=owner_principal,
             )
         sid = _hex()
         await self._repository.create_session(
             session_id=sid, tenant_id=tenant_id, title=title,
             system_prompt=system_prompt, agent_id=agent_id, folder_id=folder_id,
-            owner_user_id=owner_user_id,
+            owner_user_id=owner_user_id, owner_principal=owner_principal,
         )
-        row = await self._repository.get_session(sid, tenant_id)
+        row = await self._repository.get_session(sid, tenant_id, scope=SYSTEM_SCOPE)
         return self._session_from_row(row) if row else _Session(
             id=sid, tenant_id=tenant_id, title=title, system_prompt=system_prompt,
             agent_id=agent_id, folder_id=folder_id, owner_user_id=owner_user_id,
+            owner_principal=owner_principal,
         )
 
-    async def aget_session(self, session_id: str, tenant_id: str) -> _Session | None:
+    async def aget_session(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> _Session | None:
         if self._repository is None:
-            return self.get_session(session_id, tenant_id)
-        row = await self._repository.get_session(session_id, tenant_id)
+            return self.get_session(session_id, tenant_id, scope=scope)
+        row = await self._repository.get_session(session_id, tenant_id, scope=scope)
         return self._session_from_row(row) if row else None
 
-    async def alist_sessions(self, tenant_id: str) -> list[_Session]:
+    async def alist_sessions(
+        self, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> list[_Session]:
         if self._repository is None:
-            return self.list_sessions(tenant_id)
-        rows = await self._repository.list_sessions(tenant_id)
+            return self.list_sessions(tenant_id, scope=scope)
+        rows = await self._repository.list_sessions(tenant_id, scope=scope)
         return [self._session_from_row(r) for r in rows]
 
     async def aupdate_session(
-        self, session_id: str, tenant_id: str, **kwargs: Any
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE, **kwargs: Any
     ) -> _Session | None:
         if self._repository is None:
-            return self.update_session(session_id, tenant_id, **kwargs)
-        await self._repository.update_session(session_id, tenant_id, **kwargs)
-        return await self.aget_session(session_id, tenant_id)
+            return self.update_session(session_id, tenant_id, scope=scope, **kwargs)
+        await self._repository.update_session(session_id, tenant_id, scope=scope, **kwargs)
+        return await self.aget_session(session_id, tenant_id, scope=scope)
 
-    async def adelete_session(self, session_id: str, tenant_id: str) -> bool:
+    async def adelete_session(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> bool:
         if self._repository is None:
-            return self.delete_session(session_id, tenant_id)
-        return bool(await self._repository.delete_session(session_id, tenant_id))
+            return self.delete_session(session_id, tenant_id, scope=scope)
+        return bool(await self._repository.delete_session(session_id, tenant_id, scope=scope))
+
+    async def aassign_unowned_session(
+        self, session_id: str, tenant_id: str, *, owner_user_id: str
+    ) -> _Session | None:
+        """Give a session with no owner to a person; None when it is not unowned."""
+        if self._repository is None:
+            s = self._sessions.get(session_id)
+            if s is None or s.tenant_id != tenant_id or s.owner_principal is not None:
+                return None
+            s.owner_principal = f"user:{owner_user_id}"
+            s.owner_user_id = owner_user_id
+            s.updated_at = _now()
+            return s
+        if not await self._repository.assign_unowned_session(
+            session_id, tenant_id, owner_user_id=owner_user_id
+        ):
+            return None
+        return await self.aget_session(session_id, tenant_id)
 
     @staticmethod
     def _message_from_row(row: dict[str, Any]) -> _Message:
@@ -1154,8 +1242,13 @@ class ChatService:
         goal_id: str | None = None,
         intent: str | None = None,
         metadata: dict[str, Any] | None = None,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Message:
         if self._repository is None:
+            if scope.kind != "system" and self.get_session(
+                session_id, tenant_id, scope=scope
+            ) is None:
+                raise LookupError(f"chat session {session_id} not found")
             return self.save_message(
                 session_id=session_id, tenant_id=tenant_id, role=role,
                 content=content, goal_id=goal_id, intent=intent, metadata=metadata,
@@ -1164,6 +1257,7 @@ class ChatService:
         await self._repository.save_message(
             message_id=message_id, session_id=session_id, tenant_id=tenant_id,
             role=role, content=content, intent=intent, goal_id=goal_id, metadata=metadata,
+            scope=scope,
         )
         await self._notify_transcript(tenant_id, session_id)
         return _Message(
@@ -1180,16 +1274,54 @@ class ChatService:
         )
 
     async def alist_messages(
-        self, session_id: str, tenant_id: str, limit: int = 100
+        self,
+        session_id: str,
+        tenant_id: str,
+        limit: int = 100,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> list[_Message]:
         if self._repository is None:
-            return self.list_messages(session_id, tenant_id, limit=limit)
-        rows = await self._repository.list_messages(session_id, tenant_id)
+            return self.list_messages(session_id, tenant_id, limit=limit, scope=scope)
+        rows = await self._repository.list_messages(session_id, tenant_id, scope=scope)
         msgs = [self._message_from_row(r) for r in rows]
         return msgs[-limit:] if limit else msgs
 
+    async def aget_message(
+        self, session_id: str, message_id: str, tenant_id: str, *, scope: ChatScope
+    ) -> _Message | None:
+        """One message of one session, within the caller's scope."""
+        if self._repository is None:
+            msg = self._messages.get(message_id)
+            if msg is None or msg.tenant_id != tenant_id or msg.session_id != session_id:
+                return None
+            return msg if self.get_session(session_id, tenant_id, scope=scope) else None
+        row = await self._repository.get_message(message_id, tenant_id, scope=scope)
+        if row is None or str(row.get("session_id")) != session_id:
+            return None
+        return self._message_from_row(row)
+
+    async def adelete_message(
+        self, session_id: str, message_id: str, tenant_id: str, *, scope: ChatScope
+    ) -> bool:
+        """Hard-delete one message (CHAT-SEC-2): the row leaves the database."""
+        if self._repository is None:
+            return self.delete_message(
+                message_id, tenant_id, session_id=session_id, scope=scope
+            )
+        return bool(
+            await self._repository.delete_message(
+                session_id, message_id, tenant_id, scope=scope
+            )
+        )
+
     async def aedit_message(
-        self, message_id: str, tenant_id: str, new_content: str
+        self,
+        message_id: str,
+        tenant_id: str,
+        new_content: str,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> tuple[_Message | None, list[str]]:
         """Durable edit of a user message returning (updated_message, pruned_ids).
 
@@ -1198,13 +1330,16 @@ class ChatService:
         wired.
         """
         if self._repository is None:
-            return self.edit_message(message_id, tenant_id, new_content)
-        row = await self._repository.get_message(message_id, tenant_id)
+            return self.edit_message(message_id, tenant_id, new_content, scope=scope)
+        row = await self._repository.get_message(message_id, tenant_id, scope=scope)
         if row is None or str(row.get("role")) != "user":
             return None, []
-        await self._repository.update_message_content(message_id, tenant_id, new_content)
+        if not await self._repository.update_message_content(
+            message_id, tenant_id, new_content, scope=scope
+        ):
+            return None, []
         pruned = await self._repository.delete_messages_after(
-            str(row["session_id"]), tenant_id, row["created_at"]
+            str(row["session_id"]), tenant_id, row["created_at"], scope=scope
         )
         await self._notify_transcript(tenant_id, str(row["session_id"]))
         row["content"] = new_content
@@ -1218,6 +1353,7 @@ class ChatService:
         content_bytes: bytes,
         filename: str = "document",
         author_user_id: str | None = None,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Message | None:
         """Parse an uploaded file and store it as conversation context (Phase 4).
 
@@ -1225,7 +1361,7 @@ class ChatService:
         in the next turn's history (no run_qa/run_goal change needed). Returns None
         if the session doesn't exist.
         """
-        if await self.aget_session(session_id, tenant_id) is None:
+        if await self.aget_session(session_id, tenant_id, scope=scope) is None:
             return None
         from app.chat.attachments import format_attachment_context, parse_attachment
 
@@ -1241,6 +1377,7 @@ class ChatService:
                 "kind": "attachment",
                 **({"author_user_id": author_user_id} if author_user_id else {}),
             },
+            scope=scope,
         )
 
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
@@ -2022,9 +2159,14 @@ class ChatService:
         return True
 
     def move_session_to_folder(
-        self, session_id: str, tenant_id: str, folder_id: str | None
+        self,
+        session_id: str,
+        tenant_id: str,
+        folder_id: str | None,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Session | None:
-        return self.update_session(session_id, tenant_id, folder_id=folder_id)
+        return self.update_session(session_id, tenant_id, scope=scope, folder_id=folder_id)
 
     # ── Artifact CRUD ─────────────────────────────────────────────────────────
 
@@ -2098,6 +2240,8 @@ class ChatService:
         language: str,
         content: str,
         message_id: str | None = None,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Artifact:
         if self._repository is None:
             return self.create_artifact(
@@ -2114,39 +2258,65 @@ class ChatService:
             content=content.encode("utf-8"),
             session_id=session_id,
             message_id=message_id,
+            scope=scope,
         )
-        row = await self._repository.get_artifact(artifact_id, tenant_id, kind="snippet")
+        row = await self._repository.get_artifact(
+            artifact_id, tenant_id, scope=scope, kind="snippet"
+        )
         if row is None:
             raise RuntimeError("chat artifact was not readable after insert")
         return self._artifact_from_row(row)
 
-    async def alist_artifacts(self, session_id: str, tenant_id: str) -> list[_Artifact]:
+    async def alist_artifacts(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> list[_Artifact]:
         if self._repository is None:
+            if self.get_session(session_id, tenant_id, scope=scope) is None:
+                return []
             return self.list_artifacts(session_id, tenant_id)
-        rows = await self._repository.list_session_artifacts(session_id, tenant_id)
+        rows = await self._repository.list_session_artifacts(session_id, tenant_id, scope=scope)
         return [self._artifact_from_row(r) for r in rows]
 
     async def aupdate_artifact(
-        self, artifact_id: str, session_id: str, tenant_id: str, content: str
+        self,
+        artifact_id: str,
+        session_id: str,
+        tenant_id: str,
+        content: str,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> _Artifact | None:
         if self._repository is None:
             a = self._artifacts.get(artifact_id)
             if a is None or a.session_id != session_id:
                 return None
+            if self.get_session(session_id, tenant_id, scope=scope) is None:
+                return None
             return self.update_artifact(artifact_id, tenant_id, content)
         row = await self._repository.update_session_artifact(
-            artifact_id, session_id, tenant_id, content.encode("utf-8")
+            artifact_id, session_id, tenant_id, content.encode("utf-8"), scope=scope
         )
         return self._artifact_from_row(row) if row is not None else None
 
-    async def adelete_artifact(self, artifact_id: str, session_id: str, tenant_id: str) -> bool:
+    async def adelete_artifact(
+        self,
+        artifact_id: str,
+        session_id: str,
+        tenant_id: str,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
+    ) -> bool:
         if self._repository is None:
             a = self._artifacts.get(artifact_id)
             if a is None or a.session_id != session_id:
                 return False
+            if self.get_session(session_id, tenant_id, scope=scope) is None:
+                return False
             return self.delete_artifact(artifact_id, tenant_id)
         return bool(
-            await self._repository.delete_session_artifact(artifact_id, session_id, tenant_id)
+            await self._repository.delete_session_artifact(
+                artifact_id, session_id, tenant_id, scope=scope
+            )
         )
 
     # ── Search ────────────────────────────────────────────────────────────────
@@ -2157,6 +2327,8 @@ class ChatService:
         query: str,
         session_id: str | None = None,
         limit: int = 20,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> list[_Message]:
         """Simple substring search — production uses Postgres FTS index."""
         q = query.lower()
@@ -2166,6 +2338,7 @@ class ChatService:
             if m.tenant_id == tenant_id
             and (session_id is None or m.session_id == session_id)
             and q in m.content.lower()
+            and self.get_session(m.session_id, tenant_id, scope=scope) is not None
         ]
         return results[:limit]
 
@@ -2175,25 +2348,33 @@ class ChatService:
         query: str,
         session_id: str | None = None,
         limit: int = 20,
+        *,
+        scope: ChatScope = SYSTEM_SCOPE,
     ) -> list[_Message]:
         """Durable search (ORG-32): Postgres full-text search when a repository is
         attached -- the in-memory dict is empty in DB mode."""
         if self._repository is None:
-            return self.search_messages(tenant_id, query, session_id=session_id, limit=limit)
+            return self.search_messages(
+                tenant_id, query, session_id=session_id, limit=limit, scope=scope
+            )
         rows = await self._repository.search_messages(
-            tenant_id, query, session_id=session_id, limit=limit
+            tenant_id, query, scope=scope, session_id=session_id, limit=limit
         )
         return [self._message_from_row(r) for r in rows]
 
     # ── Conversation summary ──────────────────────────────────────────────────
 
-    async def asummarize_session(self, session_id: str, tenant_id: str) -> str:
+    async def asummarize_session(
+        self, session_id: str, tenant_id: str, *, scope: ChatScope = SYSTEM_SCOPE
+    ) -> str:
         """Durable summary (ORG-32): topics from the persisted, bounded recent
         history; the message count is the whole session's, not the window's."""
         if self._repository is None:
+            if self.get_session(session_id, tenant_id, scope=scope) is None:
+                return self._summary_of([])
             return self.summarize_session(session_id, tenant_id)
-        msgs = await self.alist_messages(session_id, tenant_id, limit=500)
-        total = await self._repository.count_messages(session_id, tenant_id)
+        msgs = await self.alist_messages(session_id, tenant_id, limit=500, scope=scope)
+        total = await self._repository.count_messages(session_id, tenant_id, scope=scope)
         return self._summary_of(msgs, total=int(total))
 
     def summarize_session(self, session_id: str, tenant_id: str) -> str:

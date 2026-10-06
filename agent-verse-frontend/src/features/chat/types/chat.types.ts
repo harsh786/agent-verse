@@ -12,6 +12,8 @@ export interface ChatSession {
   show_reasoning: boolean;
   proactive_suggestions: boolean;
   preferred_model: string | null;
+  /** Whose session this is (`user:<id>` / `key:<api key id>`); chats are private. */
+  owner_principal?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.chat.ownership import SYSTEM_SCOPE
 from app.chat.artifact_store import ChatArtifactStore, ChatArtifactTooLargeError
 
 
@@ -31,7 +32,7 @@ class _FakeRepo:
         }
 
     async def get_artifact(
-        self, artifact_id: str, tenant_id: str, *, kind: str | None = None
+        self, artifact_id: str, tenant_id: str, *, scope: Any = None, kind: str | None = None
     ) -> dict[str, Any] | None:
         if self.fail:
             raise ConnectionError("db down")
@@ -46,7 +47,7 @@ async def test_put_and_get_round_trip() -> None:
     aid = await store.put(
         tenant_id="t1", content=b"%PDF-1.4...", mime="application/pdf", filename="r.pdf"
     )
-    art = await store.get(aid, "t1")
+    art = await store.get(aid, "t1", scope=SYSTEM_SCOPE)
     assert art is not None and art.content == b"%PDF-1.4..." and art.filename == "r.pdf"
     assert art.mime == "application/pdf"
 
@@ -54,8 +55,8 @@ async def test_put_and_get_round_trip() -> None:
 async def test_get_is_tenant_scoped() -> None:
     store = ChatArtifactStore()
     aid = await store.put(tenant_id="t1", content=b"x", mime="text/plain", filename="a.txt")
-    assert await store.get(aid, "t2") is None
-    assert await store.get("missing", "t1") is None
+    assert await store.get(aid, "t2", scope=SYSTEM_SCOPE) is None
+    assert await store.get("missing", "t1", scope=SYSTEM_SCOPE) is None
 
 
 async def test_oversized_artifact_is_refused() -> None:
@@ -70,16 +71,16 @@ async def test_in_memory_store_is_bounded() -> None:
         await store.put(tenant_id="t1", content=b"x", mime="text/plain", filename=f"{i}")
         for i in range(5)
     ]
-    assert await store.get(ids[0], "t1") is None
-    assert await store.get(ids[1], "t1") is None
-    assert await store.get(ids[4], "t1") is not None
+    assert await store.get(ids[0], "t1", scope=SYSTEM_SCOPE) is None
+    assert await store.get(ids[1], "t1", scope=SYSTEM_SCOPE) is None
+    assert await store.get(ids[4], "t1", scope=SYSTEM_SCOPE) is not None
     assert len(store._items) == 3
 
 
 async def test_expired_artifact_is_gone() -> None:
     store = ChatArtifactStore(retention_days=0)
     aid = await store.put(tenant_id="t1", content=b"x", mime="text/plain", filename="a")
-    assert await store.get(aid, "t1") is None
+    assert await store.get(aid, "t1", scope=SYSTEM_SCOPE) is None
 
 
 async def test_attached_repository_holds_the_bytes_not_process_memory() -> None:
@@ -94,9 +95,9 @@ async def test_attached_repository_holds_the_bytes_not_process_memory() -> None:
     # A second store (another replica) on the same repository serves it.
     other = ChatArtifactStore()
     other.attach_repository(repo)
-    art = await other.get(aid, "t1")
+    art = await other.get(aid, "t1", scope=SYSTEM_SCOPE)
     assert art is not None and art.content == b"doc" and art.filename == "d.txt"
-    assert await other.get(aid, "t2") is None
+    assert await other.get(aid, "t2", scope=SYSTEM_SCOPE) is None
 
 
 async def test_repository_failure_raises_never_falls_back_to_memory() -> None:
@@ -108,4 +109,4 @@ async def test_repository_failure_raises_never_falls_back_to_memory() -> None:
         await store.put(tenant_id="t1", content=b"doc", mime="text/plain", filename="d")
     assert store._items == {}
     with pytest.raises(ConnectionError):
-        await store.get("any", "t1")
+        await store.get("any", "t1", scope=SYSTEM_SCOPE)
