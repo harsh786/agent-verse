@@ -136,6 +136,7 @@ async def test_rasterisation_runs_in_the_ocr_pool_not_on_the_event_loop() -> Non
 async def test_real_render_is_page_by_page_at_the_configured_dpi() -> None:
     """The real rasteriser is asked for ONE page at a time (first_page ==
     last_page), grayscale, at OCR_RENDER_DPI — never the whole document."""
+    pytest.importorskip("pdf2image")  # the optional 'ocr' extra
     calls: list[dict[str, Any]] = []
 
     def _convert(path: Any, **kw: Any) -> list[Any]:

@@ -146,6 +146,7 @@ async def test_too_many_scanned_pages_is_still_refused_before_any_work() -> None
 
 
 def test_render_pdf_page_accepts_a_path_and_maps_poppler_errors(tmp_path: Path) -> None:
+    pytest.importorskip("pdf2image")  # the optional 'ocr' extra
     from pdf2image.exceptions import PDFInfoNotInstalledError
 
     pdf = tmp_path / "x.pdf"
