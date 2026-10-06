@@ -1,3 +1,12 @@
 {
-  "CHAT-SEC-1": {"status": "done", "commit": null, "note": "chat sessions owned by their creator principal (user:/key:); owner predicate + restrictive RLS; unowned = admin-only audited routes; frontend filters to own"}
+  "CHAT-SEC-1": {
+    "status": "done",
+    "commit": "b58da6c0d",
+    "note": "chat sessions owned by their creator principal (user:/key:); owner predicate + restrictive RLS; unowned = admin-only audited routes; frontend filters to own"
+  },
+  "CHAT-SEC-2": {
+    "status": "done",
+    "commit": null,
+    "note": "message DELETE hard-deletes the row (owner, or admin via audited admin route) and removes the session transcript from the index (queued / 503 when it cannot)"
+  }
 }

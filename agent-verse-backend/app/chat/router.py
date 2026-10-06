@@ -323,7 +323,7 @@ async def delete_session(session_id: str, request: Request) -> None:
 
 
 async def _remove_session_transcript(
-    request: Request, tenant_id: str, owner: str, session_id: str
+    request: Request, tenant_id: str, owner: str, session_id: str, *, what: str = "chat"
 ) -> None:
     """CHAT-KB: a deleted chat leaves the knowledge index too (held: kept).
 
@@ -353,8 +353,9 @@ async def _remove_session_transcript(
         raise HTTPException(
             status_code=503,
             detail=(
-                "The chat was deleted, but its transcript in the knowledge base could not be "
-                f"removed yet ({reason}); the knowledge Source's next reconciliation removes it."
+                f"The {what} was deleted, but the chat's transcript in the knowledge base could "
+                f"not be removed yet ({reason}); the knowledge Source's next reconciliation "
+                "removes it."
             ),
         ) from exc
 
@@ -541,10 +542,21 @@ async def edit_message(
     "/sessions/{session_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def delete_message(session_id: str, message_id: str, request: Request) -> None:
-    tenant, svc, scope, _s = await _owned(request, session_id)
-    ok = svc.delete_message(message_id, tenant.tenant_id, session_id=session_id, scope=scope)
+    """Delete one of the caller's own messages (CHAT-SEC-2).
+
+    The message is removed from the database, not hidden. The session's
+    transcript leaves the knowledge index at once (a held one is kept), and the
+    next sync re-indexes the session without it.
+    """
+    tenant, svc, scope, s = await _owned(request, session_id)
+    ok = await svc.adelete_message(session_id, message_id, tenant.tenant_id, scope=scope)
     if not ok:
         raise HTTPException(status_code=404, detail="Message not found")
+    owner = getattr(s, "owner_user_id", None)
+    if owner:  # only an owned session can have been indexed as knowledge
+        await _remove_session_transcript(
+            request, tenant.tenant_id, owner, session_id, what="message"
+        )
 
 
 # ── Chat transcripts as knowledge: the person's own opt-in (owner decision 7) ──
@@ -1299,3 +1311,40 @@ async def admin_assign_unowned_session(
     if s is None:  # assigned or deleted meanwhile
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
+
+
+@router.delete(
+    "/admin/sessions/{session_id}/messages/{message_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def admin_delete_message(session_id: str, message_id: str, request: Request) -> None:
+    """A tenant admin deletes a message from any session of the tenant (CHAT-SEC-2).
+
+    Moderation without reading: nothing of the message is returned. Audited
+    durably before the delete (audit failure: 503, nothing deleted). The
+    session's transcript leaves the knowledge index like an owner's delete.
+    """
+    from app.chat.ownership import SYSTEM_SCOPE
+
+    tenant = _tenant(request)
+    svc = _svc(request)
+    s = await svc.aget_session(session_id, tenant.tenant_id, scope=SYSTEM_SCOPE)
+    if s is None or await svc.aget_message(
+        session_id, message_id, tenant.tenant_id, scope=SYSTEM_SCOPE
+    ) is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await _audit_admin(
+        request, tenant, "delete_message",
+        f"admin {principal_of(tenant)} deleted message {message_id} of chat session "
+        f"{session_id} (owner {getattr(s, 'owner_principal', None) or 'none'})",
+    )
+    if not await svc.adelete_message(
+        session_id, message_id, tenant.tenant_id, scope=SYSTEM_SCOPE
+    ):
+        raise HTTPException(status_code=404, detail="Message not found")
+    owner = getattr(s, "owner_user_id", None)
+    if owner:
+        await _remove_session_transcript(
+            request, tenant.tenant_id, owner, session_id, what="message"
+        )

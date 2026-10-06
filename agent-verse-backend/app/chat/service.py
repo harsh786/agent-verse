@@ -1309,11 +1309,14 @@ class ChatService:
             return self.delete_message(
                 message_id, tenant_id, session_id=session_id, scope=scope
             )
-        return bool(
+        deleted = bool(
             await self._repository.delete_message(
                 session_id, message_id, tenant_id, scope=scope
             )
         )
+        if deleted:  # the session changed: a consented transcript is re-indexed
+            await self._notify_transcript(tenant_id, session_id)
+        return deleted
 
     async def aedit_message(
         self,
