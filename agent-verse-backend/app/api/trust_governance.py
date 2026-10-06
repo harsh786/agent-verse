@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from app.governance.audit_v2 import audit_admin_action
 from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/trust", tags=["trust-governance"])
@@ -419,6 +420,12 @@ async def get_active_compliance_bundles(request: Request) -> dict[str, Any]:
 
 
 @router.post("/compliance-bundles/{bundle_id}/enable")
+@audit_admin_action(
+    "compliance_bundle.enabled",
+    "compliance_bundle",
+    "enable",
+    extract_resource_id=lambda kw: kw.get("bundle_id"),
+)
 async def enable_compliance_bundle_for_tenant(
     request: Request,
     bundle_id: str,
@@ -450,6 +457,12 @@ async def enable_compliance_bundle_for_tenant(
 
 
 @router.delete("/compliance-bundles/{bundle_id}")
+@audit_admin_action(
+    "compliance_bundle.disabled",
+    "compliance_bundle",
+    "disable",
+    extract_resource_id=lambda kw: kw.get("bundle_id"),
+)
 async def disable_compliance_bundle_for_tenant(
     request: Request,
     bundle_id: str,

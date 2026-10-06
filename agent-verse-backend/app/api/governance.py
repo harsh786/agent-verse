@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
+from app.governance.audit_v2 import audit_admin_action
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway, HITLResolutionUnavailableError
 from app.governance.policies import (
@@ -444,6 +445,9 @@ async def list_policies(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("/policies", status_code=status.HTTP_201_CREATED)
+@audit_admin_action(
+    "policy.created", "policy", "create", extract_resource_id=lambda kw: kw["body"].name
+)
 async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     engine = _policy_engine(request)
@@ -508,6 +512,9 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
 
 
 @router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit_admin_action(
+    "policy.deleted", "policy", "delete", extract_resource_id=lambda kw: kw.get("policy_id")
+)
 async def delete_policy(request: Request, policy_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)
     engine = _policy_engine(request)
@@ -1278,6 +1285,7 @@ async def get_budget(request: Request) -> dict[str, Any]:
 
 
 @router.put("/budget")
+@audit_admin_action("budget.updated", "budget", "update")
 async def set_budget(
     request: Request,
     body: SetBudgetRequest,
@@ -1330,6 +1338,7 @@ async def set_budget(
 
 
 @router.post("/notifications", status_code=201)
+@audit_admin_action("notification_channel.created", "notification_channel", "create")
 async def create_notification_channel(
     request: Request, body: CreateNotificationChannelRequest
 ) -> dict[str, Any]:
@@ -1365,6 +1374,12 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
 
 
 @router.delete("/notifications/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit_admin_action(
+    "notification_channel.deleted",
+    "notification_channel",
+    "delete",
+    extract_resource_id=lambda kw: kw.get("channel_id"),
+)
 async def delete_notification_channel(request: Request, channel_id: str) -> None:
     """Delete a notification channel by ID."""
     tenant = _require_tenant(request)
@@ -2088,6 +2103,12 @@ class RollbackRequest(BaseModel):
 
 
 @router.post("/policies/{policy_id}/rollback")
+@audit_admin_action(
+    "policy.rolled_back",
+    "policy",
+    "rollback",
+    extract_resource_id=lambda kw: kw.get("policy_id"),
+)
 async def rollback_policy(
     request: Request,
     policy_id: str,

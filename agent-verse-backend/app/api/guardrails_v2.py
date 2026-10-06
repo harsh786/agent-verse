@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.governance.audit_v2 import audit_admin_action
 from app.guardrails_v2.models import (
     COMPLIANCE_BUNDLES,
     ComplianceBundle,
@@ -61,6 +62,7 @@ class EvaluateCorpusRequest(BaseModel):
 
 
 @router.post("/rules")
+@audit_admin_action("guardrail_rule.created", "guardrail_rule", "create")
 async def create_rule(
     request: Request,
     body: CreateRuleRequest,
@@ -131,6 +133,12 @@ def _is_seeded(rule_id: str) -> bool:
 
 
 @router.patch("/rules/{rule_id}")
+@audit_admin_action(
+    "guardrail_rule.updated",
+    "guardrail_rule",
+    "update",
+    extract_resource_id=lambda kw: kw.get("rule_id"),
+)
 async def update_rule(
     request: Request,
     rule_id: str,
@@ -171,6 +179,12 @@ async def update_rule(
 
 
 @router.delete("/rules/{rule_id}")
+@audit_admin_action(
+    "guardrail_rule.deleted",
+    "guardrail_rule",
+    "delete",
+    extract_resource_id=lambda kw: kw.get("rule_id"),
+)
 async def delete_rule(
     request: Request,
     rule_id: str,
@@ -321,6 +335,12 @@ async def list_violations(
 
 
 @router.post("/bundles/{bundle_name}")
+@audit_admin_action(
+    "guardrail_bundle.enabled",
+    "guardrail_bundle",
+    "enable",
+    extract_resource_id=lambda kw: kw.get("bundle_name"),
+)
 async def enable_compliance_bundle(
     request: Request,
     bundle_name: str,
