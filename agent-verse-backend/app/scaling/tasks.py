@@ -8752,29 +8752,6 @@ def scan_cost_anomalies() -> dict:
     return _run_async(_run())
 
 
-@celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
-def embed_marketplace_templates() -> dict:
-    """Embed new unembedded marketplace templates for semantic search."""
-
-    async def _run() -> dict:
-        try:
-            from sqlalchemy import text
-
-            from app.db.session import get_session_factory as _get_fresh_db
-
-            db = _get_fresh_db()
-            async with db() as session:
-                result = await session.execute(
-                    text("SELECT COUNT(*) FROM marketplace_templates WHERE embedding IS NULL")
-                )
-                pending = result.scalar() or 0
-                return {"status": "ok", "pending_embeddings": pending}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
-
-    return _run_async(_run())
-
-
 _STALE_EXPERIMENT_BATCH = 1000
 
 

@@ -4,7 +4,7 @@ elsewhere (tests/scaling/test_celery_maintenance_real.py), never their actual
 execution paths:
 
  - enforce_hitl_sla, flush_audit_wal, scan_cost_anomalies
- - embed_marketplace_templates, conclude_stale_experiments, expire_stale_documents
+ - conclude_stale_experiments, expire_stale_documents
  - process_dpdp_erasures
 """
 
@@ -388,27 +388,6 @@ class TestFlushAuditWal:
 
 
 # ── scan_cost_anomalies: tests/scaling/test_scan_cost_anomalies.py (fakeredis) ──
-
-
-# ── embed_marketplace_templates ───────────────────────────────────────────────
-
-
-class TestEmbedMarketplaceTemplates:
-    def test_success_returns_pending_count(self):
-        from app.scaling.tasks import embed_marketplace_templates
-
-        session = _session(execute_side_effect=[MagicMock(scalar=MagicMock(return_value=7))])
-        db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
-            result = embed_marketplace_templates.run()
-        assert result == {"status": "ok", "pending_embeddings": 7}
-
-    def test_error_returns_error_status(self):
-        from app.scaling.tasks import embed_marketplace_templates
-
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
-            result = embed_marketplace_templates.run()
-        assert result == {"status": "error", "error": "no db"}
 
 
 # ── conclude_stale_experiments ────────────────────────────────────────────────

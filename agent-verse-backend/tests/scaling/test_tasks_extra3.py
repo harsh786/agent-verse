@@ -6,7 +6,7 @@ Covers uncovered paths:
   reindex_stale_knowledge, purge_expired_artifacts, run_gdpr_export,
   civilization_tick, civilization_learning_step, warm_jwks_cache,
   create_guardrail_partitions, enforce_hitl_sla, flush_audit_wal,
-  scan_cost_anomalies, embed_marketplace_templates, conclude_stale_experiments,
+  scan_cost_anomalies, conclude_stale_experiments,
   expire_stale_documents, discover_and_tick_civilizations,
   run_goal (production check, env providers, timeout, dry_run paths),
   _run_with_signals (pause/resume paths).

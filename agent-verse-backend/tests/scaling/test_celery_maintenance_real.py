@@ -2,7 +2,7 @@
 
 Covers:
  - discover_and_tick_civilizations syntax fix + registration
- - embed_marketplace_templates, conclude_stale_experiments, expire_stale_documents
+ - conclude_stale_experiments, expire_stale_documents
    have real SQL implementations (not noop stubs)
  - Helper functions: _scheduled_goal_id, _strip_secret_redis_schedule_fields,
    _schedule_datetime, _datetime_to_naive_iso, _db_schedule_payload
@@ -42,12 +42,15 @@ def test_discover_and_tick_civilizations_has_correct_queue() -> None:
 # ── Real implementations (not noop) ───────────────────────────────────────────
 
 
-def test_embed_marketplace_templates_has_real_sql() -> None:
-    from app.scaling.tasks import embed_marketplace_templates
-    src = inspect.getsource(embed_marketplace_templates)
-    # Must reference marketplace_templates table and not be a noop
-    assert "marketplace_templates" in src
-    assert "noop" not in src.lower()
+def test_noop_marketplace_embed_task_is_gone() -> None:
+    """a10-F246-05: it only counted unembedded rows; nothing embeds or reads them."""
+    import app.scaling.tasks as tasks_mod
+    from app.scaling.celery_app import celery_app
+
+    assert not hasattr(tasks_mod, "embed_marketplace_templates")
+    assert "app.scaling.tasks.embed_marketplace_templates" not in celery_app.tasks
+    scheduled = {e["task"] for e in celery_app.conf.beat_schedule.values()}
+    assert "app.scaling.tasks.embed_marketplace_templates" not in scheduled
 
 
 def test_conclude_stale_experiments_has_real_sql() -> None:

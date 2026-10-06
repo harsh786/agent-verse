@@ -449,11 +449,9 @@ celery_app.conf.update(
             "schedule": crontab(minute="0"),
             "options": {"queue": "maintenance"},
         },
-        "embed-marketplace-templates": {
-            "task": "app.scaling.tasks.embed_marketplace_templates",
-            "schedule": crontab(minute="*/15"),
-            "options": {"queue": "maintenance"},
-        },
+        # a10-F246-05: "embed-marketplace-templates" removed — it only counted
+        # rows WHERE embedding IS NULL every 15 min; nothing embeds templates or
+        # reads marketplace_templates.embedding (search is full-text).
         "conclude-stale-experiments": {
             "task": "app.scaling.tasks.conclude_stale_experiments",
             "schedule": crontab(hour="3", minute="0"),
