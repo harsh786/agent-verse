@@ -24,7 +24,10 @@ function mockFetch(opts: MockOpts = {}) {
     if (url.includes('/trust/compliance-bundles/active'))
       return new Response(JSON.stringify({ active, effective_max_autonomy: effective }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/trust/approvals'))
-      return new Response(JSON.stringify({ approvals, total: approvals.length }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      // Retired (a03-F057-01): the panel must never call it.
+      return new Response(JSON.stringify({ detail: { code: 'TRUST_APPROVALS_RETIRED' } }), { status: 410, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/governance/approvals'))
+      return new Response(JSON.stringify(approvals), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
 }
@@ -66,16 +69,21 @@ describe('GovernancePanel', () => {
     expect(screen.getAllByText('Enable')).toHaveLength(4);
   });
 
-  test('pending approvals render with a count badge and the action', async () => {
-    mockFetch({
+  test('pending approvals come from the HITL gateway (/governance/approvals), never /trust/approvals', async () => {
+    const spy = mockFetch({
       approvals: [
-        { approval_id: 'a1', step_description: 'delete prod database', goal_id: 'g-9', required_approvers: 2, status: 'pending' },
+        { request_id: 'r1', action: 'delete prod database', goal_id: 'g-9', risk_level: 'critical', required_approvers: 2, approvals_received: 1, status: 'pending' },
       ],
     });
     renderPanel();
     expect(await screen.findByText('delete prod database')).toBeInTheDocument();
     expect(screen.getByText('1 pending')).toBeInTheDocument();
     expect(screen.getByText(/Goal: g-9/)).toBeInTheDocument();
+    expect(screen.getByText(/Approvals: 1\/2/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Review in Approvals' })).toHaveAttribute('href', '/approvals');
+    const urls = spy.mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => u.includes('/governance/approvals'))).toBe(true);
+    expect(urls.some((u) => u.includes('/trust/approvals'))).toBe(false);
   });
 
   test('shows the empty approvals state when none are pending', async () => {

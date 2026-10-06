@@ -1,22 +1,17 @@
-"""Integration tests: trust-governance approvals and AI-Ops state are DURABLE.
+"""Integration tests: AI-Ops state is DURABLE (and the retired trust tables stay).
 
-Both `app/api/trust_governance.py` and `app/api/ai_ops.py` are mounted, live
-routers that kept their entire state in module-level dicts. trust_governance
-even documented itself as "In-memory for demo; production uses DB" while being
-the production path. Consequences in a multi-replica deployment:
+`app/api/ai_ops.py` is a mounted, live router that kept its entire state in
+module-level dicts: an AI-Ops baseline set on one pod meant drift was computed
+against "no baseline" everywhere else, and everything was lost on redeploy.
 
-  * an approval granted on one pod did not exist for the pod serving the next
-    request, and every pending approval was lost on redeploy;
-  * `required_approvers` was enforced by an application-level scan of an
-    in-process list, so two concurrent approvals by the SAME person landing on
-    different replicas could both count — defeating separation of duties;
-  * an AI-Ops baseline set on one pod meant drift was computed against "no
-    baseline" everywhere else.
-
-These tests exercise the real stores against a migrated Postgres as a
+These tests exercise the real store against a migrated Postgres as a
 NOSUPERUSER/NOBYPASSRLS role, and assert durability by reading back through a
 *second, independent* store instance that shares no in-process state with the
 one that wrote (the stand-in for another replica / a restart).
+
+`/trust/approvals` was retired (a03-F057-01: its approvals never gated
+execution; /governance/approvals does). Its store is gone, but its tables are
+deliberately kept (no destructive migration); the last test pins that.
 
 Run with:
     DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \
@@ -26,7 +21,6 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import secrets
 import subprocess
@@ -41,18 +35,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.evals.ai_ops_store import AIOpsStore
-from app.governance.trust_approval_store import (
-    ApprovalNotFoundError,
-    DuplicateApproverError,
-    TrustApprovalStore,
-)
 
 pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 TABLES = (
-    "trust_approval_requests",
-    "trust_approval_votes",
     "ai_ops_datasets",
     "ai_ops_dataset_versions",
     "ai_ops_eval_results",
@@ -113,126 +100,6 @@ async def app_factory(postgres_url: str) -> AsyncIterator[async_sessionmaker]:
     engine = create_async_engine(url, pool_size=6, max_overflow=0)
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
-
-
-# ── trust governance ────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_an_approval_survives_a_restart(app_factory: async_sessionmaker) -> None:
-    """A second, independent store must see the approval — the replica/restart case."""
-    writer = TrustApprovalStore(app_factory)
-    approval_id = secrets.token_hex(8)
-    await writer.create(
-        tenant_id=TENANT_A,
-        approval_id=approval_id,
-        goal_id="g1",
-        step_description="wire funds",
-        tool_name="wire_transfer",
-        risk_level="high",
-        required_approvers=2,
-    )
-    await writer.add_vote(
-        tenant_id=TENANT_A, approval_id=approval_id, approver_id="alice", note="ok"
-    )
-
-    reader = TrustApprovalStore(app_factory)  # shares no in-process state
-    loaded = await reader.get(TENANT_A, approval_id)
-    assert loaded is not None, "approval did not survive — it was never persisted"
-    assert loaded["status"] == "pending"
-    assert [a["approver_id"] for a in loaded["approvers"]] == ["alice"]
-
-
-@pytest.mark.asyncio
-async def test_distinct_approvers_complete_the_request(
-    app_factory: async_sessionmaker,
-) -> None:
-    store = TrustApprovalStore(app_factory)
-    approval_id = secrets.token_hex(8)
-    await store.create(
-        tenant_id=TENANT_A, approval_id=approval_id, goal_id=None,
-        step_description="", tool_name="t", risk_level="high", required_approvers=2,
-    )
-    first = await store.add_vote(
-        tenant_id=TENANT_A, approval_id=approval_id, approver_id="alice", note=""
-    )
-    assert first["status"] == "pending"
-    second = await store.add_vote(
-        tenant_id=TENANT_A, approval_id=approval_id, approver_id="bob", note=""
-    )
-    assert second["status"] == "approved", second
-
-
-@pytest.mark.asyncio
-async def test_the_same_approver_cannot_vote_twice(
-    app_factory: async_sessionmaker,
-) -> None:
-    store = TrustApprovalStore(app_factory)
-    approval_id = secrets.token_hex(8)
-    await store.create(
-        tenant_id=TENANT_A, approval_id=approval_id, goal_id=None,
-        step_description="", tool_name="t", risk_level="high", required_approvers=3,
-    )
-    await store.add_vote(
-        tenant_id=TENANT_A, approval_id=approval_id, approver_id="alice", note=""
-    )
-    with pytest.raises(DuplicateApproverError):
-        await store.add_vote(
-            tenant_id=TENANT_A, approval_id=approval_id, approver_id="alice", note=""
-        )
-
-
-@pytest.mark.asyncio
-async def test_concurrent_duplicate_approvals_cannot_both_count(
-    app_factory: async_sessionmaker,
-) -> None:
-    """Separation of duties must hold as a DATABASE invariant, not a Python check.
-
-    Two approvals by the same person racing on different replicas would both
-    pass an application-level "has alice approved?" scan. UNIQUE (request_id,
-    approver_id) makes that impossible regardless of timing.
-    """
-    store = TrustApprovalStore(app_factory)
-    approval_id = secrets.token_hex(8)
-    await store.create(
-        tenant_id=TENANT_A, approval_id=approval_id, goal_id=None,
-        step_description="", tool_name="t", risk_level="high", required_approvers=3,
-    )
-
-    async def vote() -> object:
-        try:
-            return await store.add_vote(
-                tenant_id=TENANT_A, approval_id=approval_id,
-                approver_id="alice", note="",
-            )
-        except Exception as exc:  # DuplicateApproverError or a serialization error
-            return exc
-
-    outcomes = await asyncio.gather(*(vote() for _ in range(4)))
-    succeeded = [o for o in outcomes if not isinstance(o, Exception)]
-    assert len(succeeded) == 1, f"more than one concurrent vote counted: {outcomes}"
-
-    loaded = await store.get(TENANT_A, approval_id)
-    assert loaded is not None
-    assert len(loaded["approvers"]) == 1, loaded["approvers"]
-    assert loaded["status"] == "pending", loaded
-
-
-@pytest.mark.asyncio
-async def test_approvals_are_tenant_isolated(app_factory: async_sessionmaker) -> None:
-    store = TrustApprovalStore(app_factory)
-    approval_id = secrets.token_hex(8)
-    await store.create(
-        tenant_id=TENANT_A, approval_id=approval_id, goal_id=None,
-        step_description="secret", tool_name="t", risk_level="high",
-        required_approvers=1,
-    )
-    assert await store.get(TENANT_B, approval_id) is None
-    assert await store.list(TENANT_B) == []
-    with pytest.raises(ApprovalNotFoundError):
-        await store.reject(
-            tenant_id=TENANT_B, approval_id=approval_id, reason="x", rejected_by="mallory"
-        )
 
 
 # ── ai ops ──────────────────────────────────────────────────────────────────
@@ -301,3 +168,23 @@ async def test_ai_ops_state_is_tenant_isolated(app_factory: async_sessionmaker) 
     assert await store.get_baseline(TENANT_B, "m") is None
     assert await store.list_alerts(TENANT_B) == []
     assert await store.count_baselines(TENANT_B) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_retired_trust_approval_tables_are_kept(postgres_url: str) -> None:
+    """Retiring /trust/approvals dropped no data: both tables still exist."""
+    engine = create_async_engine(postgres_url)
+    try:
+        async with engine.connect() as conn:
+            found = {
+                row[0]
+                for row in await conn.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public' AND table_name LIKE 'trust_approval_%'"
+                    )
+                )
+            }
+    finally:
+        await engine.dispose()
+    assert found == {"trust_approval_requests", "trust_approval_votes"}

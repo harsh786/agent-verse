@@ -55,7 +55,7 @@ def test_unregistered_write_routes_are_read_only_for_viewers() -> None:
 
     assert _may_write_unregistered(("viewer",), "/skills") is False
     assert _may_write_unregistered(("approver",), "/triggers/x") is False
-    assert _may_write_unregistered(("approver",), "/trust/approvals/a/approve") is True
+    assert _may_write_unregistered(("approver",), "/governance/approvals/a/approve") is True
     assert _may_write_unregistered(("operator",), "/skills") is True
     assert _may_write_unregistered(("admin",), "/billing/x") is True
 

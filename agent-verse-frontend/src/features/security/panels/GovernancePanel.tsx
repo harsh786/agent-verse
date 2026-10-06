@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { useAuthStore, getAuthHeader } from '../../../stores/auth';
-import { API_BASE } from '@/lib/api/client';
+import { API_BASE, governanceApi, type ApprovalRequest } from '@/lib/api/client';
 
 function apiFetch(path: string, opts?: RequestInit) {
   return fetch(`${API_BASE}${path}`, { ...opts, headers: { ...getAuthHeader(), 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
@@ -24,9 +25,12 @@ export function GovernancePanel() {
     enabled: !!apiKey,
   });
 
+  // The HITL gateway's queue (a03-F057-01): these requests really hold the
+  // step until decided, with quorum. The old /trust/approvals list recorded
+  // approvals nothing ever read, and is retired (410).
   const { data: pendingData } = useQuery({
-    queryKey: ['pending-approvals'],
-    queryFn: () => apiFetch('/trust/approvals?status=pending'),
+    queryKey: ['approvals'],
+    queryFn: () => governanceApi.listApprovals(),
     enabled: !!apiKey,
     refetchInterval: 10000,
   });
@@ -38,7 +42,9 @@ export function GovernancePanel() {
 
   const activeBundles: string[] = bundleData?.active || [];
   const effectiveMode = bundleData?.effective_max_autonomy || 'fully-autonomous';
-  const pendingApprovals = pendingData?.approvals || [];
+  const pendingApprovals: ApprovalRequest[] = Array.isArray(pendingData)
+    ? pendingData.filter((a) => !a.status || a.status === 'pending')
+    : [];
 
   return (
     <div className="space-y-6">
@@ -46,20 +52,29 @@ export function GovernancePanel() {
       <div className="rounded-xl border bg-card p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-foreground">Pending Approvals</h2>
-          {pendingApprovals.length > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs font-bold">
-              {pendingApprovals.length} pending
-            </span>
-          )}
+          <div className="flex items-center gap-3">
+            {pendingApprovals.length > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 text-xs font-bold">
+                {pendingApprovals.length} pending
+              </span>
+            )}
+            <Link to="/approvals" className="text-xs text-primary hover:underline">
+              Review in Approvals
+            </Link>
+          </div>
         </div>
         {pendingApprovals.length === 0 ? (
           <p className="text-sm text-muted-foreground">No pending approvals. All agents are running smoothly.</p>
         ) : (
           <div className="space-y-2">
-            {pendingApprovals.slice(0, 5).map((a: Record<string, unknown>) => (
-              <div key={String(a.approval_id)} className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
-                <p className="text-sm font-medium text-foreground">{String(a.step_description || a.tool_name || 'High-risk action')}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Goal: {String(a.goal_id)} · Required: {String(a.required_approvers)} approver(s)</p>
+            {pendingApprovals.slice(0, 5).map((a) => (
+              <div key={a.request_id} className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
+                <p className="text-sm font-medium text-foreground">{a.action || 'High-risk action'}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Goal: {a.goal_id}
+                  {a.risk_level ? ` · Risk: ${a.risk_level}` : ''}
+                  {` · Approvals: ${a.approvals_received ?? 0}/${a.required_approvers ?? 1}`}
+                </p>
               </div>
             ))}
           </div>

@@ -47891,73 +47891,39 @@
     },
     "/trust/approvals": {
       "get": {
-        "description": "List approval requests for the tenant, optionally filtered by status.",
-        "operationId": "list_approvals_trust_approvals_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Status"
-            }
-          }
-        ],
+        "deprecated": true,
+        "description": "Retired (410 Gone): use ``/governance/approvals``.",
+        "operationId": "trust_approvals_retired_trust_approvals_get",
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response List Approvals Trust Approvals Get",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Retired; use /governance/approvals."
           }
         },
-        "summary": "List Approvals",
+        "summary": "Trust Approvals Retired",
         "tags": [
           "trust-governance"
         ]
       },
       "post": {
-        "description": "Submit a multi-approver approval request.",
-        "operationId": "submit_approval_request_trust_approvals_post",
+        "deprecated": true,
+        "description": "Retired (410 Gone): use ``/governance/approvals``.",
+        "operationId": "trust_approvals_retired_trust_approvals_post",
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Submit Approval Request Trust Approvals Post",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Retired; use /governance/approvals."
           }
         },
-        "summary": "Submit Approval Request",
+        "summary": "Trust Approvals Retired",
         "tags": [
           "trust-governance"
         ]
@@ -47965,8 +47931,9 @@
     },
     "/trust/approvals/{approval_id}/approve": {
       "post": {
-        "description": "Approve a pending request. Supports multi-approver.",
-        "operationId": "approve_request_trust_approvals__approval_id__approve_post",
+        "deprecated": true,
+        "description": "Retired (410 Gone): decide on ``/governance/approvals/{request_id}/approve|reject``.",
+        "operationId": "trust_approval_decision_retired_trust_approvals__approval_id__approve_post",
         "parameters": [
           {
             "in": "path",
@@ -47979,17 +47946,13 @@
           }
         ],
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Approve Request Trust Approvals  Approval Id  Approve Post",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Retired; use /governance/approvals."
           },
           "422": {
             "content": {
@@ -48002,7 +47965,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Approve Request",
+        "summary": "Trust Approval Decision Retired",
         "tags": [
           "trust-governance"
         ]
@@ -48010,8 +47973,9 @@
     },
     "/trust/approvals/{approval_id}/reject": {
       "post": {
-        "description": "Reject a pending request.",
-        "operationId": "reject_request_trust_approvals__approval_id__reject_post",
+        "deprecated": true,
+        "description": "Retired (410 Gone): decide on ``/governance/approvals/{request_id}/approve|reject``.",
+        "operationId": "trust_approval_decision_retired_trust_approvals__approval_id__reject_post",
         "parameters": [
           {
             "in": "path",
@@ -48024,17 +47988,13 @@
           }
         ],
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Reject Request Trust Approvals  Approval Id  Reject Post",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Retired; use /governance/approvals."
           },
           "422": {
             "content": {
@@ -48047,7 +48007,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Reject Request",
+        "summary": "Trust Approval Decision Retired",
         "tags": [
           "trust-governance"
         ]

@@ -2719,20 +2719,15 @@ def create_app(
                 )
                 logger.info("deletion_orchestrator_wired")
 
-                # Durable trust-governance approvals + AI-Ops eval state. Both
-                # routers previously kept ALL their state in module-level dicts
-                # (app/api/trust_governance.py said "In-memory for demo;
-                # production uses DB" while being the production path), so
-                # approvals, eval datasets, judges, baselines and drift alerts
-                # were lost on restart and invisible across replicas.
+                # Durable AI-Ops eval state. The router previously kept ALL its
+                # state in module-level dicts, so eval datasets, judges,
+                # baselines and drift alerts were lost on restart and invisible
+                # across replicas. (The trust-approval store wired here too was
+                # retired with /trust/approvals, a03-F057-01.)
                 from app.evals.ai_ops_store import AIOpsStore as _AIOpsStore
-                from app.governance.trust_approval_store import (
-                    TrustApprovalStore as _TrustApprovalStore,
-                )
 
-                app.state.trust_approval_store = _TrustApprovalStore(db_factory)
                 app.state.ai_ops_store = _AIOpsStore(db_factory)
-                logger.info("trust_and_ai_ops_stores_wired")
+                logger.info("ai_ops_store_wired")
 
                 # Redis-backed inbound-message dedup for the channel webhooks.
                 # app/gateway/router.py falls back to a process-local instance,
@@ -3058,13 +3053,6 @@ def create_app(
     from app.governance.compliance_bundles import _bundle_manager
 
     app.state.compliance_bundle_store = _bundle_manager
-    # Trust approvals (a03-F057-04): only the in-memory build gets the process-
-    # local store; a pooled app gets the Postgres store in the lifespan and
-    # answers 503 until then rather than keeping approvals in one pod's memory.
-    if not manage_pools:
-        from app.governance.trust_approval_store import InMemoryTrustApprovalStore
-
-        app.state.trust_approval_store = InMemoryTrustApprovalStore()
     # No DB session factory in the in-memory app → audit chain wired in lifespan only.
     app.state.audit_chain = None
     from app.coordination.auction.repository import (

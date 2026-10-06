@@ -576,9 +576,9 @@ class AIOpsStore:
             rows = (
                 await s.execute(
                     text(
-                        # CAST(...) not `:sev::text` — see the bind-parameter note
-                        # in TrustApprovalStore.list; asyncpg also cannot infer the
-                        # type of a bare NULL bind.
+                        # CAST(...) not `:sev::text`: SQLAlchemy's text() bind
+                        # regex does not recognise `:name` followed by `::`, and
+                        # asyncpg cannot infer the type of a bare NULL bind.
                         "SELECT payload FROM ai_ops_drift_alerts WHERE tenant_id = :t "
                         "  AND (CAST(:sev AS text) IS NULL "
                         "       OR severity = CAST(:sev AS text)) "
