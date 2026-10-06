@@ -57,6 +57,9 @@ def _make_app():
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(g2_router)
     app.include_router(trust_router)
+    from app.governance.trust_approval_store import InMemoryTrustApprovalStore
+
+    app.state.trust_approval_store = InMemoryTrustApprovalStore()
     return app
 
 
@@ -632,3 +635,24 @@ def test_every_listed_compliance_bundle_can_be_enabled() -> None:
     for bundle in listed:
         r = client.delete(f"/trust/compliance-bundles/{bundle['id']}", headers=_HEADERS)
         assert r.status_code == 200, r.text
+
+
+def test_trust_approvals_are_503_without_a_wired_store() -> None:
+    """a03-F057-04: no silent module-dict fallback that answers 200."""
+    app = _make_app()
+    app.state.trust_approval_store = None
+    client = TestClient(app)
+    created = client.post("/trust/approvals", json={"tool_name": "deploy"}, headers=_HEADERS)
+    assert created.status_code == 503
+    assert client.get("/trust/approvals", headers=_HEADERS).status_code == 503
+
+
+def test_in_memory_app_build_wires_the_in_memory_store_and_pooled_does_not() -> None:
+    from app.governance.trust_approval_store import InMemoryTrustApprovalStore
+    from app.main import create_app
+
+    assert isinstance(
+        create_app(manage_pools=False).state.trust_approval_store, InMemoryTrustApprovalStore
+    )
+    pooled = create_app(manage_pools=True)
+    assert getattr(pooled.state, "trust_approval_store", None) is None

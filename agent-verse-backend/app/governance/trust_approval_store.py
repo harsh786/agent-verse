@@ -247,3 +247,89 @@ class TrustApprovalStore:
         if row[10] is not None:
             record["resolved_at"] = _iso(row[10])
         return record
+
+
+class InMemoryTrustApprovalStore:
+    """Process-local store with the same contract, for the in-memory app build.
+
+    ``create_app(manage_pools=False)`` (tests, single-process dev) wires this
+    explicitly; a pooled app gets :class:`TrustApprovalStore` from the lifespan
+    and has NO fallback, so ``/trust/approvals`` answers 503 when the durable
+    store is missing instead of silently keeping approvals in one process's
+    memory (a03-F057-04). Distinct approvers and the threshold check behave as
+    in the Postgres store.
+    """
+
+    def __init__(self) -> None:
+        self._requests: dict[tuple[str, str], dict[str, Any]] = {}
+
+    async def create(
+        self,
+        *,
+        tenant_id: str,
+        approval_id: str,
+        goal_id: str | None,
+        step_description: str,
+        tool_name: str,
+        risk_level: str,
+        required_approvers: int,
+    ) -> None:
+        self._requests[(tenant_id, approval_id)] = {
+            "approval_id": approval_id,
+            "tenant_id": tenant_id,
+            "goal_id": goal_id,
+            "step_description": step_description,
+            "tool_name": tool_name,
+            "risk_level": risk_level,
+            "required_approvers": max(1, int(required_approvers)),
+            "status": "pending",
+            "approvers": [],
+            "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        }
+
+    async def get(self, tenant_id: str, approval_id: str) -> dict[str, Any] | None:
+        record = self._requests.get((tenant_id, approval_id))
+        return _copy(record) if record is not None else None
+
+    async def list(self, tenant_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        rows = [
+            _copy(r)
+            for (tid, _aid), r in self._requests.items()
+            if tid == tenant_id and (status is None or r["status"] == status)
+        ]
+        rows.sort(key=lambda r: str(r["created_at"]), reverse=True)
+        return rows
+
+    async def add_vote(
+        self, *, tenant_id: str, approval_id: str, approver_id: str, note: str
+    ) -> dict[str, Any]:
+        record = self._requests.get((tenant_id, approval_id))
+        if record is None:
+            raise ApprovalNotFoundError(approval_id)
+        if record["status"] != "pending":
+            raise ApprovalNotPendingError(str(record["status"]))
+        if any(v["approver_id"] == approver_id for v in record["approvers"]):
+            raise DuplicateApproverError(approver_id)
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        record["approvers"].append(
+            {"approver_id": approver_id, "action": "approved", "note": note, "at": now}
+        )
+        if len(record["approvers"]) >= int(record["required_approvers"]):
+            record["status"] = "approved"
+            record["resolved_at"] = now
+        return _copy(record)
+
+    async def reject(
+        self, *, tenant_id: str, approval_id: str, reason: str, rejected_by: str
+    ) -> None:
+        record = self._requests.get((tenant_id, approval_id))
+        if record is None:
+            raise ApprovalNotFoundError(approval_id)
+        record["status"] = "rejected"
+        record["rejection_reason"] = reason
+        record["rejected_by"] = rejected_by
+        record["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def _copy(record: dict[str, Any]) -> dict[str, Any]:
+    return {**record, "approvers": [dict(v) for v in record.get("approvers", [])]}

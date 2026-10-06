@@ -3059,6 +3059,13 @@ def create_app(
     from app.governance.compliance_bundles import _bundle_manager
 
     app.state.compliance_bundle_store = _bundle_manager
+    # Trust approvals (a03-F057-04): only the in-memory build gets the process-
+    # local store; a pooled app gets the Postgres store in the lifespan and
+    # answers 503 until then rather than keeping approvals in one pod's memory.
+    if not manage_pools:
+        from app.governance.trust_approval_store import InMemoryTrustApprovalStore
+
+        app.state.trust_approval_store = InMemoryTrustApprovalStore()
     # No DB session factory in the in-memory app → audit chain wired in lifespan only.
     app.state.audit_chain = None
     from app.coordination.auction.repository import (

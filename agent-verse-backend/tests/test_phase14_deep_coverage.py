@@ -85,6 +85,9 @@ def _make_full_app() -> TestClient:
         skills_router,
     ]:
         app.include_router(router)
+    from app.governance.trust_approval_store import InMemoryTrustApprovalStore
+
+    app.state.trust_approval_store = InMemoryTrustApprovalStore()
     return TestClient(app)
 
 
