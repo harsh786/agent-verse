@@ -1,4 +1,6 @@
-"""Builder project status / preview / assets are NOT IMPLEMENTED — honest 501.
+"""Builder preview / assets are NOT IMPLEMENTED — honest 501.
+
+(Project status is implemented since a10-F229-02: tests/api/test_builder_project_status.py.)
 
 Regression: the preview listed artifacts by a workspace-id substring across all
 tenants, called the keyword-only ``read_bytes`` positionally (TypeError swallowed),
@@ -32,9 +34,7 @@ def _client(*, authed: bool = True) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-@pytest.mark.parametrize(
-    "path", ["/builder/projects/p1", "/builder/preview/ws-1", "/builder/assets/ws-1/app.js"]
-)
+@pytest.mark.parametrize("path", ["/builder/preview/ws-1", "/builder/assets/ws-1/app.js"])
 def test_unimplemented_builder_reads_are_501_and_serve_nothing(path: str) -> None:
     resp = _client().get(path)
     assert resp.status_code == 501

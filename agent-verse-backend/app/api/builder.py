@@ -108,23 +108,50 @@ async def create_builder_project(
 
 
 _NOT_IMPLEMENTED = (
-    "Builder project status and live preview are NOT IMPLEMENTED: builds run as "
-    "ordinary goals (track them via GET /goals/{goal_id}); nothing records a "
-    "project's artifacts per workspace or scopes them to a tenant, so no preview "
-    "can be served."
+    "Builder live preview is NOT IMPLEMENTED: builds run as ordinary goals (track "
+    "them via GET /builder/projects/{project_id} or GET /goals/{goal_id}); nothing "
+    "records a project's artifacts per workspace or scopes them to a tenant, so no "
+    "preview can be served."
 )
 
 
 @router.get("/projects/{project_id}")
 async def get_builder_project(project_id: str, request: Request) -> dict[str, Any]:
-    """NOT IMPLEMENTED (501).
+    """The project's build goal and its status (a10-F229-02).
 
-    This was a stub that answered ``status: building, artifacts: []`` for any id
-    (including ones that never existed), forever.
+    The ``project_id`` POST /builder/projects returns is persisted on the build
+    goal (``execution_context.builder_project_id``) and resolved from it, on any
+    replica, under the caller's tenant. This route used to be a 501 (and before
+    that a stub answering "building" for any id), so the id led nowhere.
     """
-    if getattr(request.state, "tenant", None) is None:
+    tenant_ctx = getattr(request.state, "tenant", None)
+    if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED)
+    goal_svc = getattr(request.app.state, "goal_service", None)
+    if goal_svc is None:
+        raise HTTPException(status_code=503, detail="Builder is unavailable (no goal service)")
+    try:
+        found = await goal_svc.find_goals_by_context(
+            tenant_ctx, "builder_project_id", project_id, limit=10
+        )
+    except Exception as exc:
+        logger.warning("builder_project_lookup_failed error=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Builder project status temporarily unavailable; retry"
+        ) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="Builder project not found")
+    build = found[0]
+    return {
+        "project_id": project_id,
+        "goal_id": build["goal_id"],
+        "status": build["status"],
+        "created_at": build["created_at"],
+        # Multi-agent routing can fan one build out to several goals.
+        "goal_ids": [g["goal_id"] for g in found],
+        "preview_url": None,
+        "preview": "not_implemented",
+    }
 
 
 @router.get("/preview/{workspace_id}")
