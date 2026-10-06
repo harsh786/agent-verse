@@ -2242,6 +2242,15 @@ def create_app(
                     # was an unbounded, cross-tenant memory copy (OAUTH-03).
                     _oauth._db_session_factory = db_factory
 
+                # ChatService: the clarify-round cap is counted in Redis so every
+                # replica (and a restart) sees one streak per session.
+                if getattr(app.state, "chat_service", None) is not None:
+                    from app.chat.clarify_store import RedisClarifyRoundStore
+
+                    app.state.chat_service.attach_engine(
+                        clarify_store=RedisClarifyRoundStore(redis_for_runtime)
+                    )
+
                 # MCPClient: Redis circuit-breaker + oauth + tool cache.
                 _mcp = getattr(app.state, "mcp_client", None)
                 if _mcp is not None:

@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+from app.chat.clarify_store import ClarifyRoundStore, InMemoryClarifyRoundStore
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
 from app.chat.ownership import SYSTEM_SCOPE, ChatFolderNotFoundError, ChatScope
@@ -432,7 +433,11 @@ class ChatService:
         from app.chat.personalization import InMemoryPersonalizationStore
 
         self._personalization: Any = InMemoryPersonalizationStore()
-        # clarify round tracking per session
+        # Clarify-round counter per (tenant, session). The async dispatch path uses
+        # ``_clarify_store`` (Redis-backed once the lifespan wires Redis, so every
+        # replica and a restart see the same streak); the legacy sync ``dispatch``
+        # serves only the in-memory session store and keeps a local dict.
+        self._clarify_store: ClarifyRoundStore = InMemoryClarifyRoundStore()
         self._clarify_rounds: dict[str, int] = {}
         # Phase 3: (tenant, channel, channel_user_id) -> session_id — ONLY the no-DB
         # fallback of aget_or_create_channel_session. With a repository wired the
@@ -733,7 +738,7 @@ class ChatService:
             {"role": m.role, "content": m.content}
             for m in await self.alist_messages(session_id, tenant_id, limit=1000, scope=scope)
         ]
-        clarify_round = self._clarify_rounds.get(session_id, 0)
+        clarify_round = await self._clarify_store.get(tenant_id, session_id)
         intent = self._router.classify(
             user_message, history=history, clarify_round=clarify_round
         )
@@ -751,16 +756,16 @@ class ChatService:
             "schedule_confirmation": None,
         }
         if intent == Intent.CLARIFY:
-            self._clarify_rounds[session_id] = clarify_round + 1
+            new_round = await self._clarify_store.increment(tenant_id, session_id)
             result["clarify_request"] = self._router.generate_clarifying_question(
-                user_message, history=history, round=clarify_round + 1
+                user_message, history=history, round=new_round
             )
         elif intent == Intent.SCHEDULE:
             result["schedule_confirmation"] = self._router.generate_schedule_confirmation(
                 user_message, history=history
             )
         else:
-            self._clarify_rounds.pop(session_id, None)
+            await self._clarify_store.reset(tenant_id, session_id)
         return result
 
     def dispatch(
@@ -840,6 +845,7 @@ class ChatService:
         identity_service: Any = None,
         channel_deliver: Any = None,
         provider_resolver: Any = None,
+        clarify_store: ClarifyRoundStore | None = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -873,6 +879,8 @@ class ChatService:
             self._channel_deliver = channel_deliver
         if provider_resolver is not None:
             self._provider_resolver = provider_resolver
+        if clarify_store is not None:
+            self._clarify_store = clarify_store
 
     async def _qa_provider(self, tenant_id: str) -> Any:
         """The provider a tenant's chat LLM calls use: its BYOK one, else the platform's."""
