@@ -1069,6 +1069,90 @@ class IngestionJobTracker:
             return False
         return True
 
+    async def dead_letter_sourceless(
+        self,
+        *,
+        tenant_id: str,
+        doc_id: str,
+        error: str,
+        payload: dict[str, Any],
+        failed_stage: str = "pipeline",
+        failure_type: str = "pipeline_failure",
+        job_id: str | None = None,
+    ) -> str | None:
+        """Dead-letter a failure that belongs to no Source; the entry id, or None.
+
+        Direct ingest paths (a single-URL ingest, a repository ingest) have no
+        ``source_configs`` row, so their entries carry ``source_id`` NULL (the
+        column's FK to ``source_configs`` refused every invented id) and a
+        ``payload`` with a ``kind`` the retry job knows how to replay.
+        Idempotent: one OPEN entry per (tenant, doc_id) — the partial unique
+        index ``ux_ingestion_dlq_open_sourceless`` — so the same failure posted
+        again refreshes that entry's error/payload instead of adding a row (its
+        retry count and backoff are kept).
+        """
+        if self._db is None:
+            return None
+        from sqlalchemy import text
+
+        try:
+            payload_json = json.dumps(payload, default=_json_default)
+        except (TypeError, ValueError):
+            payload_json = json.dumps({"doc_id": doc_id})
+        new_id = str(uuid.uuid4())
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        text("""
+                            INSERT INTO ingestion_dlq
+                                (id, dlq_id, source_id, tenant_id, job_id, doc_id,
+                                 failed_stage, failure_type, error_message,
+                                 raw_doc_json, retry_count, created_at)
+                            VALUES
+                                (:id, :id, NULL, :tenant_id, :job_id, :doc_id,
+                                 :failed_stage, :failure_type, :error,
+                                 :raw_doc_json, 0, NOW())
+                            ON CONFLICT (tenant_id, doc_id)
+                                WHERE source_id IS NULL AND resolved_at IS NULL
+                                  AND permanent_failure IS NOT TRUE
+                            DO UPDATE SET error_message = EXCLUDED.error_message,
+                                          last_error = EXCLUDED.error_message,
+                                          raw_doc_json = EXCLUDED.raw_doc_json
+                            RETURNING id
+                        """),
+                        {
+                            "id": new_id,
+                            "tenant_id": tenant_id,
+                            "job_id": job_id,
+                            "doc_id": doc_id,
+                            "failed_stage": (failed_stage or "pipeline")[:32],
+                            "failure_type": (failure_type or "pipeline_failure")[:32],
+                            "error": error,
+                            "raw_doc_json": payload_json,
+                        },
+                    )
+                ).first()
+        except Exception as exc:
+            _log.warning("dead_letter_sourceless_error doc=%s: %s", doc_id, exc)
+            return None
+        return str(row[0]) if row is not None else None
+
+    async def resolve_sourceless_dlq(self, *, tenant_id: str, doc_id: str) -> None:
+        """Resolve the open source-less entry of ``doc_id`` (it was ingested since)."""
+        await self._update_dlq_entry(
+            "UPDATE ingestion_dlq SET resolved_at = NOW() "
+            "WHERE tenant_id = :tid AND doc_id = :doc_id AND source_id IS NULL "
+            "AND resolved_at IS NULL",
+            {"tid": tenant_id, "doc_id": doc_id, "id": doc_id},
+            tenant_id=tenant_id,
+            op="resolve_sourceless_dlq",
+        )
+
     async def get_retryable_dlq_entries(self, max_entries: int = 50) -> list[dict[str, Any]]:
         """Return unresolved, non-permanent DLQ entries, oldest first.
 

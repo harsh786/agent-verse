@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, cast
 
 from app.ingestion.connector_egress import assert_source_url, source_client
+from app.ingestion.quality_checks import is_meaningful_text
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -63,7 +64,9 @@ class ConfluenceIngestor:
                     break
                 html = page.get("body", {}).get("storage", {}).get("value", "")
                 text = _html_to_text(html).strip()
-                if len(text) < 50:
+                # A short page (a one-line policy) is indexed; only an empty or
+                # boilerplate page is skipped.
+                if not is_meaningful_text(text):
                     pages_processed += 1
                     continue
 

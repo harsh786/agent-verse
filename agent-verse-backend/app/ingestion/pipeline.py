@@ -97,8 +97,10 @@ class ScreenResult:
     blocked_reason: str = ""  # "" | "pii_rejected" | "guardrail_blocked"
 
 
-# Minimum text length (chars) to consider a document worth chunking
-_MIN_TEXT_LENGTH = 50
+# Length no longer gates indexing: a short document with real content (a one-line
+# policy, a product-code page, ``tag: urgent``) is indexed; only empty, noise or
+# page-boilerplate text is skipped (``quality_checks.boilerplate_reason``). It used
+# to drop every parsed text under 50 characters as ``empty_content``.
 
 
 class IngestionPipeline:
@@ -267,6 +269,13 @@ class IngestionPipeline:
 
             # ── Stage 3: CONTENT HASH (LAW-02: idempotency) ──────────────────
             content_hash = raw_doc.compute_hash()
+            # A document re-keyed by its connector (S3: ``s3://bucket/key`` →
+            # Source-scoped id) takes over its legacy copy when Stage 12 writes
+            # it. Stage 3 stays document-scoped for it (P1b-6): another Source's
+            # copy of the same bytes is not a reason to skip this one.
+            legacy_takeover: str | None = None
+            if not supersedes and self._kb is not None and not dry:
+                legacy_takeover = await self._owned_legacy_document(raw_doc, source_config)
             if self._kb is not None and not dry and supersedes:
                 # Errors propagate (outer handler -> failed): the caller deletes
                 # the superseded copy only after a confirmed write.
@@ -287,6 +296,10 @@ class IngestionPipeline:
                     result.status = "skipped"
                     result.skip_reason = "dedup"
                     return result
+
+            if legacy_takeover:
+                supersedes = legacy_takeover
+                result.metadata["superseded_legacy_id"] = legacy_takeover  # type: ignore[attr-defined]
 
             # ── Stage 4: CLASSIFY ─────────────────────────────────────────────
             # Prefer the connector-supplied MIME type (trustworthy for binary
@@ -347,9 +360,13 @@ class IngestionPipeline:
             self.last_parsed_text = text
             self.last_strategy = str(content_type)
 
-            if not text.strip() or len(text) < _MIN_TEXT_LENGTH:
+            from app.ingestion.quality_checks import boilerplate_reason
+
+            not_content = boilerplate_reason(text)
+            if not_content is not None:
                 result.status = "skipped"
                 result.skip_reason = "empty_content"
+                result.metadata["empty_reason"] = not_content  # type: ignore[attr-defined]
                 return result
 
             # ── Stage 6 + 6b: PII (LAW-06) + Guardrails 2.0 RAG_INGEST ────────
@@ -542,6 +559,38 @@ class IngestionPipeline:
                 return None
         return self._ocr
 
+    async def _owned_legacy_document(
+        self, raw_doc: RawDocument, config: SourceConfig
+    ) -> str | None:
+        """The legacy id (``CONNECTOR_LEGACY_DOC_ID_KEY``) this document replaces, or None.
+
+        Only when a document is indexed under that id in the collection AND it
+        is attributed to this Source: another Source's copy of the same object
+        is never taken over (it stays that Source's document). A lookup error
+        propagates (the document fails and is retried) rather than leaving a
+        duplicate beside the legacy copy.
+        """
+        from app.ingestion.source_config import CONNECTOR_LEGACY_DOC_ID_KEY
+
+        legacy = str((raw_doc.metadata or {}).get(CONNECTOR_LEGACY_DOC_ID_KEY) or "")
+        if not legacy or legacy == raw_doc.doc_id or not config.collection_id:
+            return None
+        lookup = getattr(self._kb, "get_document_source_async", None)
+        if lookup is None:
+            return None
+        from app.tenancy.context import PlanTier, TenantContext
+
+        source = await lookup(
+            legacy,
+            collection_id=config.collection_id,
+            tenant_ctx=TenantContext(
+                tenant_id=config.tenant_id, plan=PlanTier.FREE, api_key_id="ingestion"
+            ),
+        )
+        if source and str(source.get("source_id") or "") == config.source_id:
+            return legacy
+        return None
+
     async def _check_existing_hash(
         self, content_hash: str, config: SourceConfig, *, doc_id: str = ""
     ) -> bool:
@@ -699,10 +748,20 @@ class IngestionPipeline:
         something); 0.0 when the checker fails — it used to be a binary
         1.0 / 0.1 and 1.0 on a checker error, which passed everything."""
         try:
-            from app.ingestion.quality_checks import QualityChecker
+            from app.ingestion.quality_checks import (
+                SHORT_TEXT_CHARS,
+                QualityChecker,
+                is_meaningful_text,
+            )
 
-            checker = QualityChecker(min_length=_MIN_TEXT_LENGTH)
-            return float(checker.check(text).quality_score)
+            short = len(text.strip()) < SHORT_TEXT_CHARS
+            checker = QualityChecker(min_length=1 if short else SHORT_TEXT_CHARS)
+            score = float(checker.check(text).quality_score)
+            if short:
+                # Too short for a noise ratio to mean anything: real content
+                # passes, boilerplate / noise does not.
+                return 1.0 if is_meaningful_text(text) else 0.0
+            return score
         except Exception as exc:
             _log.warning("pipeline_stage=quality checker_failed: %s", exc)
             return 0.0

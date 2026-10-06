@@ -50,7 +50,9 @@ class ChatSessionFolder(Base):
     )
 
     sessions: Mapped[list[ChatSession]] = relationship(
-        "ChatSession", back_populates="folder", foreign_keys="ChatSession.folder_id"
+        "ChatSession",
+        back_populates="folder",
+        primaryjoin="ChatSessionFolder.id == foreign(ChatSession.folder_id)",
     )
 
 
@@ -64,9 +66,11 @@ class ChatSession(Base):
     ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    folder_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("chat_session_folders.id", ondelete="SET NULL"), nullable=True
-    )
+    # No database foreign key (migration f3a9c1e7d5b4): the repository unfiles a
+    # deleted folder's sessions in the deleting transaction and filing locks the
+    # folder row (FOR KEY SHARE). The ORM must not declare one the schema lacks
+    # (tests/db/test_orm_schema_fk_drift_integration.py).
+    folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     show_reasoning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     proactive_suggestions: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     preferred_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -87,13 +91,20 @@ class ChatSession(Base):
     )
 
     folder: Mapped[ChatSessionFolder | None] = relationship(
-        "ChatSessionFolder", back_populates="sessions"
+        "ChatSessionFolder",
+        back_populates="sessions",
+        primaryjoin="foreign(ChatSession.folder_id) == ChatSessionFolder.id",
     )
     messages: Mapped[list[ChatMessage]] = relationship(
-        "ChatMessage", back_populates="session", order_by="ChatMessage.created_at"
+        "ChatMessage",
+        back_populates="session",
+        order_by="ChatMessage.created_at",
+        primaryjoin="ChatSession.id == foreign(ChatMessage.session_id)",
     )
     usage: Mapped[list[ChatMessageUsage]] = relationship(
-        "ChatMessageUsage", back_populates="session"
+        "ChatMessageUsage",
+        back_populates="session",
+        primaryjoin="ChatSession.id == foreign(ChatMessageUsage.session_id)",
     )
     artifacts: Mapped[list[ChatArtifact]] = relationship("ChatArtifact", back_populates="session")
 
@@ -102,9 +113,9 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
-    session_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    # No database foreign key (0105/0130 never created one): the repository and
+    # chat retention delete a session's messages explicitly.
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # user|assistant|system
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -124,7 +135,11 @@ class ChatMessage(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    session: Mapped[ChatSession] = relationship("ChatSession", back_populates="messages")
+    session: Mapped[ChatSession] = relationship(
+        "ChatSession",
+        back_populates="messages",
+        primaryjoin="foreign(ChatMessage.session_id) == ChatSession.id",
+    )
 
 
 class ChatMessageFeedback(Base):
@@ -162,9 +177,9 @@ class ChatMessageUsage(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
     message_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    session_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
-    )
+    # No database foreign key (0105/0130 never created one): the repository and
+    # chat retention delete a session's usage rows explicitly.
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -174,7 +189,11 @@ class ChatMessageUsage(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    session: Mapped[ChatSession] = relationship("ChatSession", back_populates="usage")
+    session: Mapped[ChatSession] = relationship(
+        "ChatSession",
+        back_populates="usage",
+        primaryjoin="foreign(ChatMessageUsage.session_id) == ChatSession.id",
+    )
 
 
 class ChatArtifact(Base):

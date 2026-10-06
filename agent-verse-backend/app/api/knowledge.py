@@ -1867,12 +1867,17 @@ async def _ingest_repo_background(
         if job_tracker is None:
             return
         try:
-            await job_tracker.add_to_dlq(
-                source_id=f"repo:{repo_url}",
+            # Source-less entry (source_id NULL): the invented ``repo:<url>``
+            # source id violated ingestion_dlq's FK to source_configs (and its
+            # 64-char width), so this row was never written.
+            await job_tracker.dead_letter_sourceless(
                 tenant_id=getattr(tenant_ctx, "tenant_id", ""),
                 doc_id=job_id,
+                job_id=job_id,
                 error=error_message,
-                raw_doc={
+                failed_stage="repo_ingest",
+                failure_type="repo_ingest_failure",
+                payload={
                     "kind": "repository",
                     "job_id": job_id,
                     "repo_url": repo_url,
@@ -2281,6 +2286,100 @@ class _UrlDocument:
         return "\n".join(t for u in self.units for _, t in u.segments)
 
 
+class UrlIngestHTTPException(HTTPException):
+    """A URL-ingest HTTP error that says whether a later retry can succeed.
+
+    A fetch failure carries the fetcher's verdict (a timeout, a network error, an
+    upstream 5xx / 429 are retryable; a block, a 404, a too-large body are not).
+    """
+
+    def __init__(self, status_code: int, detail: str, *, retryable: bool) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.retryable = retryable
+
+
+# Statuses of a URL ingest that a later attempt can fix when the error does not
+# say otherwise: the embedder / screening / persistence / budget check was
+# unavailable (503), or the upstream failed or timed out (502 / 504).
+_URL_RETRYABLE_STATUSES = frozenset({502, 503, 504})
+
+
+def url_ingest_failure_retryable(exc: BaseException) -> bool:
+    """True when a failed URL ingest belongs in the retry queue (DLQ)."""
+    if isinstance(exc, HTTPException):
+        verdict = getattr(exc, "retryable", None)
+        if verdict is not None:
+            return bool(verdict)
+        return exc.status_code in _URL_RETRYABLE_STATUSES
+    # An unexpected error (a DB blip, a provider crash): retried up to the cap.
+    return True
+
+
+URL_INGEST_DLQ_KIND = "url"
+
+
+async def _dead_letter_url_ingest(
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    url: str,
+    collection_id: str,
+    source_type: str,
+    document_id: str,
+    exc: BaseException,
+) -> str | None:
+    """Queue a failed single-URL ingest for automatic retry; its DLQ id, or None.
+
+    One open entry per (tenant, collection, URL): the row is keyed by the URL's
+    stable document id, so the same failure posted again updates that entry
+    instead of piling up rows. Best effort: a DLQ error never masks the
+    original failure.
+    """
+    from app.observability.logging import get_logger
+
+    logger = get_logger(__name__)
+    tracker = getattr(request.app.state, "ingestion_job_tracker", None)
+    dead_letter = getattr(tracker, "dead_letter_sourceless", None)
+    if dead_letter is None:
+        return None
+    error = (
+        f"{exc.status_code}: {exc.detail}" if isinstance(exc, HTTPException) else repr(exc)
+    )[:1000]
+    try:
+        dlq_id: str | None = await dead_letter(
+            tenant_id=tenant_ctx.tenant_id,
+            doc_id=document_id,
+            error=error,
+            payload={
+                "kind": URL_INGEST_DLQ_KIND,
+                "url": url,
+                "collection_id": collection_id,
+                "source_type": source_type,
+                "document_id": document_id,
+            },
+            failed_stage="url_ingest",
+            failure_type="url_ingest_failure",
+        )
+    except Exception as dlq_exc:
+        logger.warning("url_ingest_dlq_failed", error=type(dlq_exc).__name__)
+        return None
+    if dlq_id:
+        logger.info("url_ingest_dead_lettered", dlq_id=dlq_id, document_id=document_id)
+    return dlq_id
+
+
+async def _resolve_url_ingest_dlq(
+    request: Request, tenant_id: str, document_id: str
+) -> None:
+    """A successful ingest of the URL resolves its open retry entry (best effort)."""
+    tracker = getattr(request.app.state, "ingestion_job_tracker", None)
+    resolve = getattr(tracker, "resolve_sourceless_dlq", None)
+    if resolve is None:
+        return
+    with suppress(Exception):
+        await resolve(tenant_id=tenant_id, doc_id=document_id)
+
+
 def _url_fetch_target(url: str, source_type: str) -> str:
     """The URL actually fetched for ``source_type`` (400 for an unsupported type)."""
     if source_type == "web":
@@ -2326,7 +2425,9 @@ async def _fetch_url_resource(url: str, source_type: str) -> Any:
         detail = str(exc)
         if exc.kind == "blocked":
             detail = f"URL blocked for security reasons: {exc}"
-        raise HTTPException(status_code=exc.http_status, detail=detail[:500]) from exc
+        raise UrlIngestHTTPException(
+            exc.http_status, detail[:500], retryable=exc.retryable
+        ) from exc
 
 
 def _html_title(html: str) -> str:
@@ -2532,23 +2633,59 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     """
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
+    doc_id = stable_url_document_id(tenant_ctx.tenant_id, body.collection_id, body.url)
+    try:
+        result = await run_url_ingest(
+            request, tenant_ctx, store,
+            url=body.url, collection_id=body.collection_id, source_type=body.source_type,
+        )
+    except Exception as exc:
+        # A transient failure (upstream down / timeout, embedder or screening
+        # unavailable) goes to the ingestion DLQ and is retried by the same
+        # beat job as Source documents; the caller still gets the honest error,
+        # plus the entry id in ``X-Ingestion-DLQ-Id``.
+        if url_ingest_failure_retryable(exc):
+            dlq_id = await _dead_letter_url_ingest(
+                request, tenant_ctx, url=body.url, collection_id=body.collection_id,
+                source_type=body.source_type, document_id=doc_id, exc=exc,
+            )
+            if dlq_id and isinstance(exc, HTTPException):
+                exc.headers = {**(exc.headers or {}), "X-Ingestion-DLQ-Id": dlq_id}
+        raise
+    await _resolve_url_ingest_dlq(request, tenant_ctx.tenant_id, doc_id)
+    return result
 
-    doc = await _fetch_url_document(request, body.url, body.source_type)
+
+async def run_url_ingest(
+    request: Any,
+    tenant_ctx: TenantContext,
+    store: KnowledgeStore,
+    *,
+    url: str,
+    collection_id: str,
+    source_type: str,
+) -> dict[str, Any]:
+    """Fetch, extract and index one URL; the ``POST /ingest/url`` response body.
+
+    Shared by the route and the DLQ retry worker (which passes a request-shaped
+    object carrying the worker's services). Raises the route's HTTP errors.
+    """
+    doc = await _fetch_url_document(request, url, source_type)
     content = doc.text
     if not content.strip():
         raise HTTPException(422, "No content extracted from URL")
 
     doc_hash = hashlib.sha256(content.encode()).hexdigest()
-    doc_id = stable_url_document_id(tenant_ctx.tenant_id, body.collection_id, body.url)
+    doc_id = stable_url_document_id(tenant_ctx.tenant_id, collection_id, url)
     report = _url_document_report(doc)
     holder = await _indexed_document_id_or_http(
-        store, doc_hash, tenant_id=tenant_ctx.tenant_id, collection_id=body.collection_id
+        store, doc_hash, tenant_id=tenant_ctx.tenant_id, collection_id=collection_id
     )
     if holder is not None:
         return {
-            "collection_id": body.collection_id,
-            "source_url": body.url,
-            "source_type": body.source_type,
+            "collection_id": collection_id,
+            "source_url": url,
+            "source_type": source_type,
             "chunks_ingested": 0,
             "total_chars": len(content),
             "deduplicated": True,
@@ -2556,22 +2693,22 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
             # The document that already holds this content.
             "document_id": holder
             or await _existing_document_id(
-                store, doc_id, collection_id=body.collection_id, tenant_ctx=tenant_ctx
+                store, doc_id, collection_id=collection_id, tenant_ctx=tenant_ctx
             ),
             **report,
         }
     existed = await _refuse_replacing_held_url_document(
-        request, store, tenant_ctx, collection_id=body.collection_id, document_id=doc_id,
-        url=body.url,
+        request, store, tenant_ctx, collection_id=collection_id, document_id=doc_id,
+        url=url,
     )
     stored = await _index_url_document(
-        request, store, tenant_ctx, doc, collection_id=body.collection_id,
-        document_id=doc_id, source_type=body.source_type,
+        request, store, tenant_ctx, doc, collection_id=collection_id,
+        document_id=doc_id, source_type=source_type,
     )
     return {
-        "collection_id": body.collection_id,
-        "source_url": body.url,
-        "source_type": body.source_type,
+        "collection_id": collection_id,
+        "source_url": url,
+        "source_type": source_type,
         "chunks_ingested": len(stored),
         "total_chars": len(content),
         "deduplicated": not stored,
@@ -2580,7 +2717,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
             doc_id
             if stored
             else await _existing_document_id(
-                store, doc_id, collection_id=body.collection_id, tenant_ctx=tenant_ctx
+                store, doc_id, collection_id=collection_id, tenant_ctx=tenant_ctx
             )
         ),
         **report,

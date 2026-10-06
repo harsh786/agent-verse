@@ -110,7 +110,7 @@ async def _run(fake: FakeS3, cursor: str | None, *, stop_after: int | None = Non
     with patch.dict(sys.modules, _boto(fake)):
         gen = conn.get_delta(_config(**cc), cursor)
         async for raw, cur in gen:
-            keys.append(raw.doc_id.rsplit("/", 1)[-1])
+            keys.append(raw.metadata["s3_key"])  # doc ids are Source-scoped uuids now
             last = cur
             if stop_after is not None and len(keys) >= stop_after:
                 await gen.aclose()

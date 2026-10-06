@@ -27,6 +27,11 @@ CONNECTOR_REPLAY_KEY = "connector_replay"
 # moved permanently (301/308): ``{"from": old, "to": new, "status": code}``. The
 # sync surfaces it on the job and records the new URL on the Source (USR-5).
 CONNECTOR_MOVED_KEY = "connector_moved_permanently"
+# RawDocument.metadata key: the id this document had under the connector's
+# previous id scheme (e.g. S3's bare ``s3://bucket/key``). The pipeline replaces
+# that legacy document with this one in the same transaction — only when the
+# legacy document is attributed to the same Source.
+CONNECTOR_LEGACY_DOC_ID_KEY = "connector_legacy_doc_id"
 
 
 class IngestionStatus(enum.StrEnum):

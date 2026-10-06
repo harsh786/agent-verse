@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import httpx
 
+from app.ingestion.quality_checks import is_meaningful_text
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -176,7 +177,9 @@ class GitHubIngestor:
             try:
                 content = await self._fetch_file_content(owner, repo, path)
                 content = content.strip()
-                if len(content) < 50:
+                # A short file with real content (a one-line config, a
+                # constants file) is indexed; only empty / noise is skipped.
+                if not is_meaningful_text(content):
                     continue
 
                 source_url = f"https://github.com/{owner}/{repo}/blob/{branch}/{path}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.ingestion.document_text import extract_pdf_pages
+from app.ingestion.quality_checks import is_meaningful_text
 
 _CHUNK_SIZE = 1000
 _CHUNK_OVERLAP = 100
@@ -27,12 +28,14 @@ class PdfIngestor:
         chunks: list[dict[str, Any]] = []
         for page_num, raw in enumerate(pages[:_MAX_PAGES]):
             text = raw.strip()
-            if len(text) < 30:
+            # A short page (a one-line notice) is indexed; only an empty or
+            # noise page is skipped.
+            if not is_meaningful_text(text):
                 continue
             start = 0
             while start < len(text):
                 chunk_text = text[start : start + _CHUNK_SIZE]
-                if len(chunk_text.strip()) >= 30:
+                if is_meaningful_text(chunk_text):
                     chunks.append(
                         {
                             "content": chunk_text,

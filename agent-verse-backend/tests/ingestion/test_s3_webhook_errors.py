@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
-from app.ingestion.connectors.s3_connector import S3Connector
+from app.ingestion.connectors.s3_connector import S3Connector, s3_document_id
 from app.ingestion.source_config import (
     CONNECTOR_FAILURE_KEY,
     CONNECTOR_FAILURE_RETRYABLE_KEY,
@@ -90,7 +90,8 @@ async def test_a_failed_fetch_is_reported_with_reason_and_retryability(
     meta = docs[0].metadata
     assert reason.lower() in meta[CONNECTOR_FAILURE_KEY].lower()
     assert meta[CONNECTOR_FAILURE_RETRYABLE_KEY] is retryable
-    assert docs[0].doc_id == "s3://b/gone.txt"
+    assert docs[0].doc_id == s3_document_id(_config(), "b", "gone.txt")
+    assert docs[0].source_url == "s3://b/gone.txt"
     assert docs[0].content == b""
 
 
@@ -108,7 +109,9 @@ async def test_one_failed_record_does_not_hide_the_others() -> None:
     s3 = MagicMock()
     s3.get_object.side_effect = [_client_error("NoSuchKey", 404), _ok_object(b"fine")]
     docs = await _webhook(s3, "gone.txt", "ok.txt")
-    assert [d.doc_id for d in docs] == ["s3://b/gone.txt", "s3://b/ok.txt"]
+    assert [d.doc_id for d in docs] == [
+        s3_document_id(_config(), "b", "gone.txt"), s3_document_id(_config(), "b", "ok.txt")
+    ]
     assert CONNECTOR_FAILURE_KEY in docs[0].metadata
     assert docs[1].content == b"fine"
     assert CONNECTOR_FAILURE_KEY not in (docs[1].metadata or {})
