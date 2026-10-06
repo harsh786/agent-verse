@@ -41,8 +41,10 @@ TOKEN = "vendor_" + "v" * 40
 SECRET = "whsec-vendor-test-secret"
 # Teams shows the outgoing-webhook security token base64-encoded.
 TEAMS_SECRET = base64.b64encode(b"teams-outgoing-webhook-key-012345").decode()
-# DEF-5: a Teams activity's signed timestamp must be fresh (replay window).
-_NOW_ISO = time.strftime("%Y-%m-%dT%H:%M:%S.0000000Z", time.gmtime())
+# DEF-5: a Teams activity's signed timestamp must be fresh (replay window). The
+# cases are built at import, so ``_body`` stamps the real time when a test runs —
+# an import-time stamp goes stale once a long suite passes the 5-minute window.
+_NOW_ISO = "<now>"
 
 Signer = Callable[[bytes, str], dict[str, str]]
 
@@ -220,6 +222,9 @@ def _client(ttype: TriggerType, secret: str) -> tuple[TestClient, _Dispatcher]:
 
 
 def _body(payload: dict[str, Any]) -> bytes:
+    if payload.get("timestamp") == _NOW_ISO:
+        now = time.strftime("%Y-%m-%dT%H:%M:%S.0000000Z", time.gmtime())
+        payload = {**payload, "timestamp": now}
     return json.dumps(payload, separators=(",", ":")).encode()
 
 

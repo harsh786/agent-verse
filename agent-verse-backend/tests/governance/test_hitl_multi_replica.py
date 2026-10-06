@@ -187,8 +187,11 @@ async def test_slack_button_approval_goes_through_the_db_first_path() -> None:
     async def _plan(*a: object, **k: object) -> str:
         return "professional"
 
+    async def _signed(*a: object, **k: object) -> None:
+        return None
+
     with (
-        patch.object(integrations, "_require_slack_signature", lambda *a, **k: None),
+        patch.object(integrations, "_require_slack_signature", _signed),
         patch.object(integrations, "_slack_bound_tenant", _bound),
         patch.object(integrations, "_slack_principal", _linked),
         patch.object(integrations, "_tenant_plan", _plan),
