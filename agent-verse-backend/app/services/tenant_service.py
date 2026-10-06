@@ -39,6 +39,30 @@ def _hash_key(raw_key: str) -> str:
 # never longer than the key's remaining lifetime.
 _API_KEY_CACHE_TTL_S = 300
 
+# a08-F194-03: a failed read of the shared API-key cache falls through to the
+# DB (authoritative), but it is logged — at most once per window per process,
+# so a Redis outage does not log on every request.
+_CACHE_READ_WARN_INTERVAL_S = 60.0
+_cache_read_warn_state: dict[str, float | int] = {"last": 0.0, "suppressed": 0}
+
+
+def _warn_api_key_cache_read_failed(exc: BaseException) -> None:
+    import time
+
+    now = time.monotonic()
+    last = float(_cache_read_warn_state["last"])
+    if last and now - last < _CACHE_READ_WARN_INTERVAL_S:
+        _cache_read_warn_state["suppressed"] = int(_cache_read_warn_state["suppressed"]) + 1
+        return
+    suppressed = int(_cache_read_warn_state["suppressed"])
+    _cache_read_warn_state["last"] = now
+    _cache_read_warn_state["suppressed"] = 0
+    logging.getLogger(__name__).warning(
+        "api_key_cache_read_failed (resolving from the DB): %s; %d similar suppressed",
+        type(exc).__name__,
+        suppressed,
+    )
+
 
 def _parse_expiry(raw: Any) -> datetime | None:
     """Normalise a stored ``expires_at`` (ISO string or datetime) to an aware UTC
@@ -417,7 +441,12 @@ class TenantService:
         if self._redis is not None:
             try:
                 cached = await self._redis.get(cache_key)
-                if cached is not None:
+            except Exception as exc:
+                # Redis down: the DB below answers; logged (throttled), not hidden.
+                _warn_api_key_cache_read_failed(exc)
+                cached = None
+            if cached is not None:
+                try:
                     data = _json.loads(cached)
                     # Entries written before key scopes / expiry were cached carry
                     # no "scopes" / "expires_at" field; trusting one would treat a
@@ -438,8 +467,14 @@ class TenantService:
                             roles=tuple(data.get("roles", ("operator",))),
                             scopes=tuple(data["scopes"]),
                         )
-            except Exception:
-                pass  # fall through on Redis errors
+                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                    # A malformed entry (it used to be skipped silently on every
+                    # request until its TTL ran out): drop it and re-resolve.
+                    logging.getLogger(__name__).warning(
+                        "api_key_cache_entry_malformed (dropped): %s", type(exc).__name__
+                    )
+                    with suppress(Exception):
+                        await self._redis.delete(cache_key)
 
         # ── DB-authoritative lookup (multi-pod correctness) ────────────────
         # When a DB is wired, the database is the single source of truth: resolve
