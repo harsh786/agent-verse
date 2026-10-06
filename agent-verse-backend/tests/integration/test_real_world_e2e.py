@@ -13,8 +13,9 @@ import os
 import pytest
 
 # Set up credentials from environment
+# Read only: importing a test module must never change os.environ (every module
+# is imported at collection, even when its tests are deselected).
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")  # must be set via environment variable
-os.environ["OPENAI_API_KEY"] = OPENAI_KEY
 
 # These tests call the REAL OpenAI API with OpenAI model names (e.g.
 # text-embedding-3-small). Only a genuine OpenAI key ("sk-…") against the OpenAI

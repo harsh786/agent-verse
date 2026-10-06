@@ -790,18 +790,24 @@ def _isolate_model_registry_store(monkeypatch):
 # conftest set up, after collection, and drop settings cached from it. Only the
 # changed key NAMES are reported, never values.
 _ENV_AFTER_CONFTEST = dict(os.environ)
+# Defaults the APPLICATION itself sets when its modules are imported (kept: the
+# process really runs with them). Keep in sync with
+# `grep -rn "^os.environ.setdefault" app`.
+_APP_IMPORT_ENV_DEFAULTS = frozenset({"OMP_THREAD_LIMIT"})  # app/ocr/concurrency.py
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
     changed = sorted(
         k
         for k in set(os.environ) | set(_ENV_AFTER_CONFTEST)
-        if os.environ.get(k) != _ENV_AFTER_CONFTEST.get(k)
+        if os.environ.get(k) != _ENV_AFTER_CONFTEST.get(k) and k not in _APP_IMPORT_ENV_DEFAULTS
     )
     if not changed:
         return
+    kept = {k: os.environ[k] for k in _APP_IMPORT_ENV_DEFAULTS if k in os.environ}
     os.environ.clear()
     os.environ.update(_ENV_AFTER_CONFTEST)
+    os.environ.update(kept)
     with contextlib.suppress(Exception):
         from app.core.config import get_settings
 
