@@ -1869,11 +1869,15 @@ class GoalService:
         # Phase 3 services — grounding, consensus, synthesis, calibration
         from app.agent.grounding import GroundingChecker
         from app.agent.synthesis import AnswerSynthesizer
-        from app.intelligence.verifier_calibration import _default_calibration_store
+        from app.intelligence.verifier_calibration import calibration_store_for
 
         _grounding_checker = GroundingChecker()
         _answer_synthesizer = AnswerSynthesizer(llm_provider=provider)
-        _calibration_store = getattr(app_state, "calibration_store", _default_calibration_store)
+        # The lifespan-wired store, else one bound to this service's DB
+        # (a05-F092-01: a GoalService without app.state used the unbound default).
+        _calibration_store = getattr(app_state, "calibration_store", None) or (
+            calibration_store_for(self._db)
+        )
         _consensus_verifier = None
         try:
             from app.agent.consensus import ConsensusVerifier

@@ -213,3 +213,69 @@ def test_goal_attempts_returns_empty_when_no_db() -> None:
 
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# ---------------------------------------------------------------------------
+# a05-F092-01: feedback says whether it reached a verifier verdict
+# ---------------------------------------------------------------------------
+
+
+class _FakeSession:
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    def begin(self) -> _FakeSession:
+        return self
+
+    async def execute(self, *a: Any, **k: Any) -> Any:
+        return None
+
+
+def _feedback(cal_store: Any, body: dict[str, Any]) -> Any:
+    client = TestClient(
+        _make_app(AsyncMock(), extra_state={"calibration_store": cal_store}),
+        raise_server_exceptions=False,
+    )
+    with patch("app.db.session.get_session_factory", return_value=_FakeSession):
+        return client.post(
+            "/goals/g-cal/feedback", json=body, headers={"X-API-Key": _KEY}
+        )
+
+
+def test_feedback_reports_a_judged_verdict() -> None:
+    cal = AsyncMock()
+    cal.record_actual_outcome_by_goal.return_value = 1
+    resp = _feedback(cal, {"rating": 1, "is_correct": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["calibration"] == "recorded"
+    cal.record_actual_outcome_by_goal.assert_awaited_once_with(
+        goal_id="g-cal", tenant_id=_CTX.tenant_id, actual_success=False
+    )
+
+
+def test_feedback_on_a_goal_without_a_verdict_says_so() -> None:
+    cal = AsyncMock()
+    cal.record_actual_outcome_by_goal.return_value = 0  # used to be silent
+    resp = _feedback(cal, {"rating": 5, "is_correct": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["calibration"] == "no_verdict"
+
+
+def test_feedback_calibration_error_is_reported_not_hidden() -> None:
+    cal = AsyncMock()
+    cal.record_actual_outcome_by_goal.side_effect = RuntimeError("db offline")
+    resp = _feedback(cal, {"rating": 5, "is_correct": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["calibration"] == "failed"
+    assert "db offline" not in resp.text
+
+
+def test_feedback_without_a_correctness_verdict_does_not_touch_calibration() -> None:
+    cal = AsyncMock()
+    resp = _feedback(cal, {"rating": 4})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["calibration"] == "not_requested"
+    cal.record_actual_outcome_by_goal.assert_not_called()

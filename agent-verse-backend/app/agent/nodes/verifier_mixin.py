@@ -551,7 +551,10 @@ class VerifierMixin:
 
             _cal_store = getattr(self, "_calibration_store", _default_calibration_store)
             if _cal_store is not None:
-                _cal_task = asyncio.create_task(
+                # Awaited (one INSERT, bounded): a background task is cancelled
+                # by the worker loop's teardown when this is the goal's final
+                # verdict — the one feedback judges (a05-F092-01).
+                await asyncio.wait_for(
                     _cal_store.record_verdict(
                         goal_id=agent_state.goal_id,
                         tenant_id=tenant_ctx.tenant_id,
@@ -559,12 +562,11 @@ class VerifierMixin:
                         verifier_model=_verify_model,
                         iteration=agent_state.iterations,
                         goal_text=agent_state.goal,
-                    )
+                    ),
+                    timeout=5.0,
                 )
-                self._background_tasks.add(_cal_task)
-                _cal_task.add_done_callback(self._background_tasks.discard)
         except Exception as exc:
-            self._logger.debug("calibration_record_failed", error=str(exc)[:60])
+            self._logger.warning("calibration_record_failed", error=str(exc)[:200])
 
         if success:
             # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
