@@ -331,6 +331,22 @@ ROLE_SCOPES["agent"] = frozenset(
     }
 )
 
+def scopes_for_roles(roles: tuple[str, ...] | list[str] | frozenset[str]) -> frozenset[str]:
+    """Union of ``ROLE_SCOPES`` over *roles* AND every role they imply.
+
+    The role hierarchy (``app.tenancy.rbac``: admin ⊇ operator/approver ⊇
+    viewer) used to be ignored here, so an ``operator`` key — the default for a
+    key created from the UI — could write goals yet not read audit, costs or
+    governance, which every ``viewer`` key can.
+    """
+    from app.tenancy.rbac import expand_roles
+
+    granted: set[str] = set()
+    for role in expand_roles(roles):
+        granted.update(ROLE_SCOPES.get(role, frozenset()))
+    return frozenset(granted)
+
+
 _WRITE_ROLES = frozenset({"admin", "operator"})
 
 
@@ -782,14 +798,9 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
                 logger.warning("scope_lookup_failed", tenant_id=tenant_id, error=str(exc))
                 raise ScopeLookupUnavailableError(str(exc)) from exc
 
-        # Fallback: derive scopes from TenantContext.roles (backward compat)
+        # Fallback: derive scopes from TenantContext.roles (backward compat),
+        # expanding the role hierarchy (operator ⊇ viewer, admin ⊇ all).
         if not scopes and roles:
-            for role in roles:
-                scopes.update(ROLE_SCOPES.get(role, frozenset()))
-
-        # If still empty (no scopes anywhere), derive from roles unconditionally
-        if not scopes:
-            for role in roles:
-                scopes.update(ROLE_SCOPES.get(role, frozenset()))
+            scopes.update(scopes_for_roles(roles))
 
         return scopes

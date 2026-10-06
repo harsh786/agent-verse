@@ -63,11 +63,9 @@ class SlackPrincipal:
     scopes: tuple[str, ...] = field(default_factory=tuple)
 
     def effective_scopes(self) -> frozenset[str]:
-        from app.auth.scope_enforcement import ROLE_SCOPES
+        from app.auth.scope_enforcement import scopes_for_roles
 
-        granted: set[str] = set()
-        for role in self.roles:
-            granted |= ROLE_SCOPES.get(role, frozenset())
+        granted: set[str] = set(scopes_for_roles(self.roles))
         if self.scopes:  # a key created with explicit scopes may use only those
             granted &= set(self.scopes)
         return frozenset(granted)

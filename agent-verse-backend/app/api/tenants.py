@@ -59,6 +59,21 @@ class CreateKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     scopes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+    # Roles of the new key (admin | operator | approver | viewer). Omitted → the
+    # least-privilege non-admin default ("operator", capped at the caller's own
+    # roles). Only roles the caller itself holds may be granted.
+    roles: list[str] | None = None
+
+    @field_validator("roles")
+    @classmethod
+    def _known_roles(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        unknown = sorted(set(v) - VALID_ROLES)
+        if unknown:
+            raise ValueError(f"Unknown roles {unknown}; valid roles: {sorted(VALID_ROLES)}")
+        # De-duplicate, keep order.
+        return list(dict.fromkeys(v))
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
@@ -143,6 +158,7 @@ async def create_key(
     """Create a new API key. The raw key is returned ONLY in this response."""
     svc = _get_tenant_service(request)
     scopes = _scopes_for_new_key(ctx, body.scopes)
+    roles = _roles_for_new_key(ctx, body.roles)
     limited = await _api_key_limit_denial(svc, ctx)
     if limited is not None:
         return limited
@@ -152,6 +168,7 @@ async def create_key(
             name=body.name,
             scopes=scopes,
             expires_at=body.expires_at,
+            roles=roles,
         )
     except NotFoundError as exc:
         return JSONResponse(exc.to_dict(), status_code=404)
@@ -201,6 +218,32 @@ def _scopes_for_new_key(ctx: TenantContext, requested: list[str]) -> list[str]:
         raise HTTPException(
             status_code=403,
             detail=f"Cannot grant scopes this API key does not hold: {extra}",
+        )
+    return requested
+
+
+def _roles_for_new_key(ctx: TenantContext, requested: list[str] | None) -> list[str]:
+    """Roles for a key minted by *ctx*: never more than the caller holds.
+
+    The caller's roles are expanded through the hierarchy (admin ⊇ all,
+    operator ⊇ viewer, approver ⊇ viewer), so an admin may mint any role and an
+    operator may mint operator or viewer keys. Omitted → ``operator`` when the
+    caller holds it, else the caller's own roles (a viewer never mints an
+    operator key by default).
+    """
+    from app.tenancy.rbac import ROLE_OPERATOR, effective_roles
+
+    held = effective_roles(ctx)
+    if not requested:
+        if ROLE_OPERATOR in held:
+            return [ROLE_OPERATOR]
+        own = [r for r in ctx.roles if r in VALID_ROLES]
+        return own or [ROLE_OPERATOR]
+    excess = sorted(set(requested) - held)
+    if excess:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot grant roles this API key does not hold: {excess}",
         )
     return requested
 
@@ -256,10 +299,15 @@ async def rotate_key(
         return JSONResponse(exc.to_dict(), status_code=exc.http_status)
     if isinstance(tenant_keys, dict):  # tolerate a {"keys": [...]} envelope
         tenant_keys = tenant_keys.get("keys", [])
-    if not any(k.get("key_id") == key_id for k in tenant_keys):
+    old_key = next((k for k in tenant_keys if k.get("key_id") == key_id), None)
+    if old_key is None:
         return JSONResponse(
             NotFoundError(f"API key not found: {key_id}").to_dict(), status_code=404
         )
+    # The replacement keeps the rotated key's roles (an admin key used to come
+    # back as an operator key), still capped at what the caller may grant.
+    old_roles = old_key.get("roles") if isinstance(old_key.get("roles"), list) else None
+    new_roles = _roles_for_new_key(ctx, old_roles or None)
 
     limited = await _api_key_limit_denial(svc, ctx, replacing=key_id if body.revoke_old else None)
     if limited is not None:
@@ -273,6 +321,7 @@ async def rotate_key(
             name=body.name,
             scopes=_scopes_for_new_key(ctx, body.scopes),
             expires_at=None,
+            roles=new_roles,
         )
     except PlatformError as exc:
         return JSONResponse(exc.to_dict(), status_code=exc.http_status)

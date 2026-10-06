@@ -998,6 +998,8 @@ export interface ApiKeyResponse {
   key_id: string;
   name: string;
   scopes?: string[];
+  /** admin | operator | approver | viewer (backend default: operator). */
+  roles?: string[];
   created_at: string;
   last_used_at?: string;
   expires_at?: string | null;
@@ -1058,10 +1060,14 @@ export const tenantsApi = {
     request<TenantResponse>("/tenants/signup", { method: "POST", body: JSON.stringify(body) }),
   me: () => request<TenantResponse>("/tenants/me"),
   listKeys: () => request<ApiKeyResponse[]>("/tenants/me/keys"),
-  createKey: (name: string, scopes?: string[]) =>
-    request<{ raw_key: string; key_id: string }>(
+  createKey: (name: string, scopes?: string[], roles?: string[]) =>
+    request<{ raw_key: string; key_id: string; roles?: string[] }>(
       "/tenants/me/keys",
-      { method: "POST", body: JSON.stringify({ name, scopes: scopes ?? [] }) }
+      {
+        method: "POST",
+        // roles omitted → backend default (operator, capped at the caller's roles)
+        body: JSON.stringify({ name, scopes: scopes ?? [], ...(roles ? { roles } : {}) }),
+      }
     ),
   revokeKey: (keyId: string) =>
     request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),

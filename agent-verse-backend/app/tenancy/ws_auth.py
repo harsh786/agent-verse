@@ -87,7 +87,7 @@ def _scope_denied(ctx: Any, required_scope: str | None, *, write: bool, path: st
     HTTP pipeline, a key minted with explicit scopes may not use it, and a
     socket that can write needs a role that may write unregistered endpoints.
     """
-    from app.auth.scope_enforcement import ROLE_SCOPES, _may_write_unregistered
+    from app.auth.scope_enforcement import _may_write_unregistered, scopes_for_roles
 
     key_scopes = tuple(getattr(ctx, "scopes", ()) or ())
     if key_scopes and (required_scope is None or required_scope not in key_scopes):
@@ -95,13 +95,7 @@ def _scope_denied(ctx: Any, required_scope: str | None, *, write: bool, path: st
     roles = tuple(getattr(ctx, "roles", ()) or ())
     if required_scope is None:
         return write and bool(roles) and not _may_write_unregistered(roles, path)
-    if roles:
-        granted: set[str] = set()
-        for role in roles:
-            granted.update(ROLE_SCOPES.get(role, frozenset()))
-        if required_scope not in granted:
-            return True
-    return False
+    return bool(roles) and required_scope not in scopes_for_roles(roles)
 
 
 async def _mfa_denied(websocket: WebSocket, tenant_id: str) -> bool:

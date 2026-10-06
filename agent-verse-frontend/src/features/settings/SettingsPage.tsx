@@ -46,6 +46,11 @@ interface CreatedKey extends ApiKey {
   raw_key: string;
 }
 
+// Roles a key can be minted with (backend VALID_ROLES). Operator is the default;
+// viewer is read-only, approver reviews HITL requests, admin is full control.
+const KEY_ROLES = ['operator', 'viewer', 'approver', 'admin'] as const;
+type KeyRole = (typeof KEY_ROLES)[number];
+
 // ── Settings tabs ─────────────────────────────────────────────────────────────
 
 const SETTINGS_TABS = [
@@ -353,6 +358,8 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
 function ApiKeysSection({ apiKey }: { apiKey: string }) {
   const qc = useQueryClient();
   const [newKeyName, setNewKeyName] = useState('');
+  // Role of the new key. The backend only grants roles the caller holds itself.
+  const [newKeyRole, setNewKeyRole] = useState<KeyRole>('operator');
   const [showCreateInput, setShowCreateInput] = useState(false);
   const [newlyCreated, setNewlyCreated] = useState<CreatedKey | null>(null);
   const [copied, setCopied] = useState(false);
@@ -368,12 +375,13 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
     mutationFn: () =>
       apiClient<CreatedKey>('/tenants/me/keys', {
         method: 'POST',
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({ name: newKeyName, roles: [newKeyRole] }),
       }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] });
       setNewlyCreated(data);
       setNewKeyName('');
+      setNewKeyRole('operator');
       setShowCreateInput(false);
     },
   });
@@ -423,6 +431,18 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
               className="flex-1 border border-input rounded-lg px-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
               onKeyDown={(e) => e.key === 'Enter' && createMutation.mutate()}
             />
+            <select
+              aria-label="Key role"
+              value={newKeyRole}
+              onChange={(e) => setNewKeyRole(e.target.value as KeyRole)}
+              className="border border-input rounded-lg px-2 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-primary"
+            >
+              {KEY_ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
             <button
               onClick={() => createMutation.mutate()}
               disabled={!newKeyName.trim() || createMutation.isPending}

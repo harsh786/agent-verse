@@ -12,7 +12,7 @@ Role hierarchy: admin > operator/approver > viewer
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -37,12 +37,21 @@ _ROLE_IMPLIES: dict[str, frozenset[str]] = {
 }
 
 
-def effective_roles(ctx: TenantContext) -> frozenset[str]:
-    """Expand ctx.roles with implied roles from hierarchy."""
+def expand_roles(roles: Iterable[str]) -> frozenset[str]:
+    """Expand *roles* with the roles they imply (admin ⊇ all, operator ⊇ viewer…).
+
+    A role outside the hierarchy (e.g. the agent-JWT ``agent`` role) maps to
+    itself only.
+    """
     result: set[str] = set()
-    for role in ctx.roles:
+    for role in roles:
         result.update(_ROLE_IMPLIES.get(role, frozenset({role})))
     return frozenset(result)
+
+
+def effective_roles(ctx: TenantContext) -> frozenset[str]:
+    """Expand ctx.roles with implied roles from hierarchy."""
+    return expand_roles(ctx.roles)
 
 
 def has_role(ctx: TenantContext, role: str) -> bool:

@@ -322,6 +322,25 @@ describe('SettingsPage – API Keys section', () => {
     );
   });
 
+  test('QA-3: new keys default to the operator role and the role is sent', async () => {
+    const fetchMock = makeSettingsFetch({ apiKeys: [] });
+    renderSettingsPage('apikeys');
+    await waitFor(() => expect(screen.getByText(/no api keys/i)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /\+ new key/i }));
+    const roleSelect = screen.getByLabelText(/key role/i) as HTMLSelectElement;
+    expect(roleSelect.value).toBe('operator');
+    await userEvent.selectOptions(roleSelect, 'viewer');
+    await userEvent.type(screen.getByPlaceholderText(/key name/i), 'readonly');
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(
+        ([u, i]) => String(u).endsWith('/tenants/me/keys') && i?.method === 'POST',
+      );
+      expect(post).toBeDefined();
+      expect(JSON.parse(String(post![1]!.body))).toEqual({ name: 'readonly', roles: ['viewer'] });
+    });
+  });
+
   test('shows newly created key banner with raw key', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);

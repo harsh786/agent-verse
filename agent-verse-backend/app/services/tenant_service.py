@@ -278,6 +278,7 @@ class TenantService:
                 "name": self._keys[kid]["name"],
                 "scopes": self._keys[kid]["scopes"],
                 "expires_at": self._keys[kid]["expires_at"],
+                "roles": list(self._keys[kid].get("roles") or ["operator"]),
                 "is_active": self._keys[kid]["is_active"],
                 "created_at": self._keys[kid]["created_at"],
             }
@@ -291,8 +292,13 @@ class TenantService:
         name: str,
         scopes: list[str],
         expires_at: datetime | None = None,
+        roles: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a new API key.  The raw key is returned once and never stored.
+
+        *roles* defaults to ``["operator"]`` (the least-privilege non-admin
+        default). Callers are responsible for checking the requester may grant
+        them (see ``POST /tenants/me/keys``).
 
         Multi-pod: the tenant is looked up in the DB (authoritative) and the key
         row must be durable before the raw key is handed out — auth resolves
@@ -317,7 +323,10 @@ class TenantService:
 
         # DB first: auth is DB-authoritative, so a key (and its scopes) that did
         # not persist would be handed out and then rejected on every request.
-        await self._db_create_api_key(key_id, tenant_id, name, key_hash, scopes, expires_at)
+        key_roles = list(roles) if roles else ["operator"]
+        await self._db_create_api_key(
+            key_id, tenant_id, name, key_hash, scopes, expires_at, roles=key_roles
+        )
 
         self._keys[key_id] = {
             "key_id": key_id,
@@ -328,6 +337,7 @@ class TenantService:
             "key_hash": key_hash,
             "is_active": True,
             "created_at": created_at,
+            "roles": key_roles,
         }
         self._hash_to_key_id[key_hash] = key_id
         self._tenant_keys.setdefault(tenant_id, []).append(key_id)
@@ -338,6 +348,7 @@ class TenantService:
             "key_id": key_id,
             "name": name,
             "scopes": scopes,
+            "roles": key_roles,
             "expires_at": expires_at.isoformat() if expires_at else None,
             "is_active": True,
             "created_at": created_at,
@@ -596,6 +607,8 @@ class TenantService:
         key_hash: str,
         scopes: list[str],
         expires_at: datetime | None = None,
+        *,
+        roles: list[str] | None = None,
     ) -> None:
         """Persist API key to PostgreSQL."""
         if self._db is None:
@@ -615,6 +628,7 @@ class TenantService:
                     name=name,
                     key_hash=key_hash,
                     scopes=scopes,
+                    roles=list(roles) if roles else ["operator"],
                     expires_at=expires_at,
                 )
                 session.add(k)
@@ -689,6 +703,8 @@ class TenantService:
                 "name": k.name,
                 "scopes": list(k.scopes or []),
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
+                # Same default as auth (_db_resolve_by_hash): an empty list is operator.
+                "roles": list(k.roles or ["operator"]) or ["operator"],
                 "is_active": bool(k.is_active),
                 "created_at": k.created_at.isoformat() if k.created_at else "",
             }

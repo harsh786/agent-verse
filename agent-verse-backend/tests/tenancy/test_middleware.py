@@ -133,7 +133,9 @@ def test_cors_headers_present_on_scope_403() -> None:
         tenant_id="t1",
         plan=PlanTier.FREE,
         api_key_id="k1",
-        roles=("operator",),  # operator doesn't have governance:read
+        # The agent ceiling has no governance:read. (operator now inherits it from
+        # viewer through the role hierarchy — QA-3.)
+        roles=("agent",),
     )
 
     async def _resolve(_: str) -> TenantContext | None:
