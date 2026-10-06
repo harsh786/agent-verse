@@ -137,6 +137,20 @@ def _declared_endpoint_dim(settings: Any) -> int | None:
     return None
 
 
+def _endpoint_embed_model(base_url: str, fallback: str = "text-embedding-3-small") -> str:
+    """The embedding model for a dedicated endpoint: a registry model of that
+    endpoint's provider when it can be told from the URL, else the configured one
+    (another provider's model would fail on this endpoint)."""
+    from app.ai_router.model_catalog import provider_for_endpoint_url
+    from app.ai_router.selection import resolve_embed_model
+    from app.providers.model_defaults import configured_embed_model
+
+    provider = provider_for_endpoint_url(base_url)
+    if provider is None:
+        return configured_embed_model(fallback)
+    return resolve_embed_model(fallback, provider=provider)
+
+
 def resolve_embedder(settings: Any = None) -> EmbedderResolution:
     """Select the embedding provider; record (and log loudly) every failure.
 
@@ -170,7 +184,7 @@ def resolve_embedder(settings: Any = None) -> EmbedderResolution:
         def _dedicated() -> Any:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
-            model = embed_model or resolve_embed_model("text-embedding-3-small")
+            model = embed_model or _endpoint_embed_model(embed_base_url)
             return OpenAICompatibleProvider(
                 api_key=embed_key, base_url=embed_base_url, default_model=model, embed_model=model
             )
@@ -196,8 +210,8 @@ def resolve_embedder(settings: Any = None) -> EmbedderResolution:
             return OpenAICompatibleProvider(
                 api_key=openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=resolve_embed_model("text-embedding-3-small"),
-                embed_model=resolve_embed_model("text-embedding-3-small"),
+                default_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
+                embed_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
             )
 
         candidates.append(("openai", _openai, None))

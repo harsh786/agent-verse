@@ -243,3 +243,47 @@ async def test_extract_records_per_page_engines_on_the_result() -> None:
     assert result.vision_pages == 1
     assert result.confidence_measured is True
     assert result.overall_confidence == pytest.approx(0.9)
+
+
+# ── OCR_TESSERACT_ENABLED=false: vision models read every page directly ──────
+
+
+@pytest.mark.asyncio
+async def test_tesseract_off_sends_every_page_straight_to_vision(monkeypatch) -> None:
+    monkeypatch.setenv("OCR_TESSERACT_ENABLED", "false")
+    tesseract_calls: list[int] = []
+
+    async def _tesseract_high(self: Any, _p: Any, _i: Any) -> tuple[str, float]:
+        tesseract_calls.append(1)
+        return "clean text", 0.99
+
+    async def _vision_ok(self: Any, img: Any, **_: Any) -> tuple[str, float, str]:
+        return "read by the vision model", 0.85, "llm_vision"
+
+    with (
+        patch.object(OcrEngine, "_tesseract_best", _tesseract_high),
+        patch.object(OcrEngine, "_llm_vision_ocr", _vision_ok),
+    ):
+        text, _conf, engine = await OcrEngine()._ocr_page(_img())
+
+    assert (text, engine) == ("read by the vision model", "llm_vision")
+    assert tesseract_calls == []  # Tesseract never ran, even on a clean page
+
+
+@pytest.mark.asyncio
+async def test_tesseract_off_without_vision_reads_nothing(monkeypatch) -> None:
+    monkeypatch.setenv("OCR_TESSERACT_ENABLED", "off")
+    assert await OcrEngine()._ocr_page(_img(), vision_fallback=False) == ("", 0.0, "tesseract")
+
+
+def test_tesseract_flag_defaults_off_and_disables_ingestion_availability(monkeypatch) -> None:
+    from app.ingestion.document_text import tesseract_available
+    from app.ocr.engine import tesseract_enabled
+
+    monkeypatch.delenv("OCR_TESSERACT_ENABLED", raising=False)
+    assert tesseract_enabled() is False  # default: vision models read every page
+    monkeypatch.setenv("OCR_TESSERACT_ENABLED", "true")
+    assert tesseract_enabled() is True
+    monkeypatch.setenv("OCR_TESSERACT_ENABLED", "false")
+    assert tesseract_enabled() is False
+    assert tesseract_available() is False  # ingestion then needs a vision provider

@@ -1,9 +1,30 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Plus, RefreshCw, Trash2, Zap, XCircle, Loader2 } from 'lucide-react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Download,
+  Info,
+  Loader2,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  ShieldCheck,
+  Trash2,
+  XCircle,
+  Zap,
+} from 'lucide-react';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { modelsApi, type ConfiguredModel } from '@/lib/api/client';
+import {
+  modelsApi,
+  type CapabilityGroup,
+  type ConfiguredModel,
+  type ModelRegistryAccess,
+} from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
+import { CatalogImportDialog } from './CatalogImportDialog';
 
 const CAPABILITIES = [
   { key: 'text_generation', label: 'Reasoning', hint: 'Planning, execution, verification' },
@@ -13,56 +34,106 @@ const CAPABILITIES = [
   { key: 'rerank', label: 'Reranker', hint: 'Retrieval reranking' },
 ] as const;
 
+/** Providers the backend accepts on POST /models/configured. */
+const PROVIDERS = [
+  'nvidia', 'anthropic', 'openai', 'openai_compatible', 'azure_openai', 'gemini', 'google',
+  'voyage', 'groq', 'xai', 'ollama', 'onprem', 'openrouter', 'bedrock', 'vertex', 'mistral',
+  'cohere', 'custom',
+] as const;
+
 interface FormState {
   model_id: string;
+  display_name: string;
   provider: string;
   capabilities: string[];
   cost_per_1k_input: string;
+  cost_per_1k_output: string;
+  quality_score: string;
   supports_tools: boolean;
   supports_vision: boolean;
 }
 
 const EMPTY_FORM: FormState = {
   model_id: '',
-  provider: '',
+  display_name: '',
+  provider: 'nvidia',
   capabilities: ['text_generation'],
   cost_per_1k_input: '0',
+  cost_per_1k_output: '0',
+  quality_score: '0.5',
   supports_tools: true,
   supports_vision: false,
 };
+
+const keyOf = (m: ConfiguredModel) => m.key || `${m.provider}/${m.model_id}`;
+
+const INPUT_CLS =
+  'w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary';
 
 export function ModelRegistryPage() {
   const apiKey = useAuthStore((s: { apiKey: string | null }) => s.apiKey);
   const qc = useQueryClient();
   const [showModal, setShowModal] = useState(false);
+  const [showCatalog, setShowCatalog] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState('');
-  // Registry mutations are platform-admin-only. The operator supplies the
-  // platform admin key here; it is kept IN MEMORY ONLY (never written to
+  // Optional platform admin key. Kept IN MEMORY ONLY (never written to
   // localStorage/sessionStorage) so this sensitive credential is not persisted
   // in the browser — it is re-entered per session and cleared on reload.
+  // Tenant admins on an operator tenant don't need it at all.
   const [adminKey, setAdminKey] = useState<string>('');
-  const saveAdminKey = (v: string) => setAdminKey(v);
+  // Unsaved local reorderings, keyed by capability → ordered model keys.
+  const [drafts, setDrafts] = useState<Record<string, string[]>>({});
+  const [orderError, setOrderError] = useState<Record<string, string>>({});
+  const key = adminKey || undefined;
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['configured-models'],
-    queryFn: () => modelsApi.listConfigured(),
+    queryFn: () => modelsApi.listConfigured(key),
     enabled: !!apiKey,
     staleTime: 30_000,
   });
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['configured-models'] });
+  const accessQuery = useQuery({
+    queryKey: ['configured-models-access', adminKey],
+    queryFn: () => modelsApi.access(key),
+    enabled: !!apiKey,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+  // If the access probe itself fails (e.g. an older backend without the
+  // endpoint), fall back to the admin-key-only behaviour; the backend still
+  // enforces authorization on every mutation.
+  const access: ModelRegistryAccess | undefined = accessQuery.data ?? (accessQuery.isError
+    ? {
+        can_modify: !!adminKey,
+        via: adminKey ? 'admin_key' : null,
+        needs_admin_key: true,
+        reason: 'Enter the platform admin key to modify the registry.',
+      }
+    : undefined);
+  const canModify = !!access?.can_modify;
+  const showKeyInput = !!adminKey || (!!access && access.needs_admin_key && !access.can_modify);
+  const denyTitle = access?.reason || 'You are not allowed to modify the model registry';
+
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ['configured-models'] });
+    void qc.invalidateQueries({ queryKey: ['models-catalog'] });
+  };
 
   const upsert = useMutation({
     mutationFn: () =>
       modelsApi.upsertConfigured({
         model_id: form.model_id.trim(),
-        provider: form.provider.trim() || 'custom',
+        display_name: form.display_name.trim() || undefined,
+        provider: form.provider || 'custom',
         capabilities: form.capabilities,
         cost_per_1k_input: Number(form.cost_per_1k_input) || 0,
+        cost_per_1k_output: Number(form.cost_per_1k_output) || 0,
+        quality_score: Math.min(1, Math.max(0, Number(form.quality_score) || 0)),
         supports_tools: form.supports_tools,
         supports_vision: form.supports_vision || form.capabilities.includes('vision'),
-      }, adminKey),
+      }, key),
     onSuccess: () => {
       invalidate();
       setShowModal(false);
@@ -73,14 +144,48 @@ export function ModelRegistryPage() {
   });
 
   const remove = useMutation({
-    mutationFn: (m: ConfiguredModel) => modelsApi.deleteConfigured(m.provider, m.model_id, adminKey),
+    mutationFn: (m: ConfiguredModel) => modelsApi.deleteConfigured(m.provider, m.model_id, key),
     onSuccess: invalidate,
   });
 
-  const reseed = useMutation({ mutationFn: () => modelsApi.reseed(adminKey), onSuccess: invalidate });
+  const reseed = useMutation({ mutationFn: () => modelsApi.reseed(key), onSuccess: invalidate });
+
+  const clearDraft = (cap: string) => {
+    const without = <T,>(rec: Record<string, T>) => {
+      const next = { ...rec };
+      delete next[cap];
+      return next;
+    };
+    setDrafts(without);
+    setOrderError(without);
+  };
+
+  const saveOrder = useMutation({
+    mutationFn: ({ cap, order }: { cap: string; order: string[] }) =>
+      modelsApi.savePreference(cap, order, key),
+    onSuccess: (_r, { cap }) => { clearDraft(cap); invalidate(); },
+    onError: (e: Error, { cap }) =>
+      setOrderError((s) => ({ ...s, [cap]: e.message || 'Failed to save order' })),
+  });
+
+  const resetOrder = useMutation({
+    mutationFn: (cap: string) => modelsApi.resetPreference(cap, key),
+    onSuccess: (_r, cap) => { clearDraft(cap); invalidate(); },
+    onError: (e: Error, cap) =>
+      setOrderError((s) => ({ ...s, [cap]: e.message || 'Failed to reset order' })),
+  });
 
   const groups = data?.capabilities ?? [];
   const groupFor = (cap: string) => groups.find((g) => g.capability === cap);
+
+  const move = (group: CapabilityGroup, from: number, to: number) => {
+    const current = drafts[group.capability] ?? group.models.map(keyOf);
+    if (to < 0 || to >= current.length) return;
+    const next = [...current];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    setDrafts((d) => ({ ...d, [group.capability]: next }));
+  };
 
   const toggleCap = (cap: string) =>
     setForm((f) => ({
@@ -93,29 +198,33 @@ export function ModelRegistryPage() {
   return (
     <JARVISPageShell>
       <div className="space-y-6">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h1 className="text-2xl font-bold">Model Registry</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Configure models per capability. When several are configured for the same capability,
-              the platform automatically uses the <strong>lowest-cost</strong> one
-              (self-hosted models count as free).
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              Models run in the saved <strong>preference order</strong> for each category: the first
+              is the primary and the next one is the automatic fallback if it fails. Models whose
+              provider has no API key are skipped. With no saved order, the{' '}
+              <strong>cheapest</strong> model is used first (self-hosted models count as free).
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="password"
-              value={adminKey}
-              onChange={(e) => saveAdminKey(e.target.value)}
-              placeholder="Platform admin key"
-              title="Required to add/remove/reseed models — the registry is deployment-global"
-              className="rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            {showKeyInput && (
+              <input
+                type="password"
+                value={adminKey}
+                onChange={(e) => setAdminKey(e.target.value)}
+                placeholder="Platform admin key"
+                aria-label="Platform admin key"
+                title="Optional platform admin key — the registry is deployment-global"
+                className="rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            )}
             <button
               type="button"
               onClick={() => reseed.mutate()}
-              disabled={reseed.isPending || !adminKey}
-              title={adminKey ? 'Reseed from config' : 'Enter the platform admin key to modify the registry'}
+              disabled={reseed.isPending || !canModify}
+              title={canModify ? 'Reseed from config' : denyTitle}
               className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${reseed.isPending ? 'animate-spin' : ''}`} />
@@ -123,19 +232,34 @@ export function ModelRegistryPage() {
             </button>
             <button
               type="button"
+              onClick={() => setShowCatalog(true)}
+              disabled={!canModify}
+              title={canModify ? 'Import models from the provider catalog' : denyTitle}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+            >
+              <Download className="h-4 w-4" /> Import catalog
+            </button>
+            <button
+              type="button"
               onClick={() => { setForm(EMPTY_FORM); setFormError(''); setShowModal(true); }}
-              disabled={!adminKey}
-              title={adminKey ? 'Add a model' : 'Enter the platform admin key to modify the registry'}
+              disabled={!canModify}
+              title={canModify ? 'Add a model' : denyTitle}
               className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               <Plus className="h-4 w-4" /> Add Model
             </button>
           </div>
         </div>
-        {!adminKey && (
+
+        {access?.can_modify && access.via === 'tenant_admin' && (
+          <p className="inline-flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+            <ShieldCheck className="h-3.5 w-3.5" /> Signed in as platform admin — you can modify the registry.
+          </p>
+        )}
+        {access && !access.can_modify && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            Viewing is open to your tenant. Adding, removing, or reseeding models is a
-            platform-operator action — enter the platform admin key to enable it.
+            Viewing is open to your tenant.{' '}
+            {access.reason || 'Adding, removing, reordering, or reseeding models is a platform-operator action.'}
           </p>
         )}
 
@@ -144,68 +268,216 @@ export function ModelRegistryPage() {
 
         {!isLoading && CAPABILITIES.map((cap) => {
           const group = groupFor(cap.key);
-          const models = group?.models ?? [];
+          const serverModels = group?.models ?? [];
+          const draft = drafts[cap.key];
+          const byKey = new Map(serverModels.map((m) => [keyOf(m), m]));
+          const models = draft
+            ? draft.map((k) => byKey.get(k)).filter((m): m is ConfiguredModel => !!m)
+            : serverModels;
+          const dirty = !!draft && draft.join('|') !== serverModels.map(keyOf).join('|');
+
+          // Primary/fallback badges: the server's view when the order is saved,
+          // a local preview (first ready model, then the next ready ones) while
+          // an unsaved reordering is pending.
+          let primaryIdx = -1;
+          const fallbackNo = new Map<number, number>();
+          if (dirty) {
+            let n = 0;
+            models.forEach((m, i) => {
+              if (!m.provider_ready) return;
+              if (primaryIdx === -1) primaryIdx = i;
+              else fallbackNo.set(i, ++n);
+            });
+          } else if (group) {
+            primaryIdx = models.findIndex((m) => m.model_id === group.selected_model_id);
+            if (primaryIdx === -1) primaryIdx = models.findIndex((m) => m.rank === 1);
+            models.forEach((m, i) => {
+              const fb = group.fallback_model_ids.indexOf(m.model_id);
+              if (fb !== -1 && i !== primaryIdx) fallbackNo.set(i, fb + 1);
+            });
+          }
+          const anyNotReady = models.some((m) => !m.provider_ready);
+          const busy = saveOrder.isPending || resetOrder.isPending;
+
           return (
             <div key={cap.key} className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-3 flex items-baseline justify-between">
+              <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <div>
                   <h2 className="text-lg font-semibold">{cap.label}</h2>
                   <p className="text-xs text-muted-foreground">{cap.hint}</p>
                 </div>
-                <span className="text-xs text-muted-foreground">{models.length} configured</span>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  {group && (
+                    <span className="rounded-full border border-border px-2 py-0.5">
+                      {group.order_mode === 'preference' ? 'Preference order' : 'Cheapest first'}
+                    </span>
+                  )}
+                  <span>{models.length} configured</span>
+                </div>
               </div>
+              {group?.note && (
+                <p className="mb-3 flex items-start gap-1.5 text-xs text-muted-foreground">
+                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {group.note}
+                </p>
+              )}
               {models.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   No model configured for {cap.label.toLowerCase()}.
                 </p>
               ) : (
-                <div className="space-y-2">
-                  {models.map((m) => {
-                    const selected = group?.selected_model_id === m.model_id;
+                <ol className="space-y-2">
+                  {models.map((m, i) => {
+                    const primary = i === primaryIdx;
+                    const fb = fallbackNo.get(i);
                     return (
-                      <div
-                        key={`${m.provider}/${m.model_id}`}
+                      <li
+                        key={keyOf(m)}
                         className={`flex items-center justify-between rounded-xl border px-4 py-3 ${
-                          selected
+                          primary
                             ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-900/20'
                             : 'border-border bg-background'
-                        }`}
+                        } ${m.provider_ready ? '' : 'opacity-60'}`}
                       >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium truncate">{m.model_id}</span>
-                            {selected && (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold text-white">
-                                <Zap className="h-3 w-3" /> IN USE (cheapest)
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">
-                            {m.provider} · ${m.cost_per_1k_input.toFixed(5)}/1k in
-                            {m.cost_per_1k_input === 0 && ' (self-hosted / free)'}
-                            {m.supports_tools && ' · tools'}
-                            {m.supports_vision && ' · vision'}
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                            {i + 1}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="truncate font-medium">{m.model_id}</span>
+                              {primary && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                  <Zap className="h-3 w-3" /> Primary
+                                </span>
+                              )}
+                              {fb !== undefined && (
+                                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-800 dark:bg-sky-900/40 dark:text-sky-300">
+                                  Fallback {fb}
+                                </span>
+                              )}
+                              {!m.provider_ready && (
+                                <span
+                                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                                  title="This provider has no API key configured, so the model is skipped at runtime"
+                                >
+                                  No API key
+                                </span>
+                              )}
+                              {m.source === 'env' && (
+                                <span
+                                  className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
+                                  title="Seeded from environment configuration"
+                                >
+                                  env
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">
+                              {m.provider} · ${m.cost_per_1k_input.toFixed(5)}/1k in
+                              {m.cost_per_1k_input === 0 && ' (self-hosted / free)'}
+                              {m.supports_tools && ' · tools'}
+                              {m.supports_vision && ' · vision'}
+                            </div>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => remove.mutate(m)}
-                          disabled={remove.isPending || !adminKey}
-                          title={adminKey ? 'Remove model' : 'Platform admin key required'}
-                          className="ml-3 shrink-0 rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40"
-                          aria-label={`Remove ${m.model_id}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
+                        <div className="ml-3 flex shrink-0 items-center gap-1">
+                          {canModify && models.length > 1 && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => group && move(group, i, i - 1)}
+                                disabled={i === 0 || busy}
+                                aria-label={`Move ${m.model_id} up`}
+                                title="Move up"
+                                className="rounded-lg p-2 text-muted-foreground hover:bg-muted disabled:opacity-30"
+                              >
+                                <ArrowUp className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => group && move(group, i, i + 1)}
+                                disabled={i === models.length - 1 || busy}
+                                aria-label={`Move ${m.model_id} down`}
+                                title="Move down"
+                                className="rounded-lg p-2 text-muted-foreground hover:bg-muted disabled:opacity-30"
+                              >
+                                <ArrowDown className="h-4 w-4" />
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => remove.mutate(m)}
+                            disabled={remove.isPending || !canModify}
+                            title={canModify ? 'Remove model' : denyTitle}
+                            className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40"
+                            aria-label={`Remove ${m.model_id}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </li>
                     );
                   })}
+                </ol>
+              )}
+              {anyNotReady && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Models marked “No API key” are skipped at runtime until their provider key is set.
+                </p>
+              )}
+              {group && canModify && models.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => saveOrder.mutate({ cap: cap.key, order: models.map(keyOf) })}
+                    disabled={!dirty || busy}
+                    aria-label={`Save ${cap.label} order`}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {saveOrder.isPending && saveOrder.variables?.cap === cap.key
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <Save className="h-3.5 w-3.5" />}
+                    Save order
+                  </button>
+                  {dirty && (
+                    <button
+                      type="button"
+                      onClick={() => clearDraft(cap.key)}
+                      disabled={busy}
+                      className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+                    >
+                      Discard changes
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => resetOrder.mutate(cap.key)}
+                    disabled={busy || (group.order_mode === 'cost' && !dirty)}
+                    aria-label={`Reset ${cap.label} to cost order`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Reset to cost order
+                  </button>
+                  {dirty && <span className="text-xs text-amber-600 dark:text-amber-400">Unsaved order</span>}
                 </div>
+              )}
+              {orderError[cap.key] && (
+                <p role="alert" className="mt-2 text-xs text-destructive">{orderError[cap.key]}</p>
               )}
             </div>
           );
         })}
       </div>
+
+      {showCatalog && (
+        <CatalogImportDialog
+          adminKey={adminKey}
+          canModify={canModify}
+          onClose={() => setShowCatalog(false)}
+          onImported={invalidate}
+        />
+      )}
 
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -213,48 +485,85 @@ export function ModelRegistryPage() {
             <div className="border-b border-border px-6 py-4">
               <h3 className="text-lg font-semibold">Add / override a model</h3>
               <p className="mt-1 text-xs text-muted-foreground">
-                Register a model your provider can serve. Set its cost so the cheapest one is
-                auto-selected when several cover the same capability.
+                Register a model your provider can serve. Set its cost so the cheapest one is used
+                first when no preference order is saved for its capability.
               </p>
             </div>
             <div className="space-y-4 px-6 py-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Model ID *</label>
-                <input
-                  value={form.model_id}
-                  onChange={(e) => setForm((f) => ({ ...f, model_id: e.target.value }))}
-                  placeholder="e.g. openai/gpt-oss-20b"
-                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
-                />
-              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Provider</label>
+                  <label htmlFor="mr-model-id" className="mb-1 block text-xs font-medium text-muted-foreground">Model ID *</label>
                   <input
-                    value={form.provider}
-                    onChange={(e) => setForm((f) => ({ ...f, provider: e.target.value }))}
-                    placeholder="nvidia / openai / anthropic…"
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+                    id="mr-model-id"
+                    value={form.model_id}
+                    onChange={(e) => setForm((f) => ({ ...f, model_id: e.target.value }))}
+                    placeholder="e.g. openai/gpt-oss-20b"
+                    className={INPUT_CLS}
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Cost / 1k input ($)</label>
+                  <label htmlFor="mr-provider" className="mb-1 block text-xs font-medium text-muted-foreground">Provider</label>
+                  <select
+                    id="mr-provider"
+                    value={form.provider}
+                    onChange={(e) => setForm((f) => ({ ...f, provider: e.target.value }))}
+                    className={INPUT_CLS}
+                  >
+                    {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label htmlFor="mr-display-name" className="mb-1 block text-xs font-medium text-muted-foreground">Display name</label>
+                <input
+                  id="mr-display-name"
+                  value={form.display_name}
+                  onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))}
+                  placeholder="Optional"
+                  className={INPUT_CLS}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label htmlFor="mr-cost-in" className="mb-1 block text-xs font-medium text-muted-foreground">Cost / 1k input ($)</label>
                   <input
+                    id="mr-cost-in"
                     type="number" step="0.00001" min="0"
                     value={form.cost_per_1k_input}
                     onChange={(e) => setForm((f) => ({ ...f, cost_per_1k_input: e.target.value }))}
-                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+                    className={INPUT_CLS}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="mr-cost-out" className="mb-1 block text-xs font-medium text-muted-foreground">Cost / 1k output ($)</label>
+                  <input
+                    id="mr-cost-out"
+                    type="number" step="0.00001" min="0"
+                    value={form.cost_per_1k_output}
+                    onChange={(e) => setForm((f) => ({ ...f, cost_per_1k_output: e.target.value }))}
+                    className={INPUT_CLS}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="mr-quality" className="mb-1 block text-xs font-medium text-muted-foreground">Quality (0–1)</label>
+                  <input
+                    id="mr-quality"
+                    type="number" step="0.05" min="0" max="1"
+                    value={form.quality_score}
+                    onChange={(e) => setForm((f) => ({ ...f, quality_score: e.target.value }))}
+                    className={INPUT_CLS}
                   />
                 </div>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Capabilities *</label>
+                <span className="mb-1 block text-xs font-medium text-muted-foreground">Capabilities *</span>
                 <div className="flex flex-wrap gap-2">
                   {CAPABILITIES.map((c) => (
                     <button
                       key={c.key}
                       type="button"
                       onClick={() => toggleCap(c.key)}
+                      aria-pressed={form.capabilities.includes(c.key)}
                       className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                         form.capabilities.includes(c.key)
                           ? 'bg-primary text-primary-foreground'

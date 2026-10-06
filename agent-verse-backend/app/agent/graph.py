@@ -1101,7 +1101,8 @@ class AgentGraph(
         """Other configured models an LLM role may fail over to, in preference order.
 
         The execution model first (on a mixed deployment typically the fast local
-        model), then the verification model, then the executor's own default.
+        model), then the verification model, then the operator's reasoning
+        preference order, then the executor's own default.
         ``complete_with_failover`` skips whichever one is the primary.
         """
         candidates: list[str] = []
@@ -1112,6 +1113,14 @@ class AgentGraph(
                     candidates.append(router.model_for(task) or "")
                 except Exception:
                     continue
+        # The operator's reasoning preference order (Model Registry), so a
+        # failing model falls over to the next one the operator ranked.
+        try:
+            from app.ai_router.selection import resolve_fallback_models
+
+            candidates.extend(resolve_fallback_models("planning", "", limit=4))
+        except Exception:
+            pass
         candidates.append(getattr(getattr(self, "_executor", None), "_default_model", "") or "")
         role_map = getattr(router, "role_map", None) if router is not None else None
         if isinstance(role_map, dict) and role_map:

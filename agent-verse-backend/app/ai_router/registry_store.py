@@ -26,6 +26,8 @@ _SHADOW_LOG_KEY = "model_registry:shadow_log"
 _SHADOW_LOG_MAX = 200
 # Bumped on every override change so every replica / worker re-seeds (PROV-17).
 _VERSION_KEY = "model_registry:configured:version"
+# Per-capability preference order: JSON object {capability: ["provider/model_id", ...]}.
+_PREFERENCE_KEY = "model_registry:preferences"
 
 # Whitelisted fields persisted per endpoint (mirrors ModelEndpoint).
 _FIELDS = (
@@ -96,6 +98,55 @@ class ModelRegistryStore:
         self._save(kept)
         return True
 
+    def upsert_many(self, endpoints: list[dict[str, Any]], *, overwrite: bool = False) -> int:
+        """Add several overrides in one write; returns how many were added.
+
+        Existing provider/model_id entries are kept unless *overwrite* (an
+        operator's edited price or capabilities survive a catalog re-import).
+        """
+        items = self.list()
+        index = {(e.get("provider"), e.get("model_id")): i for i, e in enumerate(items)}
+        added = 0
+        for endpoint in endpoints:
+            clean = {k: endpoint[k] for k in _FIELDS if k in endpoint}
+            key = (clean.get("provider"), clean.get("model_id"))
+            if key in index:
+                if overwrite:
+                    items[index[key]] = clean
+                continue
+            index[key] = len(items)
+            items.append(clean)
+            added += 1
+        if added or overwrite:
+            self._save(items)
+        return added
+
+    # ── Per-capability preference order (deployment-wide) ─────────────────────
+    # Bumps the shared version too, so every replica / worker re-reads it.
+
+    def get_preferences(self) -> dict[str, list[str]]:
+        try:
+            raw = self._redis.get(_PREFERENCE_KEY)
+            data = json.loads(raw) if raw else {}
+        except Exception as exc:
+            logger.warning("model_registry_preferences_read_failed error=%s", str(exc)[:120])
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(cap): [str(k) for k in order if isinstance(k, str)]
+            for cap, order in data.items()
+            if isinstance(order, list)
+        }
+
+    def set_preference(self, capability: str, order: list[str]) -> None:
+        prefs = self.get_preferences()
+        if order:
+            prefs[capability] = list(order)
+        else:
+            prefs.pop(capability, None)
+        self._redis.set(_PREFERENCE_KEY, json.dumps(prefs))
+        self._redis.incr(_VERSION_KEY)
 
     # ── Tenant routing policies (PUT /models/routing-policies/{task_type}) ──────
     # Per-tenant JSON object ``{task_type: policy_dict}``. They used to live only in

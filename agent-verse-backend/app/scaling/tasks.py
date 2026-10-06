@@ -681,8 +681,9 @@ def _worker_deployment_provider() -> Any:
             try:
                 from app.core.config import get_settings
                 from app.providers import onprem as _onprem_mod
+                from app.providers.model_dispatch import with_model_dispatch
 
-                built = _onprem_mod.build_onprem_provider(get_settings())
+                built = with_model_dispatch(_onprem_mod.build_onprem_provider(get_settings()))
             except Exception as exc:
                 logger.warning("worker_onprem_provider_build_failed: %s", exc)
                 built = None
@@ -3312,7 +3313,9 @@ def run_goal(
                 _provider_name = getattr(real_provider, "_provider_name", None)
                 if _provider_name is None:
                     # Detect provider type from class name
-                    _cls = type(real_provider).__name__
+                    # (the model-dispatch wrapper's class says nothing: use the
+                    # provider it wraps)
+                    _cls = type(getattr(real_provider, "inner", real_provider)).__name__
                     if "Anthropic" in _cls:
                         _provider_name = "anthropic"
                     elif "OpenAI" in _cls or "Compatible" in _cls:

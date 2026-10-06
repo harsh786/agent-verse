@@ -36,22 +36,23 @@ _log = logging.getLogger(__name__)
 def _ocr_model() -> str:
     """The configured OCR/vision model (independent of the reasoning model).
 
-    Prefers the cheapest CONFIGURED vision/OCR model from the generic registry,
-    else VISION_MODEL/OCR_MODEL/NVIDIA_VISION_MODEL, else the reasoning model.
+    Prefers the CONFIGURED OCR model (the operator's OCR preference order, else
+    the cheapest), then vision models, else VISION_MODEL/OCR_MODEL/
+    NVIDIA_VISION_MODEL, else the reasoning model.
     Empty string lets the provider fall back to its own default model, so no cloud
     slug is ever forced onto a differently-configured endpoint.
     """
-    from app.ai_router.selection import resolve_vision_model
+    from app.ai_router.selection import resolve_ocr_model
 
-    return resolve_vision_model("")
+    return resolve_ocr_model("")
 
 
 def _ocr_fallback_models(primary: str) -> list[str]:
-    """Other configured vision/OCR models, cheapest first, tried in order when the
-    primary vision model fails (down, timing out, empty answer)."""
-    from app.ai_router.selection import resolve_vision_fallback_models
+    """Other configured OCR/vision models in preference order (else cheapest
+    first), tried in turn when the primary fails (down, timing out, empty answer)."""
+    from app.ai_router.selection import resolve_ocr_fallback_models
 
-    return resolve_vision_fallback_models(primary)
+    return resolve_ocr_fallback_models(primary)
 
 
 def _summarise_pages(pages: list[tuple[str, float, str]]) -> tuple[float, str, int, bool]:
@@ -72,6 +73,19 @@ def _summarise_pages(pages: list[tuple[str, float, str]]) -> tuple[float, str, i
     return (VISION_ASSUMED_CONFIDENCE if vision_pages else 0.0), engine_used, vision_pages, False
 
 CONFIDENCE_THRESHOLD = 0.6
+
+
+def tesseract_enabled() -> bool:
+    """``OCR_TESSERACT_ENABLED`` (default OFF, owner decision 2026-10-06).
+
+    Off: Tesseract is skipped and every page goes straight to the LLM-vision OCR
+    model (the Model Registry's OCR order, with failover). ``true`` restores
+    Tesseract first, vision only for low-confidence pages. Read per call, so
+    tests and operators can toggle it."""
+    raw = os.getenv("OCR_TESSERACT_ENABLED", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 # LLM vision gives no confidence score. A page it read is reported with this
 # assumed value and excluded from the measured average (see _summarise_pages).
 VISION_ASSUMED_CONFIDENCE = float(os.getenv("OCR_VISION_ASSUMED_CONFIDENCE", "") or 0.85)
@@ -442,6 +456,11 @@ class OcrEngine:
     ) -> tuple[str, float, str]:
         """Run OCR on a single page image. Returns (text, confidence, engine_name)."""
         low_conf: tuple[str, float, str] = ("", 0.0, "tesseract")
+        if not tesseract_enabled():
+            # OCR_TESSERACT_ENABLED=false: the vision model reads every page.
+            if not vision_fallback:
+                return low_conf
+            return await self._llm_vision_ocr(img, provider=provider)
         try:
             import pytesseract
 

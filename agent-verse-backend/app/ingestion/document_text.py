@@ -113,8 +113,8 @@ def _require_ocr(filename: str, vision_provider: Any) -> bool:
     if not has_vision and not tesseract_available():
         raise OcrUnavailableError(
             f"{filename}: this file needs OCR, but no OCR engine is available: install "
-            "Tesseract (the tesseract binary plus the 'ocr' extra) or configure a "
-            "vision-capable model provider"
+            "Tesseract (the tesseract binary plus the 'ocr' extra; OCR_TESSERACT_ENABLED "
+            "must not be false) or configure a vision-capable model provider"
         )
     return has_vision
 
@@ -382,7 +382,12 @@ def _pptx_shape_lines(shape: Any) -> list[str]:
 
 
 def tesseract_available() -> bool:
-    """True when pytesseract AND the tesseract binary are usable on this host."""
+    """True when Tesseract is enabled (``OCR_TESSERACT_ENABLED``) and pytesseract
+    AND the tesseract binary are usable on this host."""
+    from app.ocr.engine import tesseract_enabled
+
+    if not tesseract_enabled():
+        return False
     try:
         import pytesseract
 

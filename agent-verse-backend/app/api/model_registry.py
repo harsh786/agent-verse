@@ -19,7 +19,7 @@ router = APIRouter(prefix="/models", tags=["model-registry"])
 _ALLOWED_PROVIDERS = frozenset(
     {
         "anthropic", "openai", "openai_compatible", "azure_openai", "nvidia",
-        "gemini", "google", "voyage", "groq", "ollama", "openrouter",
+        "gemini", "google", "voyage", "groq", "xai", "ollama", "onprem", "openrouter",
         "bedrock", "vertex", "mistral", "cohere", "custom",
     }
 )
@@ -32,39 +32,80 @@ def _require_tenant(request: Request) -> TenantContext:
     return ctx
 
 
-def _require_platform_admin(request: Request) -> None:
-    """Authorize a platform-operator for GLOBAL, cross-tenant registry mutations.
+_REGISTRY_ADMIN_FORBIDDEN = (
+    "Only a platform admin can modify the model registry: sign in as an admin of "
+    "the operator tenant, or enter the platform admin key"
+)
 
-    The configured model registry is deployment-wide (every tenant's goals select
-    from it), so mutating it is an operator action — a regular tenant API key must
-    not be able to change what models other tenants use. Requires the platform
-    admin key (``PLATFORM_ADMIN_KEY`` via the ``X-Admin-Key`` header), matching
-    app/api/admin.py.
 
-    Status codes describe the CALLER, not the deployment:
+def _admin_tenant_ids() -> set[str] | None:
+    """``PLATFORM_ADMIN_TENANT_IDS`` as a set; ``None`` when unset."""
+    raw = os.getenv("PLATFORM_ADMIN_TENANT_IDS")
+    if raw is None or not raw.strip():
+        return None
+    return {t.strip() for t in raw.split(",") if t.strip()}
 
-    * no ``X-Admin-Key`` presented → 403, whether or not the deployment has an
-      admin key configured. A regular tenant key is simply not authorized for a
-      global mutation; answering 503 here (as before) reported a server fault for
-      what is an authorization refusal, and did so for every tenant request on a
-      deployment without ``PLATFORM_ADMIN_KEY``.
-    * an admin key presented but none configured → 503 with a clear
-      "set PLATFORM_ADMIN_KEY" message: the operator is trying to use a feature
-      this deployment has not enabled.
-    * an admin key presented that does not match → 403.
+
+def _is_production() -> bool:
+    return os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+
+
+def _registry_access(request: Request) -> tuple[bool, str | None, str, int]:
+    """Who may change the GLOBAL model registry: ``(allowed, via, reason, status)``.
+
+    The configured registry is deployment-wide (every tenant's goals select from
+    it), so changing it is a platform-operator action. Two ways to be one:
+
+    * **tenant admin of an operator tenant** — the caller has the ``admin`` role
+      and its tenant is listed in ``PLATFORM_ADMIN_TENANT_IDS`` (``*`` = any
+      tenant, for a single-tenant deployment). While the variable is unset, any
+      tenant admin is allowed outside production; production requires the list.
+      The logged-in admin used to be refused with "Platform admin privileges
+      required" because only the separate admin key was accepted.
+    * **the platform admin key** (``PLATFORM_ADMIN_KEY`` via ``X-Admin-Key``).
+
+    Status codes describe the caller: 403 when not authorized (a wrong key is
+    named as such), 503 when a key is presented but the deployment has none.
     """
-    admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
-    presented = request.headers.get("x-admin-key", "") or request.headers.get("X-Admin-Key", "")
+    from app.tenancy.rbac import has_role
+
+    ctx = getattr(request.state, "tenant", None)
+    if ctx is not None and getattr(ctx, "roles", None) and has_role(ctx, "admin"):
+        allowed = _admin_tenant_ids()
+        if allowed is None and not _is_production():
+            return True, "tenant_admin", "", 200
+        if allowed is not None and ("*" in allowed or ctx.tenant_id in allowed):
+            return True, "tenant_admin", "", 200
+        tenant_reason = (
+            "this tenant is not a platform operator tenant (add it to "
+            "PLATFORM_ADMIN_TENANT_IDS) or enter the platform admin key"
+        )
+    else:
+        tenant_reason = _REGISTRY_ADMIN_FORBIDDEN
+
+    presented = request.headers.get("x-admin-key", "")
     if not presented:
-        raise HTTPException(403, "Platform admin privileges required to modify the model registry")
+        return False, None, tenant_reason, 403
+    admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
     if not admin_key:
-        raise HTTPException(
+        return (
+            False,
+            None,
+            "Platform admin key is not configured on this deployment (set "
+            "PLATFORM_ADMIN_KEY), so it cannot be used",
             503,
-            "Platform admin is not configured on this deployment (set PLATFORM_ADMIN_KEY); "
-            "the model registry is read-only",
         )
     if not hmac.compare_digest(presented.encode(), admin_key.encode()):
-        raise HTTPException(403, "Platform admin privileges required to modify the model registry")
+        return False, None, "The platform admin key is incorrect", 403
+    return True, "admin_key", "", 200
+
+
+def _require_platform_admin(request: Request) -> str:
+    """Authorize a GLOBAL registry mutation (see :func:`_registry_access`)."""
+    allowed, via, reason, status = _registry_access(request)
+    if not allowed:
+        raise HTTPException(status, reason)
+    return via or ""
 
 
 def _health_dict(provider: str) -> dict[str, Any]:
@@ -296,8 +337,24 @@ _CAPABILITY_SELECT_TASK = {
 }
 
 
-def _configured_dict(m: Any) -> dict[str, Any]:
+_CAPABILITY_NOTES = {
+    ModelCapability.EMBEDDING: (
+        "Embeddings use the first model in this order that your embedding endpoint "
+        "serves. There is no runtime failover between embedding models (vectors of "
+        "different models are not comparable); changing the model needs a re-index."
+    ),
+    ModelCapability.RERANK: (
+        "The reranker endpoint serves one provider: the first model of that "
+        "provider in this order is used."
+    ),
+}
+
+
+def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
+    from app.ai_router.selection import is_eligible, model_key
+
     return {
+        "key": model_key(m),
         "provider": m.provider,
         "model_id": m.model_id,
         "display_name": m.display_name,
@@ -309,33 +366,212 @@ def _configured_dict(m: Any) -> dict[str, Any]:
         "supports_structured_output": m.supports_structured_output,
         "quality_score": m.quality_score,
         "is_available": m.is_available,
+        # False: the provider has no credentials here, so selection skips it.
+        "provider_ready": is_eligible(m),
+        "source": (m.extra or {}).get("source", "env"),
+        "rank": rank,
+    }
+
+
+@router.get("/configured/access")
+async def registry_access(request: Request) -> dict[str, Any]:
+    """Whether the caller may change the model registry, and how (UI gating)."""
+    _require_tenant(request)
+    allowed, via, reason, _status = _registry_access(request)
+    return {
+        "can_modify": allowed,
+        "via": via,
+        # The admin-key field only helps when the caller is not a tenant admin
+        # of an operator tenant.
+        "needs_admin_key": not allowed,
+        "reason": reason,
     }
 
 
 @router.get("/configured")
 async def list_configured_models(request: Request) -> dict[str, Any]:
-    """List the deployment's configured models, grouped by capability, marking the
-    one currently SELECTED (cheapest) for each capability."""
+    """The deployment's configured models per capability, in EXECUTION order
+    (the operator's preference order, then cheapest first), with the model
+    currently selected and the failover chain after it."""
     _require_tenant(request)
-    from app.ai_router.selection import select_configured_model_id
+    from app.ai_router.selection import (
+        _ensure_seeded,
+        order_models,
+        resolve_fallback_models,
+        select_configured_model_id,
+    )
 
+    _ensure_seeded(model_registry)
     groups: list[dict[str, Any]] = []
     for cap, task in _CAPABILITY_SELECT_TASK.items():
         models = model_registry.list_configured(cap)
         if not models:
             continue
+        ordered = order_models(models, cap)
         selected = select_configured_model_id(task)
-        groups.append(
-            {
-                "capability": cap.value,
-                "selected_model_id": selected,
-                "models": sorted(
-                    (_configured_dict(m) for m in models),
-                    key=lambda d: (d["cost_per_1k_input"], -d["quality_score"]),
-                ),
-            }
-        )
+        preference = model_registry.preference_order(cap)
+        group: dict[str, Any] = {
+            "capability": cap.value,
+            "selected_model_id": selected,
+            "fallback_model_ids": resolve_fallback_models(task, selected) if selected else [],
+            "order_mode": "preference" if preference else "cost",
+            "preference": preference,
+            "models": [_configured_dict(m, rank=i + 1) for i, m in enumerate(ordered)],
+        }
+        if cap in _CAPABILITY_NOTES:
+            group["note"] = _CAPABILITY_NOTES[cap]
+        groups.append(group)
     return {"capabilities": groups, "total": len(model_registry.list_configured())}
+
+
+# ── Catalog (reference models per provider) ──────────────────────────────────
+
+
+@router.get("/catalog")
+async def list_catalog(request: Request) -> dict[str, Any]:
+    """Reference models per provider (NVIDIA, Groq, xAI, Claude, OpenAI, Gemini,
+    Qwen on-prem, Ollama, Voyage) with whether this deployment has the
+    provider's credentials and whether each model is already configured."""
+    _require_tenant(request)
+    from app.ai_router.model_catalog import catalog_providers, provider_ready
+    from app.ai_router.registry_store import get_model_registry_store
+
+    store = get_model_registry_store()
+    configured = {(e.get("provider"), e.get("model_id")) for e in (store.list() if store else [])}
+    configured |= {(m.provider, m.model_id) for m in model_registry.list_configured()}
+    return {
+        "providers": [
+            {
+                "provider": cp.provider,
+                "label": cp.label,
+                "ready": provider_ready(cp.provider),
+                "env_hint": cp.env_hint,
+                "models": [
+                    {
+                        **{k: v for k, v in m.endpoint(cp.provider).items() if k != "provider"},
+                        "already_configured": (cp.provider, m.model_id) in configured,
+                    }
+                    for m in cp.models
+                ],
+            }
+            for cp in catalog_providers()
+        ]
+    }
+
+
+@router.post("/catalog/import")
+async def import_catalog(request: Request) -> dict[str, Any]:
+    """Copy catalog models into the configured registry (platform admin).
+
+    Body ``{"providers": [...], "model_ids": [...]}``; both optional (omitted =
+    everything). Models already configured keep the operator's edits. Models of a
+    provider without credentials are imported but skipped by selection until the
+    key is set.
+    """
+    _require_tenant(request)
+    _require_platform_admin(request)
+    from app.ai_router.model_catalog import catalog_endpoints
+    from app.ai_router.registry_store import get_model_registry_store
+    from app.ai_router.seeder import seed_registry_from_config
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    providers = [str(p) for p in body.get("providers") or [] if p]
+    model_ids = [str(m) for m in body.get("model_ids") or [] if m]
+    endpoints = catalog_endpoints(providers or None, model_ids or None)
+    if not endpoints:
+        raise HTTPException(400, "no catalog models match the requested providers/models")
+    store = get_model_registry_store()
+    if store is None:
+        raise HTTPException(503, "model registry store unavailable")
+    imported = store.upsert_many(endpoints)
+    seed_registry_from_config()
+    return {"status": "imported", "imported": imported, "skipped": len(endpoints) - imported}
+
+
+# ── Preference order per capability ──────────────────────────────────────────
+
+
+def _capability_or_400(capability: str) -> ModelCapability:
+    try:
+        cap = ModelCapability(capability)
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid capability: {capability}") from exc
+    if cap not in _CAPABILITY_SELECT_TASK:
+        raise HTTPException(400, f"capability {capability} has no preference order")
+    return cap
+
+
+@router.get("/preferences")
+async def get_preferences(request: Request) -> dict[str, Any]:
+    """The saved preference order per capability (missing = cheapest first)."""
+    _require_tenant(request)
+    from app.ai_router.selection import _ensure_seeded
+
+    _ensure_seeded(model_registry)
+    return {
+        "preferences": {
+            cap.value: model_registry.preference_order(cap) for cap in _CAPABILITY_SELECT_TASK
+        }
+    }
+
+
+@router.put("/preferences/{capability}")
+async def set_preference(request: Request, capability: str) -> dict[str, Any]:
+    """Save the execution order for one capability (platform admin).
+
+    Body ``{"order": ["provider/model_id", ...]}``: the first eligible model is
+    used, the next ones are the failover chain; configured models not listed
+    follow cheapest first.
+    """
+    _require_tenant(request)
+    _require_platform_admin(request)
+    cap = _capability_or_400(capability)
+    from app.ai_router.registry_store import get_model_registry_store
+    from app.ai_router.seeder import seed_registry_from_config
+    from app.ai_router.selection import _ensure_seeded, model_key
+
+    body = await request.json()
+    raw = body.get("order") if isinstance(body, dict) else None
+    if not isinstance(raw, list) or not all(isinstance(k, str) for k in raw):
+        raise HTTPException(400, 'body must be {"order": ["provider/model_id", ...]}')
+    order: list[str] = []
+    for k in raw:
+        if k.strip() and k.strip() not in order:
+            order.append(k.strip())
+    _ensure_seeded(model_registry)
+    known = {model_key(m) for m in model_registry.list_configured(cap)}
+    unknown = [k for k in order if k not in known]
+    if unknown:
+        raise HTTPException(
+            400, f"not configured for {cap.value}: {', '.join(unknown[:5])}"
+        )
+    store = get_model_registry_store()
+    if store is None:
+        raise HTTPException(503, "model registry store unavailable")
+    store.set_preference(cap.value, order)
+    seed_registry_from_config()
+    return {"status": "saved", "capability": cap.value, "order": order}
+
+
+@router.delete("/preferences/{capability}")
+async def reset_preference(request: Request, capability: str) -> dict[str, Any]:
+    """Drop the saved order for one capability: back to cheapest first."""
+    _require_tenant(request)
+    _require_platform_admin(request)
+    cap = _capability_or_400(capability)
+    from app.ai_router.registry_store import get_model_registry_store
+    from app.ai_router.seeder import seed_registry_from_config
+
+    store = get_model_registry_store()
+    if store is None:
+        raise HTTPException(503, "model registry store unavailable")
+    store.set_preference(cap.value, [])
+    seed_registry_from_config()
+    return {"status": "reset", "capability": cap.value}
 
 
 @router.post("/configured")

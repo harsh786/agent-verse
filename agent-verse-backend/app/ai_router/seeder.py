@@ -47,7 +47,12 @@ def _provider_for_model(model_id: str) -> str:
 
         _s = get_settings()
         if _s.onprem_enabled:
-            onprem_ids |= {_s.onprem_qwen_model, _s.onprem_gemma_model} - {""}
+            onprem_ids |= {
+                _s.onprem_qwen_model,
+                _s.onprem_gemma_model,
+                _s.onprem_embedding_model if _s.onprem_embedding_base_url else "",
+                _s.onprem_reranker_model if _s.onprem_reranker_url else "",
+            } - {""}
     except Exception:  # pragma: no cover
         pass
     if model_id in onprem_ids:
@@ -118,6 +123,9 @@ def _register(registry: ModelRegistry, model_id: str, capabilities: list[ModelCa
             supports_vision=_VI in capabilities,
             supports_structured_output=_SO in capabilities,
             is_available=True,
+            # Env-seeded: the deployment is configured for it, so it is always
+            # eligible (provider readiness is checked for registry overrides only).
+            extra={"source": "env"},
         )
     )
 
@@ -149,10 +157,22 @@ def _load_overrides(reg: ModelRegistry) -> None:
                     ),
                     quality_score=float(e.get("quality_score", 0.7) or 0.7),
                     is_available=bool(e.get("is_available", True)),
+                    extra={"source": "override"},
                 )
             )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("model_registry_overrides_load_failed error=%s", str(exc)[:120])
+
+
+def _load_preferences(reg: ModelRegistry) -> None:
+    """Load the operator's per-capability preference order from the store."""
+    try:
+        from app.ai_router.registry_store import get_model_registry_store
+
+        store = get_model_registry_store()
+        reg.set_preferences(store.get_preferences() if store is not None else {})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("model_registry_preferences_load_failed error=%s", str(exc)[:120])
 
 
 def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
@@ -180,6 +200,7 @@ def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
         # Overlay user-registered overrides from the persistent store (UI/API).
         # These win over env-seeded models with the same provider/model_id.
         _load_overrides(reg)
+        _load_preferences(reg)
         count = len(reg.list_configured())
         logger.info("model_registry_seeded", configured_models=count)
         return count

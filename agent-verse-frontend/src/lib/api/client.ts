@@ -841,7 +841,11 @@ export const connectorsApi = {
 
 // ── Model registry (generic, cost-aware model selection) ───────────────────────
 
+export type ModelCapability = 'text_generation' | 'embedding' | 'vision' | 'ocr' | 'rerank';
+
 export interface ConfiguredModel {
+  /** "provider/model_id" — the identity used by preference orders. */
+  key: string;
   provider: string;
   model_id: string;
   display_name: string;
@@ -853,17 +857,58 @@ export interface ConfiguredModel {
   supports_structured_output: boolean;
   quality_score: number;
   is_available: boolean;
+  /** False when the provider has no API key configured — skipped at runtime. */
+  provider_ready: boolean;
+  source: 'env' | 'override';
+  /** 1-based effective execution order within the capability. */
+  rank: number;
 }
 
 export interface CapabilityGroup {
-  capability: string;
+  capability: ModelCapability | string;
   selected_model_id: string;
+  fallback_model_ids: string[];
+  order_mode: 'preference' | 'cost';
+  preference: string[];
+  note?: string;
+  /** Already sorted in effective execution order (preference first, then cheapest). */
   models: ConfiguredModel[];
 }
 
-// Mutating registry endpoints are platform-admin-only (the registry is global,
-// shared across tenants). The operator supplies the platform admin key, sent as
-// X-Admin-Key. Reads need only the normal tenant key.
+/** GET /models/configured/access — can the caller modify the global registry? */
+export interface ModelRegistryAccess {
+  can_modify: boolean;
+  via: 'admin_key' | 'tenant_admin' | null;
+  needs_admin_key: boolean;
+  reason: string;
+}
+
+export interface CatalogModel {
+  model_id: string;
+  display_name: string;
+  capabilities: string[];
+  cost_per_1k_input: number;
+  cost_per_1k_output: number;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  quality_score: number;
+  already_configured: boolean;
+}
+
+export interface CatalogProvider {
+  provider: string;
+  label: string;
+  /** True when the provider's API key is configured on the backend. */
+  ready: boolean;
+  /** Env var that enables the provider, e.g. "GROQ_API_KEY". */
+  env_hint: string;
+  models: CatalogModel[];
+}
+
+// The registry is deployment-global. Mutations are authorized either by the
+// platform admin key (sent as X-Admin-Key, typed by the operator and kept in
+// memory only) or by the signed-in tenant user holding the admin role on an
+// operator tenant. Every registry call forwards the key when one was typed.
 const _adminHeaders = (adminKey?: string): Record<string, string> =>
   adminKey ? { "X-Admin-Key": adminKey } : {};
 
@@ -879,10 +924,19 @@ export interface ModelPlanCap {
 export const modelsApi = {
   planCap: (modelId: string) =>
     request<ModelPlanCap>(`/models/plan-cap?model_id=${encodeURIComponent(modelId)}`),
-  listConfigured: () =>
-    request<{ capabilities: CapabilityGroup[]; total: number }>("/models/configured"),
+  access: (adminKey?: string) =>
+    request<ModelRegistryAccess>("/models/configured/access", {
+      headers: _adminHeaders(adminKey),
+    }),
+  listConfigured: (adminKey?: string) =>
+    request<{ capabilities: CapabilityGroup[]; total: number }>("/models/configured", {
+      headers: _adminHeaders(adminKey),
+    }),
   upsertConfigured: (
-    body: Partial<ConfiguredModel> & { model_id: string; capabilities: string[] },
+    body: Partial<Omit<ConfiguredModel, 'key' | 'rank' | 'source' | 'provider_ready'>> & {
+      model_id: string;
+      capabilities: string[];
+    },
     adminKey?: string
   ) =>
     request<{ status: string; model_id: string }>("/models/configured", {
@@ -900,6 +954,29 @@ export const modelsApi = {
       method: "POST",
       headers: _adminHeaders(adminKey),
     }),
+  catalog: (adminKey?: string) =>
+    request<{ providers: CatalogProvider[] }>("/models/catalog", {
+      headers: _adminHeaders(adminKey),
+    }),
+  /** Omit both fields to import the whole catalog. */
+  importCatalog: (body: { providers?: string[]; model_ids?: string[] }, adminKey?: string) =>
+    request<{ status: string; imported: number; skipped: number }>("/models/catalog/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: _adminHeaders(adminKey),
+    }),
+  /** Save the execution order for a capability (keys are "provider/model_id"). */
+  savePreference: (capability: string, order: string[], adminKey?: string) =>
+    request<{ status: string; capability: string; order: string[] }>(
+      `/models/preferences/${encodeURIComponent(capability)}`,
+      { method: "PUT", body: JSON.stringify({ order }), headers: _adminHeaders(adminKey) }
+    ),
+  /** Drop the saved order so the capability goes back to cheapest-first. */
+  resetPreference: (capability: string, adminKey?: string) =>
+    request<{ status: string; capability: string }>(
+      `/models/preferences/${encodeURIComponent(capability)}`,
+      { method: "DELETE", headers: _adminHeaders(adminKey) }
+    ),
 };
 
 // ── Tenants ───────────────────────────────────────────────────────────────────

@@ -2,13 +2,19 @@
 
 The single entry point every capability uses to pick a model id. It selects from
 the registry's *configured* set (seeded from real deployment config), filtered by
-capability + requirements, and returns the lowest-cost qualifying model — ties
+capability + requirements. The operator's per-capability preference order
+(``PUT /models/preferences/{capability}``) decides first, and the rest of that
+order is the failover chain; models outside it follow lowest-cost first — ties
 broken by higher quality then lower latency (unpriced/self-hosted = cost 0.0, so
-they win over paid cloud). Returns ``""`` when nothing qualifies, so callers can
-fall back to their existing single-model resolution (never a dead end).
+they win over paid cloud). Registry overrides whose provider has no credentials
+are skipped. Returns ``""`` when nothing qualifies, so callers can fall back to
+their existing single-model resolution (never a dead end).
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any
 
 from app.ai_router.models import ModelCapability, TaskType
 from app.ai_router.registry import ModelRegistry, model_registry
@@ -93,41 +99,92 @@ def _ensure_seeded(reg: ModelRegistry) -> None:
         pass
 
 
-def _cheapest(models: list) -> object | None:
-    if not models:
-        return None
-    return min(
-        models,
-        key=lambda m: (
-            m.cost_per_1k_input,
-            -m.quality_score,
-            m.avg_latency_ms or 1_000_000,
-        ),
+def _cost_key(m: Any) -> tuple[float, float, float]:
+    return (
+        float(getattr(m, "cost_per_1k_input", 0.0) or 0.0),
+        -float(getattr(m, "quality_score", 0.7) or 0.0),
+        float(getattr(m, "avg_latency_ms", 0.0) or 1_000_000),
     )
 
 
-def select_configured_model_id(
+def _cheapest(models: list) -> object | None:
+    if not models:
+        return None
+    return min(models, key=_cost_key)
+
+
+def model_key(m: Any) -> str:
+    return f"{getattr(m, 'provider', '')}/{getattr(m, 'model_id', '')}"
+
+
+def is_eligible(m: Any) -> bool:
+    """Whether selection may pick *m* right now.
+
+    Env-seeded models are what the deployment is configured with, so they are
+    always eligible. A registry override (UI / catalog import) is eligible only
+    when its provider has credentials — an imported Groq model without
+    ``GROQ_API_KEY`` stays listed but is skipped instead of failing every call.
+    """
+    if (getattr(m, "extra", None) or {}).get("source") != "override":
+        return True
+    from app.ai_router.model_catalog import provider_ready
+
+    return provider_ready(str(getattr(m, "provider", "")))
+
+
+_PROVIDER_ALIASES: dict[str, str] = {"google": "gemini", "openai_compatible": "openai"}
+
+
+def _norm_provider(p: str) -> str:
+    p = (p or "").strip().lower()
+    return _PROVIDER_ALIASES.get(p, p)
+
+
+def order_models(models: list[Any], capability: Any, registry: Any = None) -> list[Any]:
+    """*models* in execution order: the operator's preference order for
+    *capability* first, then every other model cheapest-first."""
+    reg = registry or model_registry
+    pref_fn = getattr(reg, "preference_order", None)
+    pref = pref_fn(capability) if callable(pref_fn) else []
+    rank = {k: i for i, k in enumerate(pref)}
+
+    def _key(m: Any) -> tuple[int, int, float, float, float]:
+        k = model_key(m)
+        return (0 if k in rank else 1, rank.get(k, 0), *_cost_key(m))
+
+    return sorted(models, key=_key)
+
+
+def ordered_configured_models(
     task: str | TaskType,
     *,
     require_tools: bool = False,
     require_vision: bool = False,
     require_structured: bool = False,
+    provider: str | Iterable[str] | None = None,
+    include_ineligible: bool = False,
     registry: ModelRegistry | None = None,
-) -> str:
-    """Return the cheapest configured model id for *task*, or ``""`` to fall back.
-
-    ``task`` may be a TaskType or a role string ("planning", "execution", ...).
-    """
+) -> list[Any]:
+    """Every configured model that can serve *task*, in execution order
+    (preference order, then cheapest). Empty when nothing qualifies."""
     reg = registry or model_registry
     _ensure_seeded(reg)
     task_type = task if isinstance(task, TaskType) else _TASK_ALIASES.get(str(task).lower())
     if task_type is None:
-        return ""
+        return []
     capability = _TASK_CAPABILITY.get(task_type)
     if capability is None:
-        return ""
+        return []
 
-    candidates = reg.list_configured(capability)
+    candidates = list(reg.list_configured(capability))
+    if not include_ineligible:
+        candidates = [m for m in candidates if is_eligible(m)]
+    if provider:
+        names = [provider] if isinstance(provider, str) else list(provider)
+        wanted = {_norm_provider(p) for p in names}
+        candidates = [
+            m for m in candidates if _norm_provider(getattr(m, "provider", "")) in wanted
+        ]
     # PROV-24: capability enforcement — executing a step means calling tools, so a
     # model without tool use (e.g. a chat-only provider) is never picked for it.
     for required in _TASK_REQUIRED_CAPABILITIES.get(task_type, ()):
@@ -142,9 +199,45 @@ def select_configured_model_id(
         candidates = [m for m in candidates if m.supports_vision]
     if require_structured:
         candidates = [m for m in candidates if m.supports_structured_output]
+    return order_models(candidates, capability, reg)
 
-    chosen = _cheapest(candidates)
-    return chosen.model_id if chosen is not None else ""
+
+def select_configured_model_id(
+    task: str | TaskType,
+    *,
+    require_tools: bool = False,
+    require_vision: bool = False,
+    require_structured: bool = False,
+    provider: str | Iterable[str] | None = None,
+    registry: ModelRegistry | None = None,
+) -> str:
+    """Return the model id to use for *task*, or ``""`` to fall back.
+
+    The operator's preference order for the task's capability wins; without one
+    the cheapest qualifying model is used. ``task`` may be a TaskType or a role
+    string ("planning", "execution", ...). ``provider`` restricts the choice to
+    models one endpoint can serve (embeddings / reranking are endpoint-bound).
+    """
+    ordered = ordered_configured_models(
+        task,
+        require_tools=require_tools,
+        require_vision=require_vision,
+        require_structured=require_structured,
+        provider=provider,
+        registry=registry,
+    )
+    return ordered[0].model_id if ordered else ""
+
+
+def resolve_fallback_models(
+    task: str | TaskType, primary: str, *, limit: int = 3, **requirements: Any
+) -> list[str]:
+    """The models to fail over to after *primary* for *task*, in preference order."""
+    out: list[str] = []
+    for m in ordered_configured_models(task, **requirements):
+        if m.model_id and m.model_id != primary and m.model_id not in out:
+            out.append(m.model_id)
+    return out[:limit]
 
 
 # ── Capability resolvers (registry-first, env fallback) ──────────────────────
@@ -153,11 +246,18 @@ def select_configured_model_id(
 # env resolvers lazily to avoid an import cycle with the seeder.
 
 
-def resolve_embed_model(fallback: str = "") -> str:
-    """Cheapest configured embedding model, else the env-configured one."""
+def resolve_embed_model(fallback: str = "", *, provider: str | None = None) -> str:
+    """Preferred (else cheapest) configured embedding model, else the env one.
+
+    Pass the *provider* of the embedding endpoint being built: an embedding
+    model only works on the endpoint that serves it, so another provider's model
+    (e.g. an imported Ollama embedder on an OpenAI embedder) is never chosen.
+    """
     from app.providers.model_defaults import configured_embed_model
 
-    return select_configured_model_id(TaskType.EMBEDDING) or configured_embed_model(fallback)
+    return select_configured_model_id(
+        TaskType.EMBEDDING, provider=provider
+    ) or configured_embed_model(fallback)
 
 
 def resolve_vision_model(fallback: str = "") -> str:
@@ -172,28 +272,19 @@ def resolve_vision_model(fallback: str = "") -> str:
 
 
 def resolve_vision_fallback_models(primary: str, *, limit: int = 3) -> list[str]:
-    """Other configured vision/OCR models to try after *primary*, cheapest first.
+    """Other configured vision/OCR models to try after *primary*, in order.
 
-    Vision-capable models of the VISION capability, then OCR models, then the
-    env-configured vision model; *primary* and duplicates are skipped. Empty
-    when nothing else is configured (the caller simply has no failover).
+    Vision-capable models of the VISION capability, then OCR models (each in the
+    operator's preference order, else cheapest first), then the env-configured
+    vision model; *primary* and duplicates are skipped. Empty when nothing else
+    is configured (the caller simply has no failover).
     """
     from app.providers.model_defaults import configured_vision_model
 
-    reg = model_registry
-    _ensure_seeded(reg)
-    ordered: list[str] = []
-    for task_type, need_vision in ((TaskType.VISION, True), (TaskType.OCR, False)):
-        capability = _TASK_CAPABILITY.get(task_type)
-        if capability is None:
-            continue
-        candidates = list(reg.list_configured(capability))
-        if need_vision:
-            candidates = [m for m in candidates if m.supports_vision]
-        candidates.sort(
-            key=lambda m: (m.cost_per_1k_input, -m.quality_score, m.avg_latency_ms or 1_000_000)
-        )
-        ordered.extend(m.model_id for m in candidates)
+    ordered = [
+        m.model_id for m in ordered_configured_models(TaskType.VISION, require_vision=True)
+    ]
+    ordered += [m.model_id for m in ordered_configured_models(TaskType.OCR)]
     ordered.append(configured_vision_model(""))
     out: list[str] = []
     for model_id in ordered:
@@ -202,6 +293,34 @@ def resolve_vision_fallback_models(primary: str, *, limit: int = 3) -> list[str]
     return out[:limit]
 
 
-def resolve_rerank_model(fallback: str = "") -> str:
-    """Cheapest configured reranker model, else *fallback*."""
-    return select_configured_model_id(TaskType.RERANK) or fallback
+def resolve_ocr_model(fallback: str = "") -> str:
+    """The OCR model: the OCR preference order first, then vision models, else env."""
+    from app.providers.model_defaults import configured_vision_model
+
+    return (
+        select_configured_model_id(TaskType.OCR)
+        or select_configured_model_id(TaskType.VISION, require_vision=True)
+        or configured_vision_model(fallback)
+    )
+
+
+def resolve_ocr_fallback_models(primary: str, *, limit: int = 3) -> list[str]:
+    """OCR failover after *primary*: OCR order, then vision models, then env."""
+    from app.providers.model_defaults import configured_vision_model
+
+    ordered = [m.model_id for m in ordered_configured_models(TaskType.OCR)]
+    ordered += [
+        m.model_id for m in ordered_configured_models(TaskType.VISION, require_vision=True)
+    ]
+    ordered.append(configured_vision_model(""))
+    out: list[str] = []
+    for model_id in ordered:
+        if model_id and model_id != primary and model_id not in out:
+            out.append(model_id)
+    return out[:limit]
+
+
+def resolve_rerank_model(fallback: str = "", *, provider: str | None = None) -> str:
+    """Preferred (else cheapest) configured reranker the endpoint's *provider*
+    serves, else *fallback*."""
+    return select_configured_model_id(TaskType.RERANK, provider=provider) or fallback

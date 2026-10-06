@@ -264,7 +264,11 @@ def resolve_provider(
                     type=cfg.provider_type,
                     name=cfg.display_name,
                 )
-                return provider
+                # Registry models of OTHER providers (Model Registry / catalog)
+                # are dispatched to their own provider instead of this one.
+                from app.providers.model_dispatch import with_model_dispatch
+
+                return with_model_dispatch(provider)
         except ProviderConfigurationError as e:
             logger.error("provider_init_failed", type=cfg.provider_type, error=str(e)[:200])
         except Exception as e:

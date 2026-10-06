@@ -89,6 +89,9 @@ os.environ.setdefault("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
 # Unit tests must not load the real cross-encoder in the background at every app
 # startup (RERANK-PRELOAD); tests that exercise the warm-up opt in explicitly.
 os.environ.setdefault("RAG_RERANK_PRELOAD", "false")
+# OCR tests exercise the Tesseract-first path; production defaults Tesseract OFF
+# (OCR_TESSERACT_ENABLED, owner decision 2026-10-06), covered by its own test.
+os.environ.setdefault("OCR_TESSERACT_ENABLED", "true")
 os.environ.setdefault("COLBERT_PREFETCH", "false")
 
 # Tests must not depend on the developer's .env: a real provider key there (e.g.

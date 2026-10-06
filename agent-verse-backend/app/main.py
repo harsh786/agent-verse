@@ -175,12 +175,14 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
     """
     import os
 
+    from app.providers.model_dispatch import with_model_dispatch
+
     # On-prem vLLM cluster takes precedence when enabled: a model→endpoint
     # dispatching provider (Qwen for reasoning, Gemma for fast, Qwen embeddings).
     from app.providers.onprem import build_onprem_provider
     from app.providers.registry import resolve_provider
 
-    _onprem = build_onprem_provider(settings)
+    _onprem = with_model_dispatch(build_onprem_provider(settings))
     if _onprem is not None:
         logger.info(
             "onprem_provider_active",
@@ -725,9 +727,10 @@ def create_app(
     _permission_matrix = build_default_permission_matrix()
     _agent_store = AgentStore()
     # On-prem vLLM cluster wins when enabled (model→endpoint dispatching provider).
+    from app.providers.model_dispatch import with_model_dispatch as _with_model_dispatch
     from app.providers.onprem import build_onprem_provider
 
-    _onprem_provider = build_onprem_provider(settings)
+    _onprem_provider = _with_model_dispatch(build_onprem_provider(settings))
     # C6: Use the declarative provider registry directly; fall back to wrapper on error
     try:
         from app.providers.registry import resolve_provider as _resolve_provider_registry
@@ -939,8 +942,8 @@ def create_app(
             _embed_providers_by_name["openai"] = OpenAICompatibleProvider(
                 api_key=_openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=resolve_embed_model("text-embedding-3-small"),
-                embed_model=resolve_embed_model("text-embedding-3-small"),
+                default_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
+                embed_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
             )
         except Exception:
             pass

@@ -65,7 +65,17 @@ ingestion:
 # calls in flight; renderDpi = scanned-page rasterisation; ompThreadLimit pins
 # tesseract's OpenMP threads (pages already run in parallel). Rendered into the
 # shared config map, so the API and every worker use the same limits.
+# Model Registry: tenants whose ADMIN users may change the deployment-wide model
+# registry (models, catalog import, preference order) without the platform admin
+# key. Comma-separated tenant ids; "*" = any tenant's admins (single-tenant
+# deployments). Empty = any tenant admin outside production; production then
+# accepts only the platform admin key.
+platformAdminTenantIds: ""
+
 ocr:
+  # false (default) = skip Tesseract; the LLM-vision OCR model reads every page.
+  # true = Tesseract first, LLM vision only for low-confidence pages.
+  tesseractEnabled: false
   maxConcurrency: 0
   pageConcurrency: 0
   visionConcurrency: 4

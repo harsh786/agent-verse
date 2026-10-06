@@ -190,6 +190,17 @@ class ModelRegistry:
         # catalog so capability selection only ever picks a model this deployment
         # can actually serve. See app/ai_router/seeder.py.
         self._configured: dict[str, ModelEndpoint] = {}
+        # capability value → ordered "provider/model_id" keys (operator preference;
+        # first = primary, the rest = failover order). Loaded by the seeder.
+        self._preferences: dict[str, list[str]] = {}
+
+    def set_preferences(self, preferences: dict[str, list[str]]) -> None:
+        """Replace the per-capability preference order (see the seeder)."""
+        self._preferences = {str(k): list(v) for k, v in (preferences or {}).items()}
+
+    def preference_order(self, capability: ModelCapability | str) -> list[str]:
+        """The operator's ordered model keys for *capability* (empty = cost order)."""
+        return list(self._preferences.get(str(getattr(capability, "value", capability)), []))
 
     def register_configured(self, endpoint: ModelEndpoint) -> None:
         """Register (or replace) a model this deployment is configured to serve."""

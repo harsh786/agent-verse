@@ -139,12 +139,19 @@ def hosted_reranker_from_settings(settings: Any) -> HostedReranker | None:
     if not url:
         return None
     _cfg_model = str(getattr(settings, "rag_hosted_reranker_model", "rerank-english-v3.0"))
-    # Prefer the cheapest CONFIGURED reranker model from the generic registry,
-    # else the settings model.
+    # Prefer the operator's preferred (else cheapest) CONFIGURED reranker that
+    # this endpoint's provider serves, else the settings model. An unrecognised
+    # endpoint keeps the settings model: another provider's reranker would fail.
     try:
+        from app.ai_router.model_catalog import provider_for_endpoint_url
         from app.ai_router.selection import resolve_rerank_model
 
-        _model = resolve_rerank_model(_cfg_model)
+        _rr_provider = provider_for_endpoint_url(url)
+        _model = (
+            resolve_rerank_model(_cfg_model, provider=_rr_provider)
+            if _rr_provider is not None
+            else _cfg_model
+        )
     except Exception:  # pragma: no cover - never block reranker build
         _model = _cfg_model
     return HostedReranker(
