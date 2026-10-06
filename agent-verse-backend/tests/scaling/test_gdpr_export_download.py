@@ -55,7 +55,16 @@ pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROLE = "test_app"
-GRANT_TABLES = ("compliance_requests", "gdpr_export_jobs", "goals", "audit_log", "tenants")
+GRANT_TABLES = (
+    "compliance_requests",
+    "gdpr_export_jobs",
+    "goals",
+    "audit_log",
+    "tenants",
+    "agents",
+    "schedules",
+    "knowledge_collections",
+)
 
 
 @pytest.fixture(scope="function")
@@ -151,6 +160,26 @@ async def test_gdpr_export_download_link_serves_real_data_under_nobypassrls_role
             text("INSERT INTO goals (id, tenant_id, goal_text) VALUES (:gid, :tid, :text)"),
             {"gid": goal_id, "tid": tenant_id, "text": goal_text},
         )
+        # agents / schedules / knowledge collections are exported too (salvage RV-08).
+        await s.execute(
+            text("INSERT INTO agents (id, tenant_id, name) VALUES (:id, :tid, 'gdpr agent')"),
+            {"id": f"ag-{job_id[:8]}", "tid": tenant_id},
+        )
+        await s.execute(
+            text(
+                "INSERT INTO schedules (id, tenant_id, goal_id_template, trigger_type, "
+                "cron_expression, interval_seconds, config, paused) "
+                "VALUES (:id, :tid, 'x', 'cron', '0 9 * * *', 0, '{}'::jsonb, false)"
+            ),
+            {"id": f"sc-{job_id[:8]}", "tid": tenant_id},
+        )
+        await s.execute(
+            text(
+                "INSERT INTO knowledge_collections (id, tenant_id, name) "
+                "VALUES (:id, :tid, 'gdpr kb')"
+            ),
+            {"id": f"kc-{job_id[:8]}", "tid": tenant_id},
+        )
         await s.execute(
             text(
                 "INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at) "
@@ -219,6 +248,11 @@ async def test_gdpr_export_download_link_serves_real_data_under_nobypassrls_role
             "the seeded goal (RLS GUC not set, or persistence bug)"
         )
         assert any(g["text"] == goal_text for g in payload["goals"])
+        assert [a["id"] for a in payload["agents"]] == [f"ag-{job_id[:8]}"]
+        assert [x["id"] for x in payload["schedules"]] == [f"sc-{job_id[:8]}"]
+        assert payload["schedules"][0]["cron_expression"] == "0 9 * * *"
+        assert [k["id"] for k in payload["knowledge_collections"]] == [f"kc-{job_id[:8]}"]
+        assert payload["counts"]["agents"] == 1
 
         # Finally, exercise the actual service call the download endpoint makes
         # (ComplianceController.get_export_status), proving a real download
@@ -243,4 +277,6 @@ async def test_gdpr_export_download_link_serves_real_data_under_nobypassrls_role
                 text("DELETE FROM gdpr_export_jobs WHERE tenant_id = :tid"), {"tid": tenant_id}
             )
             await s.execute(text("DELETE FROM goals WHERE tenant_id = :tid"), {"tid": tenant_id})
+            for tbl in ("schedules", "knowledge_collections", "agents"):
+                await s.execute(text(f"DELETE FROM {tbl} WHERE tenant_id = :tid"), {"tid": tenant_id})
             await s.execute(text("DELETE FROM tenants WHERE id = :tid"), {"tid": tenant_id})
