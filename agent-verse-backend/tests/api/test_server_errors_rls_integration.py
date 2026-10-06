@@ -40,6 +40,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROLE = "server_errors_app"
 GRANT_TABLES = (
     "goal_templates",
+    "goal_template_tombstones",  # read by built-in seeding (a10-F230-01)
     "coordination_sessions",
     "coordination_events",
     "coordination_outbox",

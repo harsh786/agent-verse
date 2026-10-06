@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
+DEFAULT_LIST_LIMIT = 500
+MAX_LIST_LIMIT = 1000
+
 
 def _require_tenant(request: Request) -> TenantContext:
     ctx: TenantContext | None = getattr(request.state, "tenant", None)
@@ -74,30 +77,70 @@ class InstantiateRequest(BaseModel):
     priority: str = "normal"
 
 
-def _load_yaml_goal_templates() -> list[dict[str, Any]]:
-    """Load goal templates from YAML content files (152 templates across 37 domains).
+# The content pack is parsed once per process (it was re-parsed for every tenant
+# seeded). A FAILED load is remembered for _CONTENT_RETRY_SECONDS and then
+# retried, so a fixed pack is picked up without a restart.
+_CONTENT_RETRY_SECONDS = 300.0
+_content_cache: dict[str, Any] = {"templates": None, "failed_at": None}
 
-    Falls back to the hard-coded list if the content package is unavailable.
+
+def _load_yaml_goal_templates() -> list[dict[str, Any]] | None:
+    """Goal templates from the YAML content pack (152 templates across 37 domains).
+
+    ``[]`` when the pack has no templates (the hard-coded list is used instead),
+    ``None`` when loading it FAILED: seeding is then skipped and retried later,
+    because seeding the 15-template fallback instead gave the tenant a different
+    built-in set (different names → different ids) for good.
     """
+    import time
+
+    cached = _content_cache["templates"]
+    if cached is not None:
+        return list(cached)
+    failed_at = _content_cache["failed_at"]
+    if failed_at is not None and time.monotonic() - failed_at < _CONTENT_RETRY_SECONDS:
+        return None
     try:
         from app.content.loader import ContentLoader
 
         loader = ContentLoader().load_all()
-        if loader.goal_templates:
-            return [
-                {
-                    "name": t.get("name", ""),
-                    "description": t.get("description", ""),
-                    "goal_text": t.get("goal_text", ""),
-                    "domain": t.get("domain", "general"),
-                }
-                for t in loader.goal_templates
-                if t.get("name") and t.get("goal_text")
-            ]
+        templates = [
+            {
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "goal_text": t.get("goal_text", ""),
+                "domain": t.get("domain", "general"),
+            }
+            for t in loader.goal_templates
+            if t.get("name") and t.get("goal_text")
+        ]
     except Exception as exc:
         # Was a silent `pass`: a malformed content pack vanished without a trace.
         logger.error("goal_template_content_load_failed: %s", exc)
-    return []
+        _content_cache["failed_at"] = time.monotonic()
+        return None
+    _content_cache["templates"] = templates
+    _content_cache["failed_at"] = None
+    return list(templates)
+
+
+def _builtin_source() -> list[dict[str, Any]] | None:
+    """The built-in templates to seed, or None when the content pack failed."""
+    yaml_templates = _load_yaml_goal_templates()
+    if yaml_templates is None:
+        return None
+    return yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
+
+
+def _builtin_id(tenant_id: str, name: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{name}"))
+
+
+def _is_builtin_id(tenant_id: str, template_id: str) -> bool:
+    """Whether *template_id* is a seeded built-in of *tenant_id* (any source)."""
+    names = {t["name"] for t in _BUILTIN_TEMPLATES}
+    names.update(t["name"] for t in (_content_cache["templates"] or []))
+    return any(_builtin_id(tenant_id, n) == template_id for n in names)
 
 
 _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
@@ -210,6 +253,8 @@ class _TemplateStore:
         self._db: Any = None
         # Track which tenants have had built-ins seeded (in-memory mode only)
         self._seeded_tenants: set[str] = set()
+        # In-memory mode: deleted built-ins (DB mode: goal_template_tombstones).
+        self._mem_tombstones: set[tuple[str, str]] = set()
         # Allow tests to opt out of seeding to preserve pre-existing assertions
         self._seed_builtins = seed_builtins
 
@@ -246,15 +291,18 @@ class _TemplateStore:
             return
         if tenant_id in self._seeded_tenants:
             return
+        source = _builtin_source()
+        if source is None:
+            return  # content pack failed: retried on a later request
         self._seeded_tenants.add(tenant_id)
         now = datetime.now(UTC)
 
-        yaml_templates = _load_yaml_goal_templates()
-        source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
-
         for tpl in source:
+            tpl_id = _builtin_id(tenant_id, tpl["name"])
+            if (tenant_id, tpl_id) in self._mem_tombstones:
+                continue
             t: dict[str, Any] = {
-                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}")),
+                "id": tpl_id,
                 "tenant_id": tenant_id,
                 "name": tpl["name"],
                 "description": tpl["description"],
@@ -278,27 +326,33 @@ class _TemplateStore:
             return
         if tenant_id in self._seeded_tenants:
             return
+        source = _builtin_source()
+        if source is None:
+            return  # content pack failed: retried on a later request
         self._seeded_tenants.add(tenant_id)
         try:
             from sqlalchemy import text as _t
 
             now = datetime.now(UTC)
 
-            yaml_templates = _load_yaml_goal_templates()
-            source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
-
+            # Seeding runs once per process (every replica, every restart). A
+            # built-in the tenant deleted is tombstoned (goal_template_tombstones)
+            # and never re-inserted; it used to come back on the next restart.
             async with self._tenant_session(tenant_id) as session:
                 for tpl in source:
-                    tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
+                    tpl_id = _builtin_id(tenant_id, tpl["name"])
                     params = _extract_parameters(tpl["goal_text"])
                     await session.execute(
                         _t("""
                             INSERT INTO goal_templates
                                 (id, tenant_id, name, description, goal_text, domain, parameters,
                                  use_count, version, created_at, updated_at)
-                            VALUES
-                                (:id, :tenant_id, :name, :description, :goal_text, :domain,
-                                 CAST(:parameters AS jsonb), 0, 1, :now, :now)
+                            SELECT :id, :tenant_id, :name, :description, :goal_text, :domain,
+                                   CAST(:parameters AS jsonb), 0, 1, :now, :now
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM goal_template_tombstones
+                                WHERE tenant_id = :tenant_id AND template_id = :id
+                            )
                             ON CONFLICT (id) DO NOTHING
                         """),
                         {
@@ -318,20 +372,45 @@ class _TemplateStore:
             self._seeded_tenants.discard(tenant_id)
             logger.warning("template_builtin_seed_failed tenant=%s: %s", tenant_id, exc)
 
-    async def list(self, tenant_id: str, domain: str | None = None) -> list[dict[str, Any]]:
+    async def list(
+        self,
+        tenant_id: str,
+        domain: str | None = None,
+        *,
+        search: str | None = None,
+        limit: int = DEFAULT_LIST_LIMIT,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """One page of the tenant's templates, newest first (bounded: it was unbounded).
+
+        *search* matches name / description / goal text case-insensitively, in
+        the query, so it is applied before the page is cut.
+        """
+        limit = max(1, min(int(limit), MAX_LIST_LIMIT))
+        offset = max(0, int(offset))
         if self._db:
             # Seed built-ins on first request per tenant (idempotent via ON CONFLICT)
             await self._seed_builtins_db(tenant_id)
             # A DB failure propagates (the route answers 503). It used to fall
             # back to in-memory built-ins whose ids exist in no database, so every
             # get/instantiate of a listed template then 404'd.
-            return await self._list_db(tenant_id, domain)
+            return await self._list_db(tenant_id, domain, search, limit, offset)
         # In-memory mode: seed built-ins on first request per tenant
         self._seed_builtins_for_tenant(tenant_id)
         rows = [t for t in self._mem.values() if t["tenant_id"] == tenant_id]
         if domain:
             rows = [t for t in rows if t["domain"] == domain]
-        return sorted(rows, key=lambda t: t["created_at"], reverse=True)
+        if search:
+            q = search.lower()
+            rows = [
+                t
+                for t in rows
+                if q in t.get("name", "").lower()
+                or q in t.get("description", "").lower()
+                or q in t.get("goal_text", "").lower()
+            ]
+        rows = sorted(rows, key=lambda t: t["created_at"], reverse=True)
+        return rows[offset : offset + limit]
 
     async def get(self, tenant_id: str, template_id: str) -> dict[str, Any] | None:
         if self._db:
@@ -404,6 +483,8 @@ class _TemplateStore:
         if not t or t["tenant_id"] != tenant_id:
             return False
         del self._mem[template_id]
+        if _is_builtin_id(tenant_id, template_id):
+            self._mem_tombstones.add((tenant_id, template_id))
         return True
 
     async def increment_use_count(self, tenant_id: str, template_id: str) -> None:
@@ -428,8 +509,15 @@ class _TemplateStore:
 
     # DB implementations — each runs in ONE tenant-scoped transaction (see
     # _tenant_session) and keeps an explicit tenant_id predicate (defense in depth).
-    async def _list_db(self, tenant_id: str, domain: str | None) -> list[dict[str, Any]]:
-        from sqlalchemy import select
+    async def _list_db(
+        self,
+        tenant_id: str,
+        domain: str | None,
+        search: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        from sqlalchemy import or_, select
 
         from app.db.models.template import GoalTemplate
 
@@ -437,7 +525,22 @@ class _TemplateStore:
             q = select(GoalTemplate).where(GoalTemplate.tenant_id == tenant_id)
             if domain:
                 q = q.where(GoalTemplate.domain == domain)
-            q = q.order_by(GoalTemplate.created_at.desc())
+            if search:
+                pattern = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace(
+                    "_", "\\_"
+                ) + "%"
+                q = q.where(
+                    or_(
+                        GoalTemplate.name.ilike(pattern, escape="\\"),
+                        GoalTemplate.description.ilike(pattern, escape="\\"),
+                        GoalTemplate.goal_text.ilike(pattern, escape="\\"),
+                    )
+                )
+            q = (
+                q.order_by(GoalTemplate.created_at.desc(), GoalTemplate.id)
+                .limit(limit)
+                .offset(offset)
+            )
             return [self._orm_to_dict(r) for r in (await session.execute(q)).scalars().all()]
 
     async def _get_db(self, tenant_id: str, template_id: str) -> dict[str, Any] | None:
@@ -539,6 +642,17 @@ class _TemplateStore:
             if obj is None:
                 return False
             await session.delete(obj)
+            if _is_builtin_id(tenant_id, template_id):
+                # Same transaction: a deleted built-in is never re-seeded.
+                from sqlalchemy import text as _t
+
+                await session.execute(
+                    _t(
+                        "INSERT INTO goal_template_tombstones (tenant_id, template_id) "
+                        "VALUES (:tid, :id) ON CONFLICT DO NOTHING"
+                    ),
+                    {"tid": tenant_id, "id": template_id},
+                )
             return True
 
     @staticmethod
@@ -566,28 +680,32 @@ class _TemplateStore:
 template_store = _TemplateStore()
 
 
+def _unavailable(op: str, tenant_id: str, exc: Exception) -> HTTPException:
+    """A template-store failure is a retryable 503 on every route (not a raw 500).
+
+    Only the list route mapped DB errors; get / create / update / delete /
+    instantiate surfaced them as unhandled 500s.
+    """
+    logger.error("template_%s_failed tenant=%s: %s", op, tenant_id, type(exc).__name__)
+    return HTTPException(status_code=503, detail="Templates unavailable; retry")
+
+
 @router.get("")
 async def list_templates(
     request: Request,
     domain: str | None = Query(default=None),
-    search: str | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
 ) -> list[dict[str, Any]]:
+    """One page of the tenant's templates, newest first (``limit`` / ``offset``)."""
     tenant = _require_tenant(request)
     try:
-        results = await template_store.list(tenant.tenant_id, domain)
+        return await template_store.list(
+            tenant.tenant_id, domain, search=search, limit=limit, offset=offset
+        )
     except Exception as exc:
-        logger.error("template_list_failed tenant=%s: %s", tenant.tenant_id, exc)
-        raise HTTPException(status_code=503, detail="Templates unavailable; retry") from exc
-    if search:
-        q = search.lower()
-        results = [
-            t
-            for t in results
-            if q in t.get("name", "").lower()
-            or q in t.get("description", "").lower()
-            or q in t.get("goal_text", "").lower()
-        ]
-    return results
+        raise _unavailable("list", tenant.tenant_id, exc) from exc
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -596,23 +714,33 @@ async def create_template(request: Request, body: TemplateCreate) -> dict[str, A
     parameters = (
         body.parameters if body.parameters is not None else _extract_parameters(body.goal_text)
     )
-    return await template_store.create(
-        tenant_id=tenant.tenant_id,
-        name=body.name,
-        description=body.description,
-        goal_text=body.goal_text,
-        domain=body.domain,
-        parameters=parameters,
-    )
+    try:
+        return await template_store.create(
+            tenant_id=tenant.tenant_id,
+            name=body.name,
+            description=body.description,
+            goal_text=body.goal_text,
+            domain=body.domain,
+            parameters=parameters,
+        )
+    except Exception as exc:
+        raise _unavailable("create", tenant.tenant_id, exc) from exc
+
+
+async def _get_or_404(tenant_id: str, template_id: str) -> dict[str, Any]:
+    try:
+        t = await template_store.get(tenant_id, template_id)
+    except Exception as exc:
+        raise _unavailable("get", tenant_id, exc) from exc
+    if t is None:
+        raise HTTPException(404, "Template not found")
+    return t
 
 
 @router.get("/{template_id}")
 async def get_template(template_id: str, request: Request) -> dict[str, Any]:
     tenant = _require_tenant(request)
-    t = await template_store.get(tenant.tenant_id, template_id)
-    if t is None:
-        raise HTTPException(404, "Template not found")
-    return t
+    return await _get_or_404(tenant.tenant_id, template_id)
 
 
 @router.put("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -621,15 +749,18 @@ async def update_template(template_id: str, request: Request, body: TemplateUpda
     parameters = (
         body.parameters if body.parameters is not None else _extract_parameters(body.goal_text)
     )
-    result = await template_store.update(
-        tenant_id=tenant.tenant_id,
-        template_id=template_id,
-        name=body.name,
-        description=body.description,
-        goal_text=body.goal_text,
-        domain=body.domain,
-        parameters=parameters,
-    )
+    try:
+        result = await template_store.update(
+            tenant_id=tenant.tenant_id,
+            template_id=template_id,
+            name=body.name,
+            description=body.description,
+            goal_text=body.goal_text,
+            domain=body.domain,
+            parameters=parameters,
+        )
+    except Exception as exc:
+        raise _unavailable("update", tenant.tenant_id, exc) from exc
     if result is None:
         raise HTTPException(404, "Template not found")
 
@@ -637,7 +768,11 @@ async def update_template(template_id: str, request: Request, body: TemplateUpda
 @router.delete("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_template(template_id: str, request: Request) -> None:
     tenant = _require_tenant(request)
-    if not await template_store.delete(tenant.tenant_id, template_id):
+    try:
+        deleted = await template_store.delete(tenant.tenant_id, template_id)
+    except Exception as exc:
+        raise _unavailable("delete", tenant.tenant_id, exc) from exc
+    if not deleted:
         raise HTTPException(404, "Template not found")
 
 
@@ -647,9 +782,7 @@ async def instantiate_template(
 ) -> dict[str, Any]:
     """Fill template parameters and optionally submit as a goal."""
     tenant = _require_tenant(request)
-    t = await template_store.get(tenant.tenant_id, template_id)
-    if t is None:
-        raise HTTPException(404, "Template not found")
+    t = await _get_or_404(tenant.tenant_id, template_id)
 
     # Check required parameters
     missing = [
