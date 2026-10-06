@@ -267,9 +267,50 @@ async def update_session(
 async def delete_session(session_id: str, request: Request) -> None:
     tenant = _tenant(request)
     svc = _svc(request)
+    existing = await svc.aget_session(session_id, tenant.tenant_id)
     ok = await svc.adelete_session(session_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
+    owner = getattr(existing, "owner_user_id", None)
+    if owner:  # only an owned session can have been indexed as knowledge
+        await _remove_session_transcript(request, tenant.tenant_id, owner, session_id)
+
+
+async def _remove_session_transcript(
+    request: Request, tenant_id: str, owner: str, session_id: str
+) -> None:
+    """CHAT-KB: a deleted chat leaves the knowledge index too (held: kept).
+
+    When the removal cannot run now it is queued; when it cannot be queued
+    either, the caller is told (the chat itself is already deleted).
+    """
+    import asyncio
+
+    from app.services import chat_knowledge
+
+    try:
+        await chat_knowledge.remove_transcripts(
+            request.app.state, tenant_id, user_id=owner, session_ids=[session_id]
+        )
+        return
+    except chat_knowledge.ChatKnowledgeUnavailableError as exc:
+        logger.warning("chat_transcript_removal_deferred", session=session_id, error=str(exc))
+        reason = str(exc)
+    try:
+        await asyncio.to_thread(
+            chat_knowledge.enqueue_purge_continuation, tenant_id, user_id=owner,
+            session_ids=[session_id], unconsented_only=False,
+        )
+    except Exception as exc:
+        logger.warning("chat_transcript_removal_not_queued", session=session_id,
+                       error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The chat was deleted, but its transcript in the knowledge base could not be "
+                f"removed yet ({reason}); the knowledge Source's next reconciliation removes it."
+            ),
+        ) from exc
 
 
 @router.post("/sessions/{session_id}/pin")

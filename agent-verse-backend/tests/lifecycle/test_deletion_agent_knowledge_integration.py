@@ -111,3 +111,80 @@ async def test_erasure_removes_goal_derived_knowledge_but_not_held(pg_url: str) 
         assert len(await _remaining(pg_url, other_tid)) == 6
     finally:
         await engine.dispose()
+
+
+async def test_erasure_deletes_a_persons_chats_and_their_transcripts(pg_url: str) -> None:
+    """CHAT-KB: erasing a person deletes the chats they own or wrote, their opt-in,
+    and the transcripts indexed under their id (held ones kept and reported);
+    another person's chats and transcripts stay."""
+    tid = uuid.uuid4().hex
+    person, other_person = f"user-{uuid.uuid4().hex[:8]}", f"user-{uuid.uuid4().hex[:8]}"
+    await seed_tenant(pg_url, tid)
+    sessions_ = {"mine": person, "theirs": other_person}
+    sid = {k: uuid.uuid4().hex for k in sessions_}
+    for key, owner in sessions_.items():
+        await admin_exec(
+            pg_url,
+            "INSERT INTO chat_sessions (id, tenant_id, title, owner_user_id) "
+            "VALUES (:id, :t, :k, :o)",
+            {"id": sid[key], "t": tid, "k": key, "o": owner},
+        )
+    for key, author, text in (("mine", person, "my question"),
+                              ("theirs", other_person, "their question"),
+                              ("theirs", person, "my note in their chat")):
+        await admin_exec(
+            pg_url,
+            "INSERT INTO chat_messages (id, session_id, tenant_id, role, content, metadata) "
+            "VALUES (:id, :s, :t, 'user', :c, CAST(:m AS jsonb))",
+            {"id": uuid.uuid4().hex, "s": sid[key], "t": tid, "c": text,
+             "m": json.dumps({"author_user_id": author})},
+        )
+    await admin_exec(
+        pg_url,
+        "INSERT INTO chat_kb_consents (tenant_id, user_id, opted_in) VALUES "
+        "(:t, :p, true), (:t, :o, true)",
+        {"t": tid, "p": person, "o": other_person},
+    )
+    open_cid, held_cid = uuid.uuid4().hex, uuid.uuid4().hex
+    for cid in (open_cid, held_cid):
+        await admin_exec(
+            pg_url, "INSERT INTO knowledge_collections (id, tenant_id, name) VALUES (:c, :t, :c)",
+            {"c": cid, "t": tid},
+        )
+
+    def _origin(key: str) -> dict[str, object]:
+        return {"origin": {"kind": "chat_transcript", "chat_session_id": sid[key],
+                           "user_id": sessions_[key]}}
+
+    await _chunk(pg_url, tid, open_cid, "doc-mine", "my transcript", _origin("mine"))
+    await _chunk(pg_url, tid, held_cid, "doc-mine-held", "my held transcript", _origin("mine"))
+    await _chunk(pg_url, tid, open_cid, "doc-theirs", "their transcript", _origin("theirs"))
+    await admin_exec(
+        pg_url,
+        "INSERT INTO legal_holds (tenant_id, name, resource_type, resource_ids) "
+        "VALUES (:t, 'matter', 'collection', CAST(:r AS jsonb))",
+        {"t": tid, "r": json.dumps([held_cid])},
+    )
+    engine = await app_engine(pg_url)
+    try:
+        receipt = await DeletionOrchestrator(db_factory=sessions(engine)).execute_deletion(
+            tid, person)
+        assert receipt.suspended is False
+        assert receipt.per_store["knowledge_chunks_chat_transcripts"] == 1
+        assert receipt.per_store["chat_sessions"] == 1
+        assert receipt.per_store["chat_messages"] == 2  # own chat + note in theirs
+        assert receipt.per_store["chat_kb_consents"] == 1
+        assert receipt.notes["knowledge_chunks_held"].startswith("1 knowledge chunk(s) kept")
+        assert receipt.verified is True
+        assert await _remaining(pg_url, tid) == {"my held transcript", "their transcript"}
+        left = await admin_exec(
+            pg_url, "SELECT content FROM chat_messages WHERE tenant_id = :t", {"t": tid})
+        assert {r[0] for r in left} == {"their question"}
+        owners = await admin_exec(
+            pg_url, "SELECT owner_user_id FROM chat_sessions WHERE tenant_id = :t", {"t": tid})
+        assert [r[0] for r in owners] == [other_person]
+        consents = await admin_exec(
+            pg_url, "SELECT user_id FROM chat_kb_consents WHERE tenant_id = :t", {"t": tid})
+        assert [r[0] for r in consents] == [other_person]
+    finally:
+        await engine.dispose()

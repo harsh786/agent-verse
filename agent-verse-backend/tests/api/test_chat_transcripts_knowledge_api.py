@@ -223,3 +223,63 @@ def test_a_message_records_the_person_who_wrote_it() -> None:
     msgs = client.get(f"/chat/sessions/{sid}/messages", headers=_as("a")).json()["messages"]
     user_msgs = [m for m in msgs if m["role"] == "user"]
     assert user_msgs and user_msgs[0]["metadata"]["author_user_id"] == "user-a"
+
+
+# ── deleting a chat propagates to the index ──────────────────────────────────
+
+
+async def _seed_session_transcripts(app: FastAPI, sessions: dict[str, str]) -> str:
+    store: KnowledgeStore = app.state.knowledge_store
+    ctx = TenantContext(T, PlanTier.FREE, "seed")
+    cid = await store.create_collection_async(KnowledgeCollection(name="kb"), tenant_ctx=ctx)
+    for sid, owner in sessions.items():
+        await store.ingest_chunks_async(
+            [Chunk(document_id=f"doc-{sid}", content=f"transcript {sid}", embedding=[0.1] * 8,
+                   chunk_index=0, metadata={"origin": {  # type: ignore[dict-item]
+                       "kind": KIND_CHAT_TRANSCRIPT, "user_id": owner,
+                       "chat_session_id": sid}})],
+            collection_id=cid, tenant_ctx=ctx,
+        )
+    return cid
+
+
+async def test_deleting_my_chat_removes_its_transcript_only() -> None:
+    app = _app()
+    client = TestClient(app)
+    mine = client.post("/chat/sessions", headers=_as("a"), json={"title": "m"}).json()["id"]
+    kept = client.post("/chat/sessions", headers=_as("a"), json={"title": "k"}).json()["id"]
+    cid = await _seed_session_transcripts(app, {mine: "user-a", kept: "user-a"})
+    assert client.delete(f"/chat/sessions/{mine}", headers=_as("a")).status_code == 204
+    assert _docs(app.state.knowledge_store, cid) == {f"doc-{kept}"}
+
+
+async def test_a_failed_transcript_removal_is_continued_or_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.chat_knowledge as mod
+
+    app = _app()
+    client = TestClient(app)
+    store: KnowledgeStore = app.state.knowledge_store
+    sid = client.post("/chat/sessions", headers=_as("a"), json={"title": "m"}).json()["id"]
+    sid2 = client.post("/chat/sessions", headers=_as("a"), json={"title": "n"}).json()["id"]
+    await _seed_session_transcripts(app, {sid: "user-a", sid2: "user-a"})
+
+    async def _broken(*_: Any, **__: Any) -> set[str]:
+        raise OSError("hold table unavailable")
+
+    monkeypatch.setattr(store, "held_document_ids_async", _broken)
+    queued: list[dict[str, Any]] = []
+    monkeypatch.setattr(mod, "enqueue_purge_continuation",
+                        lambda tenant_id, **kw: queued.append({"tenant_id": tenant_id, **kw}))
+    assert client.delete(f"/chat/sessions/{sid}", headers=_as("a")).status_code == 204
+    assert queued == [{"tenant_id": T, "user_id": "user-a", "session_ids": [sid],
+                       "unconsented_only": False}]
+
+    def _refused(*_: Any, **__: Any) -> None:
+        raise ConnectionError("broker down")
+
+    monkeypatch.setattr(mod, "enqueue_purge_continuation", _refused)
+    resp = client.delete(f"/chat/sessions/{sid2}", headers=_as("a"))
+    assert resp.status_code == 503
+    assert "deleted" in resp.json()["detail"] and "could not be removed" in resp.json()["detail"]

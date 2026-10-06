@@ -14,6 +14,9 @@ Celery task in ``app.scaling.tasks``):
   knowledge-graph nodes) cascade from those goal ids.
 * Tagged — knowledge ``documents`` / ``knowledge_chunks`` carry the subject
   reference in their ``metadata`` JSONB.
+* A person — the chats the subject (a user id) owns or wrote, their opt-in to
+  chat transcripts as knowledge, and the transcripts indexed under their id
+  (chunk ``metadata.origin`` ``{kind: chat_transcript, user_id}``) — CHAT-KB.
 
 Legal holds are checked FIRST and are absolute: an active hold covering the
 subject SUSPENDS the run (``suspended=True``, ``total_deleted=0``) — held data
@@ -56,7 +59,20 @@ _DIRECT_STORES: tuple[tuple[str, str, str], ...] = (
     ("goals", "goals", "tenant_id = :tid AND execution_context::text ILIKE :pat"),
     ("documents", "documents", "tenant_id = :tid AND metadata::text ILIKE :pat"),
     ("dpdp_consents", "dpdp_consents", "tenant_id = :tid AND data_principal_id = :subj"),
+    # CHAT-KB: the subject's own chats (messages before their sessions), the
+    # messages they wrote into another person's chat, and their opt-in.
+    (
+        "chat_messages",
+        "chat_messages",
+        "tenant_id = :tid AND (session_id IN (SELECT id FROM chat_sessions "
+        "WHERE tenant_id = :tid AND owner_user_id = :subj) "
+        "OR metadata->>'author_user_id' = :subj)",
+    ),
+    ("chat_sessions", "chat_sessions", "tenant_id = :tid AND owner_user_id = :subj"),
+    ("chat_kb_consents", "chat_kb_consents", "tenant_id = :tid AND user_id = :subj"),
 )
+# Tables whose rows are not keyed by an ``id`` column.
+_ROW_KEY: dict[str, str] = {"chat_kb_consents": "user_id"}
 
 # Knowledge chunks live in one table per embedding dimension. Only the 768 table
 # used to be erased: a tenant on any other embedder (the live stack is 2048) kept
@@ -78,6 +94,12 @@ _CHUNK_HELD = (
 _TAGGED_CHUNKS = "tenant_id = :tid AND metadata::text ILIKE :pat"
 _GOAL_DERIVED_CHUNKS = (
     "tenant_id = :tid AND metadata->'origin'->>'goal_id' = ANY(CAST(:gids AS text[]))"
+)
+# The chat transcripts indexed under the subject's id (CHAT-KB): an
+# agent_generated Source indexes a person's own chat sessions under their id.
+_CHAT_TRANSCRIPT_CHUNKS = (
+    "tenant_id = :tid AND metadata->'origin'->>'kind' = 'chat_transcript' "
+    "AND metadata->'origin'->>'user_id' = :subj"
 )
 
 _GOAL_LINKED_STORES: tuple[tuple[str, str, str], ...] = (
@@ -200,9 +222,22 @@ class DeletionOrchestrator:
                 # cascade anchor so goal-linked would-be counts are accurate.
                 goal_ids = ids or goal_ids
         chunk_tables = await self._chunk_tables(tenant_id)
-        held = 0
+        # The person's chat transcripts first (their origin names the user id, so
+        # the tagged pass below would otherwise take them uncounted as such).
+        (
+            receipt.per_store["knowledge_chunks_chat_transcripts"],
+            held,
+        ) = await self._apply_chunks(
+            chunk_tables,
+            _CHAT_TRANSCRIPT_CHUNKS,
+            {"tid": tenant_id, "subj": subject_ref},
+            dry_run=dry_run,
+        )
         receipt.per_store["knowledge_chunks"], n_held = await self._apply_chunks(
-            chunk_tables, _TAGGED_CHUNKS, {"tid": tenant_id, "pat": pat}, dry_run=dry_run
+            chunk_tables,
+            f"{_TAGGED_CHUNKS} AND NOT COALESCE(({_CHAT_TRANSCRIPT_CHUNKS}), false)",
+            {"tid": tenant_id, "pat": pat, "subj": subject_ref},
+            dry_run=dry_run,
         )
         held += n_held
         if goal_ids:
@@ -304,6 +339,16 @@ class DeletionOrchestrator:
             chunks = -1 if n < 0 or chunks < 0 else chunks + n
         if chunks:
             residue["knowledge_chunks"] = chunks
+        transcripts = 0
+        for table in await self._chunk_tables(tenant_id):
+            n = await self._count(
+                table,
+                f"{_CHAT_TRANSCRIPT_CHUNKS} AND NOT {_CHUNK_HELD.format(table=table)}",
+                {"tid": tenant_id, "subj": subject_ref},
+            )
+            transcripts = -1 if n < 0 or transcripts < 0 else transcripts + n
+        if transcripts:
+            residue["knowledge_chunks_chat_transcripts"] = transcripts
 
         for key, table, column in _GOAL_LINKED_STORES:
             if not goal_ids:
@@ -427,10 +472,11 @@ class DeletionOrchestrator:
         from app.db.rls import sqlalchemy_rls_context
 
         tenant_id = str(params["tid"])
+        key = _ROW_KEY.get(table, "id")
         sql = (
-            f"SELECT id FROM {table} WHERE {where}"
+            f"SELECT {key} FROM {table} WHERE {where}"
             if dry_run
-            else f"DELETE FROM {table} WHERE {where} RETURNING id"
+            else f"DELETE FROM {table} WHERE {where} RETURNING {key}"
         )
         try:
             async with (
