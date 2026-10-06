@@ -1934,18 +1934,32 @@ class ExecutorMixin:
             execution_id=state.goal_id,
         )
 
-        # 4. Circuit breaker
+        # 4. Circuit breakers (a08-F198-01). Every applicable breaker gates the
+        # step: the LLM provider's ("llm", which also records this step's LLM
+        # outcome) AND one registered for the step's tool — ``get("llm") or
+        # get(tool)`` skipped the tool's breaker whenever an LLM breaker existed.
+        # The async API is used: a RedisCircuitBreaker's sync methods only read
+        # its per-instance in-memory fallback, so a provider outage observed on
+        # one replica / worker never stopped the others. (MCP connector calls
+        # are additionally guarded per connector by the MCP client itself.)
         _active_breaker: CircuitBreaker | None = None
         if self._circuit_breakers:
-            breaker = self._circuit_breakers.get("llm") or self._circuit_breakers.get(tool_name)
-            if breaker is not None:
-                if not breaker.can_call():
+            _llm_breaker = self._circuit_breakers.get("llm")
+            _tool_breaker = (
+                self._circuit_breakers.get(tool_name)
+                if tool_name and tool_name != "llm"
+                else None
+            )
+            for _name, _breaker in (("llm", _llm_breaker), (tool_name, _tool_breaker)):
+                if _breaker is None:
+                    continue
+                if not await _breaker.can_call_async():
                     # Fail the step honestly — returning a skip message here made it
                     # the step's "output" and the step was marked COMPLETE.
                     raise StepNotExecutedError(
-                        f"Circuit breaker open for '{tool_name or 'llm'}': step was not executed."
+                        f"Circuit breaker open for '{_name or 'llm'}': step was not executed."
                     )
-                _active_breaker = breaker  # track for success/failure recording
+            _active_breaker = _llm_breaker  # records the LLM call's outcome
 
         # 5. Governance — permission check with scope extraction
         if self._permission_matrix is not None:
@@ -2571,7 +2585,7 @@ class ExecutorMixin:
                 async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
                     resp = await self._stream_with_failover(req, _on_token, _token_buffer)
                 if _active_breaker is not None:
-                    _active_breaker.record_success()
+                    await _active_breaker.record_success_async()
                 # D-13: feed provider health so ModelOrchestrator failover learns —
                 # attributed to the model that actually served (after failover) and
                 # a failure for each model that did not.
@@ -2584,7 +2598,7 @@ class ExecutorMixin:
                 )
             except Exception:
                 if _active_breaker is not None:
-                    _active_breaker.record_failure()
+                    await _active_breaker.record_failure_async()
                 self._record_stream_failure(_exec_model, _llm_call_start)
                 raise
         finally:

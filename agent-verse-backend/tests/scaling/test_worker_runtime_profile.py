@@ -209,6 +209,20 @@ def test_worker_graph_gets_the_tenant_bulkhead(worker: dict[str, Any]) -> None:
     assert worker["graphs"][-1]._bulkhead_registry is not None
 
 
+def test_worker_graph_gets_the_tenant_llm_circuit_breaker(worker: dict[str, Any]) -> None:
+    """a08-F198-03: worker goal graphs had no circuit_breakers entry at all; they
+    now get the API path's Redis-shared per-tenant LLM-provider breaker."""
+    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
+
+    worker["with_context"]({})
+
+    _run()
+
+    breaker = (worker["graphs"][-1]._circuit_breakers or {}).get("llm")
+    assert isinstance(breaker, RedisCircuitBreaker)
+    assert breaker._prefix == "cb:t-prof:llm_provider"
+
+
 def test_worker_graph_receives_episodic_procedural_and_tool_reliability(
     worker: dict[str, Any],
 ) -> None:

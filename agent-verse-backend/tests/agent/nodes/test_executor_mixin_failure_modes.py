@@ -755,15 +755,15 @@ async def test_llm_call_exception_records_circuit_breaker_failure_and_propagates
             raise RuntimeError("provider connection reset")
 
     breaker = MagicMock(spec=CircuitBreaker)
-    breaker.can_call.return_value = True
+    breaker.can_call_async.return_value = True
     graph = _make_graph(executor=_RaisingProvider(), circuit_breakers={"llm": breaker})
     state = _make_state(step_desc="answer a question")
 
     with pytest.raises(RuntimeError, match="provider connection reset"):
         await graph._execute_step("answer a question", state, T)
 
-    breaker.record_failure.assert_called_once()
-    breaker.record_success.assert_not_called()
+    breaker.record_failure_async.assert_awaited_once()
+    breaker.record_success_async.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

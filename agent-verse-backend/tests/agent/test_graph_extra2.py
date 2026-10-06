@@ -237,9 +237,9 @@ async def test_dedup_cache_returns_early() -> None:
 
 
 async def test_circuit_breaker_open_returns_early() -> None:
-    """Circuit breaker returning can_call()=False causes step to be skipped (lines 815-820)."""
+    """An open breaker (async API, a08-F198-01) causes the step to be refused."""
     breaker = MagicMock()
-    breaker.can_call.return_value = False
+    breaker.can_call_async = AsyncMock(return_value=False)
 
     p = FakeProvider(
         responses=[

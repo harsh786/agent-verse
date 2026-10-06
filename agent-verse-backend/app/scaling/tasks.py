@@ -2272,6 +2272,13 @@ def _runtime_profile_from_context(
     return (profile if drives else None), profile, None
 
 
+def _worker_llm_circuit_breaker(tenant_id: str) -> Any:
+    """The tenant's LLM-provider breaker for a worker goal graph (API parity)."""
+    from app.reliability.redis_circuit_breaker import build_llm_circuit_breaker
+
+    return build_llm_circuit_breaker(_worker_async_redis(), tenant_id)
+
+
 def _worker_bulkhead_registry() -> Any:
     """The distributed per-tenant bulkhead the API path gives its graphs (or None)."""
     try:
@@ -3700,6 +3707,9 @@ def run_goal(
                 # Distributed per-tenant concurrency bulkhead — same registry the
                 # API path gives its graphs (tool-call concurrency per tenant).
                 bulkhead_registry=_worker_bulkhead_registry(),
+                # The tenant's LLM-provider breaker, shared with the API replicas
+                # through Redis (a08-F198-03: worker graphs had none).
+                circuit_breakers={"llm": _worker_llm_circuit_breaker(tenant_id)},
                 # The agent's reasoning-pattern flags (snapshotted on the goal at
                 # submission — the worker has no in-memory agent store).
                 **_worker_pattern_flags,

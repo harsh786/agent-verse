@@ -1849,20 +1849,11 @@ class GoalService:
                         cooldown_seconds=60,
                     )
 
-        # Always wire a circuit breaker for the LLM provider
-        if _redis_for_cb is not None:
-            _circuit_breakers["llm"] = RedisCircuitBreaker(
-                redis_client=_redis_for_cb,
-                tenant_id=tenant_ctx.tenant_id,
-                tool_name="llm_provider",
-                failure_threshold=3,
-                cooldown_seconds=120,
-            )
-        else:
-            _circuit_breakers["llm"] = CircuitBreaker(
-                failure_threshold=3,
-                cooldown_seconds=120,
-            )
+        # Always wire a circuit breaker for the LLM provider (the worker graph
+        # gets the same one: build_llm_circuit_breaker).
+        from app.reliability.redis_circuit_breaker import build_llm_circuit_breaker
+
+        _circuit_breakers["llm"] = build_llm_circuit_breaker(_redis_for_cb, tenant_ctx.tenant_id)
 
         # Phase 3 services — grounding, consensus, synthesis, calibration
         from app.agent.grounding import GroundingChecker

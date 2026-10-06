@@ -215,3 +215,29 @@ class RedisCircuitBreaker:
     @property
     def state(self) -> CircuitState:
         return self._fallback.state
+
+
+# Thresholds of the per-tenant LLM-provider breaker every goal graph gets.
+LLM_BREAKER_FAILURE_THRESHOLD = 3
+LLM_BREAKER_COOLDOWN_S = 120.0
+
+
+def build_llm_circuit_breaker(redis: Any, tenant_id: str) -> RedisCircuitBreaker | CircuitBreaker:
+    """The tenant's LLM-provider breaker for one goal graph (API and worker alike).
+
+    With a Redis client the state is shared by every replica and worker
+    (``cb:{tenant}:llm_provider:*``); without one it is process-local. The
+    worker graph had no breaker at all (a08-F198-03).
+    """
+    if redis is not None:
+        return RedisCircuitBreaker(
+            redis_client=redis,
+            tenant_id=tenant_id,
+            tool_name="llm_provider",
+            failure_threshold=LLM_BREAKER_FAILURE_THRESHOLD,
+            cooldown_seconds=LLM_BREAKER_COOLDOWN_S,
+        )
+    return CircuitBreaker(
+        failure_threshold=LLM_BREAKER_FAILURE_THRESHOLD,
+        cooldown_seconds=LLM_BREAKER_COOLDOWN_S,
+    )
