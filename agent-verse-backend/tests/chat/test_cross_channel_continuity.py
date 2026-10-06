@@ -79,6 +79,7 @@ class _FakeRacyRepository:
         system_prompt: str | None = None,
         agent_id: str | None = None,
         folder_id: str | None = None,
+        owner_user_id: str | None = None,
     ) -> None:
         self.create_calls += 1
         await asyncio.sleep(0.01)  # simulate DB latency — forces interleaving

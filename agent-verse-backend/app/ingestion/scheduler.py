@@ -657,6 +657,77 @@ async def _agent_generated_notify_async(
     return {"queued": queued, "rerun": rerun}
 
 
+# ── Chat transcripts as knowledge: purge continuation (CHAT-KB) ─────────────
+
+
+@shared_task(
+    name="ingestion.chat_transcripts_purge",
+    bind=True,
+    max_retries=12,
+    default_retry_delay=60,
+)
+def chat_transcripts_purge_task(
+    self: Any,
+    *,
+    tenant_id: str,
+    user_id: str | None = None,
+    session_ids: list[str] | None = None,
+    unconsented_only: bool = False,
+) -> dict[str, Any]:
+    """The rest of a bounded transcript purge (a revocation, the tenant switch
+    turned off, deleted sessions): next batches, then itself again until done."""
+    result: dict[str, Any] = _run_task_loop(
+        _chat_transcripts_purge_async(
+            tenant_id=tenant_id, user_id=user_id, session_ids=session_ids,
+            unconsented_only=unconsented_only,
+        )
+    )
+    if result.get("error"):
+        if self.request.retries < self.max_retries:
+            raise self.retry()
+        return result
+    if result.get("pending"):
+        from app.services.chat_knowledge import enqueue_purge_continuation
+
+        enqueue_purge_continuation(
+            tenant_id, user_id=user_id, session_ids=session_ids,
+            unconsented_only=unconsented_only,
+        )
+    return result
+
+
+async def _chat_transcripts_purge_async(
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    session_ids: list[str] | None,
+    unconsented_only: bool,
+) -> dict[str, Any]:
+    from app.db.session import get_session_factory
+    from app.ingestion.worker_services import build_worker_knowledge_services
+    from app.services.chat_knowledge import (
+        ChatKnowledgeSettings,
+        ChatKnowledgeUnavailableError,
+        purge_transcripts,
+    )
+
+    db_factory = get_session_factory()
+    store, _embedder = build_worker_knowledge_services(db_factory)
+    try:
+        report = await purge_transcripts(
+            store, tenant_id, user_id=user_id, session_ids=session_ids,
+            unconsented_only=unconsented_only, settings=ChatKnowledgeSettings(db=db_factory),
+        )
+    except ChatKnowledgeUnavailableError as exc:
+        _log.warning("chat_transcripts_purge_failed tenant=%s: %s", tenant_id, exc)
+        return {"error": str(exc)[:300]}
+    _log.info(
+        "chat_transcripts_purge tenant=%s removed=%d held=%d pending=%s",
+        tenant_id, report.removed, report.held, report.truncated,
+    )
+    return report.as_dict()
+
+
 # The lock a manual sync takes in the API covers the task's wait in the queue;
 # the worker then holds it under the (renewed) run TTL.
 _QUEUED_LOCK_TTL_SECONDS = 3600

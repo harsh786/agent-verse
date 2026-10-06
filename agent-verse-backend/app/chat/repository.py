@@ -76,13 +76,14 @@ class PostgresChatRepository:
         system_prompt: str | None = None,
         agent_id: str | None = None,
         folder_id: str | None = None,
+        owner_user_id: str | None = None,
     ) -> None:
         async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
             await s.execute(
                 text(
                     "INSERT INTO chat_sessions "
-                    "(id, tenant_id, title, system_prompt, agent_id, folder_id) "
-                    "VALUES (:id, :t, :title, :sp, :aid, :fid)"
+                    "(id, tenant_id, title, system_prompt, agent_id, folder_id, owner_user_id) "
+                    "VALUES (:id, :t, :title, :sp, :aid, :fid, :owner)"
                 ),
                 {
                     "id": session_id,
@@ -91,6 +92,7 @@ class PostgresChatRepository:
                     "sp": system_prompt,
                     "aid": agent_id,
                     "fid": folder_id,
+                    "owner": owner_user_id,
                 },
             )
 

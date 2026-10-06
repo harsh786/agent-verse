@@ -50,6 +50,9 @@ class ChatSession(Base):
     show_reasoning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     proactive_suggestions: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     preferred_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # The person who created the session (CHAT-KB, migration c3e8a1f5b7d2); None
+    # for an API key, a channel or an older session — never indexed as knowledge.
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

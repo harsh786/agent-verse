@@ -140,6 +140,8 @@ def _session_to_dict(s: Any) -> dict[str, Any]:
         "show_reasoning": s.show_reasoning,
         "proactive_suggestions": s.proactive_suggestions,
         "preferred_model": s.preferred_model,
+        # The person who created the session (None: an API key or a channel).
+        "owner_user_id": getattr(s, "owner_user_id", None),
         "created_at": s.created_at.isoformat(),
         "updated_at": s.updated_at.isoformat(),
     }
@@ -173,6 +175,7 @@ async def create_session(body: CreateSessionRequest, request: Request) -> dict[s
         system_prompt=body.system_prompt,
         agent_id=body.agent_id,
         folder_id=body.folder_id,
+        owner_user_id=tenant.user_id,
     )
     return _session_to_dict(s)
 
@@ -206,6 +209,7 @@ async def upload_attachment(
         tenant_id=tenant.tenant_id,
         content_bytes=data,
         filename=file.filename or "document",
+        author_user_id=tenant.user_id,
     )
     if msg is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -310,7 +314,9 @@ async def send_message(
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    result = await svc.adispatch(session_id, tenant.tenant_id, body.content)
+    result = await svc.adispatch(
+        session_id, tenant.tenant_id, body.content, author_user_id=tenant.user_id
+    )
     return result
 
 
@@ -464,6 +470,95 @@ async def delete_message(session_id: str, message_id: str, request: Request) -> 
     ok = svc.delete_message(message_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Message not found")
+
+
+# ── Chat transcripts as knowledge: the person's own opt-in (owner decision 7) ──
+
+
+class ChatKnowledgeOptIn(BaseModel):
+    opted_in: bool
+
+
+def _person(request: Request) -> tuple[TenantContext, str]:
+    tenant = _tenant(request)
+    if not tenant.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only a signed-in person can opt their own chats in or out of knowledge "
+                "(an API key has no chats of its own)."
+            ),
+        )
+    return tenant, tenant.user_id
+
+
+@router.get("/settings/knowledge")
+async def get_chat_knowledge_opt_in(request: Request) -> dict[str, Any]:
+    """Whether the caller's own chats are indexed as knowledge (off by default)."""
+    from app.services.chat_knowledge import ChatKnowledgeUnavailableError, chat_knowledge_for
+
+    tenant, user_id = _person(request)
+    settings = chat_knowledge_for(request.app.state)
+    try:
+        enabled = await settings.tenant_enabled(tenant.tenant_id)
+        state = await settings.consent(tenant.tenant_id, user_id)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"tenant_enabled": enabled, **state.as_dict()}
+
+
+@router.put("/settings/knowledge")
+async def set_chat_knowledge_opt_in(
+    body: ChatKnowledgeOptIn, request: Request
+) -> dict[str, Any]:
+    """Opt the caller's own chats in or out of the workspace's knowledge.
+
+    Opting in needs the workspace switch (an admin's) to be on; only the chat
+    sessions the caller created are indexed, under the caller's id, with PII and
+    secrets redacted. Revoking stops indexing at once and removes the caller's
+    transcripts already indexed (a document under legal hold is kept and
+    reported), never anyone else's.
+    """
+    from app.services.chat_knowledge import (
+        KIND_CHAT_TRANSCRIPT,
+        ChatKnowledgeUnavailableError,
+        chat_knowledge_for,
+        remove_transcripts,
+    )
+
+    tenant, user_id = _person(request)
+    settings = chat_knowledge_for(request.app.state)
+    try:
+        if body.opted_in and not await settings.tenant_enabled(tenant.tenant_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Chat transcripts are not enabled for this workspace: a workspace admin "
+                    "turns them on in Settings first."
+                ),
+            )
+        state = await settings.set_consent(tenant.tenant_id, user_id, body.opted_in)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if body.opted_in:
+        from app.ingestion.agent_generated_events import notify_agent_generated
+
+        await notify_agent_generated(
+            tenant.tenant_id, KIND_CHAT_TRANSCRIPT,
+            db_factory=getattr(request.app.state, "db_session_factory", None),
+        )
+        return state.as_dict()
+    try:
+        report = await remove_transcripts(request.app.state, tenant.tenant_id, user_id=user_id)
+    except ChatKnowledgeUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Your opt-in is revoked (nothing more is indexed), but removing your "
+                f"transcripts already indexed failed: {exc}. Retry to finish."
+            ),
+        ) from exc
+    return {**state.as_dict(), **report}
 
 
 # ── Usage endpoints ───────────────────────────────────────────────────────────
