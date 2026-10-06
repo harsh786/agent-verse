@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -17,6 +18,11 @@ from app.net.ssrf_guard import assert_public_url_async, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+# A tenant's persisted channels are re-read at most this often (QA-13): the
+# cache is replaced by the DB rows, so a channel deleted / changed through
+# another replica stops / changes being notified here within the window.
+_DEFAULT_CHANNEL_REFRESH_S = 30.0
 
 # channel_type → the config key its delivery URL lives under. ``url`` and
 # ``webhook_url`` are accepted for every type (QA-5: the UI saved Teams channels
@@ -77,11 +83,16 @@ class NotificationService:
     Open source only — uses httpx for all HTTP calls.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, channel_refresh_s: float = _DEFAULT_CHANNEL_REFRESH_S) -> None:
         self._channels: dict[str, list[NotificationChannel]] = {}
         self._db: Any = None
-        # Tenants whose persisted channels have been hydrated into the cache.
-        self._loaded_tenants: set[str] = set()
+        self._channel_refresh_s = channel_refresh_s
+        # tenant_id → monotonic time its persisted channels were last loaded.
+        self._loaded_tenants: dict[str, float] = {}
+        # Channel ids whose INSERT / DELETE is in flight: a concurrent refresh
+        # must not drop (resurrect) them from a DB snapshot taken mid-write.
+        self._pending_writes: set[str] = set()
+        self._pending_deletes: set[str] = set()
         # Strong refs for the legacy fire-and-forget writes: asyncio only keeps
         # weak refs to tasks, so an unreferenced write could be GC'd mid-flight.
         self._bg_tasks: set[asyncio.Task[Any]] = set()
@@ -97,14 +108,32 @@ class NotificationService:
         self._loaded_tenants.clear()
 
     async def ensure_tenant_loaded(self, tenant_id: str) -> None:
-        """Hydrate *tenant_id*'s persisted channels once per process (idempotent)."""
-        if self._db is None or not tenant_id or tenant_id in self._loaded_tenants:
+        """Make sure *tenant_id*'s cached channels are the persisted ones (and fresh).
+
+        The first call per process hydrates the tenant; later calls re-read it at
+        most every ``channel_refresh_s`` (QA-13: it used to load once per process,
+        so a channel deleted on another replica kept being notified here). Every
+        delivery path calls this first. A failed refresh keeps the last-known
+        channels and is retried after the next window; a failed FIRST load is
+        retried on the next call.
+        """
+        if self._db is None or not tenant_id:
             return
-        if await self.sync_from_db(tenant_id):
-            self._loaded_tenants.add(tenant_id)
+        loaded_at = self._loaded_tenants.get(tenant_id)
+        if loaded_at is not None and time.monotonic() - loaded_at < self._channel_refresh_s:
+            return
+        if await self.sync_from_db(tenant_id):  # stamps the load time itself
+            return
+        if loaded_at is not None:
+            # Refresh failed (logged): keep the last-known channels, retry next window.
+            self._loaded_tenants[tenant_id] = time.monotonic()
 
     async def sync_from_db(self, tenant_id: str | None = None) -> bool:
-        """Load one tenant's persisted channels into the in-memory cache.
+        """Replace one tenant's cached channels with its persisted rows.
+
+        Postgres is the source of truth: a row deleted elsewhere leaves the cache
+        (QA-13 — this used to only ever add), except channels whose own write or
+        delete is still in flight on this process.
 
         Runs inside a transaction with the tenant GUC set, plus an explicit
         ``tenant_id`` predicate. The previous no-argument form was a cross-tenant
@@ -136,19 +165,31 @@ class NotificationService:
                     {"tid": tenant_id},
                 )
                 rows = result.fetchall()
+            fresh: list[NotificationChannel] = []
             for row in rows:
                 if row[1] != tenant_id:  # defense in depth: never cache a foreign row
                     continue
-                ch = NotificationChannel(
-                    channel_id=row[0],
-                    tenant_id=row[1],
-                    channel_type=row[2],
-                    config=row[3] or {},
-                    enabled=row[4],
+                if row[0] in self._pending_deletes or any(
+                    c.channel_id == row[0] for c in fresh
+                ):
+                    continue
+                fresh.append(
+                    NotificationChannel(
+                        channel_id=row[0],
+                        tenant_id=row[1],
+                        channel_type=row[2],
+                        config=row[3] or {},
+                        enabled=row[4],
+                    )
                 )
-                cached = self._channels.setdefault(tenant_id, [])
-                if not any(c.channel_id == ch.channel_id for c in cached):
-                    cached.append(ch)
+            seen = {c.channel_id for c in fresh}
+            fresh += [
+                c
+                for c in self._channels.get(tenant_id, [])
+                if c.channel_id in self._pending_writes and c.channel_id not in seen
+            ]
+            self._channels[tenant_id] = fresh
+            self._loaded_tenants[tenant_id] = time.monotonic()
             return True
         except Exception as exc:
             logger.warning("notification_sync_failed", tenant_id=tenant_id, error=str(exc))
@@ -167,14 +208,23 @@ class NotificationService:
         """
         self._channels.setdefault(channel.tenant_id, []).append(channel)
         if self._db is not None:
-            self._spawn(self._persist_channel(channel))
+            self._pending_writes.add(channel.channel_id)
+            self._spawn(self._persist_tracked(channel))
 
     async def add_channel_async(self, channel: NotificationChannel) -> None:
         """Cache a channel and persist it before returning."""
         await self.ensure_tenant_loaded(channel.tenant_id)
         self._channels.setdefault(channel.tenant_id, []).append(channel)
         if self._db is not None:
+            self._pending_writes.add(channel.channel_id)
+            await self._persist_tracked(channel)
+
+    async def _persist_tracked(self, channel: NotificationChannel) -> None:
+        """Persist *channel*; it counts as a pending write until this returns."""
+        try:
             await self._persist_channel(channel)
+        finally:
+            self._pending_writes.discard(channel.channel_id)
 
     async def _persist_channel(self, channel: NotificationChannel) -> None:
         """Persist a channel to the DB under its tenant's RLS context."""
@@ -220,7 +270,8 @@ class NotificationService:
         self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
         removed = len(self._channels[tenant_id]) < before
         if removed and self._db is not None:
-            self._spawn(self._delete_channel(channel_id, tenant_id))
+            self._pending_deletes.add(channel_id)
+            self._spawn(self._delete_tracked(channel_id, tenant_id))
         return removed
 
     async def remove_channel_async(self, channel_id: str, tenant_id: str) -> bool:
@@ -231,9 +282,17 @@ class NotificationService:
         self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
         removed = len(self._channels[tenant_id]) < before
         if self._db is not None:
-            deleted = await self._delete_channel(channel_id, tenant_id)
+            self._pending_deletes.add(channel_id)
+            deleted = await self._delete_tracked(channel_id, tenant_id)
             removed = removed or deleted
         return removed
+
+    async def _delete_tracked(self, channel_id: str, tenant_id: str) -> bool:
+        """Delete a channel row; it counts as a pending delete until this returns."""
+        try:
+            return await self._delete_channel(channel_id, tenant_id)
+        finally:
+            self._pending_deletes.discard(channel_id)
 
     async def _delete_channel(self, channel_id: str, tenant_id: str) -> bool:
         """Delete a channel row under its tenant's RLS context; True if a row went."""
