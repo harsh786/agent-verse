@@ -204,12 +204,16 @@ def test_prompt_builder_applies_token_budget(sample_chunks):
     assert len(prompt) < 10000
 
 
-def test_llm_reranker_returns_chunks(sample_chunks):
-    """LLM reranker must return chunks (falls back to keyword overlap when no provider)."""
-    policy = RerankPolicy(strategy=RerankStrategy.LLM)
+def test_tfidf_reranker_returns_chunks(sample_chunks):
+    """The local lexical (TF-IDF) reranker returns every chunk, ranked.
+
+    (There is no LLM reranker: 'llm' is refused, a04-F073-01.)
+    """
+    policy = RerankPolicy(strategy=RerankStrategy.TFIDF)
     reranked = policy.rerank(sample_chunks, query="orchestration")
     assert len(reranked) >= 1
     assert all(isinstance(c, dict) for c in reranked)
+    assert policy.last_strategy_used == RerankStrategy.TFIDF
 
 
 # ── ContextPipeline multi-source injection (D-20) ─────────────────────────────

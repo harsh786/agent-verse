@@ -61,7 +61,7 @@ class _FakeMediaIoBaseDownload:
 
     _CONTENT: bytes = b"downloaded file body"
 
-    def __init__(self, buf: Any, request: Any) -> None:
+    def __init__(self, buf: Any, request: Any, chunksize: int = 100 * 1024 * 1024) -> None:
         self._buf = buf
         self._chunks_left = 2
 
@@ -330,3 +330,106 @@ class TestGDriveSourceConnectorGetDelta:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ── a04-F067-04: the download is bounded by the cap, not the 100 MiB chunk ────
+
+
+class _RangedDownload:
+    """MediaIoBaseDownload stand-in that honours ``chunksize`` like the real one."""
+
+    created: list[_RangedDownload] = []
+    body = b"x" * (5 * 1024 * 1024)
+
+    def __init__(self, buf: Any, request: Any, chunksize: int = 100 * 1024 * 1024) -> None:
+        self._buf = buf
+        self.chunksize = chunksize
+        self.pos = 0
+        _RangedDownload.created.append(self)
+
+    def next_chunk(self) -> tuple[Any, bool]:
+        piece = self.body[self.pos : self.pos + self.chunksize]
+        self._buf.write(piece)
+        self.pos += len(piece)
+        return None, self.pos >= len(self.body)
+
+
+def _ranged_http() -> MagicMock:
+    return MagicMock(MediaIoBaseDownload=_RangedDownload)
+
+
+class TestDownloadCap:
+    def setup_method(self) -> None:
+        _RangedDownload.created = []
+
+    def test_oversized_file_stops_one_small_range_past_the_cap(self) -> None:
+        from app.ingestion.connectors.gdrive_connector import DriveFileTooLargeError
+
+        connector = GDriveConnector(credentials=object())
+        connector._service = MagicMock()
+        with (
+            patch.dict(sys.modules, {"googleapiclient.http": _ranged_http()}),
+            pytest.raises(DriveFileTooLargeError),
+        ):
+            connector.download_file("f1", "text/plain", max_bytes=2 * 1024 * 1024)
+        [download] = _RangedDownload.created
+        assert download.chunksize <= 1024 * 1024
+        assert download.pos <= 2 * 1024 * 1024 + 1024 * 1024  # never the whole 5 MiB
+
+    def test_small_cap_requests_only_cap_plus_one_byte(self) -> None:
+        from app.ingestion.connectors.gdrive_connector import DriveFileTooLargeError
+
+        connector = GDriveConnector(credentials=object())
+        connector._service = MagicMock()
+        with (
+            patch.dict(sys.modules, {"googleapiclient.http": _ranged_http()}),
+            pytest.raises(DriveFileTooLargeError),
+        ):
+            connector.download_file("f1", "text/plain", max_bytes=100)
+        assert _RangedDownload.created[0].chunksize == 101
+        assert _RangedDownload.created[0].pos == 101
+
+    def test_listed_size_over_the_cap_downloads_nothing(self) -> None:
+        from app.ingestion.connectors.gdrive_connector import DriveFileTooLargeError
+
+        connector = GDriveConnector(credentials=object())
+        connector._service = MagicMock()
+        with pytest.raises(DriveFileTooLargeError):
+            connector.download_file("f1", "application/pdf", max_bytes=1000, size="5000")
+        connector._service.files.return_value.get_media.assert_not_called()
+        assert _RangedDownload.created == []
+
+    def test_file_within_the_cap_downloads_completely(self) -> None:
+        connector = GDriveConnector(credentials=object())
+        connector._service = MagicMock()
+        with patch.dict(sys.modules, {"googleapiclient.http": _ranged_http()}):
+            content = connector.download_file(
+                "f1", "text/plain", max_bytes=6 * 1024 * 1024, size=str(5 * 1024 * 1024)
+            )
+        assert content is not None and len(content) == 5 * 1024 * 1024
+
+    async def test_source_sync_reports_an_oversized_file_instead_of_buffering_it(self) -> None:
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+
+        cfg = _config(folder_id="fld", credentials=object())
+        cfg.max_doc_size_bytes = 1000
+        files = [
+            {"id": "big", "name": "big.pdf", "mimeType": "application/pdf",
+             "modifiedTime": "2026-01-01T00:00:00Z", "size": "999999"},
+        ]  # fmt: skip
+        downloads: list[tuple[Any, ...]] = []
+
+        def _download(*args: Any) -> str:
+            downloads.append(args)
+            from app.ingestion.connectors.gdrive_connector import DriveFileTooLargeError
+
+            raise DriveFileTooLargeError(1000)
+
+        with (
+            patch.object(GDriveConnector, "list_files", return_value=files),
+            patch.object(GDriveConnector, "download_file", side_effect=_download),
+        ):
+            docs = [doc async for doc, _ in GDriveSourceConnector().get_delta(cfg, None)]
+        [doc] = docs
+        assert "1000-byte download cap" in doc.metadata[CONNECTOR_FAILURE_KEY]
+        assert downloads[0][2:] == (1000, "999999")  # the cap and the listed size

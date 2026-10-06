@@ -35,7 +35,15 @@ class RerankStrategy(enum.StrEnum):
     RRF = "rrf"
     DIVERSITY = "diversity"
     CROSS_ENCODER = "cross_encoder"
-    LLM = "llm"
+    # TF-IDF weighted token overlap blended with the retrieval score: the local
+    # lexical reranker. It is also what an explicit cross-encoder / hosted rerank
+    # degrades to when that backend fails — ``last_strategy_used`` then says
+    # TFIDF (it used to keep saying cross_encoder / hosted) and
+    # ``last_degraded_reason`` says why.
+    TFIDF = "tfidf"
+    # There is no "llm" strategy (a04-F073-01): it was accepted and ran the
+    # cross-encoder. An LLM reranker on the retrieval path would make tenant-
+    # billed model calls per search; until one exists the name is refused.
     # HOSTED calls a managed rerank API (Cohere/Voyage/Jina-compatible). It is an
     # async strategy: on the sync path it degrades to SCORE; on rerank_async it
     # calls the endpoint and falls back to the local path on any failure.
@@ -218,6 +226,9 @@ class RerankPolicy:
         self.last_strategy_used: RerankStrategy | None = None
         self.last_reason: str = ""
         self.last_retrieval_confidence: float | None = None
+        # Set when the requested reranker failed and a fallback ran instead
+        # ("cross_encoder_error", "hosted_reranker_error", ...); None otherwise.
+        self.last_degraded_reason: str | None = None
 
     def rerank(
         self,
@@ -241,13 +252,9 @@ class RerankPolicy:
 
         # 3. Resolve + apply strategy (AUTO chooses cross-encoder vs SCORE).
         effective, reason = self._resolve_strategy()
-        if effective == RerankStrategy.LLM:
-            # There is no LLM reranker: 'llm' runs the cross-encoder. Report the
-            # reranker that actually ran (it used to be reported as 'llm').
-            effective = RerankStrategy.CROSS_ENCODER
-            reason = "llm reranking is not implemented; the cross-encoder was used"
         self.last_strategy_used = effective
         self.last_reason = reason
+        self.last_degraded_reason = None
 
         if effective == RerankStrategy.SCORE or effective == RerankStrategy.HOSTED:
             # HOSTED is async-only (an HTTP call); on the sync path degrade to a
@@ -259,6 +266,8 @@ class RerankPolicy:
             filtered = rrf_fuse([filtered], k=60)
         elif effective == RerankStrategy.CROSS_ENCODER:
             filtered = self._cross_encoder_rerank(filtered, query)
+        elif effective == RerankStrategy.TFIDF:
+            filtered = self._tfidf_rerank(filtered, query)
 
         # 4. Cap per source
         if self._max_per_source > 0:
@@ -478,12 +487,13 @@ class RerankPolicy:
                 )
             scored.sort(key=lambda c: (c["exact_identifier"], c["score"]), reverse=True)
             return scored
-        except Exception:
+        except Exception as exc:
             # Cross-encoder inference failed (missing lib, load error, backend
-            # crash). Degrade cleanly to the lexical TF-IDF fallback rather than
-            # propagating — and record that the CE path did not run.
-            self.last_reason = "cross_encoder_error_fallback_tfidf"
-            return self._tfidf_rerank(chunks, query)
+            # crash). Degrade to the lexical TF-IDF reranker rather than
+            # propagating — and say so: the results are TF-IDF ranked, counted
+            # and logged (a04-F073-03: they used to stay labelled cross_encoder,
+            # with no metric).
+            return self._degrade_to_tfidf(chunks, query, "cross_encoder_error", exc)
 
     async def rerank_async(
         self,
@@ -497,14 +507,23 @@ class RerankPolicy:
 
         s = strategy or RerankStrategy.CROSS_ENCODER
 
+        if s in (
+            RerankStrategy.CROSS_ENCODER,
+            RerankStrategy.DIVERSITY,
+            RerankStrategy.HOSTED,
+        ):
+            self.last_strategy_used = s
+            self.last_reason = f"explicit:{s.value}"
+            self.last_degraded_reason = None
+
         if s == RerankStrategy.CROSS_ENCODER:
             # Run blocking cross-encoder in thread pool
             loop = asyncio.get_event_loop()
             try:
                 result = await loop.run_in_executor(None, self._cross_encoder_rerank, chunks, query)
                 return result
-            except Exception:
-                return self._tfidf_rerank(chunks, query)
+            except Exception as exc:
+                return self._degrade_to_tfidf(chunks, query, "cross_encoder_error", exc)
 
         if s == RerankStrategy.DIVERSITY:
             return self._diversity_rerank(chunks, query_embedding=query_embedding)
@@ -535,19 +554,17 @@ class RerankPolicy:
             # provider's API), then the env endpoint; all failing → local path.
             reranker = reranker_chain_from_settings(get_settings())
             if reranker is None:
-                return self._tfidf_rerank(chunks, query)
+                return self._degrade_to_tfidf(chunks, query, "hosted_reranker_unconfigured")
             documents = [str(c.get("content", "")) for c in chunks]
             pairs = await reranker.rerank(query, documents)
         except HostedRerankerError as exc:
-            logger.debug("hosted_rerank_failed_fallback", error=str(exc)[:120])
-            return self._tfidf_rerank(chunks, query)
+            return self._degrade_to_tfidf(chunks, query, "hosted_reranker_error", exc)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("hosted_rerank_error_fallback", error=str(exc)[:120])
-            return self._tfidf_rerank(chunks, query)
+            return self._degrade_to_tfidf(chunks, query, "hosted_reranker_error", exc)
 
         if len(pairs) != len(chunks):
             # Endpoint returned a different count than sent → don't trust it.
-            return self._tfidf_rerank(chunks, query)
+            return self._degrade_to_tfidf(chunks, query, "hosted_reranker_incomplete")
         reordered: list[dict[str, Any]] = []
         for original_index, score in pairs:
             chunk = chunks[original_index]
@@ -561,6 +578,34 @@ class RerankPolicy:
                 }
             )
         return reordered
+
+    def _degrade_to_tfidf(
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
+        reason: str,
+        exc: BaseException | None = None,
+    ) -> list[dict[str, Any]]:
+        """Rank with TF-IDF because the requested reranker failed — visibly.
+
+        Records the strategy that actually ran (TFIDF) and why, counts the
+        degradation (``agentverse_rerank_degraded_total{reason}``) and logs it.
+        """
+        from app.observability.metrics import RERANK_DEGRADED_TOTAL
+
+        requested = self.last_strategy_used
+        self.last_strategy_used = RerankStrategy.TFIDF
+        self.last_reason = f"{reason}_fallback_tfidf"
+        self.last_degraded_reason = reason
+        RERANK_DEGRADED_TOTAL.labels(reason=reason).inc()
+        logger.warning(
+            "rerank_degraded_to_tfidf",
+            requested=requested.value if requested is not None else None,
+            reason=reason,
+            error_type=type(exc).__name__ if exc is not None else None,
+            error=str(exc)[:200] if exc is not None else None,
+        )
+        return self._tfidf_rerank(chunks, query)
 
     def _tfidf_rerank(self, chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
         """TF-IDF weighted token overlap reranking (improved fallback)."""

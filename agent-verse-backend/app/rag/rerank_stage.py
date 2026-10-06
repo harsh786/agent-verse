@@ -8,7 +8,7 @@ path — ``app.rag.engine.retrieve`` fallthrough and the gateway ``HYBRID``/
 This module adds ONE reachable reranking stage, driven by the ONE reranking
 registry (:class:`app.context.rerank_policy.RerankPolicy`, whose ``RerankStrategy``
 enum is the registry of strategies: ``score``/``rrf``/``diversity``/
-``cross_encoder``/``llm``/``auto``). Any strategy registered there becomes
+``cross_encoder``/``tfidf``/``hosted``/``auto``). Any strategy registered there becomes
 selectable on the default path via config alone — no new call sites.
 
 Design guarantees:
@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 
 # Strategies that emit a genuine per-(query, passage) relevance score we should
 # reflect onto the result (rather than a pure reordering).
-_SCORING_STRATEGIES = frozenset({"cross_encoder", "llm", "hosted", "auto"})
+_SCORING_STRATEGIES = frozenset({"cross_encoder", "tfidf", "hosted", "auto"})
 
 
 def is_enabled(settings: Any) -> bool:
@@ -58,6 +58,9 @@ def _resolve_strategy(name: str) -> RerankStrategy:
     try:
         return RerankStrategy(name.lower())
     except ValueError:
+        # Settings refuses unknown names at load; a value that slipped past it
+        # (a hand-built settings object) runs ``auto`` — loudly.
+        logger.warning("default_rerank_unknown_strategy", strategy=name, used="auto")
         return RerankStrategy.AUTO
 
 
@@ -87,7 +90,7 @@ async def apply_default_rerank(
     # load the model inline (``auto`` even on the event loop) and so the first
     # search after a restart burned the whole retrieval deadline and 503'd.
     skipped_reason: str | None = None
-    if strategy in (RerankStrategy.AUTO, RerankStrategy.CROSS_ENCODER, RerankStrategy.LLM):
+    if strategy in (RerankStrategy.AUTO, RerankStrategy.CROSS_ENCODER):
         status = await _cross_encoder_status(settings)
         if status == "ready":
             if strategy is RerankStrategy.AUTO:
@@ -167,6 +170,9 @@ async def apply_default_rerank(
         return results
 
     effective = (policy.last_strategy_used or strategy).value
+    # a04-F073-03: the requested reranker failed and TF-IDF ranked instead; the
+    # policy counted it, every result says so.
+    degraded_reason = policy.last_degraded_reason
     ordered: list[RetrievalResult] = []
     seen: set[int] = set()
     for chunk in reranked:
@@ -178,6 +184,8 @@ async def apply_default_rerank(
         result.source_metadata = {**(result.source_metadata or {}), "rerank_strategy": effective}
         if skipped_reason is not None:
             result.source_metadata["rerank_skipped"] = skipped_reason
+        if degraded_reason is not None:
+            result.source_metadata["rerank_degraded"] = degraded_reason
         # Reflect a genuine reranker score when one was computed.
         new_score = chunk.get("score")
         ce_score = chunk.get("ce_score")

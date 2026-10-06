@@ -951,7 +951,9 @@ def test_ingest_gdrive_folder_file_error_collected() -> None:
     detail = resp.json()["detail"]
     assert detail["status"] == "failed"
     assert len(detail["errors"]) == 1
-    assert "download failed" in detail["errors"][0]
+    # a04-F067-06: a client-safe reason, never the raw exception text.
+    assert detail["errors"][0].endswith(": the file could not be ingested")
+    assert "download failed" not in resp.text
     assert detail["failed"][0]["file_id"] == "f1"
 
 

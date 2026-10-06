@@ -39,18 +39,9 @@ def test_github_ingestor_skips_git_dir():
     assert ingestor._should_ingest(".git/config") is False
 
 
-def test_confluence_html_to_text():
-    from app.knowledge.ingestors.confluence_ingestor import _html_to_text
-    html = "<h1>Title</h1><p>This is <b>bold</b> text with &amp; entities.</p>"
-    text = _html_to_text(html)
-    assert "Title" in text
-    assert "bold" in text
-    assert "&amp;" not in text  # entities decoded
-    assert "<" not in text  # no HTML tags
+def test_jira_connector_adf_to_text():
+    from app.ingestion.connectors.jira_connector import _extract_adf_text
 
-
-def test_jira_adf_to_text():
-    from app.knowledge.ingestors.jira_ingestor import JiraIngestor
     adf = {
         "type": "doc",
         "content": [
@@ -58,24 +49,21 @@ def test_jira_adf_to_text():
             {"type": "paragraph", "content": [{"type": "text", "text": "Second paragraph"}]},
         ]
     }
-    text = JiraIngestor._adf_to_text(adf)
+    text = _extract_adf_text(adf)
     assert "Hello world" in text
     assert "Second paragraph" in text
 
 
 def test_knowledge_ingestors_all_importable():
-    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
+    # Confluence / Jira are read by app.ingestion.connectors.* only (a04-F070-03).
     from app.knowledge.ingestors.docx_ingestor import DocxIngestor
     from app.knowledge.ingestors.github_ingestor import GitHubIngestor
-    from app.knowledge.ingestors.jira_ingestor import JiraIngestor
     from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
     from app.knowledge.ingestors.slack_ingestor import SlackIngestor
     ingestor_classes = [
         PdfIngestor,
         DocxIngestor,
         GitHubIngestor,
-        ConfluenceIngestor,
-        JiraIngestor,
         SlackIngestor,
     ]
     for cls in ingestor_classes:

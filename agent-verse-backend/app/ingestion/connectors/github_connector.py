@@ -64,14 +64,23 @@ class GitHubConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        """Yield changed files and issues/PRs since cursor."""
+        """Yield one document per repository file (whole) since cursor.
+
+        Files used to be yielded as the ingestor's 1,500-character windows, all
+        under the SAME document id (``<repo>_<owner/repo/path>``): the pipeline
+        replaces a document id's chunks on every write, so only a file's LAST
+        window stayed indexed. Each file is now one document (same id, so a
+        re-sync replaces the old windows) that the pipeline chunks by its type.
+        """
         from app.ingestion.source_config import RawDocument
         from app.knowledge.ingestors.github_ingestor import GitHubIngestor
 
-        token = config.connection_config.get("token", "")
-        repos = config.connection_config.get("repos", [])
-        config.connection_config.get("include_issues", True)
-        include_code = config.connection_config.get("include_code", True)
+        cc = config.connection_config
+        token = cc.get("token", "")
+        repos = cc.get("repos", [])
+        include_code = cc.get("include_code", True)
+        branch = cc.get("branch", "main")
+        max_files = int(cc.get("max_files") or 300)
 
         ingestor = GitHubIngestor(token=token)
         new_cursor = cursor or ""
@@ -82,33 +91,35 @@ class GitHubConnector(BaseConnector):
                 if include_code:
                     owner, _, repo_name = repo.partition("/")
                     file_failures: list[tuple[str, str]] = []
-                    chunks = await ingestor.ingest_repo(
+                    files = await ingestor.repo_files(
                         owner,
                         repo_name,
-                        branch=config.connection_config.get("branch", "main"),
-                        file_patterns=config.connection_config.get(
-                            "file_extensions", [".py", ".ts", ".md"]
-                        ),
+                        branch=branch,
+                        max_files=max_files,
                         failures=file_failures,
                     )
                     for path, reason in file_failures:
                         failures.add(f"{repo}:{path}", reason)
-                    for chunk in chunks:
+                    for file in files:
                         doc_id = (
-                            f"{repo}_{chunk['source_doc_id']}"
-                            if chunk.get("source_doc_id")
+                            f"{repo}_{file['source_doc_id']}"
+                            if file.get("source_doc_id")
                             else stable_doc_id(
-                                config, repo, chunk.get("source_url", ""), chunk.get("content", "")
+                                config, repo, file.get("source_url", ""), file.get("path", "")
                             )
                         )
+                        path = str(file.get("path") or "")
                         raw = RawDocument(
                             doc_id=doc_id,
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
-                            content=chunk.get("content", "").encode("utf-8"),
+                            content=str(file.get("content", "")).encode("utf-8"),
                             content_type="text/plain",
-                            source_url=chunk.get("source_url", ""),
-                            metadata=chunk.get("metadata", {}),
+                            source_url=file.get("source_url", ""),
+                            # The file name lets the pipeline pick the code /
+                            # markdown chunker for it.
+                            title=path.rsplit("/", 1)[-1],
+                            metadata={**file.get("metadata", {}), "filename": path},
                         )
                         yield raw, new_cursor or doc_id
             except ConnectorUnavailableError:

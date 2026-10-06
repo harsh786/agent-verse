@@ -203,23 +203,37 @@ async def test_guarded_request_revalidates_every_redirect_and_drops_auth() -> No
     assert "authorization" not in {k.lower() for k in requests[1].headers}
 
 
-# ── legacy /ingest/confluence + /ingest/jira ingestors ───────────────────────
+# ── /ingest/confluence + /ingest/jira now run the connectors (a04-F070-03) ───
+
+
+def _legacy_config(source_type: str, base_url: str) -> SourceConfig:
+    return SourceConfig(
+        source_id="legacy-x",
+        tenant_id="t1",
+        name="legacy",
+        family=SourceFamily.DOCUMENT_STORE,
+        source_type=source_type,
+        connection_config={"base_url": base_url, "username": "u", "api_token": "t",
+                           "space_keys": ["S"], "project_keys": ["P"]},
+    )  # fmt: skip
 
 
 @pytest.mark.asyncio
-async def test_legacy_confluence_ingestor_refuses_internal_base_url() -> None:
-    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
+async def test_confluence_connector_refuses_internal_base_url() -> None:
+    from app.ingestion.connectors.confluence_connector import ConfluenceConnector
 
     with pytest.raises(ConnectorEgressBlockedError):
-        await ConfluenceIngestor(base_url=_CLOSED, token="t", user="u").ingest_space("S")
+        async for _ in ConfluenceConnector().get_delta(_legacy_config("confluence", _CLOSED), None):
+            pass
 
 
 @pytest.mark.asyncio
-async def test_legacy_jira_ingestor_refuses_internal_base_url() -> None:
-    from app.knowledge.ingestors.jira_ingestor import JiraIngestor
+async def test_jira_connector_refuses_internal_base_url() -> None:
+    from app.ingestion.connectors.jira_connector import JiraConnector
 
     with pytest.raises(ConnectorEgressBlockedError):
-        await JiraIngestor(base_url=_METADATA, token="t", user="u").ingest_project("P")
+        async for _ in JiraConnector().get_delta(_legacy_config("jira", _METADATA), None):
+            pass
 
 
 # ── agent knowledge.ingest tool ──────────────────────────────────────────────

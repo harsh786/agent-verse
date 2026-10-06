@@ -230,7 +230,8 @@ class Settings(BaseSettings):
     # deterministic score-sort otherwise; the stage is an honest passthrough when
     # disabled or when the reranker backend is unavailable.
     rag_default_rerank_enabled: bool = True
-    rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|hosted|auto
+    # score|rrf|diversity|cross_encoder|tfidf|hosted|auto (validated below)
+    rag_default_rerank_strategy: str = "auto"
     # RERANK-PRELOAD: warm the cross-encoder in the background at API startup and
     # in each Celery worker process (only when the strategy above uses it). Until
     # it is warm a search waits at most ``rag_rerank_warmup_wait_seconds`` for it,
@@ -773,6 +774,31 @@ class Settings(BaseSettings):
     seller_name: str = "AgentVerse Technologies Pvt Ltd"
     dpo_name: str = "Data Protection Officer"
     dpo_email: str = "dpo@agentverse.ai"
+
+    @field_validator("rag_default_rerank_strategy")
+    @classmethod
+    def _known_rerank_strategy(cls, value: str) -> str:
+        """Refuse a rerank strategy with no implementation (a04-F073-01).
+
+        ``llm`` used to be accepted and silently ran the cross-encoder; an unknown
+        name silently ran ``auto``.
+        """
+        from app.context.rerank_policy import RerankStrategy
+
+        name = (value or "").strip().lower()
+        known = sorted(s.value for s in RerankStrategy)
+        if name == "llm":
+            raise ValueError(
+                "RAG_DEFAULT_RERANK_STRATEGY=llm is not implemented (there is no LLM "
+                "reranker); use 'hosted' for Model Registry rerank models or "
+                f"'cross_encoder'; supported: {', '.join(known)}"
+            )
+        if name not in known:
+            raise ValueError(
+                f"RAG_DEFAULT_RERANK_STRATEGY={value!r} is not a rerank strategy; "
+                f"supported: {', '.join(known)}"
+            )
+        return name
 
     @field_validator("cors_origins", mode="before")
     @classmethod

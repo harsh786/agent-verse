@@ -414,8 +414,9 @@ class TestGitHubConnectorGetDelta:
         from app.ingestion.connectors.github_connector import GitHubConnector
 
         config = _config("github", {"token": "tok", "repos": ["acme/repo"]})
-        chunks = [
+        files = [
             {
+                "path": "a.py",
                 "content": "print('hi')",
                 "source_url": "https://github.com/acme/repo/blob/main/a.py",
                 "source_doc_id": "acme/repo/a.py",
@@ -425,7 +426,7 @@ class TestGitHubConnectorGetDelta:
         with patch(
             "app.knowledge.ingestors.github_ingestor.GitHubIngestor"
         ) as MockIngestor:
-            MockIngestor.return_value.ingest_repo = AsyncMock(return_value=chunks)
+            MockIngestor.return_value.repo_files = AsyncMock(return_value=files)
             docs = _run(_collect(GitHubConnector().get_delta(config, None)))
 
         assert len(docs) == 1
@@ -442,10 +443,10 @@ class TestGitHubConnectorGetDelta:
         with patch(
             "app.knowledge.ingestors.github_ingestor.GitHubIngestor"
         ) as MockIngestor:
-            MockIngestor.return_value.ingest_repo = AsyncMock(return_value=[])
+            MockIngestor.return_value.repo_files = AsyncMock(return_value=[])
             docs = _run(_collect(GitHubConnector().get_delta(config, None)))
         assert docs == []
-        MockIngestor.return_value.ingest_repo.assert_not_called()
+        MockIngestor.return_value.repo_files.assert_not_called()
 
     def test_repo_error_is_counted_and_others_continue(self):
         from app.ingestion.connectors.github_connector import GitHubConnector
@@ -453,12 +454,15 @@ class TestGitHubConnectorGetDelta:
         config = _config(
             "github", {"token": "tok", "repos": ["acme/broken", "acme/ok"]}
         )
-        good_chunk = [{"content": "ok", "source_url": "u", "source_doc_id": "id1", "metadata": {}}]
+        good_file = [
+            {"path": "f.py", "content": "ok", "source_url": "u", "source_doc_id": "id1",
+             "metadata": {}},
+        ]  # fmt: skip
         with patch(
             "app.knowledge.ingestors.github_ingestor.GitHubIngestor"
         ) as MockIngestor:
-            MockIngestor.return_value.ingest_repo = AsyncMock(
-                side_effect=[RuntimeError("404"), good_chunk]
+            MockIngestor.return_value.repo_files = AsyncMock(
+                side_effect=[RuntimeError("404"), good_file]
             )
             docs, exc = _run(drain(GitHubConnector().get_delta(config, None)))
         assert len(docs) == 1

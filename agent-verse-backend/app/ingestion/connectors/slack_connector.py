@@ -73,6 +73,8 @@ class SlackConnector(BaseConnector):
         token = config.connection_config.get("bot_token", "")
         channels = config.connection_config.get("channels", [])
         max_messages = config.connection_config.get("max_messages", 500)
+        # Optional display names ({channel_id: "#general"}) stamped on chunks.
+        channel_names = config.connection_config.get("channel_names") or {}
         ingestor = SlackIngestor(token=token)
 
         new_cursor = cursor or ""
@@ -80,7 +82,10 @@ class SlackConnector(BaseConnector):
         for channel_id in channels:
             try:
                 chunks = await ingestor.ingest_channel(
-                    channel_id, max_messages=max_messages, raise_on_error=True
+                    channel_id,
+                    channel_name=str(channel_names.get(channel_id) or ""),
+                    max_messages=max_messages,
+                    raise_on_error=True,
                 )
                 for chunk in chunks:
                     ts = chunk.get("metadata", {}).get("ts", "")

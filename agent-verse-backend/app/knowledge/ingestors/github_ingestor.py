@@ -145,28 +145,30 @@ class GitHubIngestor:
                 return False
         return True
 
-    async def ingest_repo(
+    async def repo_files(
         self,
         owner: str,
         repo: str,
         *,
         branch: str = "HEAD",
         max_files: int = 300,
-        file_patterns: list[str] | None = None,
         failures: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Chunks of the repo's files. A file that cannot be fetched (other than
-        one deleted meanwhile) is appended to ``failures`` as ``(path, reason)``
-        when given, so callers can count it instead of losing it silently."""
+        """The repo's readable text files, whole: ``{"path", "content",
+        "source_url", "source_doc_id", "metadata"}`` each (at most ``max_files``).
+
+        A file that cannot be fetched (other than one deleted meanwhile) is
+        appended to ``failures`` as ``(path, reason)`` when given, so callers can
+        count it instead of losing it silently.
+        """
         from app.knowledge.ingestors.limits import MAX_GITHUB_FILES, clamp_limit
 
         max_files = clamp_limit(max_files, MAX_GITHUB_FILES)
         tree = await self._get_tree(owner, repo)
-        chunks: list[dict[str, Any]] = []
-        file_count = 0
+        files: list[dict[str, Any]] = []
 
         for item in tree:
-            if file_count >= max_files:
+            if len(files) >= max_files:
                 break
             if item.get("type") != "blob":
                 continue
@@ -175,39 +177,26 @@ class GitHubIngestor:
                 continue
 
             try:
-                content = await self._fetch_file_content(owner, repo, path)
-                content = content.strip()
+                content = (await self._fetch_file_content(owner, repo, path)).strip()
                 # A short file with real content (a one-line config, a
                 # constants file) is indexed; only empty / noise is skipped.
                 if not is_meaningful_text(content):
                     continue
-
-                source_url = f"https://github.com/{owner}/{repo}/blob/{branch}/{path}"
-                source_doc_id = f"{owner}/{repo}/{path}"
-
-                # Sliding window chunks
-                start = 0
-                while start < len(content):
-                    chunk = content[start : start + _CHUNK_SIZE]
-                    if len(chunk.strip()) >= 50:
-                        chunks.append(
-                            {
-                                "content": chunk,
-                                "source_url": source_url,
-                                "source_type": "github",
-                                "source_doc_id": source_doc_id,
-                                "page_number": None,
-                                "metadata": {
-                                    "owner": owner,
-                                    "repo": repo,
-                                    "path": path,
-                                    "branch": branch,
-                                    "size": item.get("size", 0),
-                                },
-                            }
-                        )
-                    start += _CHUNK_SIZE - _CHUNK_OVERLAP
-                file_count += 1
+                files.append(
+                    {
+                        "path": path,
+                        "content": content,
+                        "source_url": f"https://github.com/{owner}/{repo}/blob/{branch}/{path}",
+                        "source_doc_id": f"{owner}/{repo}/{path}",
+                        "metadata": {
+                            "owner": owner,
+                            "repo": repo,
+                            "path": path,
+                            "branch": branch,
+                            "size": item.get("size", 0),
+                        },
+                    }
+                )
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
                     continue  # File deleted between tree fetch and content fetch
@@ -218,12 +207,46 @@ class GitHubIngestor:
                 logger.warning("github_file_fetch_failed", path=path, error=str(exc))
                 if failures is not None:
                     failures.append((path, f"{type(exc).__name__}: {exc}"[:300]))
+        return files
+
+    async def ingest_repo(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        branch: str = "HEAD",
+        max_files: int = 300,
+        file_patterns: list[str] | None = None,
+        failures: list[tuple[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Sliding-window chunks of the repo's files (see :meth:`repo_files`)."""
+        files = await self.repo_files(
+            owner, repo, branch=branch, max_files=max_files, failures=failures
+        )
+        chunks: list[dict[str, Any]] = []
+        for file in files:
+            content = file["content"]
+            start = 0
+            while start < len(content):
+                chunk = content[start : start + _CHUNK_SIZE]
+                if len(chunk.strip()) >= 50:
+                    chunks.append(
+                        {
+                            "content": chunk,
+                            "source_url": file["source_url"],
+                            "source_type": "github",
+                            "source_doc_id": file["source_doc_id"],
+                            "page_number": None,
+                            "metadata": dict(file["metadata"]),
+                        }
+                    )
+                start += _CHUNK_SIZE - _CHUNK_OVERLAP
 
         logger.info(
             "github_repo_ingested",
             owner=owner,
             repo=repo,
-            files=file_count,
+            files=len(files),
             chunks=len(chunks),
         )
         return chunks

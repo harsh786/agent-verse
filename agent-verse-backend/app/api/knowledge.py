@@ -77,6 +77,7 @@ from app.rag.gateway import CollectionNotFoundError
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import (
+    INGESTION_JOB_INTERRUPTED,
     DuplicateContentError,
     EmbeddingDimensionError,
     EmbeddingProviderUnavailableError,
@@ -226,9 +227,9 @@ class RpaUrlIngestRequest(BaseModel):
 
 class GitHubIngestRequest(BaseModel):
     collection_id: str
-    owner: str
-    repo: str
-    branch: str = "HEAD"
+    owner: str = Field(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
+    repo: str = Field(pattern=r"^[A-Za-z0-9._-]{1,100}$")
+    branch: str = Field(default="HEAD", max_length=255)
     max_files: int = Field(default=300, ge=1, le=MAX_GITHUB_FILES)
     # The tenant's own token for private repos; public repos need none. Never
     # the platform's GITHUB_TOKEN (see GitHubIngestor).
@@ -1821,6 +1822,20 @@ async def get_ingestion_job(request: Request, job_id: str) -> dict[str, Any]:
     return job
 
 
+class RepositoryJobLeaseHeldError(RuntimeError):
+    """Another worker holds this repository job's live lease (a04-F066-03).
+
+    Raised to the Celery task, which retries after ``retry_after_seconds`` — by
+    then a dead holder's lease has expired and the job can be taken over, while
+    a live holder keeps heartbeating and the duplicate delivery is dropped.
+    """
+
+    def __init__(self, job_id: str, *, retry_after_seconds: int) -> None:
+        self.job_id = job_id
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"repository ingestion job {job_id} is leased by another worker")
+
+
 async def _ingest_repo_background(
     job_id: str,
     repo_url: str,
@@ -1924,6 +1939,29 @@ async def _ingest_repo_background(
             tenant_ctx=tenant_ctx,
         )
         if not claimed:
+            # a04-F066-03: why not? A redelivered task (acks_late) or a
+            # duplicate delivery must neither fail nor dead-letter a job another
+            # worker holds or already finished.
+            job = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant_ctx)
+            job_status = str((job or {}).get("status") or "")
+            if job_status == "running":
+                # Live lease (an expired one would have been taken over): its
+                # holder is still working, or died less than a lease ago.
+                raise RepositoryJobLeaseHeldError(job_id, retry_after_seconds=lease_seconds + 1)
+            if job_status == "failed" and (job or {}).get("error_message") == (
+                INGESTION_JOB_INTERRUPTED
+            ):
+                # Reconciliation failed it while its dead worker's task waited
+                # for redelivery: that worker never dead-lettered it, so this
+                # delivery does — the DLQ retry re-runs the ingestion.
+                logger.warning("repo_ingest_interrupted_job_dead_lettered", job_id=job_id)
+                await _dead_letter("Repository ingestion interrupted")
+                return
+            if job_status in ("completed", "failed"):
+                logger.info(
+                    "repo_ingest_duplicate_delivery_ignored", job_id=job_id, status=job_status
+                )
+                return
             raise RuntimeError("Repository ingestion job lease could not be claimed")
         # Clone using git — non-blocking async subprocess
         proc = await asyncio.create_subprocess_exec(
@@ -2108,6 +2146,8 @@ async def _ingest_repo_background(
             repo=repo_url,
             files=len(repository_files),
         )
+    except RepositoryJobLeaseHeldError:
+        raise  # not a failure of this job: the task retries it
     except asyncio.CancelledError:
         if proc is not None and proc.returncode is None:
             proc.kill()
@@ -2898,125 +2938,225 @@ async def ingest_docx(
     return {"chunks_ingested": ingested, "source": filename, "source_type": "docx"}
 
 
-@router.post("/ingest/github", status_code=200, dependencies=_DOC_QUOTA)
-async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str, Any]:
-    """Ingest a GitHub repository into a knowledge collection via GitHub REST API."""
-    tenant = _require_tenant(request)
-    store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+async def _queue_legacy_source_ingest(
+    request: Request, tenant: Any, collection_id: str, legacy: Any
+) -> dict[str, Any]:
+    """Record a durable ingestion job and queue it on the ingestion workers.
 
-    from app.knowledge.ingestors.github_ingestor import GitHubIngestor
-
-    ingestor = GitHubIngestor(token=body.token.get_secret_value() if body.token else None)
-    chunks = await ingestor.ingest_repo(
-        body.owner,
-        body.repo,
-        branch=body.branch,
-        max_files=body.max_files,
-    )
-
-    ingested = await _ingest_chunks_from_source(
-        store, chunks, body.collection_id, tenant, embedder, request=request
-    )
-    return {
-        "chunks_ingested": ingested,
-        "source": f"github:{body.owner}/{body.repo}",
-        "source_type": "github",
-    }
-
-
-@router.post("/ingest/confluence", status_code=200, dependencies=_DOC_QUOTA)
-async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> dict[str, Any]:
-    """Ingest a Confluence space into a knowledge collection."""
-    tenant = _require_tenant(request)
-    store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
-
-    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
-
-    ingestor = ConfluenceIngestor(
-        base_url=body.base_url,
-        token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
-        user=body.user,
-    )
+    a04-F067-01 / F070-03: these routes used to fetch, screen and embed the
+    whole source synchronously inside the request with their own ingestor
+    stack. The worker now runs the registered connector through the shared
+    ingestion pipeline (see :mod:`app.ingestion.legacy_source_jobs`); poll
+    ``GET /knowledge/ingest/jobs/{job_id}``.
+    """
     from app.ingestion.connector_egress import ConnectorEgressBlockedError
+    from app.ingestion.connector_registry import (
+        ConnectorDisabledError,
+        connector_error_message,
+        get_connector,
+        load_all_connectors,
+    )
+    from app.ingestion.legacy_source_jobs import enqueue_legacy_source_ingest
+    from app.ingestion.source_egress_policy import assert_source_config_egress
+    from app.net.ssrf_guard import SSRFError
 
+    kind = legacy.kind
+    store = _knowledge_store(request)
+    settings = get_settings()
+    load_all_connectors()
     try:
-        chunks = await ingestor.ingest_space(body.space_key, max_pages=body.max_pages)
-    except ConnectorEgressBlockedError as exc:
-        # base_url is tenant-supplied: an internal target is a client error.
+        get_connector(kind)
+    except ConnectorDisabledError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=connector_error_message(exc)) from exc
+    try:
+        # base_url is tenant-supplied: an internal target is a client error,
+        # refused before anything is queued.
+        await asyncio.to_thread(assert_source_config_egress, kind, legacy.connection_config)
+    except (ConnectorEgressBlockedError, SSRFError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="base_url is not allowed") from exc
 
-    ingested = await _ingest_chunks_from_source(
-        store, chunks, body.collection_id, tenant, embedder, request=request
-    )
-    return {
-        "chunks_ingested": ingested,
-        "source": f"confluence:{body.space_key}",
-        "source_type": "confluence",
-    }
-
-
-@router.post("/ingest/jira", status_code=200, dependencies=_DOC_QUOTA)
-async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, Any]:
-    """Ingest Jira project issues into a knowledge collection."""
-    tenant = _require_tenant(request)
-    store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
-
-    from app.knowledge.ingestors.jira_ingestor import JiraIngestor
-
-    ingestor = JiraIngestor(
-        base_url=body.base_url,
-        token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
-        user=body.user,
-    )
-    from app.ingestion.connector_egress import ConnectorEgressBlockedError
-
     try:
-        chunks = await ingestor.ingest_project(
-            body.project_key,
-            jql_extra=body.jql_extra,
-            max_issues=body.max_issues,
+        collection = await store.get_collection_async(collection_id, tenant_ctx=tenant)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Knowledge collection not found")
+    try:
+        await store.reconcile_stale_ingestion_jobs_async(
+            tenant_ctx=tenant, stale_after_seconds=settings.repo_ingest_stale_job_seconds
         )
-    except ConnectorEgressBlockedError as exc:
-        # base_url is tenant-supplied: an internal target is a client error.
-        raise HTTPException(status_code=400, detail="base_url is not allowed") from exc
-
-    ingested = await _ingest_chunks_from_source(
-        store, chunks, body.collection_id, tenant, embedder, request=request
-    )
+        active = await store.count_active_ingestion_jobs_async(
+            tenant_ctx=tenant, source_type=kind
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    limit = settings.repo_ingest_max_concurrent_per_tenant
+    if active >= limit:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"{active} {kind} ingestions are already queued or running for this "
+                f"tenant (limit {limit}); retry later"
+            ),
+        )
+    try:
+        job_id = await store.create_ingestion_job_async(
+            collection_id=collection_id,
+            source_url=legacy.source_url,
+            source_type=kind,
+            title=legacy.title or legacy.target,
+            tenant_ctx=tenant,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    try:
+        enqueue_legacy_source_ingest(
+            job_id=job_id,
+            tenant_id=tenant.tenant_id,
+            collection_id=collection_id,
+            request=legacy,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            await store.fail_ingestion_job_async(
+                job_id,
+                lease_owner=None,
+                error_message=f"{kind}: the ingestion could not be queued",
+                tenant_ctx=tenant,
+            )
+        raise HTTPException(
+            status_code=503, detail="Ingestion could not be queued; retry later"
+        ) from exc
     return {
-        "chunks_ingested": ingested,
-        "source": f"jira:{body.project_key}",
-        "source_type": "jira",
+        "status": "ingestion_started",
+        "job_id": job_id,
+        "source": legacy.target,
+        "source_type": kind,
+        "collection_id": collection_id,
+        "message": f"Ingestion queued; poll GET /knowledge/ingest/jobs/{job_id}.",
     }
 
 
-@router.post("/ingest/slack", status_code=200, dependencies=_DOC_QUOTA)
-async def ingest_slack(request: Request, body: SlackIngestRequest) -> dict[str, Any]:
-    """Ingest a Slack channel's message history into a knowledge collection."""
+_LEGACY_INGEST_RESPONSES: dict[int | str, dict[str, Any]] = {
+    202: {"description": "Queued as a durable ingestion job (poll /knowledge/ingest/jobs/{id})"},
+    400: {"description": "base_url names a blocked destination"},
+    404: {"description": "Knowledge collection not found"},
+    429: {"description": "Too many ingestions of this kind queued for the tenant"},
+    503: {"description": "Persistence or the queue is unavailable"},
+}
+
+
+@router.post(
+    "/ingest/github",
+    status_code=202,
+    dependencies=_DOC_QUOTA,
+    responses=_LEGACY_INGEST_RESPONSES,
+)
+async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str, Any]:
+    """Queue a GitHub repository (via the REST API) for ingestion into a collection."""
+    from app.ingestion.legacy_source_jobs import LegacySourceRequest
+
     tenant = _require_tenant(request)
-    store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
-
-    from app.knowledge.ingestors.slack_ingestor import SlackIngestor
-
-    ingestor = SlackIngestor(token=body.token.get_secret_value())
-    chunks = await ingestor.ingest_channel(
-        body.channel_id,
-        channel_name=body.channel_name,
-        max_messages=body.max_messages,
+    target = f"github:{body.owner}/{body.repo}"
+    legacy = LegacySourceRequest(
+        kind="github",
+        target=target,
+        source_url=f"https://github.com/{body.owner}/{body.repo}#{body.branch}",
+        connection_config={
+            # The tenant's own token for private repos (never the platform's).
+            "token": body.token.get_secret_value() if body.token else "",
+            "repos": [f"{body.owner}/{body.repo}"],
+            "branch": body.branch,
+            "max_files": body.max_files,
+        },
     )
+    return await _queue_legacy_source_ingest(request, tenant, body.collection_id, legacy)
 
-    ingested = await _ingest_chunks_from_source(
-        store, chunks, body.collection_id, tenant, embedder, request=request
+
+@router.post(
+    "/ingest/confluence",
+    status_code=202,
+    dependencies=_DOC_QUOTA,
+    responses=_LEGACY_INGEST_RESPONSES,
+)
+async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> dict[str, Any]:
+    """Queue a Confluence space for ingestion into a collection."""
+    from app.ingestion.legacy_source_jobs import LegacySourceRequest
+
+    tenant = _require_tenant(request)
+    base_url = body.base_url.rstrip("/")
+    legacy = LegacySourceRequest(
+        kind="confluence",
+        target=f"confluence:{body.space_key}",
+        source_url=f"{base_url}#space={body.space_key}",
+        connection_config={
+            "base_url": base_url,
+            "username": body.user,
+            "api_token": body.token.get_secret_value(),
+            "space_keys": [body.space_key],
+            "content_types": ["page"],
+        },
+        max_documents=body.max_pages,
     )
-    return {
-        "chunks_ingested": ingested,
-        "source": f"slack:{body.channel_id}",
-        "source_type": "slack",
-    }
+    return await _queue_legacy_source_ingest(request, tenant, body.collection_id, legacy)
+
+
+@router.post(
+    "/ingest/jira",
+    status_code=202,
+    dependencies=_DOC_QUOTA,
+    responses=_LEGACY_INGEST_RESPONSES,
+)
+async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, Any]:
+    """Queue a Jira project's issues for ingestion into a collection."""
+    from app.ingestion.legacy_source_jobs import LegacySourceRequest
+
+    tenant = _require_tenant(request)
+    base_url = body.base_url.rstrip("/")
+    legacy = LegacySourceRequest(
+        kind="jira",
+        target=f"jira:{body.project_key}",
+        source_url=f"{base_url}#project={body.project_key}",
+        connection_config={
+            "base_url": base_url,
+            "username": body.user,
+            "api_token": body.token.get_secret_value(),
+            "project_keys": [body.project_key],
+            "jql_extra": body.jql_extra,
+            "newest_first": True,
+        },
+        max_documents=body.max_issues,
+    )
+    return await _queue_legacy_source_ingest(request, tenant, body.collection_id, legacy)
+
+
+@router.post(
+    "/ingest/slack",
+    status_code=202,
+    dependencies=_DOC_QUOTA,
+    responses=_LEGACY_INGEST_RESPONSES,
+)
+async def ingest_slack(request: Request, body: SlackIngestRequest) -> dict[str, Any]:
+    """Queue a Slack channel's message history for ingestion into a collection."""
+    from app.ingestion.legacy_source_jobs import LegacySourceRequest
+
+    tenant = _require_tenant(request)
+    legacy = LegacySourceRequest(
+        kind="slack",
+        target=f"slack:{body.channel_id}",
+        source_url=f"slack:{body.channel_id}",
+        connection_config={
+            "bot_token": body.token.get_secret_value(),
+            "channels": [body.channel_id],
+            "max_messages": body.max_messages,
+            "channel_names": {body.channel_id: body.channel_name} if body.channel_name else {},
+        },
+    )
+    return await _queue_legacy_source_ingest(request, tenant, body.collection_id, legacy)
 
 
 # ---------------------------------------------------------------------------
@@ -4042,6 +4182,52 @@ class EmailIngestRequest(BaseModel):
 _LEGACY_MAX_TOTAL_BYTES = 50 * 1024 * 1024
 
 
+def _public_file_error(exc: BaseException) -> str:
+    """A client-safe one-line reason for a failed file (never the raw exception).
+
+    Raw exception text (driver / upstream / provider messages, internal hosts,
+    request ids) used to be returned per file in 207 / 502 bodies.
+    """
+    from app.ingestion.document_text import DocumentParseError, ParserUnavailableError
+
+    if isinstance(exc, IngestionPolicyRejectedError):
+        return "rejected by the ingestion policy"
+    if isinstance(exc, IngestionScreeningUnavailableError):
+        return "ingestion screening is unavailable"
+    if isinstance(exc, EmbeddingProviderUnavailableError):
+        return "the embedding provider is unavailable"
+    if isinstance(exc, DocumentParseError):
+        return "the file could not be parsed"
+    if isinstance(exc, ParserUnavailableError):
+        return "no parser is available for this file type"
+    if isinstance(exc, TimeoutError):
+        return "the source timed out"
+    status_code = getattr(getattr(exc, "resp", None), "status", None)
+    if isinstance(status_code, int):  # googleapiclient HttpError
+        return f"the Drive API refused the request (HTTP {status_code})"
+    return "the file could not be ingested"
+
+
+def _gdrive_file_failure(file_id: str, filename: str, exc: BaseException) -> dict[str, str]:
+    """One ``failed`` entry: a public reason plus the correlation id of the log line."""
+    from app.observability.logging import get_logger as _get_logger
+
+    correlation_id = _uuid.uuid4().hex
+    _get_logger(__name__).warning(
+        "gdrive_file_ingest_failed",
+        correlation_id=correlation_id,
+        file_id=file_id,
+        error_type=type(exc).__name__,
+        error=str(exc)[:500],
+    )
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "error": _public_file_error(exc),
+        "correlation_id": correlation_id,
+    }
+
+
 def _raise_upstream_error(exc: Exception) -> NoReturn:
     """A generic 502 for a failed upstream (Notion / Drive / mail server) call.
 
@@ -4276,7 +4462,9 @@ async def ingest_gdrive_folder(
     * **502** ``detail.status: "failed"`` -- every attempted file failed
       (nothing was ingested); ``detail`` carries the same body shape.
 
-    Each ``failed`` entry is ``{"file_id", "filename", "error"}``. ``errors``
+    Each ``failed`` entry is ``{"file_id", "filename", "error",
+    "correlation_id"}``: ``error`` is a client-safe reason (never the raw
+    exception text), the cause is logged under ``correlation_id``. ``errors``
     keeps the legacy ``"<filename>: <error>"`` strings for older clients.
     """
     tenant = _require_tenant(request)
@@ -4294,7 +4482,10 @@ async def ingest_gdrive_folder(
         ) from exc
 
     try:
-        from app.ingestion.connectors.gdrive_connector import GDriveConnector
+        from app.ingestion.connectors.gdrive_connector import (
+            DriveFileTooLargeError,
+            GDriveConnector,
+        )
         from app.ingestion.orchestrator import IngestionOrchestrator
 
         # The key stays in memory (it used to be written to a temp file), and
@@ -4325,8 +4516,14 @@ async def ingest_gdrive_folder(
                 truncated = True
                 break
             try:
+                # The listed size pre-skips an oversized file; otherwise the
+                # download stops one 1 MiB range past the cap (a04-F067-04).
                 content = await asyncio.to_thread(
-                    connector.download_file, fid, mime, max_bytes=remaining
+                    connector.download_file,
+                    fid,
+                    mime,
+                    max_bytes=remaining,
+                    size=file_meta.get("size"),
                 )
                 if content is None:
                     # A type the connector cannot read (it used to be "empty").
@@ -4353,11 +4550,11 @@ async def ingest_gdrive_folder(
                 ingested_count += 1
             except (DecisionBudgetExceededError, EmbeddingBudgetUnverifiableError):
                 raise  # the tenant's budget, not this file: stop the whole request
+            except DriveFileTooLargeError:
+                truncated = True
+                break
             except Exception as file_exc:
-                if "download cap" in str(file_exc):
-                    truncated = True
-                    break
-                failed.append({"file_id": fid, "filename": fname, "error": str(file_exc)})
+                failed.append(_gdrive_file_failure(fid, fname, file_exc))
 
         if failed and ingested_count == 0:
             outcome = "failed"

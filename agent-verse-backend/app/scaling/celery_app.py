@@ -101,6 +101,9 @@ celery_app = Celery(
         "app.ingestion.scheduler",
         # Durable repository (git clone) ingestion (POST /knowledge/ingest/repo).
         "app.ingestion.repo_tasks",
+        # Durable one-shot GitHub / Confluence / Jira / Slack ingestion
+        # (POST /knowledge/ingest/{github,confluence,jira,slack}).
+        "app.ingestion.legacy_source_jobs",
         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
         "app.scaling.raft_tasks",
         "app.scaling.event_outbox_tasks",
@@ -687,12 +690,37 @@ def _preload_retrieval_models() -> None:
         logging.getLogger(__name__).warning("cross_encoder_preload_failed: %s", exc)
 
 
+def _enable_embedding_usage_counting() -> None:
+    """a04-F074-05: count this process's embeds in the shared Redis usage hash.
+
+    It used to be enabled only by the worker ingestion builder, so a worker
+    process whose embeds came from a re-embed or an agent's retrieval recorded
+    no usage. Idempotent; never fails worker start.
+    """
+    try:
+        from app.embedding.usage import configure_usage_redis_from_env
+
+        configure_usage_redis_from_env()
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("embedding_usage_enable_failed: %s", exc)
+
+
 @worker_process_init.connect  # type: ignore[untyped-decorator]
 def _on_worker_process_init(**_kwargs: object) -> None:
     from app.core.config import get_settings
 
+    _enable_embedding_usage_counting()
     if bool(getattr(get_settings(), "worker_preload_retrieval_models", False)):
         _preload_retrieval_models()
+
+
+@worker_init.connect  # type: ignore[untyped-decorator]
+def _on_worker_init_embedding_usage(**_kwargs: object) -> None:
+    # solo / threads pools run tasks in this (main) process, which never gets
+    # worker_process_init; prefork children inherit the flag across the fork.
+    _enable_embedding_usage_counting()
 
 
 # ── Vault key startup checks (BYOK-2) ────────────────────────────────────────

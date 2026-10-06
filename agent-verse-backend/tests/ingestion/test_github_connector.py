@@ -105,9 +105,10 @@ class TestGetDeltaOrchestration:
     async def test_yields_docs_from_ingestor_across_multiple_repos(self):
         from app.knowledge.ingestors import github_ingestor as gi_mod
 
-        chunks_by_repo = {
+        files_by_repo = {
             "acme/widgets": [
                 {
+                    "path": "a.py",
                     "content": "widget file content",
                     "source_url": "https://github.com/acme/widgets/blob/main/a.py",
                     "source_doc_id": "acme/widgets/a.py",
@@ -116,6 +117,7 @@ class TestGetDeltaOrchestration:
             ],
             "acme/gadgets": [
                 {
+                    "path": "b.py",
                     "content": "gadget file content",
                     "source_url": "https://github.com/acme/gadgets/blob/main/b.py",
                     "source_doc_id": "acme/gadgets/b.py",
@@ -124,11 +126,11 @@ class TestGetDeltaOrchestration:
             ],
         }
 
-        async def fake_ingest_repo(self, owner, repo, **kw):
-            return chunks_by_repo[f"{owner}/{repo}"]
+        async def fake_repo_files(self, owner, repo, **kw):
+            return files_by_repo[f"{owner}/{repo}"]
 
         config = _make_config({"token": "t", "repos": ["acme/widgets", "acme/gadgets"]})
-        with patch.object(gi_mod.GitHubIngestor, "ingest_repo", fake_ingest_repo):
+        with patch.object(gi_mod.GitHubIngestor, "repo_files", fake_repo_files):
             docs = await _collect(GitHubConnector().get_delta(config, None))
 
         assert len(docs) == 2
@@ -139,11 +141,12 @@ class TestGetDeltaOrchestration:
     async def test_repo_level_error_is_counted_other_repos_continue(self):
         from app.knowledge.ingestors import github_ingestor as gi_mod
 
-        async def fake_ingest_repo(self, owner, repo, **kw):
+        async def fake_repo_files(self, owner, repo, **kw):
             if repo == "broken":
                 raise RuntimeError("rate limited")
             return [
                 {
+                    "path": "f.py",
                     "content": "ok content",
                     "source_url": "https://github.com/acme/ok/blob/main/f.py",
                     "source_doc_id": "acme/ok/f.py",
@@ -152,7 +155,7 @@ class TestGetDeltaOrchestration:
             ]
 
         config = _make_config({"token": "t", "repos": ["acme/broken", "acme/ok"]})
-        with patch.object(gi_mod.GitHubIngestor, "ingest_repo", fake_ingest_repo):
+        with patch.object(gi_mod.GitHubIngestor, "repo_files", fake_repo_files):
             docs, exc = await drain(GitHubConnector().get_delta(config, None))
 
         assert len(docs) == 1
@@ -166,13 +169,13 @@ class TestGetDeltaOrchestration:
 
         called = False
 
-        async def fake_ingest_repo(self, owner, repo, **kw):
+        async def fake_repo_files(self, owner, repo, **kw):
             nonlocal called
             called = True
             return []
 
         config = _make_config({"token": "t", "repos": ["acme/widgets"], "include_code": False})
-        with patch.object(gi_mod.GitHubIngestor, "ingest_repo", fake_ingest_repo):
+        with patch.object(gi_mod.GitHubIngestor, "repo_files", fake_repo_files):
             docs = await _collect(GitHubConnector().get_delta(config, None))
 
         assert docs == []
@@ -326,9 +329,11 @@ class TestGetDeltaRealIngestorPath:
         assert len(fetched) == 100_000
         assert fetched == huge_content[:100_000]
 
-    async def test_oversized_file_still_flows_through_connector_as_chunks(self):
-        # End-to-end: the connector yields chunked docs for the (truncated)
-        # oversized file rather than raising or silently dropping it.
+    async def test_oversized_file_flows_through_connector_as_one_whole_document(self):
+        # End-to-end: the connector yields the (truncated) oversized file rather
+        # than raising or silently dropping it — as ONE document. It used to
+        # yield its sliding windows under one shared document id, so the
+        # pipeline kept only the last window (a04-F070-03 follow-up).
         tree = _tree_response([{"type": "blob", "path": "huge.py", "size": 500_000}])
         huge_content = "x = 1\n" * 50_000
 
@@ -346,8 +351,10 @@ class TestGetDeltaRealIngestorPath:
             config = _make_config({"token": "t", "repos": ["acme/widgets"]})
             docs = await _collect(GitHubConnector().get_delta(config, None))
 
-        assert len(docs) > 1  # sliding-window chunking produced multiple docs
-        assert all(d.metadata["path"] == "huge.py" for d, _c in docs)
+        [(doc, _cursor)] = docs
+        assert doc.metadata["path"] == "huge.py"
+        assert doc.title == "huge.py"
+        assert doc.content.decode() == huge_content[:100_000].strip()
 
     async def test_malformed_repo_identifier_is_a_counted_failure(self):
         # `repo.partition("/")` on a bare name yields an empty repo_name,
@@ -394,3 +401,53 @@ def test_source_type_and_registration():
     assert get_connector("github") is GitHubConnector
     assert GitHubConnector.supports_acl_propagation is True
     assert GitHubConnector.supports_deletion_tracking is False
+
+
+async def test_every_file_is_one_document_with_a_distinct_id() -> None:
+    """Files used to be yielded as windows sharing one document id per file;
+    the pipeline replaces a document id's chunks on every write, so all but the
+    last window of every file was lost. Now: one whole document per file."""
+    tree = _tree_response(
+        [
+            {"type": "blob", "path": "src/service.py", "size": 4000},
+            {"type": "blob", "path": "README.md", "size": 3000},
+        ]
+    )
+    bodies = {
+        "src/service.py": "def handler():\n    return 1\n" * 150,
+        "README.md": "# Service\n\n" + "Documentation line for the service. " * 90,
+    }
+
+    async def get(url, *a, **kw):
+        for path, body in bodies.items():
+            if url.endswith(path):
+                return _file_response(body)
+        return tree
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _mock_client(get)
+        config = _make_config({"token": "t", "repos": ["acme/widgets"], "max_files": 10})
+        docs = await _collect(GitHubConnector().get_delta(config, None))
+
+    assert len(docs) == 2
+    assert len({d.doc_id for d, _c in docs}) == 2
+    by_path = {d.metadata["path"]: d for d, _c in docs}
+    for path, body in bodies.items():
+        assert by_path[path].content.decode() == body.strip()  # whole file, not a window
+
+
+async def test_max_files_bounds_the_files_read() -> None:
+    tree = _tree_response(
+        [{"type": "blob", "path": f"f{i}.py", "size": 100} for i in range(5)]
+    )
+
+    async def get(url, *a, **kw):
+        if "git/trees" in url:
+            return tree
+        return _file_response("value = 'a meaningful constant'\n" * 3)
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value = _mock_client(get)
+        config = _make_config({"token": "t", "repos": ["acme/widgets"], "max_files": 2})
+        docs = await _collect(GitHubConnector().get_delta(config, None))
+    assert len(docs) == 2
