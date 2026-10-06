@@ -31,6 +31,14 @@ pytestmark = [
     ),
 ]
 
+@pytest.fixture(autouse=True)
+def _opt_in(request: pytest.FixtureRequest) -> None:
+    """~1 minute of real OCR: only when slow tests are selected (``-m slow``)."""
+    expr = str(request.config.getoption("markexpr") or "")
+    if "slow" not in expr or "not slow" in expr:
+        pytest.skip("opt-in benchmark: run with -m slow")
+
+
 _WORDS = [
     "ANCHOR", "BALLAST", "CAPSTAN", "DAVIT", "ENSIGN", "FATHOM", "GALLEY", "HAWSER",
     "JETTY", "KEDGE", "LANYARD", "MOORING", "NAVIGATOR", "OFFSHORE", "PILOT", "QUARTER",
