@@ -130,6 +130,7 @@ class TriggerDispatcher:
         completion_event_id: str | None = None,
         message_id: str | None = None,
         txn_id: str | None = None,
+        dead_letter_throttled: bool = True,
     ) -> TriggerEvent | SimulatedTriggerResult:
         """Execute the 12-step dispatch pipeline, auditing suppressed fires.
 
@@ -154,6 +155,7 @@ class TriggerDispatcher:
             completion_event_id=completion_event_id,
             message_id=message_id,
             txn_id=txn_id,
+            dead_letter_throttled=dead_letter_throttled,
         )
         if isinstance(result, TriggerEvent) and result.skip_reason and not simulation:
             if result.trigger_type == "unknown":
@@ -197,6 +199,7 @@ class TriggerDispatcher:
         completion_event_id: str | None = None,
         message_id: str | None = None,
         txn_id: str | None = None,
+        dead_letter_throttled: bool = True,
     ) -> TriggerEvent | SimulatedTriggerResult:
         """Execute the 12-step dispatch pipeline."""
         start_ms = time.monotonic() * 1000
@@ -266,8 +269,10 @@ class TriggerDispatcher:
                 "expired",
             )
 
-        # ── Step 4: Deduplication check ───────────────────────────────────────
-        if await self._is_duplicate(idempotency_key, tenant_id):
+        # ── Step 4: Dedup peek (non-claiming) ────────────────────────────────
+        # A replay already claimed or recorded is skipped here, before it can
+        # spend a rate-limit token or a bulkhead slot.
+        if await self._seen_before(idempotency_key, tenant_id):
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -276,11 +281,13 @@ class TriggerDispatcher:
                 "dedup",
             )
 
-        # Steps 5-7 are governance gates. A firing they skip has not run, so its
-        # dedup claim is released — a legitimate redelivery (after the rate
-        # window, the circuit closing, a free bulkhead slot) must not be dropped
-        # as a duplicate (TRG-14). An uncheckable gate fails CLOSED: skipped and
-        # dead-lettered with the reason, never admitted.
+        # Steps 5-7 are governance gates, checked BEFORE the dedup slot is
+        # claimed (B2-1): a throttled firing never touches the dedup key, so a
+        # redelivery of it is never dropped as a duplicate of a firing that did
+        # not run. A throttled firing is dead-lettered (replayable through
+        # ``POST /triggers/dlq/{id}/retry``) unless the caller tells the sender
+        # to retry instead (``dead_letter_throttled=False``, an HTTP 429). An
+        # uncheckable gate fails CLOSED: skipped and dead-lettered.
 
         # ── Step 5: Rate limit check ──────────────────────────────────────────
         try:
@@ -292,7 +299,14 @@ class TriggerDispatcher:
                 trigger_id, tenant_id, payload, idempotency_key, "rate_limit", exc
             )
         if not allowed:
-            await self._release_dedup(idempotency_key, tenant_id)
+            if dead_letter_throttled:
+                await self._write_dlq(
+                    tenant_id,
+                    trigger_id,
+                    "RATE_LIMITED",
+                    f"max {trigger_spec.max_firings_per_hour or 'plan'} firings/hour reached",
+                    payload,
+                )
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -304,7 +318,6 @@ class TriggerDispatcher:
         # ── Step 6: Circuit breaker check ─────────────────────────────────────
         cb = self._cb_registry.get(trigger_id)
         if cb.is_open() or await self._goal_outcomes_open(trigger_id, tenant_id):
-            await self._release_dedup(idempotency_key, tenant_id)
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -321,7 +334,14 @@ class TriggerDispatcher:
                 trigger_id, tenant_id, payload, idempotency_key, "bulkhead", exc
             )
         if not acquired:
-            await self._release_dedup(idempotency_key, tenant_id)
+            if dead_letter_throttled:
+                await self._write_dlq(
+                    tenant_id,
+                    trigger_id,
+                    "BULKHEAD_FULL",
+                    "tenant's concurrent trigger firings at the plan limit",
+                    payload,
+                )
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -331,6 +351,16 @@ class TriggerDispatcher:
             )
 
         try:
+            # ── Step 7b: Dedup claim (atomic, after the gates) ───────────────
+            if await self._is_duplicate(idempotency_key, tenant_id):
+                return self._make_skip_event(
+                    trigger_id,
+                    tenant_id,
+                    payload,
+                    idempotency_key,
+                    "dedup",
+                )
+
             # ── Step 8: Condition evaluation ─────────────────────────────────
             # CONDITION triggers store their expression in ``condition_expression``
             # (the API maps ``condition_cel`` there); ``condition`` is the legacy /
@@ -510,14 +540,31 @@ class TriggerDispatcher:
         gate: str,
         exc: Exception,
     ) -> TriggerEvent:
-        """Fail closed: skip + dead-letter a firing whose gate could not be checked."""
-        await self._release_dedup(idempotency_key, tenant_id)
+        """Fail closed: skip + dead-letter a firing whose gate could not be checked.
+
+        The gates run before the dedup claim (B2-1), so there is no claim of
+        this firing to release — and deleting the key could drop the claim of
+        an in-flight original of the same firing."""
         await self._write_dlq(
             tenant_id, trigger_id, f"{gate.upper()}_UNAVAILABLE", str(exc)[:500], payload
         )
         return self._make_skip_event(
             trigger_id, tenant_id, payload, idempotency_key, f"{gate}_unavailable"
         )
+
+    async def _seen_before(self, idempotency_key: str, tenant_id: str) -> bool:
+        """Non-claiming dedup check: is this firing's key claimed in Redis or
+        recorded in ``trigger_events``? A Redis error answers False here — the
+        atomic claim after the gates (:meth:`_is_duplicate`) still fails closed.
+        """
+        exists = getattr(self._redis, "exists", None) if self._redis is not None else None
+        if exists is not None:
+            try:
+                if await exists(f"trigger_dedup:{tenant_id}:{idempotency_key}"):
+                    return True
+            except Exception as exc:
+                _log.warning("trigger_dedup_peek_failed: %s", str(exc)[:200])
+        return await self._already_fired(idempotency_key, tenant_id)
 
     async def _is_duplicate(self, idempotency_key: str, tenant_id: str) -> bool:
         """Two-layer dedup: Redis for the race, Postgres for the replay.
