@@ -779,3 +779,36 @@ def _isolate_model_registry_store(monkeypatch):
     monkeypatch.setattr(_tasks_mod, "_goal_model_override", _no_goal_override)
     yield
     _rs._store = saved
+
+
+# Import-time environment leaks (found 2026-10-06): pytest imports EVERY test
+# module during collection, including deselected opt-in suites. tests/real_e2e/*
+# call load_dotenv(BACKEND_ROOT / ".env") at module level, which put the
+# developer's real .env (provider keys, VISION_MODEL, egress allowlists) into the
+# whole unit session — ~100 order-dependent failures (SSRF, routing, embedder,
+# BYOK) and unit tests running with a real provider key. Restore the environment
+# conftest set up, after collection, and drop settings cached from it. Only the
+# changed key NAMES are reported, never values.
+_ENV_AFTER_CONFTEST = dict(os.environ)
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    changed = sorted(
+        k
+        for k in set(os.environ) | set(_ENV_AFTER_CONFTEST)
+        if os.environ.get(k) != _ENV_AFTER_CONFTEST.get(k)
+    )
+    if not changed:
+        return
+    os.environ.clear()
+    os.environ.update(_ENV_AFTER_CONFTEST)
+    with contextlib.suppress(Exception):
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(
+            f"[env-guard] restored {len(changed)} env var(s) changed while importing "
+            f"test modules: {', '.join(changed[:20])}"
+        )
