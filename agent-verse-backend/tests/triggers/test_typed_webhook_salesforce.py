@@ -59,7 +59,7 @@ def test_outbound_message_fires_with_its_fields_and_is_acked() -> None:
     assert payload["sobject_type"] == "Opportunity"
     assert payload["sobject"]["Name"] == "Big deal"
     assert payload["organization_id"] == "00D000000000001"
-    assert kw == {"message_id": "04l000000000001"}
+    assert kw["message_id"] == "04l000000000001"
 
 
 def test_hostile_or_malformed_xml_is_rejected_without_ack() -> None:

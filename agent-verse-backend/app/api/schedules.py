@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import secrets
+import time
 from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -637,7 +638,6 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
     trigger's signing secret when it has one.
     """
     from app.api.triggers import _spec_for_dispatch
-    from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
@@ -654,23 +654,28 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
     if dispatcher is None:  # never report success for a webhook nothing can run
         raise HTTPException(503, "Trigger dispatcher unavailable")
 
-    body_bytes = await request.body()
+    from app.triggers.webhooks import ingress as _ingress
+
+    body_bytes = await _ingress.read_capped_body(request)
     spec = _spec_for_dispatch(rec)
     secret = str(getattr(spec, "webhook_signature_secret", "") or "")
     if secret:
-        signature = request.headers.get("x-signature", "")
-        if not await WebhookSignatureVerifier().verify(body_bytes, signature, secret):
-            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        candidates = [secret]
+        prev = str(rec.get("previous_webhook_secret", "") or "")
+        if prev and time.time() < float(rec.get("secret_grace_until", 0) or 0):
+            candidates.append(prev)
+        # Constant-time HMAC, optional signed timestamp (replay window), B2.
+        _ingress.check_signature(request.headers, body_bytes, candidates)
 
-    payload: dict[str, Any] = {}
-    if body_bytes:
-        try:
-            parsed = _json.loads(body_bytes)
-        except ValueError:
-            raise HTTPException(422, "Webhook body must be JSON") from None
-        payload = parsed if isinstance(parsed, dict) else {"data": parsed}
-
-    event = await dispatcher.dispatch(spec, payload, tenant_ctx)
+    payload = _ingress.parse_body(body_bytes, request.headers.get("content-type", ""))
+    event = await dispatcher.dispatch(
+        spec,
+        payload,
+        tenant_ctx,
+        message_id=_ingress.firing_message_id(request.headers, body_bytes),
+        dead_letter_throttled=False,
+    )
+    _ingress.raise_for_skip(getattr(event, "skip_reason", None))
     return {
         "schedule_id": rec.get("schedule_id"),
         "goal_id": getattr(event, "goal_id", None),

@@ -79,6 +79,38 @@ def _run_agent_id(spec: object) -> str:
     return str(getattr(spec, "watch_agent_id", "") or "")
 
 
+def _payload_path(payload: object, path: str) -> str:
+    """The value at a dotted ``path`` in ``payload`` as text ("" when absent).
+
+    A top-level key containing dots wins over the nested reading. Lists are
+    indexed by number; dicts/lists render as compact JSON.
+    """
+    node: Any = payload
+    if isinstance(node, dict) and path in node:
+        node = node[path]
+    else:
+        for part in path.split("."):
+            if isinstance(node, dict):
+                if part not in node:
+                    return ""
+                node = node[part]
+            elif isinstance(node, list) and part.lstrip("-").isdigit():
+                idx = int(part)
+                if not -len(node) <= idx < len(node):
+                    return ""
+                node = node[idx]
+            else:
+                return ""
+    if node is None:
+        return ""
+    if isinstance(node, dict | list):
+        try:
+            return _json.dumps(node, separators=(",", ":"), default=str)
+        except (TypeError, ValueError):
+            return str(node)
+    return str(node)
+
+
 def _chain_depth(payload: object) -> int:
     """``trigger_chain_depth`` from a chained event payload (0 when absent/bad)."""
     if not isinstance(payload, dict):
@@ -653,10 +685,11 @@ class TriggerDispatcher:
         import re
 
         result = template
-        # Replace {{payload.field}} with payload values
-        for match in re.finditer(r"\{\{payload\.([^}]+)\}\}", template):
-            field = match.group(1)
-            value = str(payload.get(field, ""))
+        # Replace {{payload.path}} with payload values. The path is dotted and
+        # may index lists ({{payload.ticket.id}}, {{payload.items.0.sku}}); it
+        # used to read top-level keys only, so nested fields rendered empty (B2-5).
+        for match in re.finditer(r"\{\{\s*payload\.([^}]+?)\s*\}\}", template):
+            value = _payload_path(payload, match.group(1))
             result = result.replace(match.group(0), value)
         # Replace {{trigger_type}} etc.
         for k, v in extra.items():
