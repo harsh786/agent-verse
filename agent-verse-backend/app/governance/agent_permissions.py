@@ -190,11 +190,30 @@ def resolve_level(
 
 
 # (tenant, agent, tool, utc-date) -> calls; used only when no Redis is wired.
+# Only today's counters are kept (a03-F061-04): a past day's counter can never
+# be read again, and the dict used to grow by one key per (tenant, agent, tool)
+# every day for the life of the process. Also capped, so one day's distinct
+# (tenant, agent, tool) count cannot grow it without bound either.
 _LOCAL_DAILY: dict[tuple[str, str, str, str], int] = {}
+_LOCAL_DAILY_MAX_KEYS = 50_000
 
 
 class DailyLimitUnavailableError(RuntimeError):
     """The shared daily-call counter could not be read/updated (refuse the call)."""
+
+
+def _evict_local_daily(today: str) -> None:
+    """Drop past days' counters; at the cap, drop the oldest of today's too.
+
+    Dropping one of today's counters can only let that (agent, tool) make more
+    calls today, so the cap is far above any real in-process (no-Redis) load;
+    a deployment with that many agents has Redis wired and never gets here.
+    """
+    stale = [k for k in _LOCAL_DAILY if k[3] != today]
+    for k in stale:
+        del _LOCAL_DAILY[k]
+    while len(_LOCAL_DAILY) >= _LOCAL_DAILY_MAX_KEYS:
+        del _LOCAL_DAILY[next(iter(_LOCAL_DAILY))]
 
 
 async def reserve_daily_call(
@@ -213,6 +232,8 @@ async def reserve_daily_call(
     day = datetime.now(UTC).strftime("%Y-%m-%d")
     if redis is None:
         key_local = (tenant_id, agent_id, tool_name, day)
+        if key_local not in _LOCAL_DAILY:
+            _evict_local_daily(day)
         used = _LOCAL_DAILY.get(key_local, 0)
         if used >= limit:
             return False

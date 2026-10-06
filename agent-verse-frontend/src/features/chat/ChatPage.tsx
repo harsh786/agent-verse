@@ -362,7 +362,7 @@ export default function ChatPage() {
   // G-02: Surface hitl_required events from the chat stream as an inline
   // approval card. When the backend emits hitl_required we capture the
   // latest event in local state so ChatHITLCard can render with the right
-  // requestId/approvalToken, and we wire approve/reject to governanceApi.
+  // requestId, and we wire approve/reject to governanceApi.
   const [hitlEvent, setHitlEvent] = useState<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
   useEffect(() => {
     if (currentEvent && (currentEvent as any).type === 'hitl_required') { // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -690,7 +690,6 @@ export default function ChatPage() {
                 riskLevel={String(hitlEvent.risk_level ?? 'high')}
                 timeoutSeconds={Number(hitlEvent.timeout_seconds ?? 300)}
                 requestId={hitlEvent.request_id}
-                approvalToken={hitlEvent.approval_token}
                 onApprove={handleHITLApprove}
                 onReject={handleHITLReject}
               />

@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.governance.audit_v2 import audit_admin_action
 from app.guardrails_v2.models import (
     COMPLIANCE_BUNDLES,
     ComplianceBundle,
@@ -61,6 +62,7 @@ class EvaluateCorpusRequest(BaseModel):
 
 
 @router.post("/rules")
+@audit_admin_action("guardrail_rule.created", "guardrail_rule", "create")
 async def create_rule(
     request: Request,
     body: CreateRuleRequest,
@@ -131,6 +133,12 @@ def _is_seeded(rule_id: str) -> bool:
 
 
 @router.patch("/rules/{rule_id}")
+@audit_admin_action(
+    "guardrail_rule.updated",
+    "guardrail_rule",
+    "update",
+    extract_resource_id=lambda kw: kw.get("rule_id"),
+)
 async def update_rule(
     request: Request,
     rule_id: str,
@@ -171,6 +179,12 @@ async def update_rule(
 
 
 @router.delete("/rules/{rule_id}")
+@audit_admin_action(
+    "guardrail_rule.deleted",
+    "guardrail_rule",
+    "delete",
+    extract_resource_id=lambda kw: kw.get("rule_id"),
+)
 async def delete_rule(
     request: Request,
     rule_id: str,
@@ -321,6 +335,12 @@ async def list_violations(
 
 
 @router.post("/bundles/{bundle_name}")
+@audit_admin_action(
+    "guardrail_bundle.enabled",
+    "guardrail_bundle",
+    "enable",
+    extract_resource_id=lambda kw: kw.get("bundle_name"),
+)
 async def enable_compliance_bundle(
     request: Request,
     bundle_name: str,
@@ -337,33 +357,64 @@ async def enable_compliance_bundle(
         raise HTTPException(400, f"Unknown bundle: {bundle_name}. Valid: {valid}") from _b904_exc
 
     bundle_rules = COMPLIANCE_BUNDLES.get(bundle, [])
-    created = []
-
-    for rule_def in bundle_rules:
-        try:
-            layers = [GuardrailLayer(lv) for lv in rule_def.get("layers", ["step"])]
-            action = GuardrailAction(rule_def.get("action", "block"))
-        except ValueError:
-            continue
-
-        rule = GuardrailRule(
-            rule_id=str(uuid.uuid4()),
-            tenant_id=tenant.tenant_id,
-            name=f"[{bundle.value.upper()}] {rule_def['name']}",
-            rule_type=rule_def["rule_type"],
-            layers=layers,
-            action=action,
-            severity=rule_def.get("severity", "high"),
-            created_at=datetime.datetime.now(datetime.UTC).isoformat(),
-        )
-        guardrails_engine.add_rule(rule)
-        created.append(rule.rule_id)
+    # a03-F063-03: rule ids are derived from (tenant, bundle, rule name), so
+    # re-enabling a bundle finds its rules instead of minting duplicates, and
+    # every write goes through the durable path (it was the in-memory add_rule
+    # with a best-effort background flush behind an "enabled" answer).
+    try:
+        await guardrails_engine.ensure_tenant_loaded(tenant.tenant_id)
+    except Exception as exc:
+        raise HTTPException(503, "Guardrail rules could not be read; retry shortly") from exc
+    created: list[str] = []
+    existing: list[str] = []
+    durable = True
+    try:
+        for rule_def in bundle_rules:
+            try:
+                layers = [GuardrailLayer(lv) for lv in rule_def.get("layers", ["step"])]
+                action = GuardrailAction(rule_def.get("action", "block"))
+            except ValueError:
+                continue
+            rule_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"agentverse:guardrail-bundle:{tenant.tenant_id}:{bundle.value}:"
+                    f"{rule_def['name']}",
+                )
+            )
+            current = guardrails_engine.find_rule(tenant.tenant_id, rule_id)
+            if current is not None:
+                if not current.enabled:
+                    await guardrails_engine.update_rule_durable(
+                        tenant.tenant_id, rule_id, enabled=True
+                    )
+                existing.append(rule_id)
+                continue
+            rule = GuardrailRule(
+                rule_id=rule_id,
+                tenant_id=tenant.tenant_id,
+                name=f"[{bundle.value.upper()}] {rule_def['name']}",
+                rule_type=rule_def["rule_type"],
+                layers=layers,
+                action=action,
+                severity=rule_def.get("severity", "high"),
+                created_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            )
+            durable = await guardrails_engine.add_rule_durable(rule) and durable
+            created.append(rule_id)
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            "Compliance bundle rules could not be saved; retry (re-enabling is safe)",
+        ) from exc
 
     return {
         "bundle": bundle_name,
         "rules_created": len(created),
-        "rule_ids": created,
+        "rules_existing": len(existing),
+        "rule_ids": created + existing,
         "status": "enabled",
+        "durable": durable,
     }
 
 

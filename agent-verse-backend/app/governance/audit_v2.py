@@ -556,6 +556,64 @@ class HashChainVerifier:
 # ---------------------------------------------------------------------------
 
 
+def _admin_audit_event(
+    request: Any,
+    *,
+    event_type: str,
+    resource_type: str,
+    resource_id: str | None,
+    action: str,
+    status: str,
+    error_code: str | None,
+    error_message: str | None,
+) -> AuditEvent | None:
+    """The audit event for one admin call, attributed to the authenticated caller.
+
+    Reads the request's :class:`TenantContext` (``tenant_id``, ``api_key_id``,
+    ``user_id``); the old body read ``tenant.id`` and ``request.state.api_key``,
+    which a ``TenantContext`` does not have, so applied to a real route the
+    decorator raised in its ``finally`` (a03-F058-02 — it was applied nowhere).
+    """
+    if request is None:
+        return None
+    tenant = getattr(request.state, "tenant", None)
+    if tenant is None:
+        return None
+    tenant_id = getattr(tenant, "tenant_id", None)
+    if not isinstance(tenant_id, str) or not tenant_id:
+        tenant_id = getattr(tenant, "id", None)
+    if not tenant_id:
+        return None
+    api_key = getattr(request.state, "api_key", None)
+    key_id = getattr(tenant, "api_key_id", None)
+    if not isinstance(key_id, str) or not key_id:
+        key_id = str(api_key.id) if api_key is not None else None
+    user_id = getattr(tenant, "user_id", None)
+    if not isinstance(user_id, str) or not user_id:
+        user_id = (
+            str(api_key.user_id) if api_key and getattr(api_key, "user_id", None) else None
+        )
+    client = getattr(request, "client", None)
+    return AuditEvent(
+        tenant_id=str(tenant_id),
+        user_id=user_id,
+        api_key_id=key_id,
+        actor_type="user" if user_id else ("api_key" if key_id else "system"),
+        actor_label=(
+            getattr(api_key, "prefix", None) if api_key is not None else (key_id or "system")
+        ),
+        event_type=event_type,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        action=action,
+        status=status,
+        error_code=error_code,
+        error_message=error_message,
+        ip_address=str(client.host) if client is not None else None,
+        request_id=request.headers.get("X-Request-ID"),
+    )
+
+
 def audit_admin_action(
     event_type: str,
     resource_type: str,
@@ -586,8 +644,6 @@ def audit_admin_action(
             request: _Request | None = kwargs.get("request") or next(
                 (a for a in args if isinstance(a, _Request)), None
             )
-            tenant = getattr(request.state, "tenant", None) if request else None
-            api_key = getattr(request.state, "api_key", None) if request else None
 
             resource_id: str | None = None
             if extract_resource_id is not None:
@@ -599,25 +655,22 @@ def audit_admin_action(
             error_message: str | None = None
 
             try:
-                result = await func(*args, **kwargs)
-                return result
+                return await func(*args, **kwargs)
             except Exception as exc:
                 evt_status = "failure"
-                error_code = getattr(exc, "code", type(exc).__name__)
-                error_message = str(exc)[:500]
+                status_code = getattr(exc, "status_code", None)
+                error_code = (
+                    f"HTTP_{status_code}"
+                    if isinstance(status_code, int)
+                    else str(getattr(exc, "code", type(exc).__name__))
+                )
+                error_message = str(getattr(exc, "detail", None) or exc)[:500]
                 raise
             finally:
-                if tenant is not None:
-                    event = AuditEvent(
-                        tenant_id=str(tenant.id),
-                        user_id=(
-                            str(api_key.user_id)
-                            if api_key and getattr(api_key, "user_id", None)
-                            else None
-                        ),
-                        api_key_id=str(api_key.id) if api_key else None,
-                        actor_type="api_key" if api_key else "system",
-                        actor_label=(getattr(api_key, "prefix", None) if api_key else "system"),
+                # Never let the audit write change the route's outcome.
+                try:
+                    event = _admin_audit_event(
+                        request,
                         event_type=event_type,
                         resource_type=resource_type,
                         resource_id=resource_id,
@@ -625,18 +678,20 @@ def audit_admin_action(
                         status=evt_status,
                         error_code=error_code,
                         error_message=error_message,
-                        ip_address=(
-                            str(request.client.host) if request and request.client else None
-                        ),
-                        request_id=(request.headers.get("X-Request-ID") if request else None),
                     )
-                    if (
-                        request is not None
-                        and hasattr(request, "app")
-                        and hasattr(request.app.state, "audit_writer")
-                    ):
-                        with contextlib.suppress(Exception):
-                            await request.app.state.audit_writer.write(event)
+                    writer = (
+                        getattr(request.app.state, "audit_writer", None)
+                        if request is not None
+                        else None
+                    )
+                    if event is not None and writer is not None:
+                        await writer.write(event)
+                except Exception as audit_exc:
+                    logger.error(
+                        "admin_action_audit_failed",
+                        event_type=event_type,
+                        error=str(audit_exc)[:200],
+                    )
 
         return wrapper
 

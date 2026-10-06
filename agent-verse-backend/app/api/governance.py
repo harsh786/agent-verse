@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
+from app.governance.audit_v2 import audit_admin_action
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway, HITLResolutionUnavailableError
 from app.governance.policies import (
@@ -24,6 +25,7 @@ from app.governance.policies import (
     hours_list,
     normalize_policy_action,
     time_window_from_rules,
+    timezone_from_rules,
 )
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
@@ -49,6 +51,22 @@ class CreatePolicyRequest(BaseModel):
     # a pair was dropped and the policy applied around the clock).
     allowed_hours_utc: list[int] | None = None
     allowed_weekdays: list[int] | None = None  # 0=Monday … 6=Sunday
+    # a03-F060-03: the IANA timezone the hours and weekdays above are read in
+    # (e.g. "America/New_York"); UTC by default. Kept in the version snapshot so
+    # every replica and every reload enforces the same local window.
+    timezone: str = "UTC"
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone(cls, value: str) -> str:
+        name = (value or "").strip() or "UTC"
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(name)
+        except Exception as exc:
+            raise ValueError(f"unknown timezone {name!r} (use an IANA name)") from exc
+        return name
 
     @field_validator("allowed_hours_utc", "allowed_weekdays")
     @classmethod
@@ -211,6 +229,7 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
                     "description": r[5] or "",
                     "allowed_hours_utc": hours_list(hours),
                     "allowed_weekdays": weekdays,
+                    "timezone": timezone_from_rules(r[6] if len(r) > 6 else None),
                 }
             )
         return out
@@ -255,6 +274,7 @@ def _policy_rules(record: dict[str, Any]) -> list[dict[str, Any]]:
             # QA-8: the hours are a set of active hours, never a [start, end] pair.
             "allowed_hours_format": HOURS_FORMAT,
             "allowed_weekdays": record.get("allowed_weekdays"),
+            "timezone": record.get("timezone") or "UTC",
         }
     ]
 
@@ -425,6 +445,9 @@ async def list_policies(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("/policies", status_code=status.HTTP_201_CREATED)
+@audit_admin_action(
+    "policy.created", "policy", "create", extract_resource_id=lambda kw: kw["body"].name
+)
 async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     engine = _policy_engine(request)
@@ -446,6 +469,7 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         approval_tools=approval_tools,
         allowed_hours_utc=frozenset(body.allowed_hours_utc) if body.allowed_hours_utc else None,
         allowed_weekdays=body.allowed_weekdays,
+        timezone=body.timezone,
         tenant_id=tenant_ctx.tenant_id,
         action=body.action,
         tool_pattern=body.tools_pattern,
@@ -461,6 +485,7 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         "priority": body.priority,
         "allowed_hours_utc": body.allowed_hours_utc,
         "allowed_weekdays": body.allowed_weekdays,
+        "timezone": body.timezone,
     }
     # Hold the engine's reload lock across the in-memory add + DB insert so
     # this can't interleave with a concurrent reload_from_db() for the same
@@ -487,6 +512,9 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
 
 
 @router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit_admin_action(
+    "policy.deleted", "policy", "delete", extract_resource_id=lambda kw: kw.get("policy_id")
+)
 async def delete_policy(request: Request, policy_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)
     engine = _policy_engine(request)
@@ -958,23 +986,47 @@ async def approve_request(
     # own dict, so an operator routed to a different replica than the one that
     # raised the gate got a false 'not found' for a live approval.
     try:
-        ok = await gateway.approve_async(
-            request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
-        )
+        outcome = await _approve_with_outcome(gateway, request_id, approver, body.note, tenant_ctx)
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
     # Not a live gateway request — maybe a durable org approval gate.
-    if not ok and not await _resolve_org_gate(
-        request, tenant_ctx, request_id, "approve", approver, body.note
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Approval request {request_id} not found",
+    if outcome is None:
+        if not await _resolve_org_gate(
+            request, tenant_ctx, request_id, "approve", approver, body.note
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Approval request {request_id} not found",
+            )
+        return {"request_id": request_id, "approver": approver, "status": "approved"}
+    return {"request_id": request_id, "approver": approver, **outcome}
+
+
+async def _approve_with_outcome(
+    gateway: Any, request_id: str, approver: str, note: str, tenant_ctx: TenantContext
+) -> dict[str, Any] | None:
+    """Approve through the gateway; ``None`` when it took no vote, else the outcome.
+
+    a03-F056-07: the outcome comes from the approve call itself (vote counted in
+    Postgres), not from this replica's request cache, which never holds a gate
+    a worker raised — there a below-quorum vote was answered 'approved'.
+    """
+    if getattr(type(gateway), "approve_async_outcome", None) is None:
+        ok = await gateway.approve_async(
+            request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
         )
+        return _vote_outcome(gateway, request_id, tenant_ctx) if ok else None
+    result = await gateway.approve_async_outcome(
+        request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+    )
+    if not result.accepted:
+        return None
+    if result.resolved:
+        return {"status": "approved"}
     return {
-        "request_id": request_id,
-        "approver": approver,
-        **_vote_outcome(gateway, request_id, tenant_ctx),
+        "status": "vote_recorded",
+        "approvals_received": result.approvals_received,
+        "required_approvers": result.required_approvers,
     }
 
 
@@ -1233,6 +1285,7 @@ async def get_budget(request: Request) -> dict[str, Any]:
 
 
 @router.put("/budget")
+@audit_admin_action("budget.updated", "budget", "update")
 async def set_budget(
     request: Request,
     body: SetBudgetRequest,
@@ -1285,6 +1338,7 @@ async def set_budget(
 
 
 @router.post("/notifications", status_code=201)
+@audit_admin_action("notification_channel.created", "notification_channel", "create")
 async def create_notification_channel(
     request: Request, body: CreateNotificationChannelRequest
 ) -> dict[str, Any]:
@@ -1320,6 +1374,12 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
 
 
 @router.delete("/notifications/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit_admin_action(
+    "notification_channel.deleted",
+    "notification_channel",
+    "delete",
+    extract_resource_id=lambda kw: kw.get("channel_id"),
+)
 async def delete_notification_channel(request: Request, channel_id: str) -> None:
     """Delete a notification channel by ID."""
     tenant = _require_tenant(request)
@@ -1741,13 +1801,13 @@ async def email_approve_link(
     # waiting agent must only be released once the decision is committed.
     # approve_async answers False unless the request is still PENDING.
     try:
-        ok = await gateway.approve_async(request_id, approver=approver, tenant_ctx=tenant_ctx)
+        maybe_outcome = await _approve_with_outcome(gateway, request_id, approver, "", tenant_ctx)
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
-    if not ok:
+    if maybe_outcome is None:
         raise HTTPException(status_code=409, detail="Approval request is no longer pending")
 
-    outcome = _vote_outcome(gateway, request_id, tenant_ctx)
+    outcome = maybe_outcome
     return {
         "request_id": request_id,
         "approver": approver,
@@ -2043,6 +2103,12 @@ class RollbackRequest(BaseModel):
 
 
 @router.post("/policies/{policy_id}/rollback")
+@audit_admin_action(
+    "policy.rolled_back",
+    "policy",
+    "rollback",
+    extract_resource_id=lambda kw: kw.get("policy_id"),
+)
 async def rollback_policy(
     request: Request,
     policy_id: str,
@@ -2165,6 +2231,7 @@ async def rollback_policy(
             "priority": int(rule.get("priority") or 0),
             "allowed_hours_utc": hours_list(restored_hours),
             "allowed_weekdays": restored_days,
+            "timezone": timezone_from_rules(rules),
         }
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tid, action="rolled_back")

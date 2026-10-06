@@ -42,4 +42,33 @@ def drain_goal_event_outbox(self: Any) -> dict[str, Any]:
     return cast(dict[str, Any], _run_async(_drain_once()))
 
 
-__all__ = ["drain_goal_event_outbox"]
+async def _drain_audit_once() -> dict[str, int]:
+    import redis.asyncio as aioredis
+
+    from app.core.config import get_settings
+    from app.db.session import get_session_factory
+    from app.governance.audit import AuditLog
+    from app.governance.audit_outbox import drain_audit_outbox
+
+    redis = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        return await drain_audit_outbox(AuditLog(db_session_factory=get_session_factory()), redis)
+    finally:
+        await redis.aclose()
+
+
+@celery_app.task(
+    name="app.scaling.event_outbox_tasks.drain_audit_write_outbox",
+    bind=True,
+    max_retries=0,
+    queue="maintenance",
+)
+@beat_task_guard(lock_ttl_seconds=120)
+def drain_audit_write_outbox(self: Any) -> dict[str, Any]:
+    """Replay audit_log rows parked after their write failed (a03-F058-01)."""
+    from app.scaling.tasks import _run_async
+
+    return cast(dict[str, Any], _run_async(_drain_audit_once()))
+
+
+__all__ = ["drain_audit_write_outbox", "drain_goal_event_outbox"]

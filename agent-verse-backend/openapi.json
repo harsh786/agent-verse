@@ -2408,6 +2408,11 @@
             "title": "Priority",
             "type": "integer"
           },
+          "timezone": {
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
+          },
           "tools_pattern": {
             "title": "Tools Pattern",
             "type": "string"
@@ -3293,6 +3298,63 @@
           "to_user_id"
         ],
         "title": "DelegateAllRequest",
+        "type": "object"
+      },
+      "DelegateGrantRequest": {
+        "description": "A narrowed child of an existing grant (a03-F055-02).\n\nEvery field may only NARROW the parent: omitted scopes / window / cap\ninherit the parent's (the cap defaults to the parent's REMAINING budget, as\nthe automatic sub-agent delegation does); anything wider is a 400.",
+        "properties": {
+          "grantee_agent_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Grantee Agent Id",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 31536000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          }
+        },
+        "required": [
+          "grantee_agent_id"
+        ],
+        "title": "DelegateGrantRequest",
         "type": "object"
       },
       "DelegateRequest": {
@@ -32160,6 +32222,106 @@
         ]
       }
     },
+    "/grants/{grant_id}/chain": {
+      "get": {
+        "description": "The grant, its ancestors (parent first, up to the root) and its direct delegations.",
+        "operationId": "get_grant_chain_grants__grant_id__chain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Grant Chain Grants  Grant Id  Chain Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Grant Chain",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
+    "/grants/{grant_id}/delegate": {
+      "post": {
+        "description": "Delegate a narrowed copy of *grant_id* to another agent of the tenant.\n\nDelegation used to happen only inside the sub-agent spawn path\n(``delegate_active_grants``); an administrator could not create one or see\nthe result. The child records ``parent_grant_id``: revoking the parent\nrevokes it, and its spend counts against the parent's budget.",
+        "operationId": "delegate_grant_grants__grant_id__delegate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DelegateGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delegate Grant Grants  Grant Id  Delegate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delegate Grant",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
     "/grants/{grant_id}/revoke": {
       "post": {
         "operationId": "revoke_grant_grants__grant_id__revoke_post",
@@ -47939,7 +48101,7 @@
     },
     "/trust/compliance-bundles": {
       "get": {
-        "description": "List available compliance bundles.",
+        "description": "List the compliance bundles this tenant can enable here.\n\na03-F057-03: this listed the guardrails-v2 rule catalogue (ids ``pci``,\n``dpdp``, ``sox``) while enable/disable below use\n``app.governance.compliance_bundles`` (``pci_dss``, ``india_dpdp``, no SOX),\nso two listed ids answered 400 on enable and the listed facts were not the\nones enabling applies. Each entry is now the governance bundle itself, with\nthe guardrails-v2 rule bundle that carries its content rules, if any.",
         "operationId": "list_compliance_bundles_trust_compliance_bundles_get",
         "responses": {
           "200": {

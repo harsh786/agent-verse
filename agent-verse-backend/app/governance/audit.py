@@ -183,6 +183,10 @@ class AuditLog:
         # can be garbage-collected mid-flight) so ``flush`` can await them.
         self._pending: set[asyncio.Task[None]] = set()
         self._lost_writes = 0
+        # Redis outbox for writes that exhausted their retries (a03-F058-01);
+        # replayed by the drain-audit-write-outbox beat task.
+        self._outbox_redis: Any = None
+        self._parked_writes = 0
         # Optional SIEM forwarder — when wired, every recorded event is also
         # enqueued for batched delivery to the configured SIEM platform.
         self._siem_forwarder: Any = None
@@ -194,6 +198,15 @@ class AuditLog:
         Passing ``None`` detaches forwarding.
         """
         self._siem_forwarder = forwarder
+
+    def set_outbox_redis(self, redis: Any) -> None:
+        """Park writes that exhaust their retries in the durable Redis outbox."""
+        self._outbox_redis = redis
+
+    @property
+    def parked_writes(self) -> int:
+        """``record`` writes that failed and were parked for replay."""
+        return self._parked_writes
 
     @property
     def pending_writes(self) -> int:
@@ -275,6 +288,22 @@ class AuditLog:
         try:
             await self._persist_with_retry(event, tenant_id)
         except AuditWriteError as exc:
+            # A transient failure is parked for replay; an over-wide value is
+            # deterministic (a replay would fail the same way) and stays lost.
+            if not isinstance(exc, AuditFieldTooLongError) and self._outbox_redis is not None:
+                from app.governance.audit_outbox import park_audit_row
+
+                if await park_audit_row(
+                    self._outbox_redis, tenant_id=tenant_id, row=_audit_row(event, tenant_id)
+                ):
+                    self._parked_writes += 1
+                    _log.warning(
+                        "audit_write_parked",
+                        event_id=event.event_id,
+                        tenant_id=tenant_id,
+                        error=str(exc.__cause__ or exc)[:200],
+                    )
+                    return
             self._lost_writes += 1
             _log.error(
                 "audit_write_lost",

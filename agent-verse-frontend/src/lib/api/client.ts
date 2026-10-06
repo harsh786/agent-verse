@@ -1187,9 +1187,11 @@ export interface GovernancePolicy {
   tools_pattern: string;
   action: "deny" | "require_approval";
   priority: number;
-  /** Hours (0-23, UTC) the policy is active in — one entry per hour, not a range. */
+  /** Hours (0-23, in `timezone`) the policy is active in — one entry per hour, not a range. */
   allowed_hours_utc?: number[];
   allowed_weekdays?: number[];
+  /** IANA timezone the hours and weekdays are read in (default "UTC"). */
+  timezone?: string;
 }
 
 export interface CreateGovernancePolicyRequest {
@@ -1198,9 +1200,11 @@ export interface CreateGovernancePolicyRequest {
   tools_pattern: string;
   action: "deny" | "require_approval";
   priority?: number;
-  /** Hours (0-23, UTC) the policy is active in — one entry per hour, not a range. */
+  /** Hours (0-23, in `timezone`) the policy is active in — one entry per hour, not a range. */
   allowed_hours_utc?: number[];
   allowed_weekdays?: number[];
+  /** IANA timezone for the window (default "UTC"). */
+  timezone?: string;
 }
 
 export interface PolicySimulateResult {

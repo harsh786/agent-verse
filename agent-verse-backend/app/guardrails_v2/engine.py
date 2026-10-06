@@ -902,6 +902,14 @@ class GuardrailsEngine:
             preview = re.sub(pattern, "***", preview)
         return preview + ("..." if len(content) > max_len else "")
 
+    def redact_text(self, content: str) -> str:
+        """The redaction a REDACT rule applies, without evaluating any rule.
+
+        For a caller that already evaluated (and recorded) the rules once and
+        must apply the same redaction to a different rendering of the content.
+        """
+        return self._redact(content, [])
+
     def _redact(self, content: str, matches: list) -> str:
         """Redact matched patterns from content."""
         redacted = content

@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from app.governance.audit_v2 import audit_admin_action
 from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/trust", tags=["trust-governance"])
@@ -22,16 +23,6 @@ def _require_tenant(request: Request):
     if ctx is None:
         raise HTTPException(401, "Unauthorized")
     return ctx
-
-
-# Legacy in-process fallback, used only when no durable store is wired (tests and
-# single-process dev). Production swaps in `app.state.trust_approval_store`
-# during lifespan — see app/governance/trust_approval_store.py. Before that store
-# existed these dicts WERE production: approvals vanished on every restart and an
-# approval granted on one replica did not exist for the next request served
-# elsewhere.
-_approvals: dict[str, dict] = {}  # tenant → {approval_id: approval}
-_approval_delegations: dict[str, list] = {}  # approval_id → list of approvers
 
 
 def _acting_principal(tenant: Any, body: dict[str, Any]) -> str:
@@ -53,8 +44,18 @@ def _acting_principal(tenant: Any, body: dict[str, Any]) -> str:
 
 
 def _approval_store(request: Request) -> Any:
-    """Durable approval store (DB-backed in prod). None → in-memory fallback."""
-    return getattr(request.app.state, "trust_approval_store", None)
+    """The approval store wired on app.state, or 503.
+
+    The lifespan wires the Postgres ``TrustApprovalStore``; the in-memory app
+    build (``create_app(manage_pools=False)``) wires ``InMemoryTrustApprovalStore``.
+    There is no module-dict fallback any more (a03-F057-04): it answered 200
+    for approvals that lived in one process's memory, vanished on restart and
+    did not exist on the next replica.
+    """
+    store = getattr(request.app.state, "trust_approval_store", None)
+    if store is None:
+        raise HTTPException(503, "Approval store unavailable; retry shortly.")
+    return store
 
 
 @router.get("/audit/integrity")
@@ -205,38 +206,19 @@ async def submit_approval_request(request: Request) -> dict[str, Any]:
     tenant = _require_tenant(request)
     body = await request.json()
 
-    approval_id = str(uuid.uuid4())
-    approval = {
-        "approval_id": approval_id,
-        "tenant_id": tenant.tenant_id,
-        "goal_id": body.get("goal_id"),
-        "step_description": body.get("step_description", ""),
-        "tool_name": body.get("tool_name", ""),
-        "risk_level": body.get("risk_level", "high"),
-        "required_approvers": body.get("required_approvers", 1),
-        "approvers": [],  # Track who approved
-        "status": "pending",
-        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
-    }
     store = _approval_store(request)
-    if store is not None:
-        await store.create(
-            tenant_id=tenant.tenant_id,
-            approval_id=approval_id,
-            goal_id=approval["goal_id"],
-            step_description=approval["step_description"],
-            tool_name=approval["tool_name"],
-            risk_level=approval["risk_level"],
-            required_approvers=approval["required_approvers"],
-        )
-    else:
-        _approvals.setdefault(tenant.tenant_id, {})[approval_id] = approval
-
-    return {
-        "approval_id": approval_id,
-        "status": "pending",
-        "required_approvers": approval["required_approvers"],
-    }
+    approval_id = str(uuid.uuid4())
+    required = body.get("required_approvers", 1)
+    await store.create(
+        tenant_id=tenant.tenant_id,
+        approval_id=approval_id,
+        goal_id=body.get("goal_id"),
+        step_description=body.get("step_description", ""),
+        tool_name=body.get("tool_name", ""),
+        risk_level=body.get("risk_level", "high"),
+        required_approvers=required,
+    )
+    return {"approval_id": approval_id, "status": "pending", "required_approvers": required}
 
 
 @router.post("/approvals/{approval_id}/approve")
@@ -254,67 +236,32 @@ async def approve_request(
     note = body.get("note", "")
 
     store = _approval_store(request)
-    if store is not None:
-        from app.governance.trust_approval_store import (
-            ApprovalNotFoundError,
-            ApprovalNotPendingError,
-            DuplicateApproverError,
-        )
-
-        try:
-            refreshed = await store.add_vote(
-                tenant_id=tenant.tenant_id,
-                approval_id=approval_id,
-                approver_id=approver_id,
-                note=note,
-            )
-        except ApprovalNotFoundError:
-            raise HTTPException(404, "Approval not found") from None
-        except ApprovalNotPendingError as exc:
-            raise HTTPException(400, f"Approval is already {exc.status}") from None
-        except DuplicateApproverError:
-            raise HTTPException(
-                409, "approver has already approved this request"
-            ) from None
-        return {
-            "approval_id": approval_id,
-            "status": refreshed["status"],
-            "approver_count": len(refreshed["approvers"]),
-            "required": refreshed["required_approvers"],
-        }
-
-    approval = _approvals.get(tenant.tenant_id, {}).get(approval_id)
-    if not approval:
-        raise HTTPException(404, "Approval not found")
-    if approval["status"] != "pending":
-        raise HTTPException(400, f"Approval is already {approval['status']}")
-
-    # Separation of duties: `required_approvers` counts DISTINCT approvers.
-    # Without this guard one person calling the endpoint N times — or a
-    # double-clicked / retried request — satisfied an N-approver requirement
-    # alone, since the completion check is `len(approvers) >= required`.
-    if any(a.get("approver_id") == approver_id for a in approval["approvers"]):
-        raise HTTPException(409, "approver has already approved this request")
-
-    approval["approvers"].append(
-        {
-            "approver_id": approver_id,
-            "action": "approved",
-            "note": note,
-            "at": datetime.datetime.now(datetime.UTC).isoformat(),
-        }
+    from app.governance.trust_approval_store import (
+        ApprovalNotFoundError,
+        ApprovalNotPendingError,
+        DuplicateApproverError,
     )
 
-    # Check if enough approvers
-    if len(approval["approvers"]) >= approval["required_approvers"]:
-        approval["status"] = "approved"
-        approval["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
-
+    try:
+        refreshed = await store.add_vote(
+            tenant_id=tenant.tenant_id,
+            approval_id=approval_id,
+            approver_id=approver_id,
+            note=note,
+        )
+    except ApprovalNotFoundError:
+        raise HTTPException(404, "Approval not found") from None
+    except ApprovalNotPendingError as exc:
+        raise HTTPException(400, f"Approval is already {exc.status}") from None
+    except DuplicateApproverError:
+        raise HTTPException(
+            409, "approver has already approved this request"
+        ) from None
     return {
         "approval_id": approval_id,
-        "status": approval["status"],
-        "approver_count": len(approval["approvers"]),
-        "required": approval["required_approvers"],
+        "status": refreshed["status"],
+        "approver_count": len(refreshed["approvers"]),
+        "required": refreshed["required_approvers"],
     }
 
 
@@ -330,29 +277,17 @@ async def reject_request(
     rejected_by = _acting_principal(tenant, body)
 
     store = _approval_store(request)
-    if store is not None:
-        from app.governance.trust_approval_store import ApprovalNotFoundError
+    from app.governance.trust_approval_store import ApprovalNotFoundError
 
-        try:
-            await store.reject(
-                tenant_id=tenant.tenant_id,
-                approval_id=approval_id,
-                reason=body.get("reason", ""),
-                rejected_by=rejected_by,
-            )
-        except ApprovalNotFoundError:
-            raise HTTPException(404, "Approval not found") from None
-        return {"approval_id": approval_id, "status": "rejected"}
-
-    approval = _approvals.get(tenant.tenant_id, {}).get(approval_id)
-    if not approval:
-        raise HTTPException(404, "Approval not found")
-
-    approval["status"] = "rejected"
-    approval["rejection_reason"] = body.get("reason", "")
-    approval["rejected_by"] = rejected_by
-    approval["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
-
+    try:
+        await store.reject(
+            tenant_id=tenant.tenant_id,
+            approval_id=approval_id,
+            reason=body.get("reason", ""),
+            rejected_by=rejected_by,
+        )
+    except ApprovalNotFoundError:
+        raise HTTPException(404, "Approval not found") from None
     return {"approval_id": approval_id, "status": "rejected"}
 
 
@@ -360,14 +295,7 @@ async def reject_request(
 async def list_approvals(request: Request, status: str | None = None) -> dict[str, Any]:
     """List approval requests for the tenant, optionally filtered by status."""
     tenant = _require_tenant(request)
-    store = _approval_store(request)
-    if store is not None:
-        approvals = await store.list(tenant.tenant_id, status)
-        return {"approvals": approvals, "total": len(approvals)}
-
-    approvals = list(_approvals.get(tenant.tenant_id, {}).values())
-    if status:
-        approvals = [a for a in approvals if a["status"] == status]
+    approvals = await _approval_store(request).list(tenant.tenant_id, status)
     return {"approvals": approvals, "total": len(approvals)}
 
 
@@ -396,30 +324,57 @@ async def simulate_policy(request: Request) -> dict[str, Any]:
     }
 
 
+# The guardrails-v2 rule bundle (POST /guardrails-v2/bundles/{name}) that holds
+# the content rules for each governance bundle; the ids differ for two of them.
+_GUARDRAIL_BUNDLE_FOR: dict[str, str] = {
+    "hipaa": "hipaa",
+    "gdpr": "gdpr",
+    "soc2": "soc2",
+    "pci_dss": "pci",
+    "india_dpdp": "dpdp",
+}
+
+
 @router.get("/compliance-bundles")
 async def list_compliance_bundles(request: Request) -> dict[str, Any]:
-    """List available compliance bundles."""
-    _require_tenant(request)
-    from app.guardrails_v2.models import COMPLIANCE_BUNDLES, ComplianceBundle
+    """List the compliance bundles this tenant can enable here.
 
-    return {
-        "bundles": [
+    a03-F057-03: this listed the guardrails-v2 rule catalogue (ids ``pci``,
+    ``dpdp``, ``sox``) while enable/disable below use
+    ``app.governance.compliance_bundles`` (``pci_dss``, ``india_dpdp``, no SOX),
+    so two listed ids answered 400 on enable and the listed facts were not the
+    ones enabling applies. Each entry is now the governance bundle itself, with
+    the guardrails-v2 rule bundle that carries its content rules, if any.
+    """
+    _require_tenant(request)
+    from app.governance.compliance_bundles import COMPLIANCE_BUNDLES
+    from app.guardrails_v2.models import COMPLIANCE_BUNDLES as GUARDRAIL_RULE_BUNDLES
+    from app.guardrails_v2.models import ComplianceBundle as GuardrailBundle
+
+    bundles = []
+    for bundle in COMPLIANCE_BUNDLES.values():
+        guardrail_id = _GUARDRAIL_BUNDLE_FOR.get(bundle.id)
+        rule_count = (
+            len(GUARDRAIL_RULE_BUNDLES.get(GuardrailBundle(guardrail_id), []))
+            if guardrail_id
+            else 0
+        )
+        if not rule_count:
+            guardrail_id = None  # no preset content rules (e.g. DPDP today)
+        bundles.append(
             {
-                "id": b.value,
-                "name": b.value.upper(),
-                "rule_count": len(COMPLIANCE_BUNDLES.get(b, [])),
-                "description": {
-                    "gdpr": "EU General Data Protection Regulation — PII protection",
-                    "soc2": "SOC 2 Type II — Security, secrets, injection prevention",
-                    "hipaa": "HIPAA — PHI protection for healthcare data",
-                    "pci": "PCI DSS — Payment card data protection",
-                    "dpdp": "India Digital Personal Data Protection Act",
-                    "sox": "Sarbanes-Oxley — Financial data controls",
-                }.get(b.value, ""),
+                "id": bundle.id,
+                "name": bundle.name,
+                "description": bundle.description,
+                "max_autonomy_mode": bundle.max_autonomy_mode,
+                "required_hitl_for": list(bundle.required_hitl_for),
+                "audit_retention_days": bundle.audit_retention_days,
+                "data_residency_required": bundle.data_residency_required,
+                "guardrail_bundle": guardrail_id,
+                "rule_count": rule_count,
             }
-            for b in ComplianceBundle
-        ]
-    }
+        )
+    return {"bundles": bundles}
 
 
 def _bundle_store(request: Request) -> Any:
@@ -465,6 +420,12 @@ async def get_active_compliance_bundles(request: Request) -> dict[str, Any]:
 
 
 @router.post("/compliance-bundles/{bundle_id}/enable")
+@audit_admin_action(
+    "compliance_bundle.enabled",
+    "compliance_bundle",
+    "enable",
+    extract_resource_id=lambda kw: kw.get("bundle_id"),
+)
 async def enable_compliance_bundle_for_tenant(
     request: Request,
     bundle_id: str,
@@ -496,6 +457,12 @@ async def enable_compliance_bundle_for_tenant(
 
 
 @router.delete("/compliance-bundles/{bundle_id}")
+@audit_admin_action(
+    "compliance_bundle.disabled",
+    "compliance_bundle",
+    "disable",
+    extract_resource_id=lambda kw: kw.get("bundle_id"),
+)
 async def disable_compliance_bundle_for_tenant(
     request: Request,
     bundle_id: str,

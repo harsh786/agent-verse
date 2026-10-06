@@ -1816,6 +1816,9 @@ def create_app(
             from app.triggers.store import ScheduleStore as ScheduleStoreClass
 
             _audit_log_db = AuditLogClass(db_session_factory=db_factory)
+            # a03-F058-01: a write that exhausts its retries is parked in Redis
+            # and replayed by the drain-audit-write-outbox beat task.
+            _audit_log_db.set_outbox_redis(redis_for_runtime)
             _schedule_store_db = ScheduleStoreClass(
                 db_session_factory=db_factory,
                 redis=redis_for_runtime,
@@ -3043,6 +3046,13 @@ def create_app(
     from app.governance.compliance_bundles import _bundle_manager
 
     app.state.compliance_bundle_store = _bundle_manager
+    # Trust approvals (a03-F057-04): only the in-memory build gets the process-
+    # local store; a pooled app gets the Postgres store in the lifespan and
+    # answers 503 until then rather than keeping approvals in one pod's memory.
+    if not manage_pools:
+        from app.governance.trust_approval_store import InMemoryTrustApprovalStore
+
+        app.state.trust_approval_store = InMemoryTrustApprovalStore()
     # No DB session factory in the in-memory app → audit chain wired in lifespan only.
     app.state.audit_chain = None
     from app.coordination.auction.repository import (

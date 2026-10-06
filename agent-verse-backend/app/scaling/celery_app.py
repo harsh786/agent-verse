@@ -169,6 +169,7 @@ celery_app.conf.update(
         "app.scaling.tasks.resume_stalled_eval_suite_runs": {"queue": "maintenance"},
         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
         "app.scaling.event_outbox_tasks.drain_goal_event_outbox": {"queue": "maintenance"},
+        "app.scaling.event_outbox_tasks.drain_audit_write_outbox": {"queue": "maintenance"},
         # GDPR export — runs in background, long-running
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
         # Training-data export jobs (OPS-37) — long-running, streamed to object storage.
@@ -339,6 +340,13 @@ celery_app.conf.update(
         # (SVC-08); replay them so the event history has no holes.
         "drain-goal-event-outbox": {
             "task": "app.scaling.event_outbox_tasks.drain_goal_event_outbox",
+            "schedule": 30.0,
+            "options": {"queue": "maintenance"},
+        },
+        # audit_log rows whose write exhausted its retries are parked in Redis
+        # (a03-F058-01); replay them so the audit trail has no holes.
+        "drain-audit-write-outbox": {
+            "task": "app.scaling.event_outbox_tasks.drain_audit_write_outbox",
             "schedule": 30.0,
             "options": {"queue": "maintenance"},
         },

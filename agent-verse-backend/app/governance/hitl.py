@@ -212,6 +212,23 @@ async def release_expired_waiters(redis: Any, request_ids: Iterable[str]) -> int
     return released
 
 
+@dataclass(frozen=True)
+class ApprovalVoteOutcome:
+    """What one approve call did (a03-F056-07).
+
+    ``accepted``: the vote/approval was taken (False: no such pending request,
+    or a lost race). ``resolved``: the gate is now approved. A multi-approver
+    gate short of quorum is ``accepted`` but not ``resolved``. The counts come
+    from the database on a DB-backed gateway, so they are right on a replica
+    that never raised (or cached) the request.
+    """
+
+    accepted: bool
+    resolved: bool
+    approvals_received: int = 0
+    required_approvers: int = 1
+
+
 class HITLResolutionUnavailableError(Exception):
     """The approval decision could not be written to the database.
 
@@ -942,12 +959,38 @@ class HITLGateway:
         awaits the resolution write, so when it returns the decision is committed
         and visible fleet-wide.
         """
+        outcome = await self.approve_async_outcome(
+            request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+        )
+        return outcome.accepted
+
+    async def approve_async_outcome(
+        self,
+        request_id: str,
+        *,
+        approver: str,
+        note: str = "",
+        tenant_ctx: TenantContext,
+    ) -> ApprovalVoteOutcome:
+        """:meth:`approve_async`, reporting whether the gate resolved and the vote count.
+
+        The REST route used to work this out from :meth:`get_request` — this
+        process's cache, which never holds a request raised on another replica
+        (a worker raises most gates), so a below-quorum vote there was answered
+        'approved' while the gate stayed closed.
+        """
         req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != ApprovalStatus.PENDING:
-            return False
+            return ApprovalVoteOutcome(accepted=False, resolved=False)
         if self._db_session_factory is None:
-            return bool(
+            ok = bool(
                 self.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
+            )
+            return ApprovalVoteOutcome(
+                accepted=ok,
+                resolved=ok and getattr(req, "status", None) == ApprovalStatus.APPROVED,
+                approvals_received=int(req.approvals_received or 0),
+                required_approvers=max(1, int(req.required_approvers or 1)),
             )
         required = max(1, int(req.required_approvers or 1))
         if required > 1:
@@ -963,7 +1006,13 @@ class HITLGateway:
             req.approver = approver
             req.note = note
             if votes < required:
-                return True  # vote recorded; the gate stays closed
+                # Vote recorded; the gate stays closed.
+                return ApprovalVoteOutcome(
+                    accepted=True,
+                    resolved=False,
+                    approvals_received=votes,
+                    required_approvers=required,
+                )
         # This vote resolves the gate: win the DB compare-and-swap FIRST, then
         # unblock the waiting agent. Approving locally first let the agent run
         # the gated action even when the decision was never recorded (DB error
@@ -973,7 +1022,7 @@ class HITLGateway:
         )
         if not won:
             await self._heal_from_db(request_id, tenant_ctx.tenant_id, "approved")
-            return False
+            return ApprovalVoteOutcome(accepted=False, resolved=False)
         if required > 1:
             # Threshold reached across replicas: mark every counted vote locally
             # so _apply_approval releases the gate.
@@ -991,9 +1040,15 @@ class HITLGateway:
             )
         )
         # (getattr: mypy keeps req.status narrowed to PENDING from the check above.)
-        if approved and getattr(req, "status", None) == ApprovalStatus.APPROVED:
+        resolved = approved and getattr(req, "status", None) == ApprovalStatus.APPROVED
+        if resolved:
             await self._publish_approved(req, approver=approver, note=note, tenant_ctx=tenant_ctx)
-        return approved
+        return ApprovalVoteOutcome(
+            accepted=approved,
+            resolved=resolved,
+            approvals_received=max(int(req.approvals_received or 0), required if resolved else 0),
+            required_approvers=required,
+        )
 
     async def _publish_approved(
         self, req: ApprovalRequest, *, approver: str, note: str, tenant_ctx: TenantContext
