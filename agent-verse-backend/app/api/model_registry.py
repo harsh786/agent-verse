@@ -369,6 +369,7 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         # False: the provider has no credentials here, so selection skips it.
         "provider_ready": is_eligible(m),
         "source": (m.extra or {}).get("source", "env"),
+        "origin": (m.extra or {}).get("origin", ""),
         "rank": rank,
     }
 

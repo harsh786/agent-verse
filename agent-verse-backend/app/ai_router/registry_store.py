@@ -45,6 +45,7 @@ _FIELDS = (
     "quality_score",
     "avg_latency_ms",
     "is_available",
+    "origin",  # "catalog" for catalog imports; absent = added by the operator
 )
 
 

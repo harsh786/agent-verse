@@ -202,7 +202,18 @@ def test_imported_models_without_a_key_are_listed_but_not_selected(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     listing = client.get("/models/configured", headers=_ADMIN).json()
     tg = next(g for g in listing["capabilities"] if g["capability"] == "text_generation")
-    assert tg["selected_model_id"] == "llama-3.1-8b-instant"  # now the cheapest ready one
+    # Ready now, but an unranked catalog import never silently replaces the
+    # deployment's own / operator-added model: it joins the failover chain.
+    assert tg["selected_model_id"] == "local-llm"
+    assert tg["fallback_model_ids"][0] == "llama-3.1-8b-instant"  # cheapest import
+    assert all(m["origin"] == "catalog" for m in tg["models"] if m["provider"] == "groq")
+
+    client.put("/models/preferences/text_generation", headers=_ADMIN,
+               json={"order": ["groq/llama-3.3-70b-versatile"]})
+    listing = client.get("/models/configured", headers=_ADMIN).json()
+    tg = next(g for g in listing["capabilities"] if g["capability"] == "text_generation")
+    assert tg["selected_model_id"] == "llama-3.3-70b-versatile"
+    assert tg["fallback_model_ids"][0] == "local-llm"
 
 
 # ── 3. preference order ─────────────────────────────────────────────────────

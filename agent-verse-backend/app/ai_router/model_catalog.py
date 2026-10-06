@@ -51,6 +51,9 @@ class CatalogModel:
             "supports_structured_output": "structured_output" in caps,
             "quality_score": self.quality_score,
             "is_available": True,
+            # Imported from the catalog: ranks after the deployment's own models
+            # until the operator puts it in the preference order.
+            "origin": "catalog",
         }
 
 

@@ -157,7 +157,7 @@ def _load_overrides(reg: ModelRegistry) -> None:
                     ),
                     quality_score=float(e.get("quality_score", 0.7) or 0.7),
                     is_available=bool(e.get("is_available", True)),
-                    extra={"source": "override"},
+                    extra={"source": "override", "origin": str(e.get("origin") or "manual")},
                 )
             )
     except Exception as exc:  # pragma: no cover - defensive

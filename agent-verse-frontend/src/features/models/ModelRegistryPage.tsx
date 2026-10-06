@@ -205,7 +205,8 @@ export function ModelRegistryPage() {
               Models run in the saved <strong>preference order</strong> for each category: the first
               is the primary and the next one is the automatic fallback if it fails. Models whose
               provider has no API key are skipped. With no saved order, the{' '}
-              <strong>cheapest</strong> model is used first (self-hosted models count as free).
+              <strong>cheapest</strong> model is used first (self-hosted models count as free);
+              models imported from the catalog only follow your configured ones until you rank them.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">

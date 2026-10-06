@@ -142,15 +142,19 @@ def _norm_provider(p: str) -> str:
 
 def order_models(models: list[Any], capability: Any, registry: Any = None) -> list[Any]:
     """*models* in execution order: the operator's preference order for
-    *capability* first, then every other model cheapest-first."""
+    *capability* first, then the deployment's own and operator-added models
+    cheapest-first, then catalog imports cheapest-first."""
     reg = registry or model_registry
     pref_fn = getattr(reg, "preference_order", None)
     pref = pref_fn(capability) if callable(pref_fn) else []
     rank = {k: i for i, k in enumerate(pref)}
 
-    def _key(m: Any) -> tuple[int, int, float, float, float]:
+    def _key(m: Any) -> tuple[int, int, int, float, float, float]:
         k = model_key(m)
-        return (0 if k in rank else 1, rank.get(k, 0), *_cost_key(m))
+        # A catalog import never silently becomes the active model: unranked, it
+        # follows the deployment's own and operator-added models.
+        imported = (getattr(m, "extra", None) or {}).get("origin") == "catalog"
+        return (0 if k in rank else 1, rank.get(k, 0), int(imported), *_cost_key(m))
 
     return sorted(models, key=_key)
 
