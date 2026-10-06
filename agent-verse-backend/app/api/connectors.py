@@ -10,7 +10,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
@@ -2364,6 +2364,61 @@ async def missing_capabilities(
         "complete": report.complete,
         "connector_errors": report.errors,
     }
+
+
+# ── Connector certification (a02-F031-02) ─────────────────────────────────────
+# app/mcp/certification.py (static manifest checks and a discovery + read-call
+# check against a connector) was referenced only by its tests. These routes
+# expose it as the certification design specified (targets + run).
+
+
+class CertificationRunRequest(BaseModel):
+    connector: str = Field(..., min_length=1, max_length=64)
+    level: Literal["static", "mocked"] = "static"
+    # Required for level=mocked: one of the caller's connectors to exercise.
+    server_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+@router.get("/certification/targets")
+async def certification_targets(request: Request) -> list[dict[str, Any]]:
+    """The connectors of the certification manifest (no secrets, only shape)."""
+    _require_tenant(request)
+    from app.mcp.certification_manifest import CONNECTOR_CERTIFICATION_TARGETS
+
+    return [
+        {
+            "connector": key,
+            "display_name": target["display_name"],
+            "category": target["category"],
+            "auth_modes": list(target["auth_modes"]),
+            "read_tool": target["read_tool"],
+            "expected_artifact_kind": target["expected_artifact_kind"],
+        }
+        for key, target in sorted(CONNECTOR_CERTIFICATION_TARGETS.items())
+    ]
+
+
+@router.post("/certification/run")
+async def run_certification(request: Request, body: CertificationRunRequest) -> dict[str, Any]:
+    """Certify a connector: ``static`` checks the manifest entry; ``mocked``
+    discovers the caller's connector ``server_id`` and runs the manifest's
+    read-only tool on it. Unknown connector → the result says failed; another
+    tenant's (or an unknown) connector → 404."""
+    tenant_ctx = _require_tenant(request)
+    from app.mcp.certification import run_mocked_certification, run_static_certification
+
+    if body.level == "static":
+        return run_static_certification(body.connector)
+    if not body.server_id:
+        raise HTTPException(status_code=422, detail="server_id is required for level=mocked")
+    if await _registry(request).get(body.server_id, tenant_ctx=tenant_ctx) is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+    if mcp_client is None:
+        raise HTTPException(status_code=503, detail="MCP client not available")
+    return await run_mocked_certification(
+        body.connector, mcp_client=mcp_client, server_id=body.server_id, tenant_ctx=tenant_ctx
+    )
 
 
 # ── Single-connector reads (connector detail page) ────────────────────────────
