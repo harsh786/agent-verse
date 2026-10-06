@@ -9184,12 +9184,20 @@ async def _process_feedback_batch_async(
         embedder = build_query_embedder()
     except Exception as exc:
         logger.warning("feedback_lesson_embedder_unavailable", error=str(exc)[:200])
-    for tid in tenant_ids:
-        result = await engine_svc.process_feedback_batch(
-            db_session_factory=db, tenant_id=tid, embedder=embedder
-        )
-        total_processed += result.get("processed", 0)
-        total_actions += result.get("actions_derived", 0)
+    # B7-4: stored lessons are published as memory.created (memory_created
+    # triggers); a client bound to this task's loop, closed when it ends.
+    event_redis = _worker_async_redis() if tenant_ids else None
+    try:
+        for tid in tenant_ids:
+            result = await engine_svc.process_feedback_batch(
+                db_session_factory=db, tenant_id=tid, embedder=embedder, event_redis=event_redis
+            )
+            total_processed += result.get("processed", 0)
+            total_actions += result.get("actions_derived", 0)
+    finally:
+        if event_redis is not None:
+            with contextlib.suppress(Exception):
+                await event_redis.aclose()
     return {"processed": total_processed, "actions_derived": total_actions}
 
 
