@@ -46,15 +46,3 @@ def test_subscribe_events_uses_bounded_queue():
     assert "asyncio.Queue(maxsize=512)" in src, (
         "subscribe_events must use asyncio.Queue(maxsize=512) not unbounded Queue()"
     )
-
-
-def test_bridge_sends_sentinel_for_terminal_events():
-    """_subscribe_celery_goal_events must send _SENTINEL after terminal events."""
-    import pathlib
-    src = pathlib.Path("app/services/goal_service.py").read_text()
-    assert "_terminal_bridge" in src, (
-        "_subscribe_celery_goal_events must define _terminal_bridge sentinel set"
-    )
-    assert "q.put_nowait(_SENTINEL)" in src, (
-        "Bridge must call q.put_nowait(_SENTINEL) on terminal events"
-    )

@@ -105,15 +105,6 @@ class TestStartHitlRejectionSubscriber:
                 pass  # no running loop — acceptable
 
 
-class TestStartCeleryEventBridge:
-    @pytest.mark.asyncio
-    async def test_bridge_starts_background_task(self):
-        svc = GoalService()
-        with patch.object(svc, "_subscribe_celery_goal_events", AsyncMock()):
-            svc.start_celery_event_bridge("redis://localhost:6379/0")
-        assert len(svc._background_tasks) >= 0  # may complete immediately
-
-
 class TestCheckpointSaverSelection:
     def test_returns_memory_saver_by_default(self):
         from langgraph.checkpoint.memory import MemorySaver

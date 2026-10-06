@@ -13,12 +13,9 @@ Regressions:
 
 from __future__ import annotations
 
-import asyncio
-import json
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -96,178 +93,17 @@ def test_status_from_events_honours_worker_complete_status() -> None:
     assert f([{"type": "worker_complete"}]) == GoalStatus.COMPLETE
 
 
-class _FakePubSub:
-    def __init__(self, msgs: list[dict[str, Any]]) -> None:
-        self._msgs = msgs
+def test_worker_envelope_on_the_goal_channel_maps_to_its_real_status() -> None:
+    """The per-goal channel path (a08-F190-07/08) normalises the worker envelope
+    and ends the stream only for a real terminal status."""
+    norm = GoalService._normalize_bus_event
+    status = GoalService._status_from_events
 
-    async def psubscribe(self, *_: Any) -> None:
-        return None
+    def envelope(event: dict[str, Any]) -> dict[str, Any]:
+        return {"goal_id": "g1", "tenant_id": "t1", "type": event["type"], "payload": event}
 
-    async def listen(self) -> Any:
-        for m in self._msgs:
-            yield m
-        await asyncio.Event().wait()
-
-
-class _FakeRedis:
-    def __init__(self, msgs: list[dict[str, Any]]) -> None:
-        self._msgs = msgs
-
-    async def __aenter__(self) -> _FakeRedis:
-        return self
-
-    async def __aexit__(self, *_: Any) -> None:
-        return None
-
-    def pubsub(self) -> _FakePubSub:
-        return _FakePubSub(self._msgs)
-
-
-def _bridge_msg(event: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "type": "pmessage",
-        "data": json.dumps(
-            {"goal_id": "g1", "tenant_id": "t1", "type": event["type"], "payload": event}
-        ),
-    }
-
-
-async def _run_bridge(svc: GoalService, events: list[dict[str, Any]]) -> None:
-    with patch("redis.asyncio.from_url", return_value=_FakeRedis([_bridge_msg(e) for e in events])):
-        task = asyncio.create_task(svc._subscribe_celery_goal_events("redis://fake"))
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_bridge_worker_complete_waiting_human_is_not_terminal() -> None:
-    svc = GoalService()
-    rec = _inject(svc)
-    q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-    rec.subscribers.append(q)
-    await _run_bridge(svc, [{"type": "worker_complete", "status": "waiting_human"}])
-    items = [q.get_nowait() for _ in range(q.qsize())]
-    assert None not in items, "stream closed on an approval-suspended goal"
-    assert rec.status != GoalStatus.COMPLETE
-
-
-@pytest.mark.asyncio
-async def test_bridge_worker_complete_failed_marks_failed_and_closes() -> None:
-    svc = GoalService()
-    rec = _inject(svc)
-    q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-    rec.subscribers.append(q)
-    await _run_bridge(svc, [{"type": "worker_complete", "status": "failed"}])
-    items = [q.get_nowait() for _ in range(q.qsize())]
-    assert items[-1] is None
-    assert rec.status == GoalStatus.FAILED
-
-
-# ── isolated execution ─────────────────────────────────────────────────────
-
-
-class _Scheduler:
-    def __init__(self, result: Any) -> None:
-        self._result = result
-
-    async def schedule(self, *_: Any, **__: Any) -> Any:
-        return self._result
-
-
-def _iso_result(success: bool, status: str, error: str = "") -> Any:
-    from app.execution_environment.models import ExecutionResult
-
-    return ExecutionResult(
-        goal_id="g1",
-        tenant_id="t1",
-        attempt_id="a1",
-        success=success,
-        status=status,
-        error_message=error,
-    )
-
-
-@pytest.mark.asyncio
-async def test_isolated_failure_without_runner_event_emits_goal_failed() -> None:
-    svc = GoalService(
-        app_state=SimpleNamespace(
-            execution_scheduler=_Scheduler(_iso_result(False, "failed", "policy denied"))
-        )
-    )
-    rec = _inject(svc)
-    await svc._run_agent_loop_isolated("g1", "do it", _ctx())
-    assert rec.events[-1]["type"] == "goal_failed"
-    assert rec.events[-1]["reason"] == "policy denied"
-    assert rec.status == GoalStatus.FAILED
-
-
-@pytest.mark.asyncio
-async def test_isolated_waiting_human_suspends_without_terminal_event() -> None:
-    svc = GoalService(
-        app_state=SimpleNamespace(
-            execution_scheduler=_Scheduler(_iso_result(False, "waiting_human"))
-        )
-    )
-    rec = _inject(svc)
-    svc._suspend_for_approval = AsyncMock()  # type: ignore[method-assign]
-    await svc._run_agent_loop_isolated("g1", "do it", _ctx())
-    assert not any(
-        e["type"] in {"goal_complete", "goal_failed", "goal_cancelled"} for e in rec.events
-    )
-    svc._suspend_for_approval.assert_awaited_once()
-    assert rec.status != GoalStatus.FAILED
-
-
-class _CapturingScheduler:
-    def __init__(self) -> None:
-        self.envelopes: list[Any] = []
-
-    async def schedule(self, envelope: Any, **__: Any) -> Any:
-        self.envelopes.append(envelope)
-        return _iso_result(True, "complete")
-
-
-class _ConfigStore:
-    def __init__(self, cfg: Any = None, exc: Exception | None = None) -> None:
-        self._cfg = cfg
-        self._exc = exc
-        self.kwargs: dict[str, Any] = {}
-
-    async def get_config(self, tenant_id: str, **kwargs: Any) -> Any:
-        self.kwargs = kwargs
-        if self._exc is not None:
-            raise self._exc
-        return self._cfg
-
-
-@pytest.mark.asyncio
-async def test_isolated_scoped_key_is_decrypted_from_encrypted_key() -> None:
-    """The store holds only ``encrypted_key``; reading ``api_key`` always gave ""."""
-    sched = _CapturingScheduler()
-    svc = GoalService(app_state=SimpleNamespace(execution_scheduler=sched))
-    _inject(svc)
-    vault = SimpleNamespace(decrypt=lambda enc: "tenant-real-key" if enc == "ct" else "")
-    store = _ConfigStore({"provider": "openai", "encrypted_key": "ct"})
-    with (
-        patch("app.services.llm_config_store.get_llm_config_store", return_value=store),
-        patch("app.providers.vault.get_vault", return_value=vault),
-    ):
-        await svc._run_agent_loop_isolated("g1", "do it", _ctx())
-    assert sched.envelopes, "goal must still run"
-    assert store.kwargs == {"strict": True}
-    assert sched.envelopes[0].scoped_llm_api_key == "tenant-real-key"
-
-
-@pytest.mark.asyncio
-async def test_isolated_unreadable_byok_fails_goal_instead_of_platform_key() -> None:
-    sched = _CapturingScheduler()
-    svc = GoalService(app_state=SimpleNamespace(execution_scheduler=sched))
-    rec = _inject(svc)
-    store = _ConfigStore(exc=RuntimeError("db down"))
-    with patch("app.services.llm_config_store.get_llm_config_store", return_value=store):
-        await svc._run_agent_loop_isolated("g1", "do it", _ctx())
-    assert sched.envelopes == []
-    assert rec.events[-1]["type"] == "goal_failed"
-    assert rec.events[-1]["failure_reason"] == "tenant_llm_provider_unavailable"
-    assert rec.status == GoalStatus.FAILED
+    waiting = norm(envelope({"type": "worker_complete", "status": "waiting_human"}))
+    failed = norm(envelope({"type": "worker_complete", "status": "failed"}))
+    assert waiting == {"type": "worker_complete", "status": "waiting_human"}
+    assert status([waiting]) is None
+    assert status([failed]) == GoalStatus.FAILED

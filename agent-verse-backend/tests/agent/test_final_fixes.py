@@ -129,13 +129,12 @@ def test_tool_context_find_tool_returns_none_when_absent():
 # ── C-1: Celery SSE bridge ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_goal_service_has_celery_event_bridge():
+async def test_goal_service_has_no_fleet_wide_goal_events_bridge():
+    """a08-F190-07: worker events reach SSE through per-goal subscriptions."""
     from app.services.goal_service import GoalService
     svc = GoalService()
-    assert hasattr(svc, "start_celery_event_bridge"), \
-        "GoalService must have start_celery_event_bridge() for SSE in Celery mode"
-    assert hasattr(svc, "_subscribe_celery_goal_events"), \
-        "GoalService must have _subscribe_celery_goal_events() coroutine"
+    assert not hasattr(svc, "_subscribe_celery_goal_events")
+    assert hasattr(svc, "_streams_from_goal_channel")
 
 
 # ── H-3: ExecutionMemory wiring ───────────────────────────────────────────────

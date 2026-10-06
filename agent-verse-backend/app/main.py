@@ -2601,15 +2601,9 @@ def create_app(
                 except Exception as _hitl_redis_exc:
                     logger.warning("hitl_gateway_redis_wire_failed", error=str(_hitl_redis_exc))
 
-            # ── C-1: Start Celery→SSE event bridge when Redis is available ────────
-            if redis_for_runtime is not None and settings.redis_url:
-                _bridge_svc = getattr(app.state, "goal_service", None)
-                if _bridge_svc is not None and hasattr(_bridge_svc, "start_celery_event_bridge"):
-                    try:
-                        _bridge_svc.start_celery_event_bridge(str(settings.redis_url))
-                        logger.info("celery_event_bridge_started")
-                    except Exception as _bridge_exc:
-                        logger.warning("celery_event_bridge_start_failed", error=str(_bridge_exc))
+            # Worker goal events reach SSE through per-goal channel
+            # subscriptions (GoalService._subscribe_remote); no fleet-wide
+            # goal_events:* bridge (a08-F190-07).
 
             # ── H-3: Seed RBAC scope definitions from declarative registry ───────
             try:

@@ -103,10 +103,9 @@ async def test_subscriber_is_restarted_after_an_unexpected_exit(
 async def test_stop_cancels_the_subscribers_and_does_not_restart(fake_redis: Any) -> None:
     svc = _service_with_goal("g3")
     svc.start_hitl_rejection_subscriber("redis://fake/0")
-    svc.start_celery_event_bridge("redis://fake/0")
     await _wait_subscribed(fake_redis())
     tasks = set(svc._background_tasks)
-    assert len(tasks) == 2
+    assert len(tasks) == 1  # no fleet-wide goal_events bridge any more (a08-F190-07)
 
     await svc.stop_background_subscribers()
     await asyncio.sleep(0.05)

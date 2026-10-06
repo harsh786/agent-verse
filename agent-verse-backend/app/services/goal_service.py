@@ -961,116 +961,14 @@ class GoalService:
         self._db_tasks.add(task)
         task.add_done_callback(self._db_tasks.discard)
 
-    # ── C-1: Celery → SSE event bridge ────────────────────────────────────────
-
-    async def _subscribe_celery_goal_events(self, redis_url: str) -> None:
-        """Bridge Celery worker goal events to in-process SSE queues.
-
-        Celery workers publish events to Redis channels:
-          goal_events:{tenant_id}:{goal_id}  -> JSON event dict
-
-        This subscriber feeds those events into the in-process GoalRecord.subscribers
-        queues so that SSE streams work correctly even when goals run on workers.
-        """
-        import json
-
-        import redis.asyncio as aioredis
-
-        while True:
-            try:
-                async with aioredis.from_url(redis_url, decode_responses=True) as r:
-                    pubsub = r.pubsub()
-                    await pubsub.psubscribe("goal_events:*")
-                    self._logger.info("celery_event_bridge_subscribed")
-
-                    async for message in pubsub.listen():
-                        if message.get("type") not in ("pmessage", "message"):
-                            continue
-                        try:
-                            data = json.loads(message.get("data", "{}"))
-                            goal_id = data.get("goal_id", "")
-                            tenant_id = data.get("tenant_id", "")
-                            event_type = data.get("type", "")
-                            payload = data.get("payload", {})
-
-                            if goal_id:
-                                # Only goals this replica already holds a record
-                                # of (a local run, or an SSE subscriber here). A
-                                # stub record per unknown goal made every replica
-                                # track every worker goal fleet-wide, unbounded
-                                # (SVC-07); nobody here listens to those events.
-                                record = self._goals.get(goal_id)
-                                if record is not None and record.tenant_id != tenant_id:
-                                    record = None
-                                if record is not None:
-                                    # Feed into SSE subscriber queues
-                                    event = {
-                                        "type": event_type,
-                                        "payload": payload,
-                                        "goal_id": goal_id,
-                                        "tenant_id": tenant_id,
-                                    }
-                                    # SVC-05: the worker's durable sequence (SSE id).
-                                    _bridge_seq = _as_seq(data.get("_seq")) or (
-                                        _as_seq(payload.get("_seq"))
-                                        if isinstance(payload, dict)
-                                        else None
-                                    )
-                                    if _bridge_seq is not None:
-                                        event["_seq"] = _bridge_seq
-                                    dead = []
-                                    for q in list(record.subscribers):
-                                        try:
-                                            q.put_nowait(event)
-                                        except asyncio.QueueFull:
-                                            if event_type not in {"token_chunk", "heartbeat"}:
-                                                dead.append(q)
-                                        except Exception:
-                                            dead.append(q)
-                                    for q in dead:
-                                        with suppress(Exception):
-                                            record.subscribers.remove(q)
-                                    # Send end-of-stream sentinel on terminal events.
-                                    # worker_complete is terminal only for the status it
-                                    # carries (waiting_human is a suspension, not an end).
-                                    _terminal_bridge = {
-                                        "goal_complete": GoalStatus.COMPLETE,
-                                        "goal_failed": GoalStatus.FAILED,
-                                        "worker_failed": GoalStatus.FAILED,
-                                        "goal_cancelled": GoalStatus.CANCELLED,
-                                    }
-                                    _final: GoalStatus | None = (
-                                        self._worker_complete_status(
-                                            payload if isinstance(payload, dict) else {}
-                                        )
-                                        if event_type == "worker_complete"
-                                        else _terminal_bridge.get(event_type)
-                                    )
-                                    if _final is not None:
-                                        for q in list(record.subscribers):
-                                            with suppress(Exception):
-                                                q.put_nowait(_SENTINEL)
-                                        record.status = _final
-                                        if _final in _TERMINAL_STATUSES:
-                                            # Starts its eviction TTL (SVC-30).
-                                            record.completed_at = (
-                                                record.completed_at
-                                                or datetime.now(UTC).isoformat()
-                                            )
-                        except Exception as exc:
-                            self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
-            except Exception as exc:
-                self._logger.warning("celery_event_bridge_error", error=str(exc))
-                await asyncio.sleep(5)
-
-    def start_celery_event_bridge(self, redis_url: str) -> None:
-        """Start the Celery→SSE event bridge as a background asyncio task."""
-        task = asyncio.create_task(
-            self._subscribe_celery_goal_events(redis_url),
-            name="celery_goal_event_bridge",
-        )
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+    # ── Worker events reach SSE through per-goal subscriptions ──────────────
+    # There is no fleet-wide bridge any more (a08-F190-07): every API replica
+    # used to PSUBSCRIBE goal_events:* and JSON-decode every worker event of
+    # every tenant only to drop those of goals it did not hold, and fed the raw
+    # {type, payload, goal_id, tenant_id} worker envelope to local SSE queues
+    # (a08-F190-08). A stream of a goal this replica does not run now
+    # SUBSCRIBEs to that goal's own channel (_subscribe_remote), which
+    # normalises worker envelopes like any cross-replica event.
 
     # ── memory management ─────────────────────────────────────────────────────
     def _evict_stale_goals(self) -> int:
@@ -6185,7 +6083,7 @@ class GoalService:
         with suppress(Exception):  # goal is on another replica — cross-replica path below
             local_record = self._get_record(goal_id, tenant_ctx)
 
-        if local_record is None:
+        if local_record is None or self._streams_from_goal_channel(local_record):
             async for event in self._subscribe_remote(goal_id, tenant_ctx, since_sequence):
                 yield event
             return
@@ -6248,6 +6146,22 @@ class GoalService:
                 # queue was registered on the local record.
                 with suppress(ValueError):
                     local_record.subscribers.remove(queue)
+
+    def _streams_from_goal_channel(self, record: GoalRecord) -> bool:
+        """Stream an active goal this replica does not run from its Redis channel.
+
+        A worker (or another replica) runs it, so its live events only exist on
+        ``goal_events:{tenant}:{goal}``; this replica's record has no local
+        producer. Needs the pub/sub channel and the DB (the remote path checks
+        the row); dry runs and finished goals keep the local path.
+        """
+        return (
+            bool(self._redis_url_for_pubsub)
+            and self._db is not None
+            and record.status not in _TERMINAL_STATUSES
+            and not record.dry_run
+            and not self._runs_locally(record)
+        )
 
     async def _subscribe_remote(
         self, goal_id: str, tenant_ctx: TenantContext, since_sequence: int
