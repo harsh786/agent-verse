@@ -385,7 +385,12 @@ class LLMProviderConfig(BaseModel):
     provider: str = Field(
         description="Provider name: anthropic | openai | gemini | groq | together | azure | ollama"
     )
-    api_key: str = Field(min_length=1, description="API key (stored encrypted in vault)")
+    # Optional on update: omitted (or ""), the stored encrypted key is kept, so an
+    # admin can change the model without re-typing the secret. Required on first
+    # setup and whenever provider or base_url changes (see set_llm_config).
+    api_key: str | None = Field(
+        default=None, description="API key (stored encrypted in vault); omit to keep the stored one"
+    )
     base_url: str | None = Field(
         default=None, description="Base URL override (for Ollama / Azure / vLLM)"
     )
@@ -436,6 +441,14 @@ def _safe_llm_view(tenant_id: str, cfg: dict[str, Any] | None) -> dict[str, Any]
     }
     safe.setdefault("default_model", safe.get("model"))
     return {"tenant_id": tenant_id, **safe, "configured": True}
+
+
+def _norm_provider(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _norm_base_url(value: Any) -> str:
+    return str(value or "").strip().rstrip("/").lower()
 
 
 def _can_edit_llm(ctx: TenantContext) -> bool:
@@ -555,17 +568,49 @@ async def set_llm_config(
     """
     if body.base_url:
         _check_llm_base_url(body.base_url)
-    # PROV-15: the tenant's own vault key when it set one, else the platform vault.
-    from app.providers.tenant_vault import TenantVaultError, encrypt_tenant_secret
+    new_key = (body.api_key or "").strip()
+    if new_key:
+        # PROV-15: the tenant's own vault key when it set one, else the platform vault.
+        from app.providers.tenant_vault import TenantVaultError, encrypt_tenant_secret
 
-    try:
-        encrypted_key = await encrypt_tenant_secret(
-            getattr(request.app.state, "db_session_factory", None), ctx.tenant_id, body.api_key
+        try:
+            encrypted_key = await encrypt_tenant_secret(
+                getattr(request.app.state, "db_session_factory", None), ctx.tenant_id, new_key
+            )
+        except TenantVaultError as exc:
+            raise HTTPException(503, f"Tenant vault key could not be read: {exc}") from exc
+        masked_key: str | None = (
+            new_key[:8] + "..." + new_key[-4:] if len(new_key) > 12 else "****"
         )
-    except TenantVaultError as exc:
-        raise HTTPException(503, f"Tenant vault key could not be read: {exc}") from exc
-    masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"
-    from app.providers.vault import get_vault
+        from app.providers.vault import get_vault
+
+        # BYOK-2: which platform key sealed it (or wraps the tenant key) — a
+        # non-secret fingerprint, so a worker with another key can say so.
+        fingerprint: str | None = get_vault().fingerprint()
+    else:
+        # QA-4: no key sent → keep the stored one (it used to be mandatory, so a
+        # model change meant re-typing the secret). Only for the SAME provider
+        # and base URL: the stored secret is never redirected to another
+        # provider or host than the one it was entered for.
+        current = await _read_llm_config(request, ctx.tenant_id)
+        if not current or not current.get("encrypted_key"):
+            raise HTTPException(
+                status_code=422,
+                detail="api_key is required: no LLM API key is stored for this tenant yet",
+            )
+        if _norm_provider(current.get("provider")) != _norm_provider(body.provider) or (
+            _norm_base_url(current.get("base_url")) != _norm_base_url(body.base_url)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "api_key is required when changing the provider or base URL; "
+                    "the stored key is only reused for the same provider and endpoint"
+                ),
+            )
+        encrypted_key = str(current["encrypted_key"])
+        masked_key = current.get("masked_key")
+        fingerprint = current.get("vault_key_fingerprint")
 
     await _save_llm_config(
         request,
@@ -575,12 +620,10 @@ async def set_llm_config(
         model=body.default_model or "",
         base_url=body.base_url,
         masked_key=masked_key,
-        # BYOK-2: which platform key sealed it (or wraps the tenant key) — a
-        # non-secret fingerprint, so a worker with another key can say so.
-        vault_key_fingerprint=get_vault().fingerprint(),
+        vault_key_fingerprint=fingerprint,
     )
     _audit_llm_change(
-        request, ctx, provider=body.provider, base_url=body.base_url, key_changed=True
+        request, ctx, provider=body.provider, base_url=body.base_url, key_changed=bool(new_key)
     )
     return JSONResponse(
         {

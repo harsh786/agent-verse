@@ -206,25 +206,28 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
   }, [llmFull, llmConfig]);
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      // Gap 1 fix: send `default_model` to the full encrypted endpoint, and also
-      // persist to the lightweight /me/llm-config endpoint for cross-service reads.
-      Promise.all([
-        apiClient<LLMConfig>('/tenants/me/llm', {
-          method: 'PUT',
-          body: JSON.stringify({
-            provider: form.provider,
-            api_key: form.api_key || undefined,
-            base_url: form.base_url || undefined,
-            default_model: form.default_model,
-          }),
-        }),
-        tenantsApi.saveLLMConfig({
+    // QA-4: the two saves are SEQUENCED. They ran in Promise.all, so a refused
+    // PUT /me/llm (e.g. 422) could still let /me/llm-config write and leave the
+    // stores disagreeing. A blank API key is omitted: the backend keeps the
+    // stored key (it requires one on first setup or a provider/base URL change).
+    mutationFn: async () => {
+      const saved = await apiClient<LLMConfig>('/tenants/me/llm', {
+        method: 'PUT',
+        body: JSON.stringify({
           provider: form.provider,
-          default_model: form.default_model,
+          api_key: form.api_key || undefined,
           base_url: form.base_url || undefined,
+          default_model: form.default_model,
         }),
-      ]),
+      });
+      // Non-secret fields for cross-service reads — only once the key save worked.
+      await tenantsApi.saveLLMConfig({
+        provider: form.provider,
+        default_model: form.default_model,
+        base_url: form.base_url || undefined,
+      });
+      return saved;
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['llm-config'] });
       qc.invalidateQueries({ queryKey: ['llm-config-simple'] });
@@ -308,6 +311,11 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
                 {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            {(llmFull as any)?.masked_key && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Leave blank to keep the stored key (a new key is needed when changing the provider or base URL).
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs font-medium mb-1">

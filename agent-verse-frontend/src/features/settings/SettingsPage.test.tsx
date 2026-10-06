@@ -219,6 +219,38 @@ describe('SettingsPage – LLM Provider section', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument());
   });
 
+  test('QA-4: a blank key is omitted, and a failed PUT /me/llm skips the second save', async () => {
+    const fetchMock = makeSettingsFetch({
+      llmConfig: { provider: 'openai', default_model: 'gpt-4o', masked_key: '****' },
+    });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/tenants/me/llm') && init?.method === 'PUT') {
+        return new Response(
+          JSON.stringify({ detail: 'api_key is required when changing the provider or base URL' }),
+          { status: 422, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return base(input, init);
+    });
+    renderSettingsPage('llm');
+    await waitFor(() => expect(screen.getByText('openai')).toBeInTheDocument());
+    const editButtons = await screen.findAllByRole('button', { name: /^edit$/i });
+    await userEvent.click(editButtons[0]);
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(screen.getByText(/api_key is required/i)).toBeInTheDocument());
+    const put = fetchMock.mock.calls.find(
+      ([u, i]) => String(u).endsWith('/tenants/me/llm') && i?.method === 'PUT',
+    );
+    expect(JSON.parse(String(put![1]!.body))).not.toHaveProperty('api_key');
+    const secondSave = fetchMock.mock.calls.find(
+      ([u, i]) => String(u).endsWith('/tenants/me/llm-config') && i?.method === 'PUT',
+    );
+    expect(secondSave).toBeUndefined();
+  });
+
   test('shows api key as masked when set', async () => {
     makeSettingsFetch({
       llmConfig: { provider: 'openai', default_model: 'gpt-4o', masked_key: '****' },
