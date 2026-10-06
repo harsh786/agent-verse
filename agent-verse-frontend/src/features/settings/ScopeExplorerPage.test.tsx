@@ -277,6 +277,38 @@ describe('ScopeExplorerPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /create api key/i })).not.toBeInTheDocument());
   });
 
+  test('QA-16: only offers scope names the backend knows (no connectors:*/analytics:*)', async () => {
+    // Mirror of agent-verse-backend app/auth/scope_enforcement.py _ALL_SCOPES.
+    const BACKEND_SCOPES = new Set([
+      'goals:read', 'goals:write', 'goals:delete', 'goals:execute',
+      'agents:read', 'agents:write', 'agents:delete',
+      'knowledge:read', 'knowledge:write', 'knowledge:delete',
+      'governance:read', 'governance:write', 'governance:approve',
+      'tenancy:read', 'tenancy:write', 'audit:read', 'audit:export',
+      'costs:read', 'costs:admin', 'mcp:read', 'mcp:write',
+      'a2a:read', 'a2a:write', 'artifacts:read', 'artifacts:write',
+      'memory:read', 'memory:write', 'collab:read', 'collab:write',
+      'rpa:read', 'rpa:write', 'perception:read', 'perception:write',
+      'tools:read', 'tools:write', 'enterprise:read', 'enterprise:write',
+      'guardrails:read', 'guardrails:write',
+    ]);
+    const user = userEvent.setup();
+    mockFetch('enterprise');
+    renderPage();
+    await user.click(await screen.findByTestId('create-key-btn'));
+    const dialog = await screen.findByRole('dialog', { name: /create api key/i });
+    const offered = within(dialog)
+      .getAllByRole('checkbox')
+      .map((cb) => cb.closest('label')?.textContent?.trim() ?? '');
+    expect(offered.length).toBeGreaterThan(0);
+    for (const name of offered) expect(BACKEND_SCOPES.has(name)).toBe(true);
+    expect(offered).toContain('mcp:read');
+    expect(offered).toContain('audit:read');
+    for (const gone of ['connectors:read', 'analytics:read', 'goals:cancel', 'goals:batch', 'agents:snapshot']) {
+      expect(offered).not.toContain(gone);
+    }
+  });
+
   test('creates an API key, reveals the raw key, and copies it', async () => {
     const user = userEvent.setup();
     mockFetch('professional');

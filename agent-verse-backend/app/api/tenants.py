@@ -55,10 +55,33 @@ class SignupRequest(BaseModel):
     email: EmailStr
 
 
+def _validate_scope_names(v: list[str]) -> list[str]:
+    """422 for scope names the backend does not enforce.
+
+    Keys used to accept any string (the UI offered ``connectors:read``,
+    ``analytics:read``…), yielding a key refused on every request. Scopes are
+    matched exactly, so wildcard forms (``mcp:*``) are unknown as well.
+    """
+    from app.auth.scope_enforcement import _ALL_SCOPES
+
+    unknown = sorted(set(v) - _ALL_SCOPES)
+    if unknown:
+        raise ValueError(
+            f"Unknown scopes {unknown} (wildcards are not supported); "
+            f"valid scopes: {sorted(_ALL_SCOPES)}"
+        )
+    return list(dict.fromkeys(v))
+
+
 class CreateKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     scopes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
+
+    @field_validator("scopes")
+    @classmethod
+    def _known_scopes(cls, v: list[str]) -> list[str]:
+        return _validate_scope_names(v)
     # Roles of the new key (admin | operator | approver | viewer). Omitted → the
     # least-privilege non-admin default ("operator", capped at the caller's own
     # roles). Only roles the caller itself holds may be granted.
@@ -275,6 +298,11 @@ class RotateKeyRequest(BaseModel):
     name: str = Field(default="Rotated Key", min_length=1, max_length=200)
     scopes: list[str] = Field(default_factory=list)
     revoke_old: bool = True
+
+    @field_validator("scopes")
+    @classmethod
+    def _known_scopes(cls, v: list[str]) -> list[str]:
+        return _validate_scope_names(v)
 
 
 @router.post("/me/keys/{key_id}/rotate", status_code=201)

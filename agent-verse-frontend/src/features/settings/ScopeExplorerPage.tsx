@@ -21,19 +21,23 @@ interface ScopeDefinition { name: string; description: string; examples: string[
 interface ScopeGroup { resource: string; icon: ComponentType<{ className?: string }>; scopes: ScopeDefinition[] }
 
 // ── Scope catalog ─────────────────────────────────────────────────────────────
+// Names MUST be scopes the backend knows (agent-verse-backend
+// app/auth/scope_enforcement.py _ALL_SCOPES / ENDPOINT_SCOPES); the backend
+// rejects unknown scopes with 422. This catalog used to offer connectors:*,
+// analytics:*, goals:cancel, goals:batch and agents:snapshot, none of which
+// exist — /connectors needs mcp:*, /analytics needs audit:read, cancelling a
+// goal needs goals:write.
 
 const SCOPE_GROUPS: ScopeGroup[] = [
   { resource: "goals", icon: Target, scopes: [
-    { name: "goals:read",   description: "List and read goals and their status",     examples: ["GET /goals", "GET /goals/:id"] },
-    { name: "goals:write",  description: "Submit and create new goals",              examples: ["POST /goals"] },
-    { name: "goals:cancel", description: "Cancel running goals mid-execution",       examples: ["POST /goals/:id/cancel"] },
-    { name: "goals:batch",  description: "Submit goals in bulk batches",             examples: ["POST /goals/batch"] },
+    { name: "goals:read",   description: "List and read goals, workflows, schedules and templates", examples: ["GET /goals", "GET /goals/:id"] },
+    { name: "goals:write",  description: "Submit, cancel and update goals and workflows",          examples: ["POST /goals", "POST /goals/:id/cancel"] },
+    { name: "goals:delete", description: "Delete goals, workflows, schedules and templates",       examples: ["DELETE /goals/:id"] },
   ]},
   { resource: "agents", icon: Bot, scopes: [
     { name: "agents:read",     description: "List and view agent configurations",        examples: ["GET /agents"] },
-    { name: "agents:write",    description: "Create and update agent configurations",    examples: ["POST /agents"] },
+    { name: "agents:write",    description: "Create, update and snapshot agents",        examples: ["POST /agents", "PATCH /agents/:id"] },
     { name: "agents:delete",   description: "Permanently delete agents",                examples: ["DELETE /agents/:id"] },
-    { name: "agents:snapshot", description: "Take versioned snapshots of agent configs", examples: ["POST /agents/:id/snapshot"] },
   ]},
   { resource: "knowledge", icon: BookOpen, scopes: [
     { name: "knowledge:read",   description: "Search and read knowledge collections", examples: ["GET /knowledge/collections"] },
@@ -41,18 +45,18 @@ const SCOPE_GROUPS: ScopeGroup[] = [
     { name: "knowledge:delete", description: "Delete knowledge collections",           examples: ["DELETE /knowledge/collections/:id"] },
   ]},
   { resource: "connectors", icon: Plug, scopes: [
-    { name: "connectors:read",   description: "List and view registered connectors", examples: ["GET /connectors"] },
-    { name: "connectors:write",  description: "Register new MCP connectors",         examples: ["POST /connectors"] },
-    { name: "connectors:delete", description: "Unregister connectors",               examples: ["DELETE /connectors/:id"] },
+    { name: "mcp:read",  description: "List and view registered MCP connectors",           examples: ["GET /connectors"] },
+    { name: "mcp:write", description: "Register, update and unregister MCP connectors",    examples: ["POST /connectors", "DELETE /connectors/:id"] },
   ]},
   { resource: "governance", icon: Shield, scopes: [
     { name: "governance:read",    description: "View policies and approvals",             examples: ["GET /governance/policies"] },
     { name: "governance:write",   description: "Create and manage governance policies",   examples: ["POST /governance/policies"] },
     { name: "governance:approve", description: "Approve or reject HITL requests",        examples: ["POST /governance/approvals/:id/approve"] },
   ]},
-  { resource: "analytics", icon: BarChart3, scopes: [
-    { name: "analytics:read",   description: "View cost, eval, and performance metrics", examples: ["GET /analytics/costs"] },
-    { name: "analytics:export", description: "Export analytics data and training sets",  examples: ["POST /intelligence/export-training-data"] },
+  { resource: "audit & costs", icon: BarChart3, scopes: [
+    { name: "audit:read",  description: "View audit trail, analytics and insights", examples: ["GET /analytics/costs", "GET /insights"] },
+    { name: "costs:read",  description: "View spend, budgets and cost predictions", examples: ["GET /costs"] },
+    { name: "costs:admin", description: "Change budgets and cost settings",         examples: ["PUT /costs/budgets"] },
   ]},
 ];
 
@@ -60,8 +64,8 @@ const ALL_SCOPES = SCOPE_GROUPS.flatMap((g) => g.scopes.map((s) => s.name));
 
 const PLAN_SCOPES: Record<string, string[]> = {
   free:         ["goals:read", "agents:read", "knowledge:read"],
-  starter:      ["goals:read", "goals:write", "agents:read", "agents:write", "knowledge:read", "knowledge:write", "connectors:read"],
-  professional: ["goals:read","goals:write","goals:cancel","goals:batch","agents:read","agents:write","agents:delete","agents:snapshot","knowledge:read","knowledge:write","knowledge:delete","connectors:read","connectors:write","connectors:delete","governance:read","analytics:read","analytics:export"],
+  starter:      ["goals:read", "goals:write", "agents:read", "agents:write", "knowledge:read", "knowledge:write", "mcp:read"],
+  professional: ["goals:read","goals:write","goals:delete","agents:read","agents:write","agents:delete","knowledge:read","knowledge:write","knowledge:delete","mcp:read","mcp:write","governance:read","audit:read","costs:read"],
   enterprise:   ALL_SCOPES,
 };
 

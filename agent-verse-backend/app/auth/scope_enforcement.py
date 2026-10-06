@@ -97,6 +97,30 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("POST", "/workflows"): "goals:write",
     ("DELETE", "/workflows"): "goals:delete",
     ("PATCH", "/workflows"): "goals:write",
+    # Workflow engine, mounted under /api/v1 (app/bootstrap/routers.py). The
+    # "/workflows" entries above are prefix matches and never matched
+    # "/api/v1/workflows…", so these routes had no scope and a key minted with
+    # explicit scopes was refused on every one of them.
+    ("GET", "/api/v1/workflows"): "goals:read",
+    ("POST", "/api/v1/workflows"): "goals:write",
+    ("PUT", "/api/v1/workflows"): "goals:write",
+    ("PATCH", "/api/v1/workflows"): "goals:write",
+    ("DELETE", "/api/v1/workflows"): "goals:delete",
+    ("GET", "/api/v1/runs"): "goals:read",
+    ("POST", "/api/v1/runs"): "goals:write",  # cancel / pause / resume / retry
+    ("GET", "/api/v1/workflow-templates"): "goals:read",
+    ("POST", "/api/v1/workflow-templates"): "goals:write",  # fork
+    # Reading the workflow approval inbox. Decisions (POST) stay unregistered:
+    # who may decide is enforced per request in-route (assignee / assigned role /
+    # approver / audited admin override), and an operator can be an assignee.
+    ("GET", "/api/v1/approvals"): "governance:read",
+    # Model registry (/models). Reads are tenant-visible; every mutation is
+    # platform-admin gated in-route, so it maps to the admin-only tenancy:write.
+    ("GET", "/models"): "tenancy:read",
+    ("POST", "/models"): "tenancy:write",
+    ("PUT", "/models"): "tenancy:write",
+    ("PATCH", "/models"): "tenancy:write",
+    ("DELETE", "/models"): "tenancy:write",
     # Schedules
     ("GET", "/schedules"): "goals:read",
     ("POST", "/schedules"): "goals:write",

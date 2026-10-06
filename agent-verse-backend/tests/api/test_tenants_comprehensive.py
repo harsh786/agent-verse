@@ -146,7 +146,7 @@ def test_create_key_success() -> None:
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.post(
         "/tenants/me/keys",
-        json={"name": "ci-key", "scopes": ["goals:submit"]},
+        json={"name": "ci-key", "scopes": ["goals:write"]},  # QA-16: a real scope
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 201
