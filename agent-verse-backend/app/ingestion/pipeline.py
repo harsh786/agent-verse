@@ -97,8 +97,10 @@ class ScreenResult:
     blocked_reason: str = ""  # "" | "pii_rejected" | "guardrail_blocked"
 
 
-# Minimum text length (chars) to consider a document worth chunking
-_MIN_TEXT_LENGTH = 50
+# Length no longer gates indexing: a short document with real content (a one-line
+# policy, a product-code page, ``tag: urgent``) is indexed; only empty, noise or
+# page-boilerplate text is skipped (``quality_checks.boilerplate_reason``). It used
+# to drop every parsed text under 50 characters as ``empty_content``.
 
 
 class IngestionPipeline:
@@ -347,9 +349,13 @@ class IngestionPipeline:
             self.last_parsed_text = text
             self.last_strategy = str(content_type)
 
-            if not text.strip() or len(text) < _MIN_TEXT_LENGTH:
+            from app.ingestion.quality_checks import boilerplate_reason
+
+            not_content = boilerplate_reason(text)
+            if not_content is not None:
                 result.status = "skipped"
                 result.skip_reason = "empty_content"
+                result.metadata["empty_reason"] = not_content  # type: ignore[attr-defined]
                 return result
 
             # ── Stage 6 + 6b: PII (LAW-06) + Guardrails 2.0 RAG_INGEST ────────
@@ -699,9 +705,17 @@ class IngestionPipeline:
         something); 0.0 when the checker fails — it used to be a binary
         1.0 / 0.1 and 1.0 on a checker error, which passed everything."""
         try:
-            from app.ingestion.quality_checks import QualityChecker
+            from app.ingestion.quality_checks import (
+                SHORT_TEXT_CHARS,
+                QualityChecker,
+                is_meaningful_text,
+            )
 
-            checker = QualityChecker(min_length=_MIN_TEXT_LENGTH)
+            if len(text.strip()) < SHORT_TEXT_CHARS:
+                # Too short for a noise ratio to mean anything: real content
+                # passes, boilerplate / noise does not.
+                return 1.0 if is_meaningful_text(text) else 0.0
+            checker = QualityChecker(min_length=SHORT_TEXT_CHARS)
             return float(checker.check(text).quality_score)
         except Exception as exc:
             _log.warning("pipeline_stage=quality checker_failed: %s", exc)

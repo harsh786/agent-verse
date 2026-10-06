@@ -8,6 +8,65 @@ from dataclasses import dataclass, field
 
 _NOISE_PATTERN = re.compile(r"^[\s\.\-_=+*#@!?/\\|<>(){}\[\]]+$")
 
+# Below this many characters a noise ratio means nothing: a short text is kept
+# when it carries real content (a one-line policy, ``tag: urgent``, a product
+# code page ``SKU TJ-5531``) and skipped only when it is empty or boilerplate.
+SHORT_TEXT_CHARS = 50
+
+# A content token: a word of 2+ letters, or any alphanumeric token with a digit
+# (``5531``, ``A1``, ``v2``).
+_CONTENT_TOKEN = re.compile(r"[^\W\d_]{2,}|[^\W_]*\d[^\W_]*")
+
+# Whole-text boilerplate of a near-empty page (normalised: lower case, letters,
+# digits and single spaces only). Matched only against SHORT texts.
+_BOILERPLATE_TEXTS = frozenset(
+    {
+        "loading", "loading please wait", "please wait", "redirecting",
+        "page not found", "not found", "404", "404 not found", "404 page not found",
+        "403", "403 forbidden", "forbidden", "access denied", "error",
+        "untitled", "untitled document", "untitled page", "no content", "no title",
+        "coming soon", "under construction", "intentionally left blank",
+        "this page intentionally left blank", "this page is intentionally left blank",
+        "javascript is required", "please enable javascript", "enable javascript",
+        "you need to enable javascript to run this app",
+        "javascript must be enabled", "skip to content", "skip to main content",
+        "click here", "lorem ipsum", "home", "menu", "null", "none", "undefined",
+        "n a", "na", "tbd", "all rights reserved",
+    }
+)
+_COPYRIGHT_LINE = re.compile(
+    r"^(?:copyright|\(c\)|©)?\s*(?:©\s*)?[\d\s,\-\u2013]*[^\n]{0,40}all rights reserved\.?$",
+    re.IGNORECASE,
+)
+
+
+def _normalise(text: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", text.lower()).replace("_", " ").split())
+
+
+def boilerplate_reason(text: str) -> str | None:
+    """Why ``text`` is not worth indexing (``empty`` / ``noise`` / ``boilerplate``), or None.
+
+    Length alone never disqualifies a text: only empty, punctuation-only,
+    token-free, or a short text that is entirely a known page-chrome phrase
+    ("Loading...", "404 Not Found", "© 2024 Acme. All rights reserved.").
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return "empty"
+    if _NOISE_PATTERN.match(stripped) or not _CONTENT_TOKEN.search(stripped):
+        return "noise"
+    if len(stripped) < SHORT_TEXT_CHARS * 2 and (
+        _normalise(stripped) in _BOILERPLATE_TEXTS or _COPYRIGHT_LINE.match(stripped)
+    ):
+        return "boilerplate"
+    return None
+
+
+def is_meaningful_text(text: str) -> bool:
+    """True when ``text`` carries indexable content, however short."""
+    return boilerplate_reason(text) is None
+
 
 @dataclass
 class QualityCheckResult:
