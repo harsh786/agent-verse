@@ -4042,6 +4042,52 @@ class EmailIngestRequest(BaseModel):
 _LEGACY_MAX_TOTAL_BYTES = 50 * 1024 * 1024
 
 
+def _public_file_error(exc: BaseException) -> str:
+    """A client-safe one-line reason for a failed file (never the raw exception).
+
+    Raw exception text (driver / upstream / provider messages, internal hosts,
+    request ids) used to be returned per file in 207 / 502 bodies.
+    """
+    from app.ingestion.document_text import DocumentParseError, ParserUnavailableError
+
+    if isinstance(exc, IngestionPolicyRejectedError):
+        return "rejected by the ingestion policy"
+    if isinstance(exc, IngestionScreeningUnavailableError):
+        return "ingestion screening is unavailable"
+    if isinstance(exc, EmbeddingProviderUnavailableError):
+        return "the embedding provider is unavailable"
+    if isinstance(exc, DocumentParseError):
+        return "the file could not be parsed"
+    if isinstance(exc, ParserUnavailableError):
+        return "no parser is available for this file type"
+    if isinstance(exc, TimeoutError):
+        return "the source timed out"
+    status_code = getattr(getattr(exc, "resp", None), "status", None)
+    if isinstance(status_code, int):  # googleapiclient HttpError
+        return f"the Drive API refused the request (HTTP {status_code})"
+    return "the file could not be ingested"
+
+
+def _gdrive_file_failure(file_id: str, filename: str, exc: BaseException) -> dict[str, str]:
+    """One ``failed`` entry: a public reason plus the correlation id of the log line."""
+    from app.observability.logging import get_logger as _get_logger
+
+    correlation_id = _uuid.uuid4().hex
+    _get_logger(__name__).warning(
+        "gdrive_file_ingest_failed",
+        correlation_id=correlation_id,
+        file_id=file_id,
+        error_type=type(exc).__name__,
+        error=str(exc)[:500],
+    )
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "error": _public_file_error(exc),
+        "correlation_id": correlation_id,
+    }
+
+
 def _raise_upstream_error(exc: Exception) -> NoReturn:
     """A generic 502 for a failed upstream (Notion / Drive / mail server) call.
 
@@ -4276,7 +4322,9 @@ async def ingest_gdrive_folder(
     * **502** ``detail.status: "failed"`` -- every attempted file failed
       (nothing was ingested); ``detail`` carries the same body shape.
 
-    Each ``failed`` entry is ``{"file_id", "filename", "error"}``. ``errors``
+    Each ``failed`` entry is ``{"file_id", "filename", "error",
+    "correlation_id"}``: ``error`` is a client-safe reason (never the raw
+    exception text), the cause is logged under ``correlation_id``. ``errors``
     keeps the legacy ``"<filename>: <error>"`` strings for older clients.
     """
     tenant = _require_tenant(request)
@@ -4294,7 +4342,10 @@ async def ingest_gdrive_folder(
         ) from exc
 
     try:
-        from app.ingestion.connectors.gdrive_connector import GDriveConnector
+        from app.ingestion.connectors.gdrive_connector import (
+            DriveFileTooLargeError,
+            GDriveConnector,
+        )
         from app.ingestion.orchestrator import IngestionOrchestrator
 
         # The key stays in memory (it used to be written to a temp file), and
@@ -4325,8 +4376,14 @@ async def ingest_gdrive_folder(
                 truncated = True
                 break
             try:
+                # The listed size pre-skips an oversized file; otherwise the
+                # download stops one 1 MiB range past the cap (a04-F067-04).
                 content = await asyncio.to_thread(
-                    connector.download_file, fid, mime, max_bytes=remaining
+                    connector.download_file,
+                    fid,
+                    mime,
+                    max_bytes=remaining,
+                    size=file_meta.get("size"),
                 )
                 if content is None:
                     # A type the connector cannot read (it used to be "empty").
@@ -4353,11 +4410,11 @@ async def ingest_gdrive_folder(
                 ingested_count += 1
             except (DecisionBudgetExceededError, EmbeddingBudgetUnverifiableError):
                 raise  # the tenant's budget, not this file: stop the whole request
+            except DriveFileTooLargeError:
+                truncated = True
+                break
             except Exception as file_exc:
-                if "download cap" in str(file_exc):
-                    truncated = True
-                    break
-                failed.append({"file_id": fid, "filename": fname, "error": str(file_exc)})
+                failed.append(_gdrive_file_failure(fid, fname, file_exc))
 
         if failed and ingested_count == 0:
             outcome = "failed"

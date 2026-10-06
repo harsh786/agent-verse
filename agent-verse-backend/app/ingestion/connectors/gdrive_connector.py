@@ -16,12 +16,40 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    fetch_failure_document,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
+
+
+# Bytes requested per Drive download request. googleapiclient's default chunk
+# is 100 MiB, so a byte cap checked between chunks fired only after up to
+# 100 MiB of one file was already buffered (a04-F067-04).
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class DriveFileTooLargeError(ValueError):
+    """A Drive file is larger than the download cap (listed size or bytes read)."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        super().__init__(f"file exceeds the {max_bytes}-byte download cap")
+
+
+def _listed_size(size: object) -> int | None:
+    """Drive's listed ``size`` (a decimal string; absent for Google Docs)."""
+    try:
+        value = int(str(size))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
 
 
 class GDriveConnector:
@@ -123,16 +151,26 @@ class GDriveConnector:
         return files if max_files is None else files[:max_files]
 
     def download_file(
-        self, file_id: str, mime_type: str, max_bytes: int | None = None
+        self,
+        file_id: str,
+        mime_type: str,
+        max_bytes: int | None = None,
+        size: object = None,
     ) -> str | None:
         """Download or export a Drive file and return its content as a string.
 
         Returns ``None`` for a type this connector cannot read (it used to return
         ``""``, so an unsupported file was reported as an empty one).
 
-        Raises ``ValueError`` once more than ``max_bytes`` have been downloaded
-        (the whole file used to be buffered in memory, however large).
+        Raises :class:`DriveFileTooLargeError` (a ``ValueError``) without
+        downloading anything when the listed ``size`` already exceeds
+        ``max_bytes``, and otherwise as soon as more than ``max_bytes`` have been
+        read — bytes are requested in 1 MiB ranges (at most ``max_bytes + 1``),
+        so at most one small range past the cap is ever buffered.
         """
+        listed = _listed_size(size)
+        if max_bytes is not None and listed is not None and listed > max_bytes:
+            raise DriveFileTooLargeError(max_bytes)
         service = self._build_service()
 
         export_mime = self._EXPORT_MIME.get(mime_type)
@@ -146,13 +184,16 @@ class GDriveConnector:
 
         from googleapiclient.http import MediaIoBaseDownload  # type: ignore[import-untyped]
 
+        chunksize = _DOWNLOAD_CHUNK_BYTES
+        if max_bytes is not None:
+            chunksize = max(1, min(_DOWNLOAD_CHUNK_BYTES, max_bytes + 1))
         buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf, request)
+        downloader = MediaIoBaseDownload(buf, request, chunksize=chunksize)
         done = False
         while not done:
             _, done = downloader.next_chunk()
             if max_bytes is not None and buf.tell() > max_bytes:
-                raise ValueError(f"file exceeds the {max_bytes}-byte download cap")
+                raise DriveFileTooLargeError(max_bytes)
         return buf.getvalue().decode("utf-8", errors="replace")
 
     def get_file_metadata(self, file_id: str) -> dict[str, Any]:
@@ -215,7 +256,24 @@ class GDriveSourceConnector(BaseConnector):
                 continue
             if modified:
                 new_cursor = max(new_cursor, modified)
-            content = await run_blocking(client.download_file, file_id, mime)
+            cap = int(config.max_doc_size_bytes)
+            try:
+                # The Source's document size cap bounds the download itself (it
+                # was unbounded: the whole file was buffered, then refused by
+                # the pipeline's size stage).
+                content = await run_blocking(
+                    client.download_file, file_id, mime, cap, meta.get("size")
+                )
+            except DriveFileTooLargeError as exc:
+                yield fetch_failure_document(
+                    config,
+                    doc_id=stable_doc_id(config, file_id),
+                    reason=str(exc),
+                    retryable=False,
+                    title=meta.get("name", ""),
+                    metadata={"gdrive_file_id": file_id, "source_type": "gdrive"},
+                ), new_cursor
+                continue
             if content is None or not content.strip():
                 continue  # unsupported type, or no text
             doc = RawDocument(
