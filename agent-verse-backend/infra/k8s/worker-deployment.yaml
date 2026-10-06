@@ -39,8 +39,10 @@ spec:
             - "--loglevel=info"
             - "-Q"
             # Every queue celery_app routes to (goals.{plan}, workflows.*, ingestion,
-            # governance, default "celery") — see tests/scaling/test_worker_queue_coverage.py.
-            - "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
+            # default "celery") together with the dedicated pools below — see
+            # tests/scaling/test_worker_queue_coverage.py. maintenance/governance
+            # run on agentverse-maintenance-worker only (GAP-WORKER).
+            - "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
             - "--concurrency=4"
             - "--max-tasks-per-child=100"
             - "--max-memory-per-child=700000"
@@ -210,6 +212,75 @@ spec:
                 - sh
                 - -c
                 - "celery -A app.scaling.celery_app inspect ping -d schedules@$HOSTNAME -t 5 2>/dev/null | grep -q OK"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 3
+---
+# Dedicated pool for the beat's housekeeping (GAP-WORKER): maintenance +
+# governance (outbox drains, audit WAL flush, MCP health, HITL expiry, retention,
+# exports). On the shared goal pool, beat ticks queued by the thousand behind
+# running goals and goals waited behind the ticks. agentverse-worker no longer
+# consumes these queues.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-maintenance-worker
+  namespace: agentverse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentverse-maintenance-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-maintenance-worker
+    spec:
+      initContainers:
+        - name: wait-for-schema
+          image: agentverse-backend:latest
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+      containers:
+        - name: maintenance-worker
+          image: agentverse-backend:latest
+          command:
+            - "celery"
+            - "-A"
+            - "app.scaling.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "-Q"
+            - "maintenance,governance"
+            - "-n"
+            - "maintenance@%h"
+            - "--concurrency=2"
+            - "--max-tasks-per-child=200"
+            - "--max-memory-per-child=700000"
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB growth).
+              memory: "2Gi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "celery -A app.scaling.celery_app inspect ping -d maintenance@$HOSTNAME -t 5 2>/dev/null | grep -q OK"
             initialDelaySeconds: 30
             periodSeconds: 60
             timeoutSeconds: 15

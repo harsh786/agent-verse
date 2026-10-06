@@ -199,6 +199,7 @@ def test_only_the_main_dev_worker_preloads_retrieval_models() -> None:
         "subgoal-worker": False,
         "workflow-worker": False,
         "schedule-worker": False,
+        "maintenance-worker": False,
     }
 
 

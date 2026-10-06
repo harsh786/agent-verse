@@ -14,6 +14,11 @@ restarted, so no time trigger fired in those windows. Two causes are closed:
   RedBeat lock timeout (300 s), so waking up late lost the lock. The beat now
   wakes at least every ``beat_max_loop_interval`` (30 s, see celery_app), well
   inside the lock.
+
+GAP-WORKER: a tick is sent with an ``expires`` shorter than its period when
+its entry has none (entries are normally given one in celery_app; this also
+covers an entry added at runtime), so ticks a busy pool did not take in time
+are discarded instead of piling up behind their successors.
 """
 
 from __future__ import annotations
@@ -27,7 +32,17 @@ class AgentVerseRedBeatScheduler(RedBeatScheduler):  # type: ignore[misc]
     def apply_async(self, entry: Any, producer: Any = None, advance: bool = True,
                     **kwargs: Any) -> Any:
         options = dict(getattr(entry, "options", None) or {})
+        changed = False
         if not options.get("ignore_result"):
             options["ignore_result"] = True
+            changed = True
+        if options.get("expires") is None:
+            from app.scaling.celery_app import beat_tick_expires
+
+            expires = beat_tick_expires(getattr(entry, "schedule", None))
+            if expires is not None:
+                options["expires"] = expires
+                changed = True
+        if changed:
             entry.options = options
         return super().apply_async(entry, producer=producer, advance=advance, **kwargs)

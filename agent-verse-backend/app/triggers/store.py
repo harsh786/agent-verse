@@ -276,6 +276,10 @@ class ScheduleStore:
                 "paused": bool(rec.get("paused", False)),
                 # B1-1: the beat fires no slot at or before this instant.
                 "armed_at": _iso_or_none(rec.get("armed_at") or rec.get("created_at")),
+                # GAP-WORKER: a beat reading this mirror (Postgres discovery
+                # failing) must see the real slot floor, or it replays every
+                # slot since armed_at.
+                "last_fired_at": _iso_or_none(rec.get("last_fired_at")),
                 # Family-specific fields (file_watch_path, rss_url, poll_url, …)
                 # merged so the beat loop can read them from the schedule dict.
                 **spec_config(spec),

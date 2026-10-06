@@ -44,6 +44,17 @@ subgoalWorker:
     repository: ghcr.io/harsh786/agentverse-backend
     tag: latest
 
+# Dedicated pools (B1-4 schedules, GAP-WORKER maintenance) run the worker image.
+scheduleWorker:
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: latest
+
+maintenanceWorker:
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: latest
+
 beat:
   image:
     repository: ghcr.io/harsh786/agentverse-backend

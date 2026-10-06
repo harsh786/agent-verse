@@ -13,6 +13,12 @@ worker:
 subgoalWorker:
   enabled: false
 
+scheduleWorker:
+  enabled: false
+
+maintenanceWorker:
+  enabled: false
+
 beat:
   enabled: false
 

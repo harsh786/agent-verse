@@ -119,13 +119,23 @@ def test_helm_worker_consumes_every_routed_queue() -> None:
         values = yaml.safe_load(values_file.read_text()) or {}
         queues = (values.get("worker") or {}).get("queues")
         sub_queues = (values.get("subgoalWorker") or {}).get("queues")
-        if values_file.name != "values.yaml" and queues is None and sub_queues is None:
+        maint_queues = (values.get("maintenanceWorker") or {}).get("queues")
+        if (
+            values_file.name != "values.yaml"
+            and queues is None
+            and sub_queues is None
+            and maint_queues is None
+        ):
             continue  # inherits the base values.yaml lists
         queues = queues if queues is not None else base["worker"]["queues"]
         if sub_queues is None:
             sub_queues = base["subgoalWorker"]["queues"]
+        if maint_queues is None:
+            maint_queues = base["maintenanceWorker"]["queues"]
         consumed = {
-            q.strip() for q in f"{queues},{sub_queues}".split(",") if q.strip()
+            q.strip()
+            for q in f"{queues},{sub_queues},{maint_queues}".split(",")
+            if q.strip()
         }
         missing = sorted(_required_queues() - consumed)
         assert missing == [], f"helm {values_file.name}: worker.queues lacks {missing}"
@@ -267,3 +277,74 @@ def test_helm_charts_run_time_triggers_on_a_pool_without_goals() -> None:
             for k in ("worker", "subgoalWorker", "scheduleWorker")
         ]
         _assert_schedule_pool(pools, str(chart))
+
+
+# ── GAP-WORKER: beat housekeeping has a pool that never runs goals ────────────
+# Live (2026-10-06): maintenance + governance shared the 2-slot goal worker. While
+# goals held both slots for ~2 h the beat kept enqueueing (~2,500 ticks/h), so
+# ``maintenance`` reached ~4,700 queued ticks, and a free-plan goal waited ~30 min
+# behind the ticks once they drained. The goal pools must not consume these queues.
+
+_MAINTENANCE_QUEUES = {"maintenance", "governance"}
+
+
+def _assert_maintenance_pool(pools: list[set[str]], where: str) -> None:
+    for queues in pools:
+        if queues & _GOAL_QUEUES:
+            leaked = sorted(queues & _MAINTENANCE_QUEUES)
+            assert leaked == [], f"{where}: a goal pool also consumes {leaked}"
+    dedicated = [q for q in pools if q >= _MAINTENANCE_QUEUES and not q & _GOAL_QUEUES]
+    assert dedicated, (
+        f"{where}: no worker consumes {sorted(_MAINTENANCE_QUEUES)} without running goals"
+    )
+
+
+@pytest.mark.parametrize("compose", ["docker-compose.yml", "docker-compose.prod.yml"])
+def test_compose_runs_maintenance_on_a_pool_without_goals(compose: str) -> None:
+    _assert_maintenance_pool(_compose_pools(INFRA / compose), compose)
+
+
+def test_k8s_runs_maintenance_on_a_pool_without_goals() -> None:
+    pools = []
+    for doc in yaml.safe_load_all((INFRA / "k8s" / "worker-deployment.yaml").read_text()):
+        if not doc:
+            continue
+        for c in doc["spec"]["template"]["spec"]["containers"]:
+            pools.append(_queues_from_argv(_argv(c.get("command")) + _argv(c.get("args"))))
+    _assert_maintenance_pool(pools, "k8s worker-deployment")
+
+
+def test_helm_charts_run_maintenance_on_a_pool_without_goals() -> None:
+    for chart, template_name in (
+        (INFRA / "helm" / "agentverse", "app-workloads.yaml"),
+        (Path(__file__).resolve().parents[2] / "helm" / "agentverse",
+         "maintenance-worker-deployment.yaml"),
+    ):
+        template = (chart / "templates" / template_name).read_text()
+        assert "{{- if .Values.maintenanceWorker.enabled }}" in template
+        assert "maintenance@%h" in template
+        values = yaml.safe_load((chart / "values.yaml").read_text())
+        assert values["maintenanceWorker"]["enabled"] is True
+        pools = [
+            {q.strip() for q in str(values[k]["queues"]).split(",") if q.strip()}
+            for k in ("worker", "subgoalWorker", "scheduleWorker", "maintenanceWorker")
+        ]
+        _assert_maintenance_pool(pools, str(chart))
+
+
+def test_maintained_helm_overlays_keep_the_dedicated_pools_with_the_worker() -> None:
+    """worker.queues relies on the maintenance pool: an overlay that runs the
+    worker must run it too, from the same image (the schedule pool as well)."""
+    chart = INFRA / "helm" / "agentverse"
+    for values_file in sorted(chart.glob("values-*.yaml")):
+        overlay = yaml.safe_load(values_file.read_text()) or {}
+        worker = overlay.get("worker") or {}
+        repo = (worker.get("image") or {}).get("repository")
+        for pool in ("maintenanceWorker", "scheduleWorker"):
+            section = overlay.get(pool) or {}
+            assert section.get("enabled", True) == worker.get("enabled", True), (
+                f"{values_file.name}: {pool} must follow the worker"
+            )
+            if repo:
+                pool_repo = (section.get("image") or {}).get("repository")
+                assert pool_repo == repo, f"{values_file.name}: {pool} image differs"

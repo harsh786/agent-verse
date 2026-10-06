@@ -2852,8 +2852,19 @@ def run_goal(
             _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, status=status
         )
 
-    async def mark_worker_complete(status: str, iterations: int) -> None:
-        await update_submitted_goal_status(status, iterations=iterations)
+    async def mark_worker_complete(status: str, iterations: int, reason: str = "") -> None:
+        # GAP-WORKER: a goal the agent loop ended as "failed" kept an empty
+        # goals.error_message (the reason only reached the goal_failed event), so
+        # every row listing showed failures without a cause. Store the redacted
+        # reason on the row as well (failed only; never overwrites a terminal row).
+        error_message = ""
+        if status == "failed" and reason:
+            from app.agent.sanitization import redact_sensitive_text
+
+            error_message = redact_sensitive_text(reason)[:1000]
+        await update_submitted_goal_status(
+            status, iterations=iterations, error_message=error_message
+        )
         await append_submitted_goal_event(
             {
                 "type": "worker_complete",
@@ -4015,7 +4026,13 @@ def run_goal(
                     _iso_result = _run_async(
                         _iso_scheduler.schedule(_iso_envelope, event_callback=_iso_event_cb)
                     )
-                    _run_async(mark_worker_complete(_iso_result.status, _iso_result.iterations))
+                    _run_async(
+                        mark_worker_complete(
+                            _iso_result.status,
+                            _iso_result.iterations,
+                            str(getattr(_iso_result, "error_message", "") or ""),
+                        )
+                    )
                     _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
                     return {
                         "status": _iso_result.status,
@@ -4151,7 +4168,13 @@ def run_goal(
                 "reason": f"timeout after {goal_timeout_s}s",
                 "result_scope": "worker_only",
             }
-        _run_async(mark_worker_complete(state.status.value, state.iterations))
+        _run_async(
+            mark_worker_complete(
+                state.status.value,
+                state.iterations,
+                str(getattr(state, "error_message", "") or ""),
+            )
+        )
         if state.status.value in {"complete", "failed", "cancelled", "waiting_human"}:
             _terminal_recorded = state.status.value
         if state.status.value == "complete" and not dry_run:
@@ -5303,6 +5326,42 @@ def _apply_catch_up(
     return slots, []
 
 
+def _cap_mirror_fallback_slots(
+    sched: dict[str, Any], slots: list[datetime.datetime]
+) -> tuple[list[datetime.datetime], list[datetime.datetime]]:
+    """Fire only the latest recurring slot of a schedule read from the Redis mirror
+    while Postgres discovery is failing (GAP-WORKER).
+
+    The mirror is a copy written when a schedule is created / edited; its
+    ``last_fired_at`` is not the source of truth (older mirrors have none at
+    all), so the slot floor fell back to ``armed_at``. Live (2026-10-06 10:11,
+    Postgres restarting): every daily ``0 9 * * *`` cron replayed each 09:00
+    since it was created — ~20 goals per schedule in one second, ~300 in all,
+    on a 2-slot worker. Only the most recent slot is fired in this mode.
+    """
+    if len(slots) > 1 and str(sched.get("trigger_type") or "") in ("cron", "business_calendar"):
+        return slots[-1:], slots[:-1]
+    return slots, []
+
+
+def _mirror_last_fired_at(r: Any, key: str, fired_at: datetime.datetime) -> None:
+    """Keep the Redis mirror's ``last_fired_at`` current for a DB-backed schedule,
+    so a beat that must fall back to the mirror sees the real slot floor."""
+    import json
+
+    try:
+        raw = r.get(key)
+        if not raw:
+            return
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return
+        payload["last_fired_at"] = fired_at.isoformat()
+        r.set(key, json.dumps(_strip_secret_redis_schedule_fields(payload)), xx=True)
+    except Exception as exc:  # the mirror is a fallback; never fail the fire over it
+        logger.warning("schedule_mirror_last_fired_update_failed: %s", str(exc)[:200])
+
+
 _SAFE_TABLE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
@@ -6351,6 +6410,9 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                 schedules[key] = sched
         elif not _db_schedule_discovery_enabled():
             logger.info("fire_due_schedules: DB schedule discovery disabled")
+        # Postgres is the source of truth but could not be read: the schedules
+        # come from the Redis mirror, whose slot floors are not trustworthy.
+        mirror_fallback = db_discovered is None and _db_schedule_discovery_enabled()
 
         def mark_schedule_fired(
             key: str,
@@ -6370,6 +6432,8 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             fired_at,
                         )
                     )
+                if r is not None:
+                    _mirror_last_fired_at(r, key, fired_at)
             elif r is not None:
                 r.set(key, json.dumps(_strip_secret_redis_schedule_fields(sched)))
 
@@ -6428,6 +6492,17 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             keeps (B1-5). Returns the number fired."""
             if not slots:
                 return 0
+            if mirror_fallback and key not in db_schedule_keys:
+                slots, capped = _cap_mirror_fallback_slots(sched, slots)
+                if capped:
+                    logger.warning(
+                        "schedule_mirror_fallback_slots_capped schedule=%s skipped=%d "
+                        "oldest=%s newest=%s",
+                        key,
+                        len(capped),
+                        capped[0].isoformat(),
+                        capped[-1].isoformat(),
+                    )
             slots, skipped = _apply_catch_up(sched, slots, now)
             if skipped:
                 logger.info(
@@ -10230,3 +10305,12 @@ def resume_stalled_eval_suite_runs(self: Any) -> dict[str, Any]:
     """Beat: resume eval-suite runs whose workers died (no progress heartbeat)."""
     result: dict[str, Any] = _run_async(_resume_stalled_eval_suite_runs_async())
     return result
+
+
+# GAP-WORKER: the entries registered in this module (expire-hitl-approvals-every-60s,
+# memory / feedback / org-intelligence crons ...) get the same tick expiry as the
+# ones defined in celery_app: a tick no worker took before the next one is
+# discarded instead of piling up behind it.
+from app.scaling.celery_app import apply_beat_tick_expiry as _apply_beat_tick_expiry  # noqa: E402
+
+_apply_beat_tick_expiry(celery_app.conf.beat_schedule)
