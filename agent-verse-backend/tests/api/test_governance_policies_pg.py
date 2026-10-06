@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -50,10 +51,26 @@ async def test_policy_round_trip_under_the_app_role(pg_url: str) -> None:
             )
             assert deny.status_code == 201, deny.text
             assert ask.status_code == 201, ask.text
+            # a03-F060-03: a window in the policy's own timezone round-trips.
+            kiri = datetime.now(ZoneInfo("Pacific/Kiritimati")).hour
+            local = await c.post(
+                "/governance/policies",
+                json={
+                    "name": "local-tz",
+                    "tools_pattern": "drop*",
+                    "action": "deny",
+                    "priority": 5,
+                    "allowed_hours_utc": [kiri],
+                    "timezone": "Pacific/Kiritimati",
+                },
+            )
+            assert local.status_code == 201, local.text
 
             listed = (await c.get("/governance/policies")).json()
             by_name = {p["name"]: p for p in listed}
-            assert [p["name"] for p in listed] == ["ask-now", "deny"]  # priority DESC
+            assert [p["name"] for p in listed] == ["ask-now", "local-tz", "deny"]  # priority DESC
+            assert by_name["local-tz"]["timezone"] == "Pacific/Kiritimati"
+            assert by_name["deny"]["timezone"] == "UTC"
             assert by_name["ask-now"]["allowed_hours_utc"] == sorted([now, (now + 12) % 24])
             assert by_name["ask-now"]["allowed_weekdays"] == list(range(7))
             assert by_name["deny"]["action"] == "deny"
@@ -65,6 +82,8 @@ async def test_policy_round_trip_under_the_app_role(pg_url: str) -> None:
             reloaded = {p.name: p for p in other._policies if p.tenant_id == tid}
             assert reloaded["ask-now"].priority == 10
             assert reloaded["ask-now"].allowed_hours_utc == frozenset({now, (now + 12) % 24})
+            assert reloaded["local-tz"].timezone == "Pacific/Kiritimati"
+            assert other.evaluate("drop_table", tenant_ctx=tenant(tid)) == PolicyResult.DENY
             assert other.evaluate("deploy_prod", tenant_ctx=tenant(tid)) == (
                 PolicyResult.REQUIRE_APPROVAL
             )

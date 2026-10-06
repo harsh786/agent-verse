@@ -792,7 +792,7 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
                           <p>
                             Active{' '}
                             {p.allowed_hours_utc?.length
-                              ? `${formatActiveHours(p.allowed_hours_utc)} UTC`
+                              ? `${formatActiveHours(p.allowed_hours_utc)} ${p.timezone ?? 'UTC'}`
                               : 'all day'}
                           </p>
                           <p className="text-muted-foreground">

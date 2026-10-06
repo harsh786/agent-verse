@@ -24,6 +24,7 @@ from app.governance.policies import (
     hours_list,
     normalize_policy_action,
     time_window_from_rules,
+    timezone_from_rules,
 )
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
@@ -49,6 +50,22 @@ class CreatePolicyRequest(BaseModel):
     # a pair was dropped and the policy applied around the clock).
     allowed_hours_utc: list[int] | None = None
     allowed_weekdays: list[int] | None = None  # 0=Monday … 6=Sunday
+    # a03-F060-03: the IANA timezone the hours and weekdays above are read in
+    # (e.g. "America/New_York"); UTC by default. Kept in the version snapshot so
+    # every replica and every reload enforces the same local window.
+    timezone: str = "UTC"
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone(cls, value: str) -> str:
+        name = (value or "").strip() or "UTC"
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(name)
+        except Exception as exc:
+            raise ValueError(f"unknown timezone {name!r} (use an IANA name)") from exc
+        return name
 
     @field_validator("allowed_hours_utc", "allowed_weekdays")
     @classmethod
@@ -211,6 +228,7 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
                     "description": r[5] or "",
                     "allowed_hours_utc": hours_list(hours),
                     "allowed_weekdays": weekdays,
+                    "timezone": timezone_from_rules(r[6] if len(r) > 6 else None),
                 }
             )
         return out
@@ -255,6 +273,7 @@ def _policy_rules(record: dict[str, Any]) -> list[dict[str, Any]]:
             # QA-8: the hours are a set of active hours, never a [start, end] pair.
             "allowed_hours_format": HOURS_FORMAT,
             "allowed_weekdays": record.get("allowed_weekdays"),
+            "timezone": record.get("timezone") or "UTC",
         }
     ]
 
@@ -446,6 +465,7 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         approval_tools=approval_tools,
         allowed_hours_utc=frozenset(body.allowed_hours_utc) if body.allowed_hours_utc else None,
         allowed_weekdays=body.allowed_weekdays,
+        timezone=body.timezone,
         tenant_id=tenant_ctx.tenant_id,
         action=body.action,
         tool_pattern=body.tools_pattern,
@@ -461,6 +481,7 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         "priority": body.priority,
         "allowed_hours_utc": body.allowed_hours_utc,
         "allowed_weekdays": body.allowed_weekdays,
+        "timezone": body.timezone,
     }
     # Hold the engine's reload lock across the in-memory add + DB insert so
     # this can't interleave with a concurrent reload_from_db() for the same
@@ -2165,6 +2186,7 @@ async def rollback_policy(
             "priority": int(rule.get("priority") or 0),
             "allowed_hours_utc": hours_list(restored_hours),
             "allowed_weekdays": restored_days,
+            "timezone": timezone_from_rules(rules),
         }
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tid, action="rolled_back")

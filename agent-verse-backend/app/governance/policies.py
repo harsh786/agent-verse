@@ -183,17 +183,57 @@ def time_window_from_rules(rules: Any) -> tuple[HoursWindow | None, list[int] | 
     return hours, parse_weekdays(rule.get("allowed_weekdays"))
 
 
+def normalize_policy_timezone(value: Any) -> str:
+    """A valid IANA timezone name, or ``"UTC"`` for a missing/unknown one."""
+    name = str(value or "").strip()
+    if not name:
+        return "UTC"
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo(name)
+    except Exception:
+        _log.warning("policy_timezone_unknown_using_utc", timezone=name[:64])
+        return "UTC"
+    return name
+
+
+def timezone_from_rules(rules: Any) -> str:
+    """The timezone a version snapshot's time window is expressed in (``"UTC"``).
+
+    The window's hours and weekdays are read in this zone. Snapshots written
+    before the field existed carry none and stay UTC.
+    """
+    import json
+
+    try:
+        if isinstance(rules, str):
+            rules = json.loads(rules)
+        rule = rules[0] if isinstance(rules, list) and rules else {}
+    except (TypeError, ValueError):
+        return "UTC"
+    if not isinstance(rule, dict):
+        return "UTC"
+    return normalize_policy_timezone(rule.get("timezone"))
+
+
 def _time_windows_by_name(
     version_rows: Any,
-) -> dict[str, tuple[HoursWindow | None, list[int] | None]]:
-    """``{policy name: (allowed_hours_utc, allowed_weekdays)}`` from version rules."""
-    out: dict[str, tuple[HoursWindow | None, list[int] | None]] = {}
+) -> dict[str, tuple[HoursWindow | None, list[int] | None, str]]:
+    """``{policy name: (allowed_hours_utc, allowed_weekdays, timezone)}`` from version rules.
+
+    The timezone travels with the window (a03-F060-03): it used to be dropped
+    here, so every reload — every other replica, and this one after a restart —
+    read a policy written for e.g. "America/New_York" business hours in UTC.
+    """
+    out: dict[str, tuple[HoursWindow | None, list[int] | None, str]] = {}
     for row in version_rows or ():
         try:
             name, rules = row[0], row[1]
         except (TypeError, IndexError, KeyError):
             continue
-        out[str(name)] = time_window_from_rules(rules)
+        hours, weekdays = time_window_from_rules(rules)
+        out[str(name)] = (hours, weekdays, timezone_from_rules(rules))
     return out
 
 
@@ -439,7 +479,7 @@ class PolicyEngine:
                 for row in rows:
                     name, tools_pattern, policy_tenant_id = row[0], row[2], row[3]
                     action = normalize_policy_action(row[1], policy=name)
-                    hours, weekdays = windows.get(name, (None, None))
+                    hours, weekdays, policy_tz = windows.get(name, (None, None, "UTC"))
                     self._policies.append(
                         Policy(
                             name=name,
@@ -452,6 +492,7 @@ class PolicyEngine:
                             tool_pattern=tools_pattern or "*",
                             allowed_hours_utc=hours,
                             allowed_weekdays=weekdays,
+                            timezone=policy_tz,
                             priority=_row_priority(row),
                         )
                     )
