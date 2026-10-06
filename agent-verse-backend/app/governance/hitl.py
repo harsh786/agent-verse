@@ -980,11 +980,38 @@ class HITLGateway:
             req.approvals_received = max(req.approvals_received, required - 1)
             if approver in req.approvers_list:
                 req.approvers_list.remove(approver)
-        return bool(
+        approved = bool(
             self._apply_approval(
-                req, approver=approver, note=note, tenant_ctx=tenant_ctx, persist=False
+                req,
+                approver=approver,
+                note=note,
+                tenant_ctx=tenant_ctx,
+                persist=False,
+                background_publish=False,
             )
         )
+        if approved and req.status == ApprovalStatus.APPROVED:
+            await self._publish_approved(req, approver=approver, note=note, tenant_ctx=tenant_ctx)
+        return approved
+
+    async def _publish_approved(
+        self, req: ApprovalRequest, *, approver: str, note: str, tenant_ctx: TenantContext
+    ) -> None:
+        """Deliver an approval to cross-replica waiters and HITL triggers, awaited.
+
+        B7-NEW-1: these used to be fire-and-forget ``loop.create_task`` calls, so
+        a process shutting down right after answering lost the ``hitl.approved``
+        event (hitl_approved triggers never fired for that decision). Awaited
+        here, like ``reject``; a publish error is logged, never undoes the
+        already-committed decision.
+        """
+        if self._redis is None:
+            return
+        with contextlib.suppress(Exception):
+            await self.publish_resolution(
+                request_id=req.request_id, action="approved", approver=approver, note=note
+            )
+        await self._publish_trigger_event("hitl.approved", req, tenant_ctx)
 
     async def _db_cast_vote(
         self, request_id: str, tenant_id: str, approver: str, note: str
@@ -1219,6 +1246,7 @@ class HITLGateway:
         note: str,
         tenant_ctx: TenantContext,
         persist: bool,
+        background_publish: bool = True,
     ) -> _AwaitableBool:
         """Record one approver's vote locally (and, when *persist*, schedule the write)."""
         if req.status != ApprovalStatus.PENDING:
@@ -1240,8 +1268,10 @@ class HITLGateway:
                 self._schedule_db_resolution(
                     req.request_id, tenant_ctx.tenant_id, "approved", approver, note
                 )
-            # C6.1: Publish cross-replica notification via Redis BLPOP
-            if self._redis is not None:
+            # C6.1: Publish cross-replica notification via Redis BLPOP.
+            # The sync approve() can only schedule it; approve_async awaits
+            # the same publishes itself (B7-NEW-1, see _publish_approved).
+            if self._redis is not None and background_publish:
                 try:
                     loop = asyncio.get_running_loop()
                     _task = loop.create_task(  # noqa: RUF006
