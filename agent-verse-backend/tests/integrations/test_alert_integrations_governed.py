@@ -127,6 +127,52 @@ def test_alertmanager_goal_failure_is_a_503(am_env: None) -> None:
     assert r.status_code == 503, r.text
 
 
+class _FlakyGoals(_Goals):
+    """Fails goal creation for one alert name until healed."""
+
+    def __init__(self, failing: str) -> None:
+        super().__init__()
+        self.failing: str | None = failing
+
+    async def create_goal(self, **kwargs: Any) -> Any:
+        if self.failing and self.failing in str(kwargs.get("goal_text", "")):
+            raise RuntimeError("db down")
+        return await super().create_goal(**kwargs)
+
+
+def _named_alert(name: str) -> dict[str, Any]:
+    alert = _alert()
+    alert["fingerprint"] = hashlib.sha256(name.encode()).hexdigest()[:16]
+    alert["labels"] = {"alertname": name, "severity": "warning"}
+    return alert
+
+
+def test_partly_failed_alertmanager_batch_is_a_503_and_the_retry_fills_the_gap(
+    am_env: None,
+) -> None:
+    """a07-F154-01: one failed alert in a batch answers 503 (not 200).
+
+    A 200 told Alertmanager the whole batch was delivered, so the failed
+    alert waited for repeat_interval (hours). The retry re-sends the batch:
+    the delivered episode is deduplicated, the failed one is created.
+    """
+    goals = _FlakyGoals(failing="DiskFull")
+    client = _client(goals)
+    batch = [_named_alert("HighCPU"), _named_alert("DiskFull")]
+
+    first = _post_am(client, batch)
+    assert first.status_code == 503, first.text
+    assert len(goals.created) == 1  # HighCPU went through
+
+    goals.failing = None  # the outage is over; Alertmanager retries the batch
+    retry = _post_am(client, batch)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["goals_created"] == 1
+    assert sorted(
+        "HighCPU" if "HighCPU" in g["goal_text"] else "DiskFull" for g in goals.created
+    ) == ["DiskFull", "HighCPU"]  # one goal per episode, no duplicate
+
+
 def _post_dd(client: TestClient, body: dict[str, Any]) -> Any:
     raw = json.dumps(body)
     sig = hmac.new(b"dd-secret", raw.encode(), hashlib.sha256).hexdigest()

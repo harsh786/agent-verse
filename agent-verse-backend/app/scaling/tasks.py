@@ -7099,6 +7099,15 @@ def _vendor_replay_guard_purge_sql() -> str:
 
 _VENDOR_REPLAY_GUARD_PURGE = _vendor_replay_guard_purge_sql()
 
+
+def _workflow_replay_guard_purge_sql() -> str:
+    from app.workflow.webhook_replay import purge_sql
+
+    return purge_sql(_TENANT_HOLD_EXEMPT)
+
+
+_WORKFLOW_REPLAY_GUARD_PURGE = _workflow_replay_guard_purge_sql()
+
 # (label, batched DELETE). Each selects at most :lim victims by an indexed column.
 _RETENTION_DELETES: tuple[tuple[str, str], ...] = (
     (
@@ -7128,6 +7137,12 @@ _RETENTION_DELETES: tuple[tuple[str, str], ...] = (
         # deleted or a secret rotation completed after it was recorded.
         "vendor_webhook_replay_guard",
         _VENDOR_REPLAY_GUARD_PURGE,
+    ),
+    (
+        # WF-REPLAY-1: signed workflow webhook deliveries; dead once the
+        # workflow row is gone or (signed-ts rows) the replay window passed.
+        "workflow_webhook_replay_guard",
+        _WORKFLOW_REPLAY_GUARD_PURGE,
     ),
     (
         # D-18: each memory record carries its own deadline in expires_at.

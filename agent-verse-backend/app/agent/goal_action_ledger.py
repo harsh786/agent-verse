@@ -55,6 +55,19 @@ def call_fingerprint(server_id: str, tool_name: str, arguments: dict[str, Any] |
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def call_idempotency_key(goal_id: str, fingerprint: str) -> str | None:
+    """Idempotency key a side-effecting call of a goal carries (a06-F101-04).
+
+    Deterministic per (goal, call): the call that was in flight when a worker
+    crashed is re-issued on the redelivered goal under the SAME key, so an MCP
+    server that honours ``Idempotency-Key`` / ``_meta.idempotencyKey`` applies it
+    once. (The ledger only knows calls whose result was recorded.)
+    """
+    if not goal_id or not fingerprint:
+        return None
+    return f"goal:{goal_id}:{fingerprint[:32]}"
+
+
 def call_approval_key(fingerprint: str) -> str:
     return f"call:{fingerprint}"
 

@@ -41,9 +41,13 @@ async def test_decompose_single_qa_and_goal() -> None:
 class _FakeScheduleStore:
     def __init__(self) -> None:
         self.created: list[Any] = []
+        self.quota_plans: list[str | None] = []
 
-    async def create_async(self, *, goal_id, spec, tenant_ctx, agent_id, goal_template):  # type: ignore[no-untyped-def]
+    async def create_async(  # type: ignore[no-untyped-def]
+        self, *, goal_id, spec, tenant_ctx, agent_id, goal_template, quota_plan=None
+    ):
         self.created.append(spec)
+        self.quota_plans.append(quota_plan)
         return f"sched-{len(self.created)}"
 
 
@@ -81,3 +85,91 @@ async def test_afulfill_one_time_schedule_uses_fire_at() -> None:
     spec = store.created[0]
     assert str(spec.trigger_type).endswith("ONCE") or spec.trigger_type == "once"
     assert spec.fire_at_iso  # a concrete one-time timestamp was computed
+
+
+# --- a06-F102-08: the compound-turn schedule path shares POST /schedules' gates ---
+
+
+async def test_afulfill_schedule_enforces_the_plan_trigger_quota() -> None:
+    """The compound path passes quota_plan, so PLAN_MAX_TRIGGERS applies to it."""
+    from app.tenancy.context import PlanTier, TenantContext
+
+    store = _FakeScheduleStore()
+    svc = ChatService(answer_generator=FakeProvider(responses=["ok"]))
+    svc.attach_engine(nl_scheduler=object(), schedule_store=store)
+    session = svc.create_session("t1")
+    ctx = TenantContext(tenant_id="t1", api_key_id="k", plan=PlanTier.STARTER)
+    await svc.afulfill(
+        session_id=session.id, tenant_id="t1", tenant_ctx=ctx,
+        message="every Monday at 9am send the report",
+    )
+    assert store.quota_plans == ["starter"]
+
+
+async def test_afulfill_schedule_over_quota_is_reported_not_claimed() -> None:
+    """A refused create never answers "I'll ..." (it looked scheduled)."""
+    from app.triggers.quota import TriggerQuotaExceeded
+
+    class _FullStore(_FakeScheduleStore):
+        async def create_async(self, **kwargs: Any) -> str:  # type: ignore[override]
+            raise TriggerQuotaExceeded("Trigger quota exceeded: plan 'free' allows 5 triggers")
+
+    svc = ChatService(answer_generator=FakeProvider(responses=["ok"]))
+    svc.attach_engine(nl_scheduler=object(), schedule_store=_FullStore())
+    session = svc.create_session("t1")
+    out = await svc.afulfill(
+        session_id=session.id, tenant_id="t1",
+        message="every Monday at 9am send the report",
+    )
+    assert "I'll" not in out["reply"]
+    assert "could not schedule" in out["reply"].lower()
+    assert "quota" in out["reply"].lower()
+
+
+async def test_afulfill_schedule_refuses_an_uncreatable_spec() -> None:
+    """creatable_error gates the compound path: a spec that would never fire is not stored."""
+    import app.triggers.validation as validation
+
+    store = _FakeScheduleStore()
+    svc = ChatService(answer_generator=FakeProvider(responses=["ok"]))
+    svc.attach_engine(nl_scheduler=object(), schedule_store=store)
+    session = svc.create_session("t1")
+    original = validation.creatable_error
+    validation.creatable_error = lambda spec, *, plan="free": "cron: too frequent for plan"  # type: ignore[assignment]
+    try:
+        out = await svc.afulfill(
+            session_id=session.id, tenant_id="t1",
+            message="every Monday at 9am send the report",
+        )
+    finally:
+        validation.creatable_error = original  # type: ignore[assignment]
+    assert store.created == []
+    assert "could not schedule" in out["reply"].lower()
+    assert "too frequent" in out["reply"]
+
+
+async def test_afulfill_schedule_unexpected_failure_is_not_claimed() -> None:
+    class _BrokenStore(_FakeScheduleStore):
+        async def create_async(self, **kwargs: Any) -> str:  # type: ignore[override]
+            raise ConnectionError("db down at 10.0.0.5")
+
+    svc = ChatService(answer_generator=FakeProvider(responses=["ok"]))
+    svc.attach_engine(nl_scheduler=object(), schedule_store=_BrokenStore())
+    session = svc.create_session("t1")
+    out = await svc.afulfill(
+        session_id=session.id, tenant_id="t1",
+        message="every Monday at 9am send the report",
+    )
+    assert "I'll" not in out["reply"]
+    assert "could not schedule" in out["reply"].lower()
+    assert "10.0.0.5" not in out["reply"]  # driver detail stays in the log
+
+
+async def test_afulfill_schedule_without_engine_does_not_claim_success() -> None:
+    svc = ChatService(answer_generator=FakeProvider(responses=["ok"]))
+    session = svc.create_session("t1")
+    out = await svc.afulfill(
+        session_id=session.id, tenant_id="t1",
+        message="every Monday at 9am send the report",
+    )
+    assert "I'll" not in out["reply"]

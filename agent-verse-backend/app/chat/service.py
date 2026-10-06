@@ -2197,13 +2197,27 @@ class ChatService:
         return {"session_id": session_id, "reply": reply, "actions": executed}
 
     async def _fulfill_schedule(self, act: Any, tenant_id: str, tenant_ctx: Any) -> str:
-        """Create a durable schedule from a ScheduleAction (falls back to a preview)."""
-        if not self.can_schedule:
-            return f"🗓️ I'll {act.task} {act.human} (scheduling not fully wired here)."
-        ctx = tenant_ctx or self._tenant_ctx(tenant_id)
-        try:
-            from app.triggers.models import TriggerSpec, TriggerType
+        """Create a durable schedule from a ScheduleAction of a compound turn.
 
+        a06-F102-08: the same gate and plan quota as POST /schedules and the
+        SCHEDULE intent (:meth:`create_schedule`). This path used to store the
+        spec with no ``creatable_error`` check and no ``quota_plan`` (bypassing
+        ``PLAN_MAX_TRIGGERS``), and any failure was answered "I'll ...", so a
+        refused or failed create looked scheduled. It now says it scheduled only
+        when the schedule was stored.
+        """
+        if not self.can_schedule:
+            return (
+                f"⚠️ I could not schedule: {act.task} {act.human} "
+                "(scheduling is not available here)."
+            )
+        ctx = tenant_ctx or self._tenant_ctx(tenant_id)
+        plan = str(getattr(ctx, "plan", "free") or "free")
+        from app.triggers import validation
+        from app.triggers.models import TriggerSpec, TriggerType
+        from app.triggers.quota import TriggerQuotaExceeded
+
+        try:
             spec = TriggerSpec(
                 trigger_type=TriggerType.ONCE if act.once else TriggerType.CRON,
                 description=act.human,
@@ -2211,13 +2225,23 @@ class ChatService:
                 cron_expression="" if act.once else act.cron,
                 fire_at_iso=act.fire_at_iso if act.once else "",
             )
+            reason = validation.creatable_error(spec, plan=plan)
+            if reason is not None:
+                return f"⚠️ I could not schedule: {act.task} {act.human} ({reason})."
             schedule_id = await self._schedule_store.create_async(
                 goal_id=act.task, spec=spec, tenant_ctx=ctx,
-                agent_id=None, goal_template=act.task,
+                agent_id=None, goal_template=act.task, quota_plan=plan,
             )
-            return f"✅ Scheduled — I'll {act.task} {act.human} (id {str(schedule_id)[:8]})."
-        except Exception:
-            return f"🗓️ I'll {act.task} {act.human}."
+        except TriggerQuotaExceeded as exc:
+            return f"⚠️ I could not schedule: {act.task} {act.human} ({exc})."
+        except Exception as exc:
+            _logger.warning(
+                "chat_schedule_action_not_created", tenant_id=tenant_id,
+                error=type(exc).__name__,
+            )
+            # The driver error stays in the log (it never reaches a channel).
+            return f"⚠️ I could not schedule: {act.task} {act.human}. Please try again later."
+        return f"✅ Scheduled — I'll {act.task} {act.human} (id {str(schedule_id)[:8]})."
 
     async def _fulfill_remember(self, act: Any, tenant_id: str) -> str:
         if self._memory_writer is None:

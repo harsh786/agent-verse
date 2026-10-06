@@ -396,8 +396,11 @@ class TriggerDispatcher:
             )
 
         # ── Step 7: Bulkhead check ────────────────────────────────────────────
+        # a06-F103-02: trigger goals still running count against the cap, not
+        # only the dispatches in progress (the slot is released after enqueue).
+        in_flight = await self._in_flight_trigger_goals(tenant_id, plan)
         try:
-            acquired = await self._bulkhead.acquire(tenant_id, plan)
+            acquired = await self._bulkhead.acquire(tenant_id, plan, in_flight=in_flight)
         except TriggerGateUnavailableError as exc:
             return await self._gate_unavailable(
                 trigger_id, tenant_id, payload, idempotency_key, "bulkhead", exc
@@ -564,6 +567,28 @@ class TriggerDispatcher:
             await self._bulkhead.release(tenant_id)
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    async def _in_flight_trigger_goals(self, tenant_id: str, plan: str) -> int:
+        """The tenant's trigger goals still running (a06-F103-02), from Postgres.
+
+        0 without a DB (in-memory deployments keep the dispatch-only bound). A
+        read error is logged and counts 0: like the outcome circuit this is an
+        availability guard, and the goal insert needs the same database anyway.
+        """
+        if self._db_factory is None:
+            return 0
+        from app.triggers.bulkhead import in_flight_window_seconds
+
+        try:
+            return await self._read_in_flight(tenant_id, in_flight_window_seconds(plan))
+        except Exception as exc:
+            _log.warning("trigger_in_flight_read_failed tenant_id=%s: %s", tenant_id, exc)
+            return 0
+
+    async def _read_in_flight(self, tenant_id: str, window_seconds: int) -> int:
+        from app.triggers.bulkhead import read_in_flight_trigger_goals
+
+        return await read_in_flight_trigger_goals(self._db_factory, tenant_id, window_seconds)
 
     async def _goal_outcomes_open(self, trigger_id: str, tenant_id: str) -> bool:
         """TRG-13: open when the trigger's recent goals keep FAILING.

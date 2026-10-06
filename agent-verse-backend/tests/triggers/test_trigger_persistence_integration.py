@@ -393,6 +393,48 @@ async def test_outcome_circuit_opens_from_failed_goals_on_the_app_role(
 
 
 @pytest.mark.asyncio
+async def test_in_flight_trigger_goals_counted_on_the_app_role(dbs: SimpleNamespace) -> None:
+    """a06-F103-02: the bulkhead's in-flight count is the tenant's non-terminal
+    trigger goals inside the plan window, under RLS on the least-privilege role."""
+    from app.triggers.bulkhead import in_flight_window_seconds, read_in_flight_trigger_goals
+
+    rows = [
+        # (tenant, goal status, fired minutes ago, goal_created)
+        (dbs.t1, "executing", 1, True),
+        (dbs.t1, "waiting_human", 5, True),
+        (dbs.t1, "planning", 2, False),  # folded into another goal: not this firing's
+        (dbs.t1, "complete", 3, True),
+        (dbs.t1, "failed", 4, True),
+        (dbs.t1, "executing", 60 * 24 * 3, True),  # stuck row far past the plan timeout
+        (dbs.t2, "executing", 1, True),
+    ]
+    async with dbs.admin() as s, s.begin():
+        for tenant, status, mins, created in rows:
+            gid = uuid.uuid4().hex
+            await s.execute(
+                text(
+                    "INSERT INTO goals (id, tenant_id, goal_text, status, priority, "
+                    "autonomy_mode, dry_run, iterations) "
+                    "VALUES (:g, :t, 'x', :st, 'normal', 'bounded-autonomous', false, 0)"
+                ),
+                {"g": gid, "t": tenant, "st": status},
+            )
+            await s.execute(
+                text(
+                    "INSERT INTO trigger_events (id, tenant_id, trigger_id, trigger_type, "
+                    "idempotency_key, fired_at, goal_created, goal_id) VALUES "
+                    "(:id, :t, 'tr', 'cron', :k, NOW() - make_interval(mins => :m), :c, :g)"
+                ),
+                {"id": str(uuid.uuid4()), "t": tenant, "k": gid, "m": mins, "c": created,
+                 "g": gid},
+            )
+
+    window = in_flight_window_seconds("free")
+    assert await read_in_flight_trigger_goals(dbs.app, dbs.t1, window) == 2
+    assert await read_in_flight_trigger_goals(dbs.app, dbs.t2, window) == 1
+
+
+@pytest.mark.asyncio
 async def test_beat_loads_only_due_schedules(
     dbs: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
