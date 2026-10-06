@@ -123,6 +123,11 @@ Note: the live stack currently mounts the p3b1/p3b2 worktree; B1 added a `schedu
 `run_forever.py` starts its own beat whenever compose's beat disappears (even briefly during redeploy) — owner decision pending.
 
 Parallel code tracks (code + tests only, live-verified later in their queue slot):
+- `fix/ocr-parallelism` · `.claude/worktrees/ocrpar` — OWNER REQUEST (2026-10-06): OCR must process multiple documents
+  and multi-page documents at the same time. Root causes found: pages OCR'd sequentially (`OcrEngine.extract`,
+  `ocr_pdf_pages`), `convert_from_bytes` rasterises all pages on the event loop, tesseract on the unbounded default
+  executor. Fix: bounded concurrent pages, off-loop page-by-page render, one process-wide OCR limiter with
+  per-document fairness, concurrent multi-file/ZIP, `OMP_THREAD_LIMIT=1`; benchmark in a one-off container.
 - `fix/b7-platform-events` — MERGED into main (`fcf68e1c9`, commits B7-1..B7-5): trigger lineage + loop guard
   (no self-trigger unless `allow_self_trigger`, chain depth cap 10, audit row per suppressed fire), every goal-failing
   path publishes `goal.failed`, goal_score_below requires a 0..1 threshold and honours the dimension, workflow HITL
