@@ -25,6 +25,10 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
+class UsageSummaryUnavailableError(RuntimeError):
+    """The durable usage rollup could not be read (the summary would be wrong)."""
+
+
 class UsageService:
     """
     Records usage metrics to DB and/or in-memory buffer.
@@ -168,7 +172,8 @@ class UsageService:
         in-memory buffer (which is drained on every flush). The un-flushed buffer is
         merged on top: a record lives in exactly one place — buffer or DB — so this
         never double-counts. With no DB factory (unit-test / in-memory path) the
-        rollup is skipped and only the buffer is summarised.
+        rollup is skipped and only the buffer is summarised. Raises
+        :class:`UsageSummaryUnavailableError` when the rollup cannot be read.
         """
         summary: dict[str, float] = defaultdict(float)
         costs: dict[str, float] = defaultdict(float)
@@ -202,7 +207,13 @@ class UsageService:
                     summary[str(metric)] += float(quantity)
                     costs[str(metric)] += float(total_cost)
             except Exception as exc:
+                # a08-F197-04: this returned only the in-memory buffer, so
+                # /billing/usage reported (near) zero usage during a DB outage
+                # instead of an error. A partial number is never shown.
                 logger.warning("usage_summary_db_failed", error=str(exc)[:80])
+                raise UsageSummaryUnavailableError(
+                    "usage records could not be read; try again shortly"
+                ) from exc
 
         for record in self._buffer:
             if record["tenant_id"] == tenant_id:
@@ -303,7 +314,3 @@ def _insert_params(record: dict[str, Any]) -> dict[str, Any]:
         "period_start": period_start,
         "metadata": json.dumps(record.get("metadata") or {}, default=str),
     }
-
-
-# Module-level singleton
-_usage_service = UsageService()

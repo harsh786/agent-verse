@@ -1203,7 +1203,9 @@ async def test_app_resolver_uses_each_tenants_configured_provider_and_model() ->
         def __init__(self, configs: dict[str, dict[str, object]]) -> None:
             self.configs = configs
 
-        async def get_config(self, tenant_id: str) -> dict[str, object] | None:
+        async def get_config(
+            self, tenant_id: str, *, strict: bool = False
+        ) -> dict[str, object] | None:
             return self.configs.get(tenant_id)
 
     vault = get_vault()
@@ -1256,7 +1258,9 @@ async def test_app_resolver_preserves_azure_and_together_identity() -> None:
     from app.providers.vault import get_vault
 
     class TenantConfigStore:
-        async def get_config(self, tenant_id: str) -> dict[str, object] | None:
+        async def get_config(
+            self, tenant_id: str, *, strict: bool = False
+        ) -> dict[str, object] | None:
             configs = {
                 "tenant-azure": {
                     "provider": "azure",
@@ -1368,10 +1372,6 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
     db_factory = RecordingSessionFactory()
     monkeypatch.setattr(kg_store, "_db", None)
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: db_factory)
-    monkeypatch.setattr(
-        "app.services.tenant_service.TenantService.sync_from_db",
-        AsyncMock(return_value=0),
-    )
     monkeypatch.setattr(
         "app.services.goal_service.GoalService.sync_from_db",
         AsyncMock(return_value=0),

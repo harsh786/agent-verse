@@ -126,10 +126,12 @@ class TestUsageService:
         paths = [r.path for r in router.routes]
         assert any("/plans" in p for p in paths)
 
-    def test_usage_service_module_singleton(self):
-        from app.services.usage_service import _usage_service
+    def test_app_binds_its_own_usage_service(self):
+        # a08-F197-02: the unused module singleton is gone; the app wires one.
+        from app.main import create_app
+        from app.services.usage_service import UsageService
 
-        assert _usage_service is not None
+        assert isinstance(create_app().state.usage_service, UsageService)
 
 
 class _RecordingFlushSession:

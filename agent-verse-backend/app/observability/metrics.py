@@ -300,6 +300,12 @@ MEMORY_DEGRADED_TOTAL = Counter(
     labelnames=("store", "op"),
     registry=REGISTRY,
 )
+GOAL_NOTIFICATION_TOTAL = Counter(
+    "agentverse_goal_notification_total",
+    "Opt-in goal outcome notifications by result (sent, channel_failed, error, ...).",
+    labelnames=("outcome", "result"),
+    registry=REGISTRY,
+)
 KNOWLEDGE_FAILURE_TOTAL = Counter(
     "agentverse_knowledge_failure_total",
     "Knowledge-plane operations that failed (cache writes, retention runs, ...).",
@@ -720,3 +726,11 @@ orchestration_readiness_gate_blocked_total = Counter(
     ["blocking_dep"],
     registry=REGISTRY,
 )
+
+
+def record_goal_notification(outcome: str, result: str) -> None:
+    """Count one goal outcome notification attempt (a08-F196-05)."""
+    try:
+        GOAL_NOTIFICATION_TOTAL.labels(outcome=outcome[:16], result=result[:32]).inc()
+    except Exception:  # metrics must never break the caller
+        return

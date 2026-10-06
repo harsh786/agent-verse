@@ -247,7 +247,12 @@ class TestResolveApiKey:
         ctx = await svc.resolve_api_key(raw_key)
         assert ctx is not None
         assert ctx.tenant_id == created["tenant_id"]
-        mock_redis.get.assert_called_once()
+        # The first read is the api_key:{hash} cache entry. (This legacy entry has no
+        # scopes/expires_at, so it is re-resolved; the later reads are the revocation
+        # tombstone checks after the re-cache, a08-F194-06.)
+        from app.services.tenant_service import _hash_key
+
+        assert mock_redis.get.call_args_list[0].args == (f"api_key:{_hash_key(raw_key)}",)
 
     async def test_resolve_populates_redis_cache(self) -> None:
         svc = TenantService()
@@ -336,18 +341,3 @@ class TestSSOProvisioning:
             assert result["plan"] == expected.value
 
 
-# ── sync_from_db ──────────────────────────────────────────────────────────────
-
-class TestSyncFromDb:
-    async def test_sync_returns_0_when_no_db(self) -> None:
-        svc = TenantService()
-        count = await svc.sync_from_db()
-        assert count == 0
-
-    async def test_sync_returns_0_on_error(self) -> None:
-        async def bad_factory():
-            raise Exception("DB error")
-
-        svc = TenantService(db_session_factory=bad_factory)
-        count = await svc.sync_from_db()
-        assert count == 0

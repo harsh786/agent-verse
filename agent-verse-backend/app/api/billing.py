@@ -128,7 +128,15 @@ async def get_usage(request: Request) -> dict[str, Any]:
 
     usage_svc = getattr(request.app.state, "usage_service", None)
     if usage_svc is not None:
-        return await usage_svc.get_usage_summary(tenant_ctx.tenant_id)  # type: ignore[no-any-return]
+        from app.services.usage_service import UsageSummaryUnavailableError
+
+        try:
+            return await usage_svc.get_usage_summary(tenant_ctx.tenant_id)  # type: ignore[no-any-return]
+        except UsageSummaryUnavailableError as exc:
+            # a08-F197-04: an outage is a retryable 503, not "zero usage".
+            raise HTTPException(
+                status_code=503, detail="Usage data is temporarily unavailable; retry shortly"
+            ) from exc
 
     return {
         "tenant_id": tenant_ctx.tenant_id,

@@ -203,7 +203,12 @@ async def test_resolve_api_key_with_redis_cache_hit():
     ctx = await svc.resolve_api_key(created["api_key"])
     assert ctx is not None
     assert ctx.tenant_id == tid
-    mock_redis.get.assert_called_once()
+    # The first read is the api_key:{hash} cache entry. (This legacy entry has no
+    # scopes/expires_at, so it is re-resolved; the later reads are the revocation
+    # tombstone checks after the re-cache, a08-F194-06.)
+    from app.services.tenant_service import _hash_key
+
+    assert mock_redis.get.call_args_list[0].args == (f"api_key:{_hash_key(created["api_key"])}",)
 
 
 @pytest.mark.asyncio
@@ -431,39 +436,6 @@ async def test_create_tenant_from_sso_refuses_an_existing_email():
         await svc.create_tenant_from_sso(
             sso_sub="sub:takeover", email="owner@example.com", name="Attacker"
         )
-
-
-# ---------------------------------------------------------------------------
-# sync_from_db
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_sync_from_db_no_db():
-    svc = TenantService()
-    count = await svc.sync_from_db()
-    assert count == 0
-
-
-@pytest.mark.asyncio
-async def test_sync_from_db_exception_returns_zero():
-    from contextlib import asynccontextmanager
-
-    mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
-
-    @asynccontextmanager
-    async def _begin():
-        yield None
-
-    mock_session.begin = MagicMock(side_effect=lambda: _begin())
-
-    @asynccontextmanager
-    async def _db():
-        yield mock_session
-
-    svc = TenantService(db_session_factory=_db)
-    count = await svc.sync_from_db()
-    assert count == 0
 
 
 # ---------------------------------------------------------------------------

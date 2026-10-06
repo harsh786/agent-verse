@@ -252,6 +252,17 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
     },
   });
 
+  // a08-F195-05: remove the stored provider config and key (admin only).
+  const removeMutation = useMutation({
+    mutationFn: () => apiClient<void>('/tenants/me/llm', { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['llm-config'] });
+      qc.invalidateQueries({ queryKey: ['llm-config-simple'] });
+      setEditing(false);
+      toast({ kind: 'success', message: 'Stored LLM provider key removed' });
+    },
+  });
+
   // The provider key and base_url decide where every prompt goes, so only tenant
   // admins may change them (the backend answers 403 otherwise and reports can_edit).
   const canEdit =
@@ -372,6 +383,29 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
               <dd className={`font-medium ${mono ? 'font-mono text-xs' : ''}`}>{value}</dd>
             </div>
           ))}
+          {canEdit && (llmFull as any)?.masked_key && (
+            <div className="flex flex-col items-end gap-1 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      'Remove the stored LLM provider key? LLM calls then use the platform provider, if this deployment offers one.',
+                    )
+                  ) {
+                    removeMutation.mutate();
+                  }
+                }}
+                disabled={removeMutation.isPending}
+                className="text-xs text-red-600 hover:opacity-70 disabled:opacity-50"
+              >
+                {removeMutation.isPending ? 'Removing…' : 'Remove stored key'}
+              </button>
+              {removeMutation.isError && (
+                <p className="text-xs text-red-600">{String(removeMutation.error)}</p>
+              )}
+            </div>
+          )}
         </dl>
       )}
     </SectionShell>
@@ -736,8 +770,6 @@ function SecurityTab() {
 
 // ── Notifications tab ─────────────────────────────────────────────────────────
 
-const NOTIF_KEY = 'av_notification_prefs';
-
 type NotifPrefs = {
   goalComplete: boolean;
   goalFailed: boolean;
@@ -746,40 +778,47 @@ type NotifPrefs = {
   weeklyReport: boolean;
 };
 
+// a08-F196-05: goal outcome notifications are OPT-IN — off until the tenant
+// switches them on. The server is the source of truth (GET/PUT
+// /tenants/me/notifications); these are only shown while it loads. The old
+// localStorage copy is no longer read: it held goalComplete/goalFailed = true
+// from the old defaults and would have opted tenants in on their next save.
 const DEFAULT_NOTIF_PREFS: NotifPrefs = {
-  goalComplete: true,
-  goalFailed: true,
+  goalComplete: false,
+  goalFailed: false,
   budgetAlert: true,
   hitlPending: true,
   weeklyReport: false,
 };
 
 function NotificationsTab() {
-  const [prefs, setPrefs] = useState<NotifPrefs>(() => {
-    try {
-      const stored = localStorage.getItem(NOTIF_KEY);
-      return stored ? (JSON.parse(stored) as NotifPrefs) : DEFAULT_NOTIF_PREFS;
-    } catch {
-      return DEFAULT_NOTIF_PREFS;
-    }
+  const qc = useQueryClient();
+  const { data, isError } = useQuery<NotifPrefs>({
+    queryKey: ['notification-prefs'],
+    queryFn: () => apiClient<NotifPrefs>('/tenants/me/notifications'),
   });
-  const [saving, setSaving] = useState(false);
+  const prefs: NotifPrefs = { ...DEFAULT_NOTIF_PREFS, ...(data ?? {}) };
 
-  const toggle = async (key: keyof NotifPrefs) => {
-    const next = { ...prefs, [key]: !prefs[key] };
-    setPrefs(next);
-    localStorage.setItem(NOTIF_KEY, JSON.stringify(next));
-    setSaving(true);
-    try {
-      await apiClient('/tenants/me/notifications', {
+  const saveMutation = useMutation({
+    // Only the changed key: the server merges it into the stored preferences.
+    mutationFn: (change: Partial<NotifPrefs>) =>
+      apiClient<{ preferences: NotifPrefs }>('/tenants/me/notifications', {
         method: 'PUT',
-        body: JSON.stringify(next),
-      });
-    } catch {
-      // Backend may not have this endpoint yet — localStorage fallback is enough
-    } finally {
-      setSaving(false);
-    }
+        body: JSON.stringify(change),
+      }),
+    onSuccess: (res) => {
+      if (res?.preferences) qc.setQueryData(['notification-prefs'], res.preferences);
+      else qc.invalidateQueries({ queryKey: ['notification-prefs'] });
+    },
+    onError: () => {
+      toast({ kind: 'error', message: 'Notification preference could not be saved.' });
+    },
+  });
+  const saving = saveMutation.isPending;
+
+  const toggle = (key: keyof NotifPrefs) => {
+    if (saving || !data) return; // never save a value the server has not shown
+    saveMutation.mutate({ [key]: !prefs[key] });
   };
 
   const NOTIF_ITEMS: { key: keyof NotifPrefs; label: string; desc: string; icon: string }[] = [
@@ -795,9 +834,13 @@ function NotificationsTab() {
       <div>
         <h3 className="text-base font-semibold">Notification Preferences</h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Choose which events trigger notifications.
+          Choose which events are sent to your notification channels. Goal notifications are
+          off until you switch them on.
           {saving && <span className="ml-2 text-primary">Saving…</span>}
         </p>
+        {isError && (
+          <p className="text-xs text-red-600 mt-1">Notification preferences could not be loaded.</p>
+        )}
       </div>
       <div className="space-y-3">
         {NOTIF_ITEMS.map(({ key, label, desc, icon }) => (

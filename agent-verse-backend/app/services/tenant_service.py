@@ -39,6 +39,47 @@ def _hash_key(raw_key: str) -> str:
 # never longer than the key's remaining lifetime.
 _API_KEY_CACHE_TTL_S = 300
 
+# a08-F194-06: revocation tombstones. A resolve that read the key row just
+# before a revoke / deactivation committed would otherwise re-populate
+# api_key:{hash} after the revoke deleted it, and the revoked key kept working
+# for up to the cache TTL. Revoke / deactivate set these markers; a resolve that
+# caches a context re-checks them AFTER its write and deletes its own entry
+# when one is present. They outlive any in-flight resolve (2 x the cache TTL).
+_REVOCATION_TOMBSTONE_TTL_S = 2 * _API_KEY_CACHE_TTL_S
+
+
+def _revoked_key_marker(key_hash: str) -> str:
+    return f"api_key_revoked:{key_hash}"
+
+
+def _deactivated_tenant_marker(tenant_id: str) -> str:
+    return f"tenant_deactivated:{tenant_id}"
+
+
+# a08-F194-03: a failed read of the shared API-key cache falls through to the
+# DB (authoritative), but it is logged — at most once per window per process,
+# so a Redis outage does not log on every request.
+_CACHE_READ_WARN_INTERVAL_S = 60.0
+_cache_read_warn_state: dict[str, float | int] = {"last": 0.0, "suppressed": 0}
+
+
+def _warn_api_key_cache_read_failed(exc: BaseException) -> None:
+    import time
+
+    now = time.monotonic()
+    last = float(_cache_read_warn_state["last"])
+    if last and now - last < _CACHE_READ_WARN_INTERVAL_S:
+        _cache_read_warn_state["suppressed"] = int(_cache_read_warn_state["suppressed"]) + 1
+        return
+    suppressed = int(_cache_read_warn_state["suppressed"])
+    _cache_read_warn_state["last"] = now
+    _cache_read_warn_state["suppressed"] = 0
+    logging.getLogger(__name__).warning(
+        "api_key_cache_read_failed (resolving from the DB): %s; %d similar suppressed",
+        type(exc).__name__,
+        suppressed,
+    )
+
 
 def _parse_expiry(raw: Any) -> datetime | None:
     """Normalise a stored ``expires_at`` (ISO string or datetime) to an aware UTC
@@ -78,16 +119,12 @@ class TenantService:
     and for unit tests.  Wire as ``app.state.tenant_service`` in the factory.
     """
 
-    def __init__(
-        self,
-        db_session_factory: Any = None,
-        *,
-        system_db_session_factory: Any = None,
-    ) -> None:
-        # Cross-tenant maintenance factory (BYPASSRLS role when configured): lets
-        # the startup sync load every active API key in ONE query instead of one
-        # RLS-scoped query per tenant. Optional; falls back to the per-tenant loop.
-        self._system_db: Any = system_db_session_factory
+    def __init__(self, db_session_factory: Any = None) -> None:
+        # The dicts below are the store ONLY in the no-DB (tests / dev) build.
+        # With a DB wired every read is DB-authoritative (get_tenant,
+        # list_api_keys, resolve_api_key, SSO lookup) and nothing is mirrored
+        # into them (a08-F194-04): each replica used to copy every active tenant
+        # and API key into memory at startup, unbounded, for no reader.
         # tenant_id → {tenant_id, name, email, plan, created_at}
         self._tenants: dict[str, dict[str, Any]] = {}
         # normalised email → tenant_id (fast duplicate-email detection)
@@ -118,10 +155,11 @@ class TenantService:
         The raw API key appears **once** in this response and is never stored.
         Raises :class:`~app.core.errors.ConflictError` if the e-mail is taken.
 
-        Writes to DB first, then updates in-memory cache, then invalidates Redis.
+        Writes to DB first (no-DB build: the in-memory store), then invalidates Redis.
         """
         normalised = email.lower()
-        if normalised in self._email_index:
+        # No-DB build only; with a DB the unique constraint decides (below).
+        if self._db is None and normalised in self._email_index:
             raise ConflictError(f"Email already registered: {email}")
 
         tenant_id = uuid.uuid4().hex
@@ -141,28 +179,27 @@ class TenantService:
             key_hash=key_hash,
         )
 
-        # ── 2. Update in-memory cache after successful DB write ───────────────
-        self._tenants[tenant_id] = {
-            "tenant_id": tenant_id,
-            "name": name,
-            "email": email,
-            "plan": plan.value,
-            "created_at": created_at,
-        }
-        self._email_index[normalised] = tenant_id
-        self._keys[key_id] = {
-            "key_id": key_id,
-            "tenant_id": tenant_id,
-            "name": "Default",
-            "scopes": [],
-            "expires_at": None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": created_at,
-            "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
-        }
-        self._hash_to_key_id[key_hash] = key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(key_id)
+        # ── 2. In-memory store (no-DB build only; a08-F194-04) ────────────────
+        self._remember(
+            {
+                "tenant_id": tenant_id,
+                "name": name,
+                "email": email,
+                "plan": plan.value,
+                "created_at": created_at,
+            },
+            {
+                "key_id": key_id,
+                "tenant_id": tenant_id,
+                "name": "Default",
+                "scopes": [],
+                "expires_at": None,
+                "key_hash": key_hash,
+                "is_active": True,
+                "created_at": created_at,
+                "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
+            },
+        )
 
         # ── 3. Invalidate Redis cache so stale entries are evicted immediately ─
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
@@ -328,19 +365,20 @@ class TenantService:
             key_id, tenant_id, name, key_hash, scopes, expires_at, roles=key_roles
         )
 
-        self._keys[key_id] = {
-            "key_id": key_id,
-            "tenant_id": tenant_id,
-            "name": name,
-            "scopes": scopes,
-            "expires_at": expires_at.isoformat() if expires_at else None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": created_at,
-            "roles": key_roles,
-        }
-        self._hash_to_key_id[key_hash] = key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(key_id)
+        self._remember(
+            None,
+            {
+                "key_id": key_id,
+                "tenant_id": tenant_id,
+                "name": name,
+                "scopes": scopes,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "key_hash": key_hash,
+                "is_active": True,
+                "created_at": created_at,
+                "roles": key_roles,
+            },
+        )
         # Invalidate tenant cache since the key roster changed
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
@@ -383,6 +421,12 @@ class TenantService:
         # rather than suppressed.
         if key_hash and self._redis is not None:
             try:
+                # Tombstone first (a08-F194-06), then the entry: a resolve racing
+                # this revoke either finds its entry deleted here or sees the
+                # tombstone after its own write and deletes it.
+                await self._redis.setex(
+                    _revoked_key_marker(key_hash), _REVOCATION_TOMBSTONE_TTL_S, "1"
+                )
                 await self._redis.delete(f"api_key:{key_hash}")
             except Exception as exc:
                 logging.getLogger(__name__).error(
@@ -417,7 +461,12 @@ class TenantService:
         if self._redis is not None:
             try:
                 cached = await self._redis.get(cache_key)
-                if cached is not None:
+            except Exception as exc:
+                # Redis down: the DB below answers; logged (throttled), not hidden.
+                _warn_api_key_cache_read_failed(exc)
+                cached = None
+            if cached is not None:
+                try:
                     data = _json.loads(cached)
                     # Entries written before key scopes / expiry were cached carry
                     # no "scopes" / "expires_at" field; trusting one would treat a
@@ -438,8 +487,14 @@ class TenantService:
                             roles=tuple(data.get("roles", ("operator",))),
                             scopes=tuple(data["scopes"]),
                         )
-            except Exception:
-                pass  # fall through on Redis errors
+                except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                    # A malformed entry (it used to be skipped silently on every
+                    # request until its TTL ran out): drop it and re-resolve.
+                    logging.getLogger(__name__).warning(
+                        "api_key_cache_entry_malformed (dropped): %s", type(exc).__name__
+                    )
+                    with suppress(Exception):
+                        await self._redis.delete(cache_key)
 
         # ── DB-authoritative lookup (multi-pod correctness) ────────────────
         # When a DB is wired, the database is the single source of truth: resolve
@@ -514,7 +569,7 @@ class TenantService:
                 return
             ttl = min(ttl, remaining)
 
-        with suppress(Exception):  # caching is best-effort
+        try:
             await self._redis.setex(
                 cache_key,
                 ttl,
@@ -529,6 +584,30 @@ class TenantService:
                     }
                 ),
             )
+        except Exception:
+            return  # caching is best-effort; nothing was written
+        # a08-F194-06: re-check the revocation tombstones AFTER the write. A
+        # revoke / deactivation that committed while this resolve was in flight
+        # set one before deleting the entry, so either it deleted this entry or
+        # this check sees its tombstone and drops the entry here.
+        key_hash = cache_key.removeprefix("api_key:")
+        try:
+            revoked = await self._redis.get(_revoked_key_marker(key_hash))
+            if revoked is None:
+                revoked = await self._redis.get(_deactivated_tenant_marker(ctx.tenant_id))
+        except Exception as exc:
+            # Unknown: do not leave a possibly-revoked context cached.
+            logging.getLogger(__name__).warning(
+                "api_key_tombstone_check_failed: %s", type(exc).__name__
+            )
+            revoked = "unknown"
+        if revoked is not None:
+            try:
+                await self._redis.delete(cache_key)
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "api_key_revoked_entry_not_dropped: %s", type(exc).__name__
+                )
 
     # ── DB persistence helpers ────────────────────────────────────────────────
 
@@ -668,9 +747,8 @@ class TenantService:
             "plan": t.plan_tier,
             "created_at": t.created_at.isoformat() if t.created_at else "",
         }
-        # Warm this pod's cache for the helpers that still read memory (SSO lookups).
-        self._tenants.setdefault(t.id, dict(profile))
-        self._email_index.setdefault(t.email.lower(), t.id)
+        # Not mirrored into this pod's memory (a08-F194-04): no reader needs it
+        # (SSO lookups are DB-authoritative too) and it grew with every tenant.
         return profile
 
     async def _db_list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
@@ -752,7 +830,8 @@ class TenantService:
 
     async def _db_resolve_by_hash(self, key_hash: str) -> dict[str, Any] | None:
         """Authoritative single-key lookup by hash. Returns the active, non-expired
-        key + tenant plan, or None. This makes auth DB-authoritative so a key
+        key + tenant plan, or None; raises :class:`KeyStoreUnavailableError` when
+        the DB cannot answer. This makes auth DB-authoritative so a key
         revoked on one pod is honoured cluster-wide (the DB is the source of truth;
         the Redis cache in front is cleared on revoke).
 
@@ -804,8 +883,17 @@ class TenantService:
                 "expires_at": expiry,
             }
         except Exception as exc:
-            logging.getLogger(__name__).warning("DB resolve api_key failed: %s", exc)
-            return None
+            # a08-F194-05: this returned None, so a Postgres outage answered 401
+            # "invalid key" for every uncached key (clients drop or rotate a key
+            # on 401). Unknown is not invalid: a retryable 503 (the middleware
+            # maps it), the key is neither accepted nor called bad.
+            logging.getLogger(__name__).warning(
+                "api_key_resolve_db_unavailable: %s", type(exc).__name__
+            )
+            raise KeyStoreUnavailableError(
+                "The API key could not be verified (key store unavailable); retry shortly.",
+                cause=exc,
+            ) from exc
 
     # ── SSO JIT provisioning ──────────────────────────────────────────────────
 
@@ -981,6 +1069,11 @@ class TenantService:
         if sso_sub:
             cache_keys.append(_sso_cache_key(sso_sub))
         try:
+            # Tombstone first (a08-F194-06): a resolve that read the tenant as
+            # active before this commit must not re-cache one of its keys.
+            await self._redis.setex(
+                _deactivated_tenant_marker(tenant_id), _REVOCATION_TOMBSTONE_TTL_S, "1"
+            )
             await self._redis.delete(*cache_keys)
         except Exception as exc:
             logging.getLogger(__name__).error(
@@ -1015,7 +1108,8 @@ class TenantService:
         """
         del plan
         normalised = email.lower()
-        if normalised in self._email_index:
+        # No-DB build only; with a DB the unique constraints decide (below).
+        if self._db is None and normalised in self._email_index:
             raise ConflictError(f"Email already registered: {email}")
         plan_tier = PlanTier.FREE
         tenant_id = uuid.uuid4().hex
@@ -1068,230 +1162,42 @@ class TenantService:
             "sso_sub": sso_sub,
             "created_at": created_at,
         }
-        self._tenants[tenant_id] = tenant
-        self._email_index[normalised] = tenant_id
-        self._keys[api_key_id] = {
-            "key_id": api_key_id,
-            "tenant_id": tenant_id,
-            "name": "SSO auto-provisioned",
-            "scopes": [],
-            "expires_at": None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": created_at,
-            "roles": ["admin"],
-        }
-        self._hash_to_key_id[key_hash] = api_key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(api_key_id)
+        self._remember(
+            tenant,
+            {
+                "key_id": api_key_id,
+                "tenant_id": tenant_id,
+                "name": "SSO auto-provisioned",
+                "scopes": [],
+                "expires_at": None,
+                "key_hash": key_hash,
+                "is_active": True,
+                "created_at": created_at,
+                "roles": ["admin"],
+            },
+        )
         return tenant
 
-    async def sync_from_db(self) -> int:
-        """Load tenants and API keys from PostgreSQL into memory on startup.
+    def _remember(self, tenant: dict[str, Any] | None, key: dict[str, Any]) -> None:
+        """Record a tenant and/or key in the in-memory store — no-DB build only.
 
-        Returns number of tenants loaded.
+        With a DB wired nothing is mirrored (a08-F194-04): every read is
+        DB-authoritative, so a per-replica copy had no reader and only grew.
         """
-        if self._db is None:
-            return 0
-        try:
-            from sqlalchemy import select
+        if self._db is not None:
+            return
+        if tenant is not None:
+            self._tenants[tenant["tenant_id"]] = tenant
+            self._email_index[str(tenant["email"]).lower()] = tenant["tenant_id"]
+        self._keys[key["key_id"]] = key
+        self._hash_to_key_id[key["key_hash"]] = key["key_id"]
+        self._tenant_keys.setdefault(key["tenant_id"], []).append(key["key_id"])
 
-            from app.db.models.tenant import ApiKey, Tenant
-            from app.db.rls import sqlalchemy_rls_context
-
-            loaded = 0
-            # Before opening the request-role session: never hold two connections.
-            batched_keys = await self._load_active_keys_batched()
-            async with self._db() as session:
-                # Load all active tenants
-                result = await session.execute(
-                    select(Tenant).where(Tenant.is_active == True)  # noqa: E712
-                )
-                tenants = result.scalars().all()
-                for t in tenants:
-                    if t.id not in self._tenants:
-                        self._tenants[t.id] = {
-                            "tenant_id": t.id,
-                            "name": t.name,
-                            "email": t.email,
-                            "plan": t.plan_tier,
-                            "created_at": t.created_at.isoformat() if t.created_at else "",
-                        }
-                        self._email_index[t.email.lower()] = t.id
-                        loaded += 1
-                # api_keys has tenant RLS enabled. One cross-tenant query when the
-                # role may bypass RLS; otherwise one RLS-scoped query per tenant.
-                keys = batched_keys
-                if keys is None:
-                    keys = []
-                    for tenant_id in list(self._tenants):
-                        async with sqlalchemy_rls_context(session, tenant_id):
-                            key_result = await session.execute(
-                                select(ApiKey).where(
-                                    ApiKey.tenant_id == tenant_id,
-                                    ApiKey.is_active == True,  # noqa: E712
-                                )
-                            )
-                        keys.extend(key_result.scalars().all())
-                for k in keys:
-                    if k.tenant_id not in self._tenants:
-                        continue
-                    key_data = {
-                        "key_id": k.id,
-                        "tenant_id": k.tenant_id,
-                        "name": k.name,
-                        "scopes": list(k.scopes or []),
-                        "roles": list(k.roles or ["admin"]),
-                        "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                        "key_hash": k.key_hash,
-                        "is_active": True,
-                        "created_at": k.created_at.isoformat() if k.created_at else "",
-                    }
-                    # Always update from DB (not just on first load) so role/scope
-                    # changes made via DB or API are picked up on next sync.
-                    self._keys[k.id] = key_data
-                    self._hash_to_key_id[k.key_hash] = k.id
-                    self._tenant_keys.setdefault(k.tenant_id, [])
-                    if k.id not in self._tenant_keys[k.tenant_id]:
-                        self._tenant_keys[k.tenant_id].append(k.id)
-            logging.getLogger(__name__).info("Synced %d tenants from DB", loaded)
-            return loaded
-        except Exception as exc:
-            logging.getLogger(__name__).warning("DB sync failed: %s", exc)
-            return 0
-
-    async def _load_active_keys_batched(self) -> list[Any] | None:
-        """All active API keys in one cross-tenant query, or None when not allowed.
-
-        Uses ``system_session`` (``SET LOCAL row_security = off``) on the system
-        factory. Under a NOBYPASSRLS role the SELECT raises instead of silently
-        returning nothing, so a failure means "fall back to the per-tenant loop".
-        """
-        factory = self._system_db
-        if factory is None:
-            return None
-        try:
-            from sqlalchemy import select
-
-            from app.db.models.tenant import ApiKey
-            from app.db.rls import system_session
-
-            async with factory() as session, session.begin(), system_session(session):
-                result = await session.execute(
-                    select(ApiKey).where(ApiKey.is_active == True)  # noqa: E712
-                )
-                return list(result.scalars().all())
-        except Exception as exc:
-            logging.getLogger(__name__).info(
-                "api_key_batched_sync_unavailable (per-tenant fallback): %s",
-                type(exc).__name__,
-            )
-            return None
-
-    # ── Redis read-through cache helpers ──────────────────────────────────────
-
-    async def _get_tenant_from_db(
-        self,
-        tenant_id: str,
-        *,
-        db: Any = None,
-    ) -> TenantContext | None:
-        """Fetch a single tenant from PostgreSQL and return a TenantContext.
-
-        Returns ``None`` if no DB factory is available or the tenant is not found.
-        """
-        db_session = db or self._db
-        if db_session is None:
-            return None
-        try:
-            from sqlalchemy import select
-
-            from app.db.models.tenant import Tenant
-
-            async with db_session() as session:
-                result = await session.execute(
-                    select(Tenant).where(
-                        Tenant.id == tenant_id,
-                        Tenant.is_active == True,  # noqa: E712
-                    )
-                )
-                t = result.scalar_one_or_none()
-                if t is None:
-                    return None
-                return TenantContext(
-                    tenant_id=t.id,
-                    plan=PlanTier(t.plan_tier),
-                    api_key_id="",
-                    roles=(),
-                )
-        except Exception as exc:
-            logging.getLogger(__name__).warning("_get_tenant_from_db failed: %s", exc)
-            return None
-
-    async def get_tenant_cached(
-        self,
-        tenant_id: str,
-        redis: Any = None,
-        db: Any = None,
-    ) -> TenantContext | None:
-        """Get tenant context with Redis read-through cache (TTL 5 minutes).
-
-        Lookup order: Redis → PostgreSQL → in-memory dict.
-        A successful DB fetch is written back to Redis automatically.
-        """
-        import json as _json
-
-        cache_key = f"tenant:{tenant_id}"
-
-        # ── L1: Redis cache hit ────────────────────────────────────────────
-        if redis is not None:
-            try:
-                raw = await redis.get(cache_key)
-                if raw:
-                    data = _json.loads(raw)
-                    return TenantContext(
-                        tenant_id=data["tenant_id"],
-                        plan=PlanTier(data.get("plan", "free")),
-                        api_key_id=data.get("api_key_id", ""),
-                        roles=tuple(data.get("roles", [])),
-                    )
-            except Exception:
-                pass  # Redis errors are non-fatal — fall through
-
-        # ── L2: DB fetch + populate cache ─────────────────────────────────
-        if db is not None:
-            try:
-                tenant = await self._get_tenant_from_db(tenant_id, db=db)
-                if tenant is not None and redis is not None:
-                    with suppress(Exception):
-                        await redis.set(
-                            cache_key,
-                            _json.dumps(
-                                {
-                                    "tenant_id": tenant.tenant_id,
-                                    "plan": tenant.plan.value,
-                                    "api_key_id": tenant.api_key_id,
-                                    "roles": list(tenant.roles),
-                                }
-                            ),
-                            ex=300,  # 5-minute TTL
-                        )
-                return tenant
-            except Exception:
-                pass  # DB errors fall through to in-memory
-
-        # ── L3: In-memory fallback ─────────────────────────────────────────
-        raw_dict = self._tenants.get(tenant_id)
-        if raw_dict is None:
-            return None
-        try:
-            return TenantContext(
-                tenant_id=raw_dict["tenant_id"],
-                plan=PlanTier(raw_dict.get("plan", "free")),
-                api_key_id=raw_dict.get("api_key_id", ""),
-                roles=tuple(raw_dict.get("roles", [])),
-            )
-        except Exception:
-            return None
+    # ── Redis cache invalidation ──────────────────────────────────────────────
+    # (a08-F194-01: the ``get_tenant_cached`` / ``_get_tenant_from_db`` read-through
+    # pair was removed — nothing called it, and its DB read logged and returned
+    # None on any error, so a caller would have read a DB outage as "no tenant".
+    # Tenant reads go through the DB-authoritative ``get_tenant``.)
 
     async def invalidate_tenant_cache(self, tenant_id: str, redis: Any = None) -> None:
         """Invalidate cached tenant data after any mutation.

@@ -53,6 +53,8 @@ class TriggerConsumerSupervisor:
         schedule_store: Any = None,
         dispatcher: Any = None,
         redis: Any = None,
+        notification_service: Any = None,
+        db_session_factory: Any = None,
         enable_extended: bool = False,
         restart_backoff_s: float = 1.0,
         restart_backoff_max_s: float = 60.0,
@@ -60,6 +62,9 @@ class TriggerConsumerSupervisor:
         self._schedule_store = schedule_store
         self._dispatcher = dispatcher
         self._redis = redis
+        # Opt-in goal outcome notifications (a08-F196-05) read the goal stream too.
+        self._notification_service = notification_service
+        self._db_session_factory = db_session_factory
         self._enable_extended = enable_extended
         self._restart_backoff_s = restart_backoff_s
         self._restart_backoff_max_s = restart_backoff_max_s
@@ -205,6 +210,7 @@ class TriggerConsumerSupervisor:
                 return
 
     def _consumer_specs(self) -> list[_ConsumerSpec]:
+        from app.services.goal_notifications import GoalNotificationConsumer
         from app.triggers.consumers.chain import ChainTriggerConsumer
         from app.triggers.consumers.condition import ConditionTriggerConsumer
         from app.triggers.consumers.conversational import ConversationalTriggerConsumer
@@ -255,6 +261,18 @@ class TriggerConsumerSupervisor:
                 name="ConversationalTriggerConsumer",
                 factory=lambda: ConversationalTriggerConsumer(**_core_kwargs()),
                 required=dict(core_deps),
+            ),
+            _ConsumerSpec(
+                name="GoalNotificationConsumer",
+                factory=lambda: GoalNotificationConsumer(
+                    redis=self._redis,
+                    notification_service=self._notification_service,
+                    db_session_factory=self._db_session_factory,
+                ),
+                required={
+                    "redis": self._redis,
+                    "notification_service": self._notification_service,
+                },
             ),
         ]
 

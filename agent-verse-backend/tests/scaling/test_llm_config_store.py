@@ -115,16 +115,27 @@ async def test_redis_get_failure_returns_none_gracefully() -> None:
     assert cfg is None
 
 
-async def test_redis_set_failure_is_swallowed_gracefully() -> None:
-    """A Redis failure on set should log a warning and not raise."""
+async def test_redis_only_set_failure_is_reported_not_swallowed() -> None:
+    """a08-F195-04: with no DB, Redis IS the store — a failed write saved nothing
+    and must not be reported as saved (it used to be swallowed)."""
+    import pytest
+
+    from app.services.llm_config_store import LLMConfigPersistError
+
     store = LLMConfigStore(redis_client=_BrokenRedis())
-    # Should not raise
-    await store.set_config("t1", "anthropic", "key", "claude-opus-4-8")
+    with pytest.raises(LLMConfigPersistError):
+        await store.set_config("t1", "anthropic", "key", "claude-opus-4-8")
 
 
-async def test_redis_delete_failure_is_swallowed_gracefully() -> None:
+async def test_redis_delete_failure_is_reported_not_swallowed() -> None:
+    """a08-F195-04: a removed key left in the shared cache keeps being used."""
+    import pytest
+
+    from app.services.llm_config_store import LLMConfigCacheStaleError
+
     store = LLMConfigStore(redis_client=_BrokenRedis())
-    await store.delete_config("t1")  # Should not raise
+    with pytest.raises(LLMConfigCacheStaleError):
+        await store.delete_config("t1")
 
 
 # ── RedisCircuitBreaker ────────────────────────────────────────────────────────

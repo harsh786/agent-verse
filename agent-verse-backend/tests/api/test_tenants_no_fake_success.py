@@ -79,7 +79,8 @@ def test_notifications_round_trip_without_expiry_and_validated() -> None:
     )
     got = client.get("/tenants/me/notifications", headers=H).json()
     assert got["goalComplete"] is False
-    assert got["goalFailed"] is True  # defaults kept for unspecified keys
+    assert got["goalFailed"] is False  # opt-in default kept for unspecified keys (F196-05)
+    assert got["budgetAlert"] is True
     bad = client.put("/tenants/me/notifications", json={"evil": "x"}, headers=H)
     assert bad.status_code == 422
 

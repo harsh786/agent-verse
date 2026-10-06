@@ -1355,8 +1355,13 @@ async def create_notification_channel(
         config=body.config,
     )
     # Awaited, RLS-scoped write: the row exists (for every replica) before the
-    # caller is told it was created.
-    await svc.add_channel_async(channel)
+    # caller is told it was created; a failed write is a 503, not "created".
+    from app.services.notification_service import NotificationStoreUnavailableError
+
+    try:
+        await svc.add_channel_async(channel)
+    except NotificationStoreUnavailableError as exc:
+        raise HTTPException(503, exc.message) from exc
     return {"channel_id": channel.channel_id, "type": channel.channel_type, "status": "created"}
 
 
@@ -1386,7 +1391,13 @@ async def delete_notification_channel(request: Request, channel_id: str) -> None
     svc = getattr(request.app.state, "notification_service", None)
     if svc is None:
         raise HTTPException(404, "Notification channel not found")
-    removed = await svc.remove_channel_async(channel_id, tenant.tenant_id)
+    from app.services.notification_service import NotificationStoreUnavailableError
+
+    try:
+        removed = await svc.remove_channel_async(channel_id, tenant.tenant_id)
+    except NotificationStoreUnavailableError as exc:
+        # The row may still exist: never a 404 for a channel that is still notified.
+        raise HTTPException(503, exc.message) from exc
     if not removed:
         raise HTTPException(404, "Notification channel not found")
 

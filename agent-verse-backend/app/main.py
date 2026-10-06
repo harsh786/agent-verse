@@ -981,11 +981,22 @@ def create_app(
         strategy: RAGStrategy,
     ) -> ResolvedLLM | None:
         del strategy
+        from app.services.llm_config_store import get_llm_config_store
+
         tenant_config: dict[str, Any] | None = None
-        config_store = getattr(app.state, "llm_config_store", None)
+        config_store = getattr(app.state, "llm_config_store", None) or get_llm_config_store()
         if config_store is not None:
-            tenant_config = await config_store.get_config(tenant_context.tenant_id)
-        if tenant_config is None:
+            # a08-F195-02: strict. A DB read error used to read as "no BYOK" and
+            # fall to a stale per-replica copy or the platform provider, so a
+            # BYOK tenant's RAG LLM traffic (and cost) silently went to the
+            # platform vendor. LLMConfigReadError propagates: the gateway then
+            # refuses a strategy that needs an LLM and runs an optional one
+            # without one — never on platform spend. The per-replica dict is
+            # only for builds with no store at all (a08-F195-01).
+            tenant_config = await config_store.get_config(
+                tenant_context.tenant_id, strict=True
+            )
+        else:
             tenant_config = getattr(app.state, "_llm_configs", {}).get(tenant_context.tenant_id)
 
         if tenant_config is not None:
@@ -1001,10 +1012,16 @@ def create_app(
                 # here sent together keys to api.openai.com and ollama keys to the
                 # platform's localhost:11434 when base_url was empty.
                 from app.providers.tenant_provider import build_tenant_provider
+                from app.providers.tenant_vault import prepare_tenant_llm_config
 
-                provider = build_tenant_provider(
-                    tenant_config, tenant_id=tenant_context.tenant_id
+                # A key sealed with the tenant's own vault key (PROV-15) is
+                # unwrapped first, as on the goal paths; the builder refused it.
+                prepared = await prepare_tenant_llm_config(
+                    dict(tenant_config),
+                    tenant_context.tenant_id,
+                    getattr(app.state, "db_session_factory", None),
                 )
+                provider = build_tenant_provider(prepared, tenant_id=tenant_context.tenant_id)
             except Exception as exc:
                 logger.warning(
                     "tenant_retrieval_provider_resolution_failed",
@@ -1655,10 +1672,7 @@ def create_app(
                 _usage_svc._db = db_factory
                 logger.info("usage_service_db_wired")
 
-            _tenant_svc_with_db = TenantService(
-                db_session_factory=db_factory,
-                system_db_session_factory=app.state.system_db_session_factory,
-            )
+            _tenant_svc_with_db = TenantService(db_session_factory=db_factory)
             _goal_svc_with_db = GoalService(
                 audit_log=_audit_log,
                 hitl=_hitl,
@@ -1669,11 +1683,12 @@ def create_app(
             _agent_store_with_db = AgentStore(db_session_factory=db_factory)
 
             # Hydrate in-memory state from DB (idempotent — skips keys already present).
-            # Tenants/API keys and agents are essential (auth + sync agent lookups).
+            # Agents are essential (sync agent lookups). Tenants / API keys are not
+            # hydrated at all: auth and every tenant read are DB-authoritative, so a
+            # per-replica copy of every tenant and key had no reader (a08-F194-04).
             # The goal mirror is only a warm cache (get/list goals read the DB), so it
             # loads in the background together with restart recovery, which needs it
             # (see "goal_warm_cache" below).
-            await _tenant_svc_with_db.sync_from_db()
             await _agent_store_with_db.sync_from_db()
 
             async def _warm_goal_cache(recover: bool) -> None:
@@ -2775,6 +2790,8 @@ def create_app(
                         schedule_store=getattr(app.state, "schedule_store", None),
                         dispatcher=getattr(app.state, "trigger_dispatcher", None),
                         redis=redis_for_runtime,
+                        notification_service=getattr(app.state, "notification_service", None),
+                        db_session_factory=db_factory,
                         enable_extended=getattr(
                             settings, "triggers_extended_consumers_enabled", False
                         ),

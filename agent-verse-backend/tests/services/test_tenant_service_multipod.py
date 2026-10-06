@@ -186,3 +186,25 @@ async def test_signup_fails_when_the_tenant_cannot_be_persisted() -> None:
     with pytest.raises(KeyStoreUnavailableError):
         await svc.create_tenant(name="Acme", email="acme@x.test")
     assert svc._tenants == {} and svc._keys == {}
+
+
+@pytest.mark.asyncio
+async def test_db_wired_service_mirrors_nothing_into_memory() -> None:
+    """a08-F194-04: with a DB every read is DB-authoritative, so no tenant or key
+    is copied into the replica's memory — not at startup (the unbounded
+    sync_from_db hydration is gone), not on signup / key creation / reads."""
+    db = _FakeDB()
+    pod = TenantService(db_session_factory=db)
+    assert not hasattr(pod, "sync_from_db")
+
+    created = await pod.create_tenant(name="Acme", email="acme@example.com")
+    tid = created["tenant_id"]
+    await pod.create_api_key(tenant_id=tid, name="CI", scopes=["goals:read"])
+    assert (await pod.get_tenant(tid))["name"] == "Acme"
+    assert len(await pod.list_api_keys(tid)) == 2
+
+    assert pod._tenants == {}
+    assert pod._keys == {}
+    assert pod._hash_to_key_id == {}
+    assert pod._email_index == {}
+    assert pod._tenant_keys == {}

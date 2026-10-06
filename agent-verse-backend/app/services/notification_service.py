@@ -14,10 +14,25 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.core.errors import PlatformError
 from app.net.ssrf_guard import assert_public_url_async, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class NotificationStoreUnavailableError(PlatformError):
+    """A notification channel could not be written to / deleted from Postgres.
+
+    a08-F196-03: the failure used to be logged and swallowed, so POST
+    /governance/notifications answered "created" for a channel that existed only
+    in one pod's memory (and vanished on restart), and a failed delete answered
+    404 while the row stayed and kept being notified after the next refresh.
+    """
+
+    code = "NOTIFICATION_STORE_UNAVAILABLE"
+    http_status = 503
+    retryable = True
 
 # A tenant's persisted channels are re-read at most this often (QA-13): the
 # cache is replaced by the DB rows, so a channel deleted / changed through
@@ -209,15 +224,36 @@ class NotificationService:
         self._channels.setdefault(channel.tenant_id, []).append(channel)
         if self._db is not None:
             self._pending_writes.add(channel.channel_id)
-            self._spawn(self._persist_tracked(channel))
+            self._spawn(self._logged(self._persist_tracked(channel)))
 
     async def add_channel_async(self, channel: NotificationChannel) -> None:
-        """Cache a channel and persist it before returning."""
+        """Persist a channel, then cache it; raises when it was not persisted.
+
+        Raises :class:`NotificationStoreUnavailableError` (503) when the row could
+        not be written — the channel is then not cached either, so no pod
+        notifies (or lists) a channel that does not exist for the others.
+        """
         await self.ensure_tenant_loaded(channel.tenant_id)
         self._channels.setdefault(channel.tenant_id, []).append(channel)
         if self._db is not None:
             self._pending_writes.add(channel.channel_id)
-            await self._persist_tracked(channel)
+            try:
+                await self._persist_tracked(channel)
+            except Exception:
+                self._channels[channel.tenant_id] = [
+                    c
+                    for c in self._channels.get(channel.tenant_id, [])
+                    if c.channel_id != channel.channel_id
+                ]
+                raise
+
+    @staticmethod
+    async def _logged(coro: Any) -> None:
+        """Run a legacy fire-and-forget write; a failure is logged (no caller)."""
+        try:
+            await coro
+        except Exception as exc:
+            logger.warning("notification_background_write_failed", error=str(exc)[:200])
 
     async def _persist_tracked(self, channel: NotificationChannel) -> None:
         """Persist *channel*; it counts as a pending write until this returns."""
@@ -259,6 +295,10 @@ class NotificationService:
                 )
         except Exception as exc:
             logger.warning("notification_persist_failed", error=str(exc))
+            raise NotificationStoreUnavailableError(
+                "The notification channel could not be saved; nothing was created. Retry.",
+                cause=exc,
+            ) from exc
 
     def get_channels(self, tenant_id: str) -> list[NotificationChannel]:
         return [c for c in self._channels.get(tenant_id, []) if c.enabled]
@@ -271,19 +311,29 @@ class NotificationService:
         removed = len(self._channels[tenant_id]) < before
         if removed and self._db is not None:
             self._pending_deletes.add(channel_id)
-            self._spawn(self._delete_tracked(channel_id, tenant_id))
+            self._spawn(self._logged(self._delete_tracked(channel_id, tenant_id)))
         return removed
 
     async def remove_channel_async(self, channel_id: str, tenant_id: str) -> bool:
-        """Remove a channel from the cache and the DB; True if it existed for *tenant_id*."""
+        """Remove a channel from the cache and the DB; True if it existed for *tenant_id*.
+
+        Raises :class:`NotificationStoreUnavailableError` (503) when the DB delete
+        failed: the channel is restored in the cache (the row still exists, and
+        every pod would keep notifying it) instead of answering "not found".
+        """
         await self.ensure_tenant_loaded(tenant_id)
         channels = self._channels.get(tenant_id, [])
-        before = len(channels)
+        dropped = [c for c in channels if c.channel_id == channel_id]
         self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
-        removed = len(self._channels[tenant_id]) < before
+        removed = bool(dropped)
         if self._db is not None:
             self._pending_deletes.add(channel_id)
-            deleted = await self._delete_tracked(channel_id, tenant_id)
+            try:
+                deleted = await self._delete_tracked(channel_id, tenant_id)
+            except Exception:
+                if dropped:
+                    self._channels.setdefault(tenant_id, []).extend(dropped)
+                raise
             removed = removed or deleted
         return removed
 
@@ -313,11 +363,14 @@ class NotificationService:
                     ),
                     {"cid": channel_id, "tid": tenant_id},
                 )
-            rowcount = getattr(result, "rowcount", 0)
-            return isinstance(rowcount, int) and rowcount > 0
         except Exception as exc:
             logger.warning("notification_delete_failed", error=str(exc))
-            return False
+            raise NotificationStoreUnavailableError(
+                "The notification channel could not be deleted; it is still active. Retry.",
+                cause=exc,
+            ) from exc
+        rowcount = getattr(result, "rowcount", 0)
+        return isinstance(rowcount, int) and rowcount > 0
 
     async def notify_approval_required(
         self,
@@ -431,21 +484,45 @@ class NotificationService:
                 )
         return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
-    async def notify_goal_complete(self, *, goal_id: str, status: str, tenant_id: str) -> None:
-        """Notify when a goal reaches a terminal state."""
+    async def notify_goal_outcome(
+        self, *, goal_id: str, status: str, tenant_id: str, summary: str = ""
+    ) -> dict[str, Any]:
+        """Send a goal outcome (complete / failed) to every channel of the tenant.
+
+        Called by the opt-in goal notification consumer (a08-F196-05); *summary*
+        is already sanitized there (redacted goal text or failure reason — never
+        raw tool output). Returns per-channel results like the other notify_*
+        methods; a channel that fails is reported, never raised.
+        """
         await self.ensure_tenant_loaded(tenant_id)
         channels = self.get_channels(tenant_id)
+        if not channels:
+            return {"sent": 0, "channels": []}
+        ok = status == "complete"
+        title = "Goal completed" if ok else "Goal failed"
+        lines = [f"{'✅' if ok else '❌'} *{title}*", f"Goal: `{goal_id}`", f"Status: `{status}`"]
+        if summary:
+            lines.append(("Summary: " if ok else "Reason: ") + summary)
         message = {
             "type": "goal_terminal",
             "goal_id": goal_id,
             "status": status,
-            "text": f"{'✅' if status == 'complete' else '❌'} Goal `{goal_id}` {status}",
+            "summary": summary,
+            "text": "\n".join(lines),
         }
+        results = []
         for channel in channels:
             try:
                 await self._send(channel, message)
+                results.append({"channel_id": channel.channel_id, "status": "sent"})
             except Exception as exc:
-                logger.warning("goal_notification_failed", error=str(exc))
+                logger.warning(
+                    "goal_notification_failed", channel_id=channel.channel_id, error=str(exc)[:200]
+                )
+                results.append(
+                    {"channel_id": channel.channel_id, "status": "failed", "error": str(exc)[:200]}
+                )
+        return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
     async def notify_budget_alert(self, alert: dict[str, Any]) -> None:
         """Send a budget threshold alert to every channel of the tenant (COST-03)."""

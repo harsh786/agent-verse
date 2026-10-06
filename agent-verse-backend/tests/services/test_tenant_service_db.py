@@ -1,7 +1,6 @@
 """Tests for TenantService DB persistence (no-op when db_session_factory=None)."""
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pytest
 
@@ -65,74 +64,8 @@ async def test_create_tenant_persists_tenant_and_default_key_before_return():
     assert persisted == ["Tenant", "ApiKey"]
 
 
-async def test_sync_from_db_noop_when_no_factory():
-    svc = TenantService()
-    count = await svc.sync_from_db()
-    assert count == 0
 
 
-async def test_sync_from_db_loads_api_keys_with_tenant_rls_context():
-    tenant = SimpleNamespace(
-        id="tenant-1",
-        name="Tenant One",
-        email="tenant-1@example.com",
-        plan_tier="free",
-        created_at=None,
-        roles=[],
-    )
-    api_key = SimpleNamespace(
-        id="key-1",
-        tenant_id="tenant-1",
-        name="Default",
-        scopes=[],
-        expires_at=None,
-        key_hash="hash-1",
-        roles=["admin"],
-        created_at=None,
-    )
-
-    class _ScalarResult:
-        def __init__(self, rows: list[object]) -> None:
-            self._rows = rows
-
-        def all(self) -> list[object]:
-            return self._rows
-
-    class _Result:
-        def __init__(self, rows: list[object]) -> None:
-            self._rows = rows
-
-        def scalars(self) -> _ScalarResult:
-            return _ScalarResult(self._rows)
-
-    class _Session:
-        current_tenant: str | None = None
-
-        async def __aenter__(self) -> _Session:
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            pass
-
-        async def execute(self, statement: object, params: dict[str, str] | None = None) -> _Result:
-            sql = str(statement)
-            if "set_config('app.tenant_id'" in sql:
-                self.current_tenant = params["tid"] if params else None
-                return _Result([])
-            if "FROM tenants" in sql:
-                return _Result([tenant])
-            if "FROM api_keys" in sql and self.current_tenant == "tenant-1":
-                return _Result([api_key])
-            return _Result([])
-
-    def fake_db_factory() -> _Session:
-        return _Session()
-
-    svc = TenantService(db_session_factory=fake_db_factory)
-    loaded = await svc.sync_from_db()
-
-    assert loaded == 1
-    assert svc._hash_to_key_id == {"hash-1": "key-1"}
 
 
 async def test_goal_service_sync_from_db_noop():

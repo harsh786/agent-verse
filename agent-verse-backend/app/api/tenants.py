@@ -420,11 +420,27 @@ def _llm_store(request: Request) -> Any:
 
 
 async def _read_llm_config(request: Request, tenant_id: str) -> dict[str, Any] | None:
+    """The tenant's stored LLM config, ``None`` when it has none.
+
+    With a store wired it is the only source, read strictly: a DB read error is
+    a 503 (a08-F195-03 — it was reported as ``configured: false``, and the
+    keep-the-stored-key update then answered "no key is stored"). The
+    process-local copy is consulted only when no store exists at all
+    (a08-F195-01 — it used to back up a store that returned nothing, serving a
+    config the store no longer had).
+    """
+    from app.services.llm_config_store import LLMConfigReadError
+
     store = _llm_store(request)
     if store is not None:
-        cfg = await store.get_config(tenant_id)
-        if cfg is not None:
-            return dict(cfg)
+        try:
+            cfg = await store.get_config(tenant_id, strict=True)
+        except LLMConfigReadError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM configuration could not be read; try again shortly",
+            ) from exc
+        return dict(cfg) if cfg else None
     # No store wired (tests / no infrastructure): the process-local copy.
     local = getattr(request.app.state, "_llm_configs", {}).get(tenant_id)
     return dict(local) if local else None
@@ -508,7 +524,7 @@ async def _save_llm_config(
     masked_key: str | None,
     vault_key_fingerprint: str | None = None,
 ) -> None:
-    from app.services.llm_config_store import LLMConfigPersistError
+    from app.services.llm_config_store import LLMConfigCacheStaleError, LLMConfigPersistError
 
     store = _llm_store(request)
     if store is not None:
@@ -522,14 +538,21 @@ async def _save_llm_config(
                 masked_key=masked_key,
                 vault_key_fingerprint=vault_key_fingerprint,
             )
+        except LLMConfigCacheStaleError as exc:
+            # Saved durably, but replicas may still serve the old config (a08-F195-04).
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except LLMConfigPersistError as exc:
             raise HTTPException(
                 status_code=503, detail="LLM configuration could not be saved"
             ) from exc
+        # a08-F195-01: no process-local copy beside a store. It used to be
+        # written on every save and read whenever the store answered nothing,
+        # so a config the store no longer had (deleted, or a failed read) was
+        # still served from this replica's memory.
+        return
     if not hasattr(request.app.state, "_llm_configs"):
         request.app.state._llm_configs = {}
-    # Process-local copy only for deployments without a store (tests, no infra);
-    # the goal path reads the store first.
+    # Process-local copy only for deployments without a store (tests, no infra).
     request.app.state._llm_configs[tenant_id] = {
         "provider": provider,
         "base_url": base_url,
@@ -634,6 +657,54 @@ async def set_llm_config(
         },
         status_code=200,
     )
+
+
+@router.delete("/me/llm", status_code=204)
+async def delete_llm_config(
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+    _: None = Depends(require_role("admin")),
+) -> Response:
+    """Remove this tenant's LLM provider config, stored API key included.
+
+    a08-F195-05: there was no way to remove a stored BYOK key (only GET/PUT).
+    Admin only and audited. Afterwards the tenant's LLM calls use the platform
+    provider where the deployment offers one (as before any key was set).
+    Idempotent: removing a config that does not exist is also 204. A store
+    error is a 503 — the key is never reported removed while it is still used.
+    """
+    from app.services.llm_config_store import LLMConfigCacheStaleError, LLMConfigPersistError
+
+    store = _llm_store(request)
+    if store is not None:
+        try:
+            await store.delete_config(ctx.tenant_id)
+        except LLMConfigCacheStaleError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LLMConfigPersistError as exc:
+            raise HTTPException(
+                status_code=503, detail="LLM configuration could not be removed"
+            ) from exc
+    else:
+        getattr(request.app.state, "_llm_configs", {}).pop(ctx.tenant_id, None)
+
+    from app.governance.audit import AuditEvent
+    from app.governance.permissions import ActionLevel
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is not None:
+        audit_log.record(
+            AuditEvent(
+                goal_id="tenant_settings",
+                tool_name="tenant.llm_config",
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome="deleted",
+                api_key_id=ctx.api_key_id,
+                note="llm config and stored API key removed",
+            ),
+            tenant_ctx=ctx,
+        )
+    return Response(status_code=204)
 
 
 # ── LLM config: non-secret fields ────────────────────────────────────────────
@@ -1363,52 +1434,48 @@ async def set_chat_transcripts_knowledge(
     return {"enabled": False, **report}
 
 
-_NOTIFICATION_KEYS = frozenset(
-    {"goalComplete", "goalFailed", "budgetAlert", "hitlPending", "weeklyReport"}
-)
-
-
 @router.get("/me/notifications")
 async def get_notifications(request: Request) -> dict:
-    """Get tenant notification preferences."""
-    tenant = _require_tenant(request)
-    prefs: dict = {
-        "goalComplete": True,
-        "goalFailed": True,
-        "budgetAlert": True,
-        "hitlPending": True,
-        "weeklyReport": False,
-    }
-    redis = getattr(request.app.state, "_redis", None)
-    if redis is not None:
-        import json
+    """Get tenant notification preferences.
 
-        try:
-            stored = await redis.get(f"notif_prefs:{tenant.tenant_id}")
-        except Exception as exc:
-            # Not the defaults: that would show "saved" preferences as reset.
-            raise HTTPException(
-                status_code=503, detail="Notification preferences unavailable"
-            ) from exc
-        if stored:
-            prefs.update(json.loads(stored))
-    return prefs
+    a08-F196-05: goal outcome notifications are opt-in. ``goalComplete`` /
+    ``goalFailed`` are off unless the tenant switched them on with the current
+    PUT; a record saved before they were delivered counts as never set.
+    """
+    from app.services.notification_prefs import DEFAULT_PREFS, load_prefs
+
+    tenant = _require_tenant(request)
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is None:
+        return dict(DEFAULT_PREFS)
+    try:
+        return await load_prefs(redis, tenant.tenant_id)
+    except Exception as exc:
+        # Not the defaults: that would show "saved" preferences as reset.
+        raise HTTPException(status_code=503, detail="Notification preferences unavailable") from exc
 
 
 @router.put("/me/notifications")
 async def update_notifications(request: Request) -> dict:
-    """Update tenant notification preferences."""
+    """Update tenant notification preferences (merged into the current ones)."""
+    from app.services.notification_prefs import (
+        NOTIFICATION_KEYS,
+        load_prefs,
+        prefs_key,
+        serialize_prefs,
+    )
+
     tenant = _require_tenant(request)
     try:
         body = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Body must be a JSON object") from exc
     if not isinstance(body, dict) or not all(
-        k in _NOTIFICATION_KEYS and isinstance(v, bool) for k, v in body.items()
+        k in NOTIFICATION_KEYS and isinstance(v, bool) for k, v in body.items()
     ):
         raise HTTPException(
             status_code=422,
-            detail=f"Body must map {sorted(_NOTIFICATION_KEYS)} to booleans",
+            detail=f"Body must map {sorted(NOTIFICATION_KEYS)} to booleans",
         )
 
     # "updated" used to be returned with no Redis wired and on a Redis error,
@@ -1416,15 +1483,15 @@ async def update_notifications(request: Request) -> dict:
     redis = getattr(request.app.state, "_redis", None)
     if redis is None:
         raise HTTPException(status_code=503, detail="Notification preferences store unavailable")
-    import json
-
     try:
-        await redis.set(f"notif_prefs:{tenant.tenant_id}", json.dumps(body))
+        # A partial update keeps the other choices (it used to replace the record).
+        prefs = {**(await load_prefs(redis, tenant.tenant_id)), **body}
+        await redis.set(prefs_key(tenant.tenant_id), serialize_prefs(prefs))
     except Exception as exc:
         raise HTTPException(
             status_code=503, detail="Notification preferences could not be saved"
         ) from exc
-    return {"status": "updated", "preferences": body}
+    return {"status": "updated", "preferences": prefs}
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
