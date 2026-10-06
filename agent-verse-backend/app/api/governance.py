@@ -979,23 +979,47 @@ async def approve_request(
     # own dict, so an operator routed to a different replica than the one that
     # raised the gate got a false 'not found' for a live approval.
     try:
-        ok = await gateway.approve_async(
-            request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
-        )
+        outcome = await _approve_with_outcome(gateway, request_id, approver, body.note, tenant_ctx)
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
     # Not a live gateway request — maybe a durable org approval gate.
-    if not ok and not await _resolve_org_gate(
-        request, tenant_ctx, request_id, "approve", approver, body.note
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Approval request {request_id} not found",
+    if outcome is None:
+        if not await _resolve_org_gate(
+            request, tenant_ctx, request_id, "approve", approver, body.note
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Approval request {request_id} not found",
+            )
+        return {"request_id": request_id, "approver": approver, "status": "approved"}
+    return {"request_id": request_id, "approver": approver, **outcome}
+
+
+async def _approve_with_outcome(
+    gateway: Any, request_id: str, approver: str, note: str, tenant_ctx: TenantContext
+) -> dict[str, Any] | None:
+    """Approve through the gateway; ``None`` when it took no vote, else the outcome.
+
+    a03-F056-07: the outcome comes from the approve call itself (vote counted in
+    Postgres), not from this replica's request cache, which never holds a gate
+    a worker raised — there a below-quorum vote was answered 'approved'.
+    """
+    if getattr(type(gateway), "approve_async_outcome", None) is None:
+        ok = await gateway.approve_async(
+            request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
         )
+        return _vote_outcome(gateway, request_id, tenant_ctx) if ok else None
+    result = await gateway.approve_async_outcome(
+        request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+    )
+    if not result.accepted:
+        return None
+    if result.resolved:
+        return {"status": "approved"}
     return {
-        "request_id": request_id,
-        "approver": approver,
-        **_vote_outcome(gateway, request_id, tenant_ctx),
+        "status": "vote_recorded",
+        "approvals_received": result.approvals_received,
+        "required_approvers": result.required_approvers,
     }
 
 
@@ -1762,13 +1786,13 @@ async def email_approve_link(
     # waiting agent must only be released once the decision is committed.
     # approve_async answers False unless the request is still PENDING.
     try:
-        ok = await gateway.approve_async(request_id, approver=approver, tenant_ctx=tenant_ctx)
+        maybe_outcome = await _approve_with_outcome(gateway, request_id, approver, "", tenant_ctx)
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
-    if not ok:
+    if maybe_outcome is None:
         raise HTTPException(status_code=409, detail="Approval request is no longer pending")
 
-    outcome = _vote_outcome(gateway, request_id, tenant_ctx)
+    outcome = maybe_outcome
     return {
         "request_id": request_id,
         "approver": approver,

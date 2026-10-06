@@ -135,6 +135,10 @@ def test_approve_endpoint_returns_503_when_decision_cannot_be_recorded() -> None
     gw.approve_async = AsyncMock(  # type: ignore[method-assign]
         side_effect=HITLResolutionUnavailableError("db down")
     )
+    # The route asks for the vote outcome (a03-F056-07), which is the same call.
+    gw.approve_async_outcome = AsyncMock(  # type: ignore[method-assign]
+        side_effect=HITLResolutionUnavailableError("db down")
+    )
     gw.reject = AsyncMock(  # type: ignore[method-assign]
         side_effect=HITLResolutionUnavailableError("db down")
     )
