@@ -35,6 +35,22 @@ def _hash_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
+# Resolved API-key contexts are cached this long in Redis (``api_key:{hash}``),
+# never longer than the key's remaining lifetime.
+_API_KEY_CACHE_TTL_S = 300
+
+
+def _parse_expiry(raw: Any) -> datetime | None:
+    """Normalise a stored ``expires_at`` (ISO string or datetime) to an aware UTC
+    datetime; ``None`` means the key never expires."""
+    if raw is None or raw == "":
+        return None
+    expiry = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw))
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return expiry
+
+
 def _generate_raw_key(plan: str = "free") -> str:
     """Generate a cryptographically random API key with a recognisable plan prefix."""
     return f"av_{plan}_{secrets.token_urlsafe(32)}"
@@ -89,8 +105,9 @@ class TenantService:
 
     def set_redis(self, redis: Any) -> None:
         """Wire the shared Redis client used to cache resolved API-key contexts
-        (``api_key:{hash}``, 300s TTL). The cache is shared across pods and cleared
-        on revoke, so revocation propagates cluster-wide."""
+        (``api_key:{hash}``, 300s TTL capped at the key's expiry). The cache is
+        shared across pods and cleared on revoke, so revocation propagates
+        cluster-wide."""
         self._redis = redis
 
     # ── tenant CRUD ───────────────────────────────────────────────────────────
@@ -375,8 +392,10 @@ class TenantService:
         resolver callback.
 
         Redis caching: on first lookup the resolved context is cached under
-        ``api_key:{sha256(raw_key)}`` (TTL 300 s) so subsequent requests skip
-        the in-memory dict walk entirely.
+        ``api_key:{sha256(raw_key)}`` (TTL 300 s, capped at the key's remaining
+        lifetime) so subsequent requests skip the lookup. The entry carries the
+        key's ``expires_at`` and a hit past it is rejected: a cached context used
+        to keep an expired key working for up to the full 300 s TTL.
         """
         import json as _json
 
@@ -389,10 +408,18 @@ class TenantService:
                 cached = await self._redis.get(cache_key)
                 if cached is not None:
                     data = _json.loads(cached)
-                    # Entries written before key scopes were cached carry no
-                    # "scopes" field; trusting one would treat a narrowly scoped
-                    # key as unrestricted until the TTL ran out. Re-resolve.
-                    if "scopes" in data:
+                    # Entries written before key scopes / expiry were cached carry
+                    # no "scopes" / "expires_at" field; trusting one would treat a
+                    # narrowly scoped key as unrestricted, or an expired key as
+                    # live, until the TTL ran out. Re-resolve.
+                    expiry = _parse_expiry(data.get("expires_at"))
+                    if expiry is not None and datetime.now(UTC) >= expiry:
+                        # Expired since it was cached: drop the entry so no pod
+                        # serves it, and fall through to the authoritative lookup
+                        # (which rejects the expired key).
+                        with suppress(Exception):
+                            await self._redis.delete(cache_key)
+                    elif "scopes" in data and "expires_at" in data:
                         return TenantContext(
                             tenant_id=data["tenant_id"],
                             plan=PlanTier(data["plan"]),
@@ -420,7 +447,7 @@ class TenantService:
                 roles=tuple(rec["roles"]),
                 scopes=tuple(rec.get("scopes") or ()),
             )
-            await self._cache_resolved_key(cache_key, ctx)
+            await self._cache_resolved_key(cache_key, ctx, _parse_expiry(rec.get("expires_at")))
             return ctx
 
         # ── In-memory lookup (no DB configured: tests / dev only) ──────────
@@ -432,13 +459,9 @@ class TenantService:
             return None
 
         # Fix 4: reject keys whose expiry has passed.
-        expires_at_raw = key.get("expires_at")
-        if expires_at_raw is not None:
-            expiry = datetime.fromisoformat(expires_at_raw)
-            if expiry.tzinfo is None:
-                expiry = expiry.replace(tzinfo=UTC)
-            if datetime.now(UTC) > expiry:
-                return None
+        key_expiry = _parse_expiry(key.get("expires_at"))
+        if key_expiry is not None and datetime.now(UTC) >= key_expiry:
+            return None
 
         tenant = self._tenants.get(key["tenant_id"])
         if tenant is None:
@@ -456,19 +479,34 @@ class TenantService:
             scopes=tuple(key.get("scopes") or ()),
         )
 
-        await self._cache_resolved_key(cache_key, ctx)
+        await self._cache_resolved_key(cache_key, ctx, key_expiry)
         return ctx
 
-    async def _cache_resolved_key(self, cache_key: str, ctx: TenantContext) -> None:
-        """Best-effort write of a resolved key context to the shared Redis cache."""
+    async def _cache_resolved_key(
+        self, cache_key: str, ctx: TenantContext, expires_at: datetime | None = None
+    ) -> None:
+        """Best-effort write of a resolved key context to the shared Redis cache.
+
+        The TTL never outlives the key: it is ``min(300 s, seconds until
+        expires_at)``, and an already-expired key is not cached at all. The
+        expiry is stored in the entry too, so a hit past it is rejected even if
+        the entry survives (TTL rounding, clock skew between pods).
+        """
         if self._redis is None:
             return
         import json as _json
 
+        ttl = _API_KEY_CACHE_TTL_S
+        if expires_at is not None:
+            remaining = int((expires_at - datetime.now(UTC)).total_seconds())
+            if remaining <= 0:
+                return
+            ttl = min(ttl, remaining)
+
         with suppress(Exception):  # caching is best-effort
             await self._redis.setex(
                 cache_key,
-                300,
+                ttl,
                 _json.dumps(
                     {
                         "tenant_id": ctx.tenant_id,
@@ -476,6 +514,7 @@ class TenantService:
                         "api_key_id": ctx.api_key_id,
                         "roles": list(ctx.roles),
                         "scopes": list(ctx.scopes),
+                        "expires_at": expires_at.isoformat() if expires_at else None,
                     }
                 ),
             )
@@ -733,12 +772,9 @@ class TenantService:
             if row is None:
                 return None
             key, tenant = row
-            if key.expires_at is not None:
-                expiry = key.expires_at
-                if expiry.tzinfo is None:
-                    expiry = expiry.replace(tzinfo=UTC)
-                if datetime.now(UTC) > expiry:
-                    return None
+            expiry = _parse_expiry(key.expires_at)
+            if expiry is not None and datetime.now(UTC) >= expiry:
+                return None
             if not tenant.is_active:
                 return None
             return {
@@ -747,6 +783,9 @@ class TenantService:
                 "api_key_id": key.id,
                 "roles": list(key.roles or ["operator"]) or ["operator"],
                 "scopes": list(key.scopes or []),
+                # Bounds the shared cache TTL so an expiring key is not served
+                # from it past its expiry.
+                "expires_at": expiry,
             }
         except Exception as exc:
             logging.getLogger(__name__).warning("DB resolve api_key failed: %s", exc)
