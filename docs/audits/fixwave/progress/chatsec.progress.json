@@ -11,7 +11,7 @@
   },
   "CHAT-SEC-3": {
     "status": "done",
-    "commit": null,
+    "commit": "e56df5355",
     "note": "hourly beat task purges sessions idle past ttl_days (pinned/held kept) in bounded batches, transcript purge queued first; ttl_days settable via PATCH"
   },
   "_new_findings": [
