@@ -1,0 +1,2 @@
+passed test_goal_events_fire_once_with_two_api_replicas 188.4
+passed test_events_fire_once_with_two_api_replicas 18.6

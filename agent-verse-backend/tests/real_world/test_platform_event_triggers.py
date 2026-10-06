@@ -555,8 +555,9 @@ def test_memory_created_fires_once_and_does_not_loop(
         api: LiveAPI, cleanup: Any, evidence: dict[str, Any]) -> None:
     t = tag()
     agent = _agent(api, cleanup, "rw-b7-mem")
-    g = _submit(api, cleanup, f"Note for the record: supplier SUP-{t} prefers invoices by email."
-                + ACK, agent_id=agent)
+    # A plain acknowledgement: a goal asserting a fact ("supplier X prefers email")
+    # was failed by the final-answer grounding check, which is not under test here.
+    g = _submit(api, cleanup, f"Acknowledge memo MEMO-{t}." + ACK, agent_id=agent)
     # Scoped to this goal's learnings; the loop guard runs BEFORE the condition,
     # so the learning of the trigger's own goal is audited self_trigger.
     sid = _trigger(api, cleanup, {"trigger_type": "memory_created", "name": f"rw-b7-mem-{t}",
