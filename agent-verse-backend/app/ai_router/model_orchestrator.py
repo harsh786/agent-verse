@@ -229,6 +229,77 @@ def _configured_within_cap(task: str, cap: str) -> str:
     return min(allowed, key=lambda m: m.cost_per_1k_input).model_id
 
 
+# Vendors whose own reference table IS ``_TIER_MODELS`` ("" = vendor unknown:
+# the caller did not say, so the legacy table is kept).
+_TIER_TABLE_VENDORS = frozenset({"", "openai"})
+_PROFILE_ROLE_FIELDS: dict[str, tuple[str, ...]] = {
+    "planner": ("planning_model", "fallback_model"),
+    "executor": ("execution_model", "fallback_model"),
+    "verifier": ("verification_model", "fallback_model"),
+    "classifier": ("execution_model", "fallback_model"),
+    "judge": ("verification_model", "planning_model", "fallback_model"),
+    "embedder": ("embedding_model",),
+    "reranker": (),
+}
+
+
+def vendor_profile_models(vendor: str) -> dict[str, str]:
+    """``{role: model}`` from *vendor*'s provider profile, or ``{}``.
+
+    The same profiles (plus env role pins) the Celery worker's ``ModelRouter``
+    routes with, so the API path and the worker agree on what a vendor serves.
+    """
+    from dataclasses import fields
+
+    from app.agent.model_router import (
+        _PROVIDER_DEFAULTS,
+        ModelRouterConfig,
+        _apply_env_model_overrides,
+    )
+
+    cfg = _apply_env_model_overrides(_PROVIDER_DEFAULTS.get(vendor, ModelRouterConfig()))
+    values = {f.name: str(getattr(cfg, f.name) or "") for f in fields(cfg)}
+    out: dict[str, str] = {}
+    for role, names in _PROFILE_ROLE_FIELDS.items():
+        model = next((values[n] for n in names if values.get(n)), "")
+        if model:
+            out[role] = model
+    return out
+
+
+def reference_role_model(tier: str, role: str, vendor: str = "") -> str:
+    """Last-resort model for *role* when the registry has nothing configured.
+
+    a01-F022-02: this used to be ``_TIER_MODELS`` (OpenAI slugs) for every
+    vendor, so an Anthropic / NVIDIA / self-hosted goal was sent ``gpt-4o``.
+    Now: OpenAI (or an unknown vendor) keeps the tier table; any other vendor
+    gets its own profile model, or "" — callers then use the provider's own
+    default model.
+    """
+    vendor = (vendor or "").strip().lower()
+    if vendor in _TIER_TABLE_VENDORS:
+        return _TIER_MODELS.get(tier, _TIER_MODELS["medium"]).get(role, "")
+    return vendor_profile_models(vendor).get(role, "")
+
+
+def reference_model_within_cap(cap: str, role: str, vendor: str = "") -> str:
+    """Cheapest model *vendor* is known to serve within tier *cap* (or "")."""
+    vendor = (vendor or "").strip().lower()
+    if vendor in _TIER_TABLE_VENDORS:
+        return _TIER_MODELS[cap][role]
+    from app.intelligence.cost_tracker import model_pricing
+
+    candidates = {
+        m
+        for r, m in vendor_profile_models(vendor).items()
+        if r not in ("embedder", "reranker")
+        and _TIER_RANK[model_quality_tier(m)] <= _TIER_RANK[cap]
+    }
+    if not candidates:
+        return ""
+    return min(candidates, key=lambda m: model_pricing(m)[0])
+
+
 @dataclass
 class ModelRoleAssignment:
     planner: str
@@ -262,6 +333,8 @@ class ModelOrchestrator:
         self,
         config: PatternConfig,
         budget_spent_ratio: float = 0.0,
+        *,
+        vendor: str = "",
     ) -> ModelRoleAssignment:
         from app.agent.pattern_config import Complexity, RiskLevel
 
@@ -283,26 +356,23 @@ class ModelOrchestrator:
         if plan_cap is not None and _TIER_RANK[tier] > _TIER_RANK[plan_cap]:
             tier = plan_cap
 
-        tier_models = _TIER_MODELS[tier]
-
         configured = _configured_for_tier(tier)
 
+        def reference(role: str) -> str:
+            return reference_role_model(tier, role, vendor)
+
         def resolve(role: str, hint: str) -> str:
-            model = (
-                hint
-                if hint and hint != "default"
-                else configured or tier_models.get(role, "gpt-4o-mini")
-            )
-            return self._with_failover(model)
+            model = hint if hint and hint != "default" else configured or reference(role)
+            return self._with_failover(model) if model else ""
 
         latency_class = "realtime" if time_sens == "realtime" else "interactive"
         return ModelRoleAssignment(
             planner=resolve("planner", config.model_planner),
             executor=resolve("executor", config.model_executor),
             verifier=resolve("verifier", config.model_verifier),
-            judge=configured or tier_models["judge"],
-            embedder=tier_models["embedder"],
-            reranker=tier_models["reranker"],
+            judge=configured or reference("judge"),
+            embedder=reference("embedder"),
+            reranker=reference("reranker"),
             classifier=resolve("classifier", config.model_classifier),
             quality_tier=tier,
             latency_class=latency_class,
@@ -439,6 +509,14 @@ class ModelOrchestratorAdapter:
         self._role_map: dict[str, str] = {}
         self._policy_roles: dict[str, str] = {}
         self._plan_tier = ""
+        self._vendor = ""
+
+    def set_provider_vendor(self, vendor: str) -> None:
+        """The vendor of the goal's provider ("anthropic", "nvidia", ...).
+
+        Last-resort models (nothing configured in the registry) come from this
+        vendor's profile, never from the OpenAI tier table (a01-F022-02)."""
+        self._vendor = str(vendor or "").strip().lower()
 
     def set_plan_tier(self, plan: str) -> None:
         """The tenant's plan: caps every model this adapter returns (PROV-18)."""
@@ -469,9 +547,19 @@ class ModelOrchestratorAdapter:
         if _TIER_RANK[tier] <= _TIER_RANK[cap]:
             return model
         role = _ROLE_FOR_TASK.get(task_type, "planner")
-        clamped = _configured_within_cap(task_type, cap) or _TIER_MODELS[cap][role]
+        clamped = _configured_within_cap(task_type, cap) or reference_model_within_cap(
+            cap, role, self._vendor
+        )
         import logging
 
+        if not clamped:
+            # Nothing this vendor is known to serve fits the cap: a cloud slug of
+            # another vendor would only fail on this provider.
+            logging.getLogger(__name__).warning(
+                "model_cap_unenforceable model=%s tier=%s cap=%s plan=%s vendor=%s",
+                model, tier, cap, self._plan_tier, self._vendor,
+            )
+            return model
         logging.getLogger(__name__).info(
             "model_clamped_by_plan_or_budget model=%s tier=%s cap=%s plan=%s "
             "budget_ratio=%.2f -> %s",
@@ -530,7 +618,7 @@ class ModelOrchestratorAdapter:
                 plan_tier=str(getattr(runtime_profile, "tenant_plan", "") or ""),
             )
             self._cached_assignment = self._orchestrator.select_models(
-                pattern_config, budget_spent_ratio
+                pattern_config, budget_spent_ratio, vendor=self._vendor
             )
             self._last_budget_ratio = budget_spent_ratio
         except Exception:
@@ -589,19 +677,20 @@ class ModelOrchestratorAdapter:
 
         assignment = self._cached_assignment
         if assignment is None:
-            # No profile yet — use default tier models
-            tier_models = _TIER_MODELS.get(self._default_tier, _TIER_MODELS["medium"])
-            mapping = {
-                "planning": tier_models["planner"],
-                "execution": tier_models["executor"],
-                "verification": tier_models["verifier"],
-                "reflection": tier_models["planner"],
-                "think": tier_models["planner"],
-                "thinking": tier_models["planner"],
-                "classification": tier_models["classifier"],
-                "judge": tier_models["judge"],
-            }
-            return mapping.get(task_type, tier_models["planner"])
+            # No profile yet — the default tier's reference models for this
+            # goal's vendor ("" = the provider's own default model).
+            tier = self._default_tier if self._default_tier in _TIER_MODELS else "medium"
+            role = {
+                "planning": "planner",
+                "execution": "executor",
+                "verification": "verifier",
+                "reflection": "planner",
+                "think": "planner",
+                "thinking": "planner",
+                "classification": "classifier",
+                "judge": "judge",
+            }.get(task_type, "planner")
+            return reference_role_model(tier, role, self._vendor)
 
         mapping = {
             "planning": assignment.planner,
@@ -614,7 +703,9 @@ class ModelOrchestratorAdapter:
             "judge": assignment.judge,
         }
         result = mapping.get(task_type, assignment.planner)
-        return result or fallback or "gpt-4o-mini"
+        if result:
+            return result
+        return fallback or reference_role_model("low", "executor", self._vendor)
 
     def model_for_goal(self, task_type: str, *, goal: str = "") -> str:
         """Alias for model_for() with goal context (unused in orchestrator path)."""

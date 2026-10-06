@@ -744,6 +744,22 @@ def _routing_outcome(decision: Any) -> dict[str, Any]:
     }
 
 
+
+def _router_vendor_of(provider: Any) -> str:
+    """The goal provider's vendor for model routing ("anthropic", "nvidia", ...).
+
+    The worker's ModelRouter is built per provider type; the API path's
+    ModelOrchestratorAdapter gets the same signal (a01-F022-02).
+    """
+    if provider is None:
+        return ""
+    from app.observability.traced_provider import provider_system_of, unwrap_provider
+
+    inner = unwrap_provider(provider)
+    inner = getattr(inner, "inner", inner)  # the per-model dispatch wrapper
+    vendor = provider_system_of(inner)
+    return "" if vendor == "unknown" else vendor
+
 class GoalService:
     """In-memory goal service.
 
@@ -1757,6 +1773,8 @@ class GoalService:
                 orchestrator=ModelOrchestrator(),
                 default_tier=_agent_config.get("model_tier", "medium"),
             )
+            # Last-resort role models follow THIS goal's provider (a01-F022-02).
+            _model_router.set_provider_vendor(_router_vendor_of(provider))
         except Exception:
             # Fallback to simple ModelRouter if orchestrator fails
             try:
