@@ -368,3 +368,21 @@ def test_tenant_context_replace_smoke():
     ctx = TenantContext(tenant_id="t", plan=PlanTier.FREE, api_key_id="k")
     updated = replace(ctx, plan=PlanTier.ENTERPRISE)
     assert updated.plan == PlanTier.ENTERPRISE
+
+
+def test_module_docstring_lists_only_mounted_routes() -> None:
+    """a10-F239-04: the docstring advertised POST .../keys/revoke, which never existed."""
+    import re
+
+    import app.api.admin as admin_mod
+
+    mounted = {(m, r.path) for r in router.routes for m in getattr(r, "methods", ())}
+    listed = re.findall(
+        r"^\s+(GET|POST|PUT|DELETE|PATCH)\s+(/admin/\S+)", admin_mod.__doc__ or "", re.M
+    )
+    assert listed
+    for method, path in listed:
+        head, _, tail = path.rpartition("/")
+        for leaf in tail.split("|"):
+            variant = f"{head}/{leaf}".replace("{id}", "{mapping_id}")
+            assert (method, variant) in mounted, (method, variant)

@@ -2,13 +2,14 @@
 
 Requires a platform admin (app.tenancy.platform_admin): a tenant admin of an
 operator tenant (PLATFORM_ADMIN_TENANT_IDS), or a caller presenting the
-platform admin key as X-Admin-Key. Operates cross-tenant.
+platform admin key as X-Admin-Key. Operates cross-tenant. The routes sit
+behind the standard tenant middleware like every other route (the caller
+authenticates as usual; the X-Admin-Key is checked on top of that).
 
 Endpoints:
-  GET  /admin/tenants                 — list all tenants
+  GET  /admin/tenants                 — list all tenants (Postgres)
   GET  /admin/tenants/{tenant_id}     — get tenant detail + usage
   PUT  /admin/tenants/{tenant_id}/plan — change plan
-  POST /admin/tenants/{tenant_id}/keys/revoke — revoke API key
   GET  /admin/usage                   — aggregated platform usage (Postgres)
   GET  /admin/incidents               — 501: guardrail incidents are not persisted
   GET  /admin/channel-mappings/review — sms/email claims awaiting operator approval
