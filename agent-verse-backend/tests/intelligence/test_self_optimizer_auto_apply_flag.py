@@ -121,9 +121,9 @@ async def test_apply_pending_applies_candidate_winner() -> None:
 
     async def spy_apply(tid, aid, eid, cfg):
         applied.append({"agent": aid, "cfg": cfg})
-        return True
+        return None  # applied (else: the reason it was not)
 
-    optimizer.apply_suggestion = spy_apply  # type: ignore[assignment]
+    optimizer._apply_suggestion = spy_apply  # type: ignore[method-assign]
 
     result = await optimizer.apply_pending("tenant-1", "exp-1")
 

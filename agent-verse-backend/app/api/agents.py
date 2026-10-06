@@ -1335,19 +1335,6 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
             status_code=422,
             detail="fully-autonomous mode requires eval_suite_id",
         )
-    # Becoming fully-autonomous (or changing the suite that vouches for it)
-    # requires the suite's latest completed run to pass the rollout gate.
-    if _gate_on and new_autonomy == "fully-autonomous" and (
-        current.get("autonomy_mode") != "fully-autonomous"
-        or new_eval_suite != current.get("eval_suite_id")
-    ):
-        # The gate vouches for the configuration being WRITTEN (MEM-52).
-        proposed = {**current, **{k: v for k, v in body.model_dump().items() if v is not None}}
-        await _enforce_rollout_gate(
-            request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
-            agent_config=proposed,
-        )
-
     # Build update dict (only non-None fields)
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
     # QA-14: the domain identity being WRITTEN must be valid, judged on the merge
@@ -1365,6 +1352,24 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
         _merged = normalize_pattern_flags({**pattern_flags_from_record(current), **_given_flags})
         update_data.update(_merged)
         update_data["pattern_flags"] = _merged
+
+    # Becoming fully-autonomous, changing the suite that vouches for it, or
+    # changing the behaviour config of a fully-autonomous agent (a05-F095-04:
+    # the gate pins agent_config_hash, yet a PUT could rewrite system_prompt /
+    # model / connectors of an agent already fully-autonomous) requires the
+    # suite's latest completed run to pass the gate FOR THE CONFIG BEING
+    # WRITTEN (MEM-52) — so a behaviour change is refused until the suite has
+    # run against it (demote, change, re-run, promote).
+    proposed = {**current, **update_data}
+    if _gate_on and new_autonomy == "fully-autonomous" and (
+        current.get("autonomy_mode") != "fully-autonomous"
+        or new_eval_suite != current.get("eval_suite_id")
+        or _behaviour_config_changed(current, proposed)
+    ):
+        await _enforce_rollout_gate(
+            request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
+            agent_config=proposed,
+        )
 
     # QA-15: a new trigger / goal template goes through the same gate as create
     # (422 before anything is written), and the agent's schedule is replaced
@@ -2017,14 +2022,15 @@ async def exchange_agent_token(
 
 def _eval_gate_enabled() -> bool:
     """Owner decision: is the fully-autonomous eval rollout gate enforced?"""
-    from app.core.config import get_settings
+    from app.intelligence.rollout_gate import eval_gate_enabled
 
-    enabled = bool(getattr(get_settings(), "fully_autonomous_eval_gate_enabled", True))
-    if not enabled:
-        from app.observability.logging import get_logger
+    return eval_gate_enabled()
 
-        get_logger(__name__).warning("fully_autonomous_eval_gate_disabled_by_setting")
-    return enabled
+
+def _behaviour_config_changed(current: dict[str, Any], proposed: dict[str, Any]) -> bool:
+    from app.intelligence.rollout_gate import behaviour_config_changed
+
+    return behaviour_config_changed(current, proposed)
 
 
 async def _rollout_gate_report(

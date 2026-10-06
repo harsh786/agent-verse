@@ -393,7 +393,25 @@ Respond with ONLY valid JSON:
         Apply candidate_config to the agent's real config columns
         (``AGENT_CONFIG_COLUMNS``) via a direct DB UPDATE.
         """
+        return await self._apply_suggestion(
+            tenant_id, agent_id, experiment_id, candidate_config
+        ) is None
+
+    async def _apply_suggestion(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        experiment_id: str,
+        candidate_config: dict[str, Any],
+    ) -> str | None:
+        """Apply the candidate; ``None`` on success, else the reason it was not applied."""
         from sqlalchemy import text as _t
+
+        # Autonomy is never an optimisation target: the rollout gate owns
+        # promotion. The candidate's autonomy_mode is the snapshot taken when
+        # the experiment started, so writing it could silently undo (or redo)
+        # a promotion made since (a05-F095-04).
+        candidate_config = {k: v for k, v in candidate_config.items() if k != "autonomy_mode"}
 
         # ── CRITICAL: the live apply, in its OWN committed transaction ──────────
         # The improved config is what the next agent run reads back — it must NOT
@@ -408,6 +426,19 @@ Respond with ONLY valid JSON:
                 )
                 if current_config is None:
                     raise AgentConfigUnavailableError(f"agent {agent_id} not found")
+                if self._rollout_gate_blocks(current_config, candidate_config):
+                    # a05-F095-04: a fully-autonomous agent is vouched for by a
+                    # golden-suite run of its CURRENT config (agent_config_hash);
+                    # rewriting it here would bypass the gate. Left pending: an
+                    # operator demotes the agent, applies, re-runs the suite and
+                    # promotes it again.
+                    logger.warning(
+                        "optimization_apply_blocked_by_rollout_gate",
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        experiment_id=experiment_id,
+                    )
+                    return "rollout_gate"
                 await self._write_agent_config(db, tenant_id, agent_id, candidate_config)
                 await db.commit()
         except Exception as exc:
@@ -417,7 +448,7 @@ Respond with ONLY valid JSON:
                 tenant_id=tenant_id,
                 agent_id=agent_id,
             )
-            return False
+            return "apply_failed"
 
         # ── BEST-EFFORT: history + experiment bookkeeping (separate txn) ────────
         # A failure here is logged but never negates the already-applied config.
@@ -483,7 +514,18 @@ Respond with ONLY valid JSON:
             agent_id=agent_id,
             experiment_id=experiment_id,
         )
-        return True
+        return None
+
+    @staticmethod
+    def _rollout_gate_blocks(current: dict[str, Any], candidate: dict[str, Any]) -> bool:
+        """Would applying *candidate* change the gated config of a fully-autonomous agent?"""
+        if current.get("autonomy_mode") != "fully-autonomous":
+            return False
+        from app.intelligence.rollout_gate import behaviour_config_changed, eval_gate_enabled
+
+        return eval_gate_enabled() and behaviour_config_changed(
+            current, {**current, **candidate}
+        )
 
     async def apply_pending(self, tenant_id: str, experiment_id: str) -> dict[str, Any]:
         """Manually apply a concluded experiment whose winner was never auto-applied.
@@ -523,14 +565,14 @@ Respond with ONLY valid JSON:
             return {"applied": False, "reason": "already_applied"}
 
         candidate_config = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg or "{}")
-        ok = await self.apply_suggestion(
+        reason = await self._apply_suggestion(
             tenant_id, agent_id_str, experiment_id, candidate_config
         )
         return {
-            "applied": ok,
+            "applied": reason is None,
             "agent_id": agent_id_str,
             "experiment_id": experiment_id,
-            "reason": None if ok else "apply_failed",
+            "reason": reason,
         }
 
     async def rollback(

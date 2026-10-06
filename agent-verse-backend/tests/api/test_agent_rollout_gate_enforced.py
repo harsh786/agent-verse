@@ -214,3 +214,67 @@ def test_gate_report_names_the_suite_and_threshold_and_ignores_other_suites() ->
         f"/agents/{agent_id}/rollout-gate?min_pass_rate=0.5", headers=_h()
     ).json()
     assert lenient["gate_passed"] is True and lenient["min_pass_rate_required"] == 0.5
+
+
+# ── a05-F095-04: a fully-autonomous agent's behaviour config stays gated ─────
+
+
+def _fully_autonomous_agent(client: TestClient, ctx: TenantContext, suite: str) -> str:
+    agent_id = _agent(client, eval_suite_id=suite, system_prompt="vetted prompt")
+    _seed_run(ctx, suite, passed=5, total=5, agent=_record(client, agent_id))
+    r = _promote(client, agent_id)
+    assert r.status_code == 200, r.text
+    return agent_id
+
+
+def test_changing_a_fully_autonomous_agents_behaviour_config_reruns_the_gate() -> None:
+    client, ctx = _client()
+    agent_id = _fully_autonomous_agent(client, ctx, "suite-pinned")
+    for change in (
+        {"system_prompt": "an unvetted prompt"},
+        {"model_override": "some-other-model"},
+        {"connector_ids": ["conn-new"]},
+        {"max_iterations": 40},
+    ):
+        r = client.put(f"/agents/{agent_id}", json=change, headers=_h())
+        assert r.status_code == 409, (change, r.text)
+        assert r.json()["detail"]["code"] == "ROLLOUT_GATE_FAILED"
+    record = _record(client, agent_id)
+    assert record["system_prompt"] == "vetted prompt"
+    assert record["autonomy_mode"] == "fully-autonomous"
+
+
+def test_a_non_behaviour_edit_of_a_fully_autonomous_agent_needs_no_new_run() -> None:
+    client, ctx = _client()
+    agent_id = _fully_autonomous_agent(client, ctx, "suite-pinned-2")
+    r = client.put(f"/agents/{agent_id}", json={"name": "renamed"}, headers=_h())
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "renamed"
+    # Re-sending the vetted config unchanged is not a change either.
+    r = client.put(f"/agents/{agent_id}", json={"system_prompt": "vetted prompt"}, headers=_h())
+    assert r.status_code == 200, r.text
+
+
+def test_demoting_while_changing_the_config_is_allowed() -> None:
+    client, ctx = _client()
+    agent_id = _fully_autonomous_agent(client, ctx, "suite-pinned-3")
+    r = client.put(
+        f"/agents/{agent_id}",
+        json={"autonomy_mode": "bounded-autonomous", "system_prompt": "a new prompt"},
+        headers=_h(),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["system_prompt"] == "a new prompt"
+
+
+def test_a_run_against_the_new_config_lets_it_be_promoted_again() -> None:
+    client, ctx = _client()
+    agent_id = _fully_autonomous_agent(client, ctx, "suite-pinned-4")
+    r = client.put(
+        f"/agents/{agent_id}",
+        json={"autonomy_mode": "bounded-autonomous", "system_prompt": "a new prompt"},
+        headers=_h(),
+    )
+    assert r.status_code == 200, r.text
+    _seed_run(ctx, "suite-pinned-4", passed=5, total=5, agent=_record(client, agent_id))
+    assert _promote(client, agent_id).status_code == 200
