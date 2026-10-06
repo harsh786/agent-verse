@@ -122,6 +122,24 @@ async def withdraw_cancel(goal_id: str, redis: Any) -> None:
         logger.warning("goal_cancel_withdraw_failed", goal_id=goal_id, error=str(exc))
 
 
+async def withdraw_pause(goal_id: str, redis: Any) -> None:
+    """Best-effort undo of :func:`signal_pause` when the pause could not be
+    persisted (the API answers 503 and the goal must keep running)."""
+    try:
+        await redis.delete(_PAUSE_FLAG.format(goal_id=goal_id))
+    except Exception as exc:
+        logger.warning("goal_pause_withdraw_failed", goal_id=goal_id, error=str(exc))
+
+
+async def restore_pause(goal_id: str, redis: Any) -> None:
+    """Best-effort undo of :func:`signal_resume` when the resume could not be
+    persisted (the API answers 503 and the goal must stay paused)."""
+    try:
+        await redis.set(_PAUSE_FLAG.format(goal_id=goal_id), "1", ex=_PAUSE_TTL)
+    except Exception as exc:
+        logger.warning("goal_pause_restore_failed", goal_id=goal_id, error=str(exc))
+
+
 async def clear_signals(goal_id: str, redis: Any) -> None:
     """Clear all signals for a completed/failed goal."""
     with contextlib.suppress(Exception):

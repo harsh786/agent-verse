@@ -5611,14 +5611,25 @@ class GoalService:
         # caller's point of view (while the operator believes it is paused and
         # the worker may in fact be blocked on the Redis pause flag).
         # Conditional (a goal that finished meanwhile is not "paused") and a
-        # failed write is a 503, not a pause reported as done.
-        changed = await self._db_update_goal_status(
-            goal_id,
-            tenant_ctx.tenant_id,
-            GoalStatus.WAITING_HUMAN.value,
-            only_if_active=True,
-            raise_on_error=True,
-        )
+        # failed write is a 503, not a pause reported as done — and then the
+        # pause flag just set is withdrawn (a08-F189-07), as cancel withdraws
+        # its own: a runner polling in that window must not stop on a pause the
+        # caller was told failed.
+        try:
+            changed = await self._db_update_goal_status(
+                goal_id,
+                tenant_ctx.tenant_id,
+                GoalStatus.WAITING_HUMAN.value,
+                only_if_active=True,
+                raise_on_error=True,
+            )
+        except ServiceUnavailableError:
+            _redis = getattr(self, "_redis", None)
+            if _redis is not None:
+                from app.reliability.goal_lifecycle import withdraw_pause
+
+                await withdraw_pause(goal_id, _redis)
+            raise
         if changed is False:
             fresh = await self._db_get_goal_record(goal_id, tenant_ctx)
             if fresh is not None and fresh.status in _TERMINAL_STATUSES:
@@ -6015,14 +6026,24 @@ class GoalService:
             # Conditional + fail-closed: a swallowed DB error left the goal
             # "waiting_human" forever while the API reported it resumed, and a
             # goal that finished meanwhile was flipped back to "executing". A
-            # 503 here is safe to retry (releasing the pause flag is idempotent).
-            changed = await self._db_update_goal_status(
-                goal_id,
-                tenant_ctx.tenant_id,
-                GoalStatus.EXECUTING.value,
-                only_if_active=True,
-                raise_on_error=True,
-            )
+            # 503 here is safe to retry (releasing the pause flag is idempotent);
+            # the released flag is put back first (a08-F189-07) so the runner
+            # does not resume behind an error response.
+            try:
+                changed = await self._db_update_goal_status(
+                    goal_id,
+                    tenant_ctx.tenant_id,
+                    GoalStatus.EXECUTING.value,
+                    only_if_active=True,
+                    raise_on_error=True,
+                )
+            except ServiceUnavailableError:
+                _redis = getattr(self, "_redis", None)
+                if _redis is not None:
+                    from app.reliability.goal_lifecycle import restore_pause
+
+                    await restore_pause(goal_id, _redis)
+                raise
             if changed is False:
                 return await self._real_status_after_lost_write(record, tenant_ctx)
             record.status = GoalStatus.EXECUTING

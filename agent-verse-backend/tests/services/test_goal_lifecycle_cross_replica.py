@@ -295,3 +295,54 @@ async def test_in_process_goal_on_a_is_cancelled_from_b(
     assert replica_a._goals[goal_id].status == GoalStatus.CANCELLED
     assert table.rows[goal_id]["status"] == "cancelled"
     assert "goal_failed" not in [e.get("type") for e in replica_a._goals[goal_id].events]
+
+
+def _failing_status_write(svc: GoalService) -> None:
+    async def _down(*a: Any, **k: Any) -> bool:
+        if k.get("raise_on_error"):
+            raise ServiceUnavailableError("goal status could not be persisted")
+        return False
+
+    svc._db_update_goal_status = _down  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_a_pause_that_could_not_be_persisted_does_not_pause_the_runner(
+    cluster: Any,
+) -> None:
+    """a08-F189-07: pause signalled the runner, then its DB write failed (503) and
+    the pause flag stayed: a runner polling in that window paused anyway."""
+    table, aredis, sredis = cluster
+    replica_a = _replica(table, aredis, task_queue=MagicMock())
+    replica_b = _replica(table, aredis, task_queue=MagicMock())
+    goal_id = await _submit_worker_goal(replica_a)
+    table.rows[goal_id]["status"] = "executing"
+    _failing_status_write(replica_b)
+
+    with pytest.raises(ServiceUnavailableError):
+        await replica_b.pause_goal(goal_id, CTX)
+
+    assert not is_paused_sync(goal_id, sredis), "the failed pause must be withdrawn"
+    assert table.rows[goal_id]["status"] == "executing"
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_could_not_be_persisted_keeps_the_runner_paused(
+    cluster: Any,
+) -> None:
+    """a08-F189-07: resume released the pause flag before its DB write; on a 503
+    the runner resumed anyway while the API said the resume failed."""
+    table, aredis, sredis = cluster
+    replica_a = _replica(table, aredis, task_queue=MagicMock())
+    replica_b = _replica(table, aredis, task_queue=MagicMock())
+    goal_id = await _submit_worker_goal(replica_a)
+    table.rows[goal_id]["status"] = "executing"
+    await replica_a.pause_goal(goal_id, CTX)
+    assert is_paused_sync(goal_id, sredis)
+    _failing_status_write(replica_b)
+
+    with pytest.raises(ServiceUnavailableError):
+        await replica_b.resume_goal(goal_id, CTX)
+
+    assert is_paused_sync(goal_id, sredis), "the failed resume must leave the goal paused"
+    assert table.rows[goal_id]["status"] == "waiting_human"
