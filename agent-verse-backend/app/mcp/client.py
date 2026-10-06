@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import httpx
 
+from app.mcp.bounded_cache import BoundedTTLCache
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
@@ -61,6 +62,23 @@ def _idempotency_request_parts() -> tuple[dict[str, str], dict[str, Any]]:
 # runtime. Use the project's structlog binder so those calls actually work.
 logger = get_logger(__name__)
 SecretResolver = Callable[..., str | None | Awaitable[str | None]]
+
+
+_BREAKER_CACHE_MAX = 4096
+_BREAKER_IDLE_TTL_S = 3600.0
+_SCHEMA_CACHE_MAX = 1024
+_SCHEMA_CACHE_TTL_S = 300.0
+
+
+def _config_fingerprint(cfg: Any) -> str:
+    """Digest of a connector's stored config (never logged; secrets are refs)."""
+    import hashlib
+
+    try:
+        raw = cfg.model_dump_json() if hasattr(cfg, "model_dump_json") else repr(cfg)
+    except Exception:
+        raw = repr(cfg)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class CircuitBreakerOpenError(Exception):
@@ -283,8 +301,14 @@ class MCPClient:
             "SecretResolver", secret_resolver or resolve_connector_secret_ref
         )
         self._secret_resolver_accepts_tenant = self._accepts_tenant_context(self._secret_resolver)
-        # Circuit breaker support — wired externally by setting _redis
-        self._circuit_breakers: dict[str, Any] = {}
+        # Circuit breaker support — wired externally by setting _redis.
+        # Bounded (a02-F030-11): it was a plain dict that grew by one breaker per
+        # tenant x connector ever called. An entry idle for an hour is dropped (a
+        # Redis-backed breaker keeps its state in Redis; a local one idle that
+        # long is past its cooldown anyway).
+        self._circuit_breakers: Any = BoundedTTLCache[str, Any](
+            maxsize=_BREAKER_CACHE_MAX, ttl_s=_BREAKER_IDLE_TTL_S, sliding=True
+        )
         self._redis: Any = redis
         # LLM provider for self-healing tool argument repair
         self._provider: Any = llm_provider
@@ -301,9 +325,13 @@ class MCPClient:
         # key would hand tenant A's Mcp-Session-Id to tenant B's calls against
         # the same nominal server. Scoping by tenant closes that off entirely.
         self._mcp_sessions: dict[str, str] = {}
-        # Per-session tool schema cache: server_id → list[ToolDefinition]
-        # Avoids calling discover_tools() on every call_tool() invocation
-        self._schema_cache: dict[str, list[Any]] = {}
+        # Tool schema cache: avoids calling discover_tools() on every call_tool().
+        # Keyed by server x tenant x a fingerprint of the connector config, so an
+        # edited connector is rediscovered on every replica; bounded and expiring
+        # (a02-F030-11 — it was an unbounded dict never invalidated).
+        self._schema_cache: Any = BoundedTTLCache[str, list[Any]](
+            maxsize=_SCHEMA_CACHE_MAX, ttl_s=_SCHEMA_CACHE_TTL_S
+        )
         # Tool result cache (ToolResultCache or None) — wired externally
         self._tool_cache: Any = None
 
@@ -383,39 +411,34 @@ class MCPClient:
     def _get_circuit_breaker(self, server_id: str, tenant_id: str = "") -> Any:
         """Get or create a per-tenant circuit breaker for a server."""
         cb_key = f"{tenant_id}:{server_id}"
-        if cb_key not in self._circuit_breakers:
-            if self._redis is not None:
-                try:
-                    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
+        existing = self._circuit_breakers.get(cb_key)
+        if existing is not None:
+            return existing
+        from app.reliability.circuit_breaker import CircuitBreaker
 
-                    self._circuit_breakers[cb_key] = RedisCircuitBreaker(
-                        redis_client=self._redis,
-                        tenant_id=tenant_id,
-                        tool_name=f"mcp:{server_id}",
-                        failure_threshold=5,
-                        cooldown_seconds=60.0,
-                    )
-                except Exception as exc:
-                    # A process-local breaker, never none at all (MCPCLI-04).
-                    logger.error(
-                        "circuit_breaker_redis_init_failed server_id=%s error=%s",
-                        server_id,
-                        exc,
-                    )
-                    from app.reliability.circuit_breaker import CircuitBreaker
+        breaker: Any = None
+        if self._redis is not None:
+            try:
+                from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
-                    self._circuit_breakers[cb_key] = CircuitBreaker(
-                        failure_threshold=5,
-                        cooldown_seconds=60.0,
-                    )
-            else:
-                from app.reliability.circuit_breaker import CircuitBreaker
-
-                self._circuit_breakers[cb_key] = CircuitBreaker(
+                breaker = RedisCircuitBreaker(
+                    redis_client=self._redis,
+                    tenant_id=tenant_id,
+                    tool_name=f"mcp:{server_id}",
                     failure_threshold=5,
                     cooldown_seconds=60.0,
                 )
-        return self._circuit_breakers[cb_key]
+            except Exception as exc:
+                # A process-local breaker, never none at all (MCPCLI-04).
+                logger.error(
+                    "circuit_breaker_redis_init_failed server_id=%s error=%s",
+                    server_id,
+                    exc,
+                )
+        if breaker is None:
+            breaker = CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self._circuit_breakers[cb_key] = breaker
+        return breaker
 
     async def _resolve_auth_value(self, value: Any, tenant_ctx: TenantContext | None) -> str:
         if is_connector_secret_ref(value):
@@ -1496,14 +1519,17 @@ class MCPClient:
             ):
                 try:
                     # Check per-session schema cache first
-                    _cache_key = f"{server_id}:{tenant_ctx.tenant_id}"
-                    if _cache_key not in self._schema_cache:
+                    _cache_key = (
+                        f"{server_id}:{tenant_ctx.tenant_id}:{_config_fingerprint(cfg)}"
+                    )
+                    _cached_tools = self._schema_cache.get(_cache_key)
+                    if _cached_tools is None:
                         _live_tools = await self.discover_tools(
                             server_id=server_id, tenant_ctx=tenant_ctx
                         )
                         self._schema_cache[_cache_key] = _live_tools
                     else:
-                        _live_tools = self._schema_cache[_cache_key]
+                        _live_tools = _cached_tools
                     for _lt in _live_tools:
                         if _lt.name == tool_name:
                             _tool_schema = _lt.input_schema or {}
