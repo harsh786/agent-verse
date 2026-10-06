@@ -1,0 +1,1 @@
+{"suite": "backend", "scenario": "INGRESS-EVENT-MULTI-REPLICA", "test": "tests/real_world/test_ingress_triggers.py::test_events_fire_once_with_two_api_replicas", "result": "passed", "duration_s": 18.5, "evidence": {"goals": 12, "consumers": 7}, "failure_detail": "", "finished_at": "2026-10-06T11:50:21"}
