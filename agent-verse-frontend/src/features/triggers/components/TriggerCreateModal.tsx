@@ -40,7 +40,7 @@ const FAMILY_DESCRIPTIONS: Record<TriggerFamily, string> = {
   monitoring: 'Trigger from metrics, log patterns, and alerting systems',
   state_condition: 'Evaluate conditions, feature flags, and state transitions',
   ml_signal: 'React to model drift, anomalies, and ML predictions',
-  iot: 'Handle MQTT messages, geofence events, and sensor readings',
+  iot: 'Handle geofence events and sensor readings',
 };
 
 export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {

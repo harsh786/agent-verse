@@ -34,7 +34,6 @@ function scheduleSummary(spec: Trigger['spec']): string | null {
   if (spec.webhook_token || spec.webhook_signature_secret) return 'on webhook call';
   if (spec.watch_goal_id) return `watch goal ${spec.watch_goal_id.slice(0, 8)}`;
   if (spec.condition || spec.condition_expression) return `when: ${spec.condition || spec.condition_expression}`;
-  if (spec.mqtt_topic) return `mqtt: ${spec.mqtt_topic}`;
   return null;
 }
 

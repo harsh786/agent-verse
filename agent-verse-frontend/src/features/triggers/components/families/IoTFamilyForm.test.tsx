@@ -17,43 +17,14 @@ describe('IoTFamilyForm', () => {
     expect(container.querySelector('.space-y-4')?.children.length).toBe(0);
   });
 
-  describe('mqtt', () => {
-    test('renders broker URL, topic, and QoS fields with defaults', () => {
-      render(<IoTFamilyForm triggerType="mqtt" value={{}} onChange={vi.fn()} />);
-      expect(screen.getByPlaceholderText('mqtt://broker.example.com:1883')).toHaveValue('');
-      expect(screen.getByPlaceholderText('sensors/+/temperature')).toHaveValue('');
-      expect(screen.getByRole('combobox')).toHaveValue('0');
-    });
-
-    test('editing broker URL merges into value', () => {
-      const onChange = vi.fn();
-      render(<IoTFamilyForm triggerType="mqtt" value={{ description: 'x' }} onChange={onChange} />);
-      fireEvent.change(screen.getByPlaceholderText('mqtt://broker.example.com:1883'), {
-        target: { value: 'mqtt://host:1883' },
-      });
-      expect(lastArg(onChange)).toEqual({ description: 'x', mqtt_broker_url: 'mqtt://host:1883' });
-    });
-
-    test('editing topic pattern merges into value', () => {
-      const onChange = vi.fn();
-      render(<IoTFamilyForm triggerType="mqtt" value={{}} onChange={onChange} />);
-      fireEvent.change(screen.getByPlaceholderText('sensors/+/temperature'), {
-        target: { value: 'sensors/#' },
-      });
-      expect(lastArg(onChange)).toEqual({ mqtt_topic: 'sensors/#' });
-    });
-
-    test('changing QoS coerces to a number', () => {
-      const onChange = vi.fn();
-      render(<IoTFamilyForm triggerType="mqtt" value={{}} onChange={onChange} />);
-      fireEvent.change(screen.getByRole('combobox'), { target: { value: '2' } });
-      expect(lastArg(onChange)).toEqual({ mqtt_qos: 2 });
-    });
-
-    test('shows a passed QoS value', () => {
-      render(<IoTFamilyForm triggerType="mqtt" value={{ mqtt_qos: 1 }} onChange={vi.fn()} />);
-      expect(screen.getByRole('combobox')).toHaveValue('1');
-    });
+  // a06-F105-01: the backend refuses MQTT triggers, so the form offers no MQTT config.
+  test('renders no MQTT configuration for an mqtt trigger type', () => {
+    const { container } = render(
+      <IoTFamilyForm triggerType="mqtt" value={{}} onChange={vi.fn()} />,
+    );
+    expect(container.querySelector('.space-y-4')?.children.length).toBe(0);
+    expect(screen.queryByText(/MQTT/i)).toBeNull();
+    expect(screen.queryByPlaceholderText(/mqtt:\/\//)).toBeNull();
   });
 
   describe('geofence', () => {

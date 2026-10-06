@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { TriggerCreateModal } from './TriggerCreateModal';
+import { TRIGGER_FAMILY_LABELS } from '../types';
 
 function mockFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -43,6 +44,25 @@ describe('TriggerCreateModal', () => {
     expect(screen.getByRole('heading', { name: /choose a trigger family/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Time & Schedule/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Conversational/i })).toBeInTheDocument();
+  });
+
+  test('never offers MQTT: no IoT family (no creatable IoT type) and no mqtt type anywhere', async () => {
+    mockFetch();
+    renderModal();
+    expect(screen.queryByRole('button', { name: /IoT & Edge/i })).toBeNull();
+    expect(screen.queryByText(/MQTT/i)).toBeNull();
+    let visited = 0;
+    for (const label of Object.values(TRIGGER_FAMILY_LABELS)) {
+      // Family buttons are named "<label> <description> <n> types".
+      const family = screen.queryByRole('button', { name: new RegExp(`^${label} `) });
+      if (!family) continue;
+      visited += 1;
+      await userEvent.click(family);
+      expect(screen.getByRole('heading', { name: label })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'mqtt' })).toBeNull();
+      await userEvent.click(screen.getByRole('button', { name: /Back/ }));
+    }
+    expect(visited).toBeGreaterThan(0);
   });
 
   test('choosing a family advances to the type step for that family', async () => {

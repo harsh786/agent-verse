@@ -6,6 +6,8 @@ interface FamilyFormProps {
   onChange: (v: Record<string, unknown>) => void;
 }
 
+// MQTT is deliberately absent (a06-F105-01): the backend refuses MQTT triggers
+// because no MQTT consumer is wired, so the UI never offers or configures one.
 export function IoTFamilyForm({ triggerType, value, onChange }: FamilyFormProps) {
   function set(key: string, val: unknown) {
     onChange({ ...value, [key]: val });
@@ -13,39 +15,6 @@ export function IoTFamilyForm({ triggerType, value, onChange }: FamilyFormProps)
 
   return (
     <div className="space-y-4">
-      {triggerType === 'mqtt' && (
-        <>
-          <Field label="MQTT Broker URL">
-            <input
-              type="text"
-              value={(value.mqtt_broker_url as string) ?? ''}
-              onChange={(e) => set('mqtt_broker_url', e.target.value)}
-              placeholder="mqtt://broker.example.com:1883"
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-          <Field label="Topic Pattern" hint="Use + for single-level and # for multi-level wildcards">
-            <input
-              type="text"
-              value={(value.mqtt_topic as string) ?? ''}
-              onChange={(e) => set('mqtt_topic', e.target.value)}
-              placeholder="sensors/+/temperature"
-              className={`${inputCls} font-mono`}
-            />
-          </Field>
-          <Field label="QoS Level">
-            <select
-              value={(value.mqtt_qos as number) ?? 0}
-              onChange={(e) => set('mqtt_qos', Number(e.target.value))}
-              className={inputCls}
-            >
-              <option value={0}>0 — At most once</option>
-              <option value={1}>1 — At least once</option>
-              <option value={2}>2 — Exactly once</option>
-            </select>
-          </Field>
-        </>
-      )}
       {triggerType === 'geofence' && (
         <>
           <Field label="Geofence Action">

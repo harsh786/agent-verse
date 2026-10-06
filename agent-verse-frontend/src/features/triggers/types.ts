@@ -345,6 +345,9 @@ export const TRIGGER_TYPE_FAMILY: Record<TriggerType, TriggerFamily> = {
  * `dispatch_map.is_supported`). The create UI must offer only these — the other
  * enum values are recognised for parsing/round-trip but would 422 on create.
  * Keep in sync with the backend dispatch map.
+ *
+ * `mqtt` stays out by owner decision (a06-F105-01): the backend refuses MQTT
+ * triggers (no MQTT consumer is wired) and the UI hides MQTT everywhere.
  */
 export const SUPPORTED_TRIGGER_TYPES: ReadonlySet<TriggerType> = new Set<TriggerType>([
   'cron', 'interval', 'once', 'deadline', 'relative_delay', 'business_calendar',

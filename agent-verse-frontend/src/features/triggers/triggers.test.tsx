@@ -8,6 +8,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import {
   TRIGGER_FAMILY_LABELS,
   TRIGGER_TYPE_FAMILY,
+  SUPPORTED_TRIGGER_TYPES,
   type TriggerType,
   type TriggerFamily,
 } from './types';
@@ -49,6 +50,10 @@ describe('TriggerType system', () => {
   it('iot family includes mqtt and geofence', () => {
     expect(TRIGGER_TYPE_FAMILY['mqtt']).toBe('iot');
     expect(TRIGGER_TYPE_FAMILY['geofence']).toBe('iot');
+  });
+
+  it('mqtt is never creatable (backend refuses it, a06-F105-01)', () => {
+    expect(SUPPORTED_TRIGGER_TYPES.has('mqtt')).toBe(false);
   });
 
   it('webhook family includes github_webhook and stripe_webhook', () => {
@@ -216,11 +221,11 @@ describe('WebhookFamilyForm', () => {
 // ── IoTFamilyForm ─────────────────────────────────────────────────────────────
 
 describe('IoTFamilyForm', () => {
-  it('renders mqtt fields for mqtt type', () => {
+  it('renders no mqtt fields (MQTT triggers are refused and hidden, a06-F105-01)', () => {
     const onChange = vi.fn();
     render(<IoTFamilyForm triggerType="mqtt" value={{}} onChange={onChange} />);
-    expect(screen.getByPlaceholderText('mqtt://broker.example.com:1883')).toBeTruthy();
-    expect(screen.getByPlaceholderText('sensors/+/temperature')).toBeTruthy();
+    expect(screen.queryByPlaceholderText('mqtt://broker.example.com:1883')).toBeNull();
+    expect(screen.queryByText(/MQTT/i)).toBeNull();
   });
 
   it('renders geofence action dropdown', () => {
