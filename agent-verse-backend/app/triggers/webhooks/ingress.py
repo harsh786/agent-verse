@@ -45,7 +45,7 @@ DELIVERY_ID_HEADERS = (
     "x-request-id",
 )
 TIMESTAMP_HEADERS = ("x-webhook-timestamp", "webhook-timestamp")
-SIGNATURE_HEADERS = ("x-signature", "webhook-signature")
+SIGNATURE_HEADERS = ("x-signature", "x-agentverse-signature", "webhook-signature")
 
 
 async def read_capped_body(request: Request, cap: int = MAX_WEBHOOK_BODY_BYTES) -> bytes:
