@@ -2008,11 +2008,13 @@
       "readiness_requirements": [
         "database",
         "embedder",
+        "precomputed_index",
         "strategy_runner"
       ],
       "required_dependencies": [
         "database",
-        "embedder"
+        "embedder",
+        "precomputed_index"
       ],
       "safe_explanation_fields": [
         "status",
@@ -2704,11 +2706,13 @@
       "readiness_requirements": [
         "database",
         "embedder",
+        "precomputed_index",
         "strategy_runner"
       ],
       "required_dependencies": [
         "database",
-        "embedder"
+        "embedder",
+        "precomputed_index"
       ],
       "safe_explanation_fields": [
         "status",

@@ -19084,7 +19084,7 @@
     },
     "/api/v1/workflows/import-yaml": {
       "post": {
-        "description": "Import a workflow definition from a YAML body.",
+        "description": "Import a workflow definition from a YAML body (always a NEW draft workflow).\n\nWebhook HMAC secrets (B2-GAP-3): an exported YAML carries ``auth: hmac``\nwebhooks with the secret masked (``hmac_secret: '********'``) \u2014 exports never\ncontain it. Importing such a file is refused with **422** naming the fix: put\na new secret in ``hmac_secret`` (and configure the sender with it), or remove\n``auth: hmac``. The import is never created with an empty secret (it would\nrefuse every delivery), never copies a secret from another workflow, and no\nsecret is generated or echoed back. A plaintext ``hmac_secret`` in the YAML\nis stored vault-encrypted and masked in the response.",
         "operationId": "import_yaml_api_v1_workflows_import_yaml_post",
         "responses": {
           "201": {
@@ -47143,7 +47143,7 @@
     },
     "/triggers/webhooks/{webhook_type}/{token}": {
       "post": {
-        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).",
+        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).\n\nReplay protection of a signed generic delivery (B2-GAP-1): the delivery-id\nheaders are not signed, so identity comes from the signed bytes. A legacy\nbody-only signature dedupes on the signed body, unwindowed, and the body of\nevery delivery that ran is remembered (``vendor_webhook_replay_guard``) for as\nlong as the secret that signed it is accepted: the same signed body never\nfires twice. Senders whose events can repeat a byte-identical body must use\nthe timestamped scheme, whose exact signed bytes are guarded for the window.",
         "operationId": "receive_typed_webhook_triggers_webhooks__webhook_type___token__post",
         "parameters": [
           {
