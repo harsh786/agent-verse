@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 
@@ -67,24 +69,28 @@ def _decrypt_without_password(reader: Any) -> bool:
         raise DocumentParseError(f"the PDF's encryption could not be opened ({exc})") from exc
 
 
-# Pages of one upload OCR'd in the request (each is ~1-3 s of Tesseract at 300 dpi).
+# Scanned pages of one upload OCR'd in the request (each is ~1-3 s of Tesseract
+# at 300 dpi; they run OCR_PAGE_CONCURRENCY at a time on the shared OCR pool).
 OCR_MAX_PDF_PAGES = int(os.getenv("KNOWLEDGE_OCR_MAX_PAGES", "60"))
 OCR_PDF_DPI = 300
 
 
-def render_pdf_page(data: bytes, page_number: int, *, dpi: int = OCR_PDF_DPI) -> Any:
-    """Page ``page_number`` (1-based) of a PDF as a grayscale PIL image (poppler)."""
+def render_pdf_page(
+    data: bytes | str | Path, page_number: int, *, dpi: int = OCR_PDF_DPI
+) -> Any:
+    """Page ``page_number`` (1-based) of a PDF (bytes, or a file path: written
+    once per document) as a grayscale PIL image (poppler). Blocking: callers run
+    it on the OCR pool (:func:`app.ocr.concurrency.run_ocr_work`)."""
     try:
-        from pdf2image import convert_from_bytes
         from pdf2image.exceptions import PDFInfoNotInstalledError
+
+        from app.ocr.rasterize import render_pdf_page_image
     except ImportError as exc:
         raise ParserUnavailableError(
             "scanned-PDF OCR needs pdf2image and poppler (the 'ocr' extra)"
         ) from exc
     try:
-        images = convert_from_bytes(
-            data, dpi=dpi, first_page=page_number, last_page=page_number, grayscale=True
-        )
+        return render_pdf_page_image(data, page_number, dpi=dpi)
     except PDFInfoNotInstalledError as exc:
         raise ParserUnavailableError(
             "scanned-PDF OCR needs poppler (pdftoppm), which is not installed"
@@ -93,9 +99,12 @@ def render_pdf_page(data: bytes, page_number: int, *, dpi: int = OCR_PDF_DPI) ->
         raise DocumentParseError(
             f"page {page_number} could not be rendered for OCR ({exc})"
         ) from exc
-    if not images:
-        raise DocumentParseError(f"page {page_number} could not be rendered for OCR")
-    return images[0]
+
+
+def _png_bytes(image: Any) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG", compress_level=1)  # lossless; fast over small
+    return buf.getvalue()
 
 
 def _require_ocr(filename: str, vision_provider: Any) -> bool:
@@ -124,7 +133,7 @@ async def ocr_pdf_pages(
     another page's citation). Raises OcrUnavailableError without an OCR engine,
     DocumentParseError when more pages need OCR than one request may run.
     """
-    import asyncio
+    from app.ocr.concurrency import current_limits, map_bounded, ocr_page_slot, run_ocr_work
 
     if len(page_numbers) > OCR_MAX_PDF_PAGES:
         raise DocumentParseError(
@@ -136,20 +145,35 @@ async def ocr_pdf_pages(
         from app.ocr.engine import OcrEngine
 
         ocr_engine = OcrEngine()
-    out: dict[int, tuple[str, str]] = {}
-    for number in page_numbers:
-        image = await asyncio.to_thread(render_pdf_page, data, number)
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        result = await ocr_engine.extract(
-            image_bytes=buf.getvalue(),
-            provider=vision_provider if has_vision else None,
-            extract_fields=False,
-            vision_fallback=has_vision,
-        )
-        text = (getattr(result, "raw_text", "") or "").strip()
-        out[number] = (text, str(getattr(result, "engine_used", "") or ""))
-    return out
+    limits = current_limits()
+
+    with tempfile.TemporaryDirectory(prefix="ocr-upload-") as tmp:
+        path = Path(tmp) / "document.pdf"
+        await run_ocr_work(path.write_bytes, data)  # once, not once per page
+
+        async def _page(number: int) -> tuple[str, str]:
+            # One process-wide page slot from render to text: at most the pages
+            # in flight are in memory; render + PNG encode run on the OCR pool.
+            async with ocr_page_slot():
+                image = await run_ocr_work(
+                    render_pdf_page, path, number, dpi=limits.render_dpi
+                )
+                png = await run_ocr_work(_png_bytes, image)
+                del image
+                result = await ocr_engine.extract(
+                    image_bytes=png,
+                    provider=vision_provider if has_vision else None,
+                    extract_fields=False,
+                    vision_fallback=has_vision,
+                )
+            text = (getattr(result, "raw_text", "") or "").strip()
+            return text, str(getattr(result, "engine_used", "") or "")
+
+        # Concurrent but bounded (OCR_PAGE_CONCURRENCY); results come back in
+        # page order, so page N's text is always cited as page N. The first
+        # failure (unrenderable page, budget refusal) cancels the other pages.
+        results = await map_bounded(page_numbers, _page, limit=limits.page_concurrency)
+    return dict(zip(page_numbers, results, strict=True))
 
 
 def extract_docx_text(data: bytes, *, filename: str = "document.docx") -> str:

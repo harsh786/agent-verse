@@ -79,23 +79,24 @@ def _upload(client: TestClient, cid: str, data: bytes, name: str = "scan.pdf") -
 
 
 class _Ocr:
-    """Renders nothing real: page N's 'image' OCRs to the text given for N."""
+    """Renders nothing real: page N's 'image' OCRs to the text given for N.
+
+    Pages are OCR'd concurrently (OCR-PAR), so the page number travels IN the
+    image (its width), never as "the page rendered last"."""
 
     def __init__(self, texts: dict[int, str]) -> None:
         self.texts = texts
         self.rendered: list[int] = []
 
-    def render(self, data: bytes, page_number: int, **_: Any) -> Any:
+    def render(self, data: Any, page_number: int, **_: Any) -> Any:
         from PIL import Image
 
         self.rendered.append(page_number)
-        img = Image.new("L", (40, 40), 255)
-        img.info["page"] = page_number
-        return img
+        return Image.new("L", (40 + page_number, 40), 255)
 
     async def page(self, img: Any, *, provider: Any = None,
                    vision_fallback: bool = True) -> tuple[str, float, str]:
-        return self.texts.get(self.rendered[-1], ""), 0.91, "tesseract"
+        return self.texts.get(int(img.size[0]) - 40, ""), 0.91, "tesseract"
 
 
 def _patched(ocr: _Ocr, *, tesseract: bool = True) -> Any:
@@ -119,7 +120,7 @@ def test_fully_scanned_pdf_is_ocrd_page_by_page_with_page_citations() -> None:
     body = r.json()
     assert body["pages"] == 2
     assert body["ocr_pages"] == [1, 2]
-    assert ocr.rendered == [1, 2]
+    assert sorted(ocr.rendered) == [1, 2]  # rendered concurrently
     by_page = {c.metadata["page"]: c for c in _chunks(app)}
     assert by_page["2"].content == "Crane STS-09 hoist brake wear 2.4 mm"
     assert by_page["1"].metadata["ocr_used"] == "true"
