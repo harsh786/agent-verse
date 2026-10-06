@@ -1,7 +1,8 @@
-"""KB-24: reranker degradations are visible, and the 'llm' strategy is honest.
+"""KB-24: reranker degradations are visible, and there is no fake 'llm' strategy.
 
 ``_llm_rerank_sync`` just called the cross-encoder while reporting ``llm``; a
 default-path rerank failure passed results through with a DEBUG log only.
+a04-F073-01: 'llm' (still no LLM reranker behind it) is now refused outright.
 """
 
 from __future__ import annotations
@@ -18,11 +19,28 @@ from app.rag.engine import RetrievalResult
 from app.rag.rerank_stage import apply_default_rerank
 
 
-def test_llm_strategy_reports_the_reranker_that_actually_ran() -> None:
-    policy = RerankPolicy(strategy=RerankStrategy.LLM)
-    policy.rerank([{"content": "a", "score": 0.5}, {"content": "b", "score": 0.4}], query="a")
-    assert policy.last_strategy_used == RerankStrategy.CROSS_ENCODER
-    assert "llm" in (policy.last_reason or "").lower()
+def test_llm_is_not_a_rerank_strategy() -> None:
+    with pytest.raises(ValueError):
+        RerankStrategy("llm")
+    assert "llm" not in {s.value for s in RerankStrategy}
+
+
+def test_settings_refuse_the_llm_rerank_strategy() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="not implemented"):
+        Settings(rag_default_rerank_strategy="llm")
+    with pytest.raises(ValidationError, match="not a rerank strategy"):
+        Settings(rag_default_rerank_strategy="magic")
+    assert Settings(rag_default_rerank_strategy="Hosted").rag_default_rerank_strategy == "hosted"
+
+
+def test_llm_never_warms_the_cross_encoder() -> None:
+    from app.rag.cross_encoder import CROSS_ENCODER_STRATEGIES
+
+    assert "llm" not in CROSS_ENCODER_STRATEGIES
 
 
 def _results() -> list[RetrievalResult]:

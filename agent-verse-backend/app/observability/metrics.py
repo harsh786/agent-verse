@@ -277,7 +277,8 @@ STRATEGY_TOKENS_TOTAL = Counter(
 )
 RERANK_DEGRADED_TOTAL = Counter(
     "agentverse_rerank_degraded_total",
-    "Default-path reranks that failed and passed results through unranked.",
+    "Reranks that failed or degraded: results passed through unranked, the "
+    "cross-encoder skipped, or a cross-encoder / hosted rerank fell back to TF-IDF.",
     labelnames=("reason",),
     registry=REGISTRY,
 )
