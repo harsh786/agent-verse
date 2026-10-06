@@ -193,6 +193,28 @@ def test_create_schedule_rejects_specs_that_could_never_fire(body: dict) -> None
     assert resp.status_code == 422, resp.text
 
 
+def test_create_schedule_keeps_its_timezone_and_refuses_an_unknown_one() -> None:
+    """B1-2: POST /schedules had no timezone (every cron ran in UTC); an unknown
+    zone is refused instead of silently evaluated as UTC."""
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    ok = client.post(
+        "/schedules",
+        json={"trigger_type": "cron", "cron_expr": "30 9 * * 1-5", "timezone": "Asia/Kolkata",
+              "goal_template": "Standup digest"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["spec"]["timezone"] == "Asia/Kolkata"
+    bad = client.post(
+        "/schedules",
+        json={"trigger_type": "cron", "cron_expr": "30 9 * * 1-5", "timezone": "Asia/Kolkatta",
+              "goal_template": "Standup digest"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert bad.status_code == 422
+    assert "Asia/Kolkatta" in bad.json()["detail"]
+
+
 def test_create_schedule_awaits_create_async_before_returning() -> None:
     store = _AsyncCreateStore()
     client = TestClient(_make_app(schedule_store=store), raise_server_exceptions=False)

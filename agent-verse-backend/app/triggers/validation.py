@@ -95,6 +95,27 @@ def is_within(path: str, base: str) -> bool:
     return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
 
 
+def timezone_error(tz_name: str) -> str | None:
+    """Why *tz_name* is not a usable IANA timezone, else None (empty = UTC).
+
+    The beat resolves the zone with ``ZoneInfo`` and fell back to UTC for any
+    name it could not load (B1-2), so a typo ran the schedule hours off.
+    """
+    name = (tz_name or "").strip()
+    if not name or name.upper() == "UTC":
+        return None
+    from zoneinfo import ZoneInfo
+
+    try:
+        ZoneInfo(name)
+    except (ValueError, KeyError, OSError):
+        return (
+            f"Unknown timezone {name!r}: use an IANA zone name such as "
+            "'Asia/Kolkata', 'America/New_York' or 'UTC'"
+        )
+    return None
+
+
 def _require_iso(value: str, missing: str) -> None:
     if not value.strip():
         raise ValueError(missing)
@@ -162,6 +183,9 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     from app.triggers.consumers.conversational import validate_conversational_patterns
 
     validate_conversational_patterns(spec)
+    # B1-2: an unknown zone used to be stored and then silently evaluated as UTC.
+    if (reason := timezone_error(spec.timezone)) is not None:
+        raise ValueError(reason)
     # TRG-23: HITL queue filters are derived ids (agent:<id> / risk:<tier>).
     if spec.hitl_queue_id:
         from app.governance.hitl_queues import queue_id_error

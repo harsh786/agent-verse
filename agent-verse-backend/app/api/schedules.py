@@ -33,6 +33,9 @@ events_router = APIRouter(tags=["schedules"])
 class CreateScheduleRequest(BaseModel):
     trigger_type: str = "once"
     cron_expr: str = ""
+    # IANA zone the cron is evaluated in (B1-2: this endpoint had none, so every
+    # cron created here ran in UTC).
+    timezone: str = "UTC"
     interval_seconds: int = 0
     # Required for trigger_type="once": when to fire (ISO-8601).
     fire_at_iso: str = ""
@@ -230,6 +233,7 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
     spec = TriggerSpec(
         trigger_type=ttype,
         cron_expression=body.cron_expr,
+        timezone=body.timezone or "UTC",
         interval_seconds=body.interval_seconds,
         fire_at_iso=body.fire_at_iso,
         webhook_token=webhook_token,
