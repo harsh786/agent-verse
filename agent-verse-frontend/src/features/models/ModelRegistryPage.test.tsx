@@ -18,6 +18,7 @@ const model = (over: Record<string, unknown>) => ({
   is_available: true,
   provider_ready: true,
   source: 'override',
+  base_url: null,
   ...over,
   key: `${over.provider}/${over.model_id}`,
 });
@@ -32,7 +33,7 @@ const REGISTRY = {
       order_mode: 'cost',
       preference: [],
       models: [
-        model({ provider: 'custom', model_id: 'cheap-llm', rank: 1 }),
+        model({ provider: 'custom', model_id: 'cheap-llm', rank: 1, base_url: 'http://192.168.63.104:30080/v1', supports_structured_output: true, quality_score: 0.7, cost_per_1k_output: 0.0004 }),
         model({ provider: 'nvidia', model_id: 'pricey-llm', cost_per_1k_input: 0.02, rank: 2, source: 'env' }),
         model({ provider: 'groq', model_id: 'keyless-llm', cost_per_1k_input: 0.03, rank: 3, provider_ready: false }),
       ],
@@ -61,7 +62,7 @@ const CATALOG = {
       provider: 'xai', label: 'xAI', ready: false, env_hint: 'XAI_API_KEY',
       models: [
         { model_id: 'grok-4', display_name: 'Grok 4', capabilities: ['text_generation'], cost_per_1k_input: 0.003, cost_per_1k_output: 0.015, supports_tools: true, supports_vision: true, quality_score: 0.9, already_configured: false },
-        { model_id: 'grok-mini', display_name: 'Grok mini', capabilities: ['text_generation'], cost_per_1k_input: 0.0003, cost_per_1k_output: 0.0005, supports_tools: true, supports_vision: false, quality_score: 0.7, already_configured: true },
+        { model_id: 'grok-mini', display_name: 'Grok mini', capabilities: ['text_generation'], cost_per_1k_input: 0.0003, cost_per_1k_output: 0.0005, supports_tools: true, supports_vision: false, quality_score: 0.7, already_configured: true, base_url: 'http://10.0.0.5:8000/v1' },
       ],
     },
   ],
@@ -75,6 +76,11 @@ const NEEDS_KEY: Access = {
 };
 const TENANT_ADMIN: Access = { can_modify: true, via: 'tenant_admin', needs_admin_key: false, reason: '' };
 
+const TEST_OK = {
+  ok: true, latency_ms: 42.4, probe: 'chat', model_listed: true,
+  served_models: ['gpt-oss-20b'], detail: 'Chat completion returned 1 choice.', error: null,
+};
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -84,7 +90,10 @@ const headersOf = (init?: RequestInit) => (init?.headers ?? {}) as Record<string
  * Default: the caller is not a tenant admin, so the backend wants the platform
  * admin key; typing 'admin-secret' unlocks modification via admin_key.
  */
-function mockFetch(opts: { access?: Access; registry?: unknown; postStatus?: number; postBody?: unknown } = {}) {
+function mockFetch(opts: {
+  access?: Access; registry?: unknown; postStatus?: number; postBody?: unknown;
+  testStatus?: number; testBody?: unknown;
+} = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -95,6 +104,8 @@ function mockFetch(opts: { access?: Access; registry?: unknown; postStatus?: num
         : json(NEEDS_KEY);
     }
     if (url.includes('/models/configured/reseed')) return json({ status: 'ok', configured_models: 3 });
+    if (url.includes('/models/configured/test-endpoint'))
+      return json(opts.testBody ?? TEST_OK, opts.testStatus ?? 200);
     if (url.includes('/models/catalog/import')) return json({ status: 'imported', imported: 1, skipped: 0 });
     if (url.includes('/models/catalog')) return json(CATALOG);
     if (url.includes('/models/preferences/') && method === 'PUT')
@@ -471,5 +482,194 @@ describe('ModelRegistryPage', () => {
     expect(addBtn).toBeDisabled();
     await userEvent.type(await screen.findByPlaceholderText(/Platform admin key/i), 'k2');
     await waitFor(() => expect(addBtn).toBeEnabled());
+  });
+});
+
+describe('ModelRegistryPage — model endpoints (base_url)', () => {
+  const ENDPOINT = 'http://192.168.63.104:30080/v1';
+  const postedModels = (spy: ReturnType<typeof mockFetch>) =>
+    spy.mock.calls
+      .filter(([u, i]) => String(u).endsWith('/models/configured') && (i as RequestInit)?.method === 'POST')
+      .map(([, i]) => JSON.parse((i as RequestInit).body as string));
+  const testCalls = (spy: ReturnType<typeof mockFetch>) =>
+    spy.mock.calls.filter(([u]) => String(u).includes('/models/configured/test-endpoint'));
+
+  async function openAddDialog() {
+    await screen.findByText('cheap-llm');
+    await userEvent.click(await screen.findByRole('button', { name: /Add Model/i }));
+    return screen.getByRole('dialog');
+  }
+
+  test('shows the endpoint host on rows with a base_url, full URL in the title', async () => {
+    mockFetch();
+    renderPage();
+    const row = (await screen.findByText('cheap-llm')).closest('li') as HTMLElement;
+    const endpoint = within(row).getByText('192.168.63.104:30080');
+    expect(endpoint.closest('[title]')).toHaveAttribute('title', ENDPOINT);
+    const other = screen.getByText('pricey-llm').closest('li') as HTMLElement;
+    expect(within(other).queryByLabelText(/^Endpoint /)).not.toBeInTheDocument();
+  });
+
+  test('base_url is posted (trimmed) when filled and omitted when empty', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN });
+    renderPage();
+    const dialog = await openAddDialog();
+    expect(within(dialog).getByText(/Base URL of an OpenAI-compatible server/i)).toBeInTheDocument();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'plain-model');
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0]).not.toHaveProperty('base_url');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    const dialog2 = await openAddDialog();
+    await userEvent.type(within(dialog2).getByLabelText(/Model ID/i), 'vllm-model');
+    await userEvent.type(within(dialog2).getByLabelText(/Endpoint URL/i), `  ${ENDPOINT}  `);
+    await userEvent.click(within(dialog2).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(2));
+    expect(postedModels(spy)[1]).toMatchObject({ model_id: 'vllm-model', base_url: ENDPOINT });
+  });
+
+  test('a 400 detail from save (refused URL) is shown in the dialog', async () => {
+    mockFetch({
+      access: TENANT_ADMIN,
+      postStatus: 400,
+      postBody: { detail: 'base_url host 10.1.2.3 is not in MODEL_ENDPOINT_ALLOWLIST' },
+    });
+    renderPage();
+    const dialog = await openAddDialog();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'm');
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), 'http://10.1.2.3/v1');
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/not in MODEL_ENDPOINT_ALLOWLIST/);
+  });
+
+  test('Test connection is gated on model id + URL, posts the form fields with the admin key, and shows success', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await unlockWithAdminKey();
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+    const dialog = screen.getByRole('dialog');
+    const testBtn = within(dialog).getByRole('button', { name: /Test connection/i });
+    expect(testBtn).toBeDisabled();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'gpt-oss-20b');
+    expect(testBtn).toBeDisabled();
+    await userEvent.selectOptions(within(dialog).getByLabelText('Provider'), 'onprem');
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), ENDPOINT);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Embeddings' }));
+    expect(testBtn).toBeEnabled();
+    await userEvent.click(testBtn);
+
+    const result = await within(dialog).findByTestId('endpoint-test-result');
+    expect(result).toHaveTextContent('Connected · 42 ms · chat');
+    expect(result).toHaveTextContent('Chat completion returned 1 choice.');
+    expect(result).not.toHaveTextContent(/does not list/);
+    const [, init] = testCalls(spy)[0];
+    expect((init as RequestInit).method).toBe('POST');
+    expect(headersOf(init as RequestInit)['X-Admin-Key']).toBe('admin-secret');
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      provider: 'onprem', model_id: 'gpt-oss-20b', base_url: ENDPOINT,
+      capabilities: ['text_generation', 'embedding'],
+    });
+
+    // Editing the URL invalidates the shown result.
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), 'x');
+    expect(within(dialog).queryByTestId('endpoint-test-result')).not.toBeInTheDocument();
+  });
+
+  test('Test connection warns when the server does not list the model', async () => {
+    mockFetch({
+      access: TENANT_ADMIN,
+      testBody: { ...TEST_OK, model_listed: false, served_models: ['llama-3-8b', 'qwen2-7b'] },
+    });
+    renderPage();
+    const dialog = await openAddDialog();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'gpt-oss-20b');
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), ENDPOINT);
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    const result = await within(dialog).findByTestId('endpoint-test-result');
+    expect(result).toHaveTextContent('Connected');
+    expect(result).toHaveTextContent(
+      'The server does not list gpt-oss-20b; it serves: llama-3-8b, qwen2-7b',
+    );
+  });
+
+  test('Test connection shows the error for ok:false and the detail for a refused URL (400)', async () => {
+    mockFetch({
+      access: TENANT_ADMIN,
+      testBody: { ...TEST_OK, ok: false, error: 'Connection refused', detail: '' },
+    });
+    renderPage();
+    const dialog = await openAddDialog();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'gpt-oss-20b');
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), ENDPOINT);
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    const failed = await within(dialog).findByTestId('endpoint-test-result');
+    expect(failed).toHaveAttribute('role', 'alert');
+    expect(failed).toHaveTextContent('Connection refused');
+    expect(failed).not.toHaveTextContent('Connected ·');
+  });
+
+  test('Test connection shows the 400 detail when the URL is refused', async () => {
+    mockFetch({
+      access: TENANT_ADMIN,
+      testStatus: 400,
+      testBody: { detail: 'Private host 192.168.63.104 is not allowed' },
+    });
+    renderPage();
+    const dialog = await openAddDialog();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'gpt-oss-20b');
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), ENDPOINT);
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    expect(await within(dialog).findByTestId('endpoint-test-result')).toHaveTextContent(
+      'Private host 192.168.63.104 is not allowed',
+    );
+  });
+
+  test('Edit is hidden without modify rights', async () => {
+    mockFetch();
+    renderPage();
+    await screen.findByText('cheap-llm');
+    expect(screen.queryByRole('button', { name: 'Edit cheap-llm' })).not.toBeInTheDocument();
+  });
+
+  test('Edit pre-fills the dialog from the row and saving upserts it', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN });
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.click(screen.getByRole('button', { name: 'Edit cheap-llm' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Edit model' })).toBeInTheDocument();
+    expect(within(dialog).getByText(/changing either creates a new entry/i)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/Model ID/i)).toHaveValue('cheap-llm');
+    expect(within(dialog).getByLabelText('Provider')).toHaveValue('custom');
+    expect(within(dialog).getByLabelText(/Endpoint URL/i)).toHaveValue(ENDPOINT);
+    expect(within(dialog).getByLabelText(/Cost \/ 1k output/i)).toHaveValue(0.0004);
+    expect(within(dialog).getByLabelText(/Quality/i)).toHaveValue(0.7);
+    expect(within(dialog).getByRole('checkbox', { name: /Supports tools/i })).toBeChecked();
+    expect(within(dialog).getByRole('button', { name: 'Reasoning' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(dialog).getByRole('button', { name: 'Vision' })).toHaveAttribute('aria-pressed', 'false');
+
+    const quality = within(dialog).getByLabelText(/Quality/i);
+    await userEvent.clear(quality);
+    await userEvent.type(quality, '0.8');
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0]).toMatchObject({
+      model_id: 'cheap-llm', provider: 'custom', base_url: ENDPOINT,
+      capabilities: ['text_generation'], cost_per_1k_output: 0.0004, quality_score: 0.8,
+      supports_tools: true, supports_structured_output: true,
+    });
+    expect(postedModels(spy)[0]).not.toHaveProperty('display_name');
+  });
+
+  test('catalog import dialog shows a catalog model base_url', async () => {
+    mockFetch({ access: TENANT_ADMIN });
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.click(screen.getByRole('button', { name: /Import catalog/i }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(await within(dialog).findByRole('button', { name: /Show xAI models/i }));
+    expect(within(dialog).getByText('http://10.0.0.5:8000/v1')).toHaveAttribute('title', 'http://10.0.0.5:8000/v1');
   });
 });

@@ -4,15 +4,19 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  CircleCheck,
   Download,
   Info,
   Loader2,
+  Pencil,
+  Plug,
   Plus,
   RefreshCw,
   RotateCcw,
   Save,
   ShieldCheck,
   Trash2,
+  TriangleAlert,
   XCircle,
   Zap,
 } from 'lucide-react';
@@ -21,6 +25,7 @@ import {
   modelsApi,
   type CapabilityGroup,
   type ConfiguredModel,
+  type ModelEndpointTestResult,
   type ModelRegistryAccess,
 } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
@@ -45,18 +50,23 @@ interface FormState {
   model_id: string;
   display_name: string;
   provider: string;
+  /** Base URL of an OpenAI-compatible server; empty = the provider's configured API. */
+  base_url: string;
   capabilities: string[];
   cost_per_1k_input: string;
   cost_per_1k_output: string;
   quality_score: string;
   supports_tools: boolean;
   supports_vision: boolean;
+  /** Not editable in the form; carried over when editing so an upsert keeps it. */
+  supports_structured_output?: boolean;
 }
 
 const EMPTY_FORM: FormState = {
   model_id: '',
   display_name: '',
   provider: 'nvidia',
+  base_url: '',
   capabilities: ['text_generation'],
   cost_per_1k_input: '0',
   cost_per_1k_output: '0',
@@ -65,7 +75,37 @@ const EMPTY_FORM: FormState = {
   supports_vision: false,
 };
 
+const formFromModel = (m: ConfiguredModel): FormState => ({
+  model_id: m.model_id,
+  display_name: m.display_name && m.display_name !== m.model_id ? m.display_name : '',
+  provider: m.provider,
+  base_url: m.base_url ?? '',
+  capabilities: [...m.capabilities],
+  cost_per_1k_input: String(m.cost_per_1k_input ?? 0),
+  cost_per_1k_output: String(m.cost_per_1k_output ?? 0),
+  quality_score: String(m.quality_score ?? 0.5),
+  supports_tools: !!m.supports_tools,
+  supports_vision: !!m.supports_vision,
+  supports_structured_output: m.supports_structured_output,
+});
+
 const keyOf = (m: ConfiguredModel) => m.key || `${m.provider}/${m.model_id}`;
+
+/** host:port of an endpoint URL for compact display; the raw value if it does not parse. */
+const endpointHost = (url: string) => {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+};
+
+/** The fields a connection test depends on — a result is only shown while they are unchanged. */
+const testSignature = (f: FormState) => `${f.provider}\n${f.model_id.trim()}\n${f.base_url.trim()}`;
+
+type TestOutcome =
+  | { sig: string; kind: 'result'; result: ModelEndpointTestResult }
+  | { sig: string; kind: 'error'; message: string };
 
 const INPUT_CLS =
   'w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary';
@@ -77,6 +117,9 @@ export function ModelRegistryPage() {
   const [showCatalog, setShowCatalog] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState('');
+  // The row being edited ("provider/model_id"), or null when adding.
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [testOutcome, setTestOutcome] = useState<TestOutcome | null>(null);
   // Optional platform admin key. Kept IN MEMORY ONLY (never written to
   // localStorage/sessionStorage) so this sensitive credential is not persisted
   // in the browser — it is re-entered per session and cleared on reload.
@@ -122,8 +165,9 @@ export function ModelRegistryPage() {
   };
 
   const upsert = useMutation({
-    mutationFn: () =>
-      modelsApi.upsertConfigured({
+    mutationFn: () => {
+      const baseUrl = form.base_url.trim();
+      return modelsApi.upsertConfigured({
         model_id: form.model_id.trim(),
         display_name: form.display_name.trim() || undefined,
         provider: form.provider || 'custom',
@@ -133,15 +177,62 @@ export function ModelRegistryPage() {
         quality_score: Math.min(1, Math.max(0, Number(form.quality_score) || 0)),
         supports_tools: form.supports_tools,
         supports_vision: form.supports_vision || form.capabilities.includes('vision'),
-      }, key),
+        ...(form.supports_structured_output !== undefined
+          ? { supports_structured_output: form.supports_structured_output }
+          : {}),
+        ...(baseUrl ? { base_url: baseUrl } : {}),
+      }, key);
+    },
     onSuccess: () => {
       invalidate();
-      setShowModal(false);
-      setForm(EMPTY_FORM);
-      setFormError('');
+      closeModal();
     },
-    onError: (e: Error) => setFormError(e.message ?? 'Failed to save model'),
+    onError: (e: Error) => setFormError(e.message || 'Failed to save model'),
   });
+
+  const testConn = useMutation({
+    mutationFn: ({ f }: { f: FormState; sig: string }) =>
+      modelsApi.testEndpoint({
+        provider: f.provider || 'custom',
+        model_id: f.model_id.trim(),
+        base_url: f.base_url.trim(),
+        capabilities: f.capabilities,
+      }, key),
+    onSuccess: (result, { sig }) => setTestOutcome({ sig, kind: 'result', result }),
+    onError: (e: Error, { sig }) =>
+      setTestOutcome({ sig, kind: 'error', message: e.message || 'Connection test failed' }),
+  });
+
+  const openAdd = () => {
+    setForm(EMPTY_FORM);
+    setEditingKey(null);
+    setFormError('');
+    setTestOutcome(null);
+    setShowModal(true);
+  };
+
+  const openEdit = (m: ConfiguredModel) => {
+    setForm(formFromModel(m));
+    setEditingKey(keyOf(m));
+    setFormError('');
+    setTestOutcome(null);
+    setShowModal(true);
+  };
+
+  function closeModal() {
+    setShowModal(false);
+    setForm(EMPTY_FORM);
+    setEditingKey(null);
+    setFormError('');
+    setTestOutcome(null);
+  }
+
+  /** Update a form field; a change to what the connection test probed clears its result. */
+  const setField = <K extends keyof FormState>(field: K, value: FormState[K]) => {
+    const next = { ...form, [field]: value };
+    if (testSignature(next) !== testSignature(form)) setTestOutcome(null);
+    setForm(next);
+  };
 
   const remove = useMutation({
     mutationFn: (m: ConfiguredModel) => modelsApi.deleteConfigured(m.provider, m.model_id, key),
@@ -242,7 +333,7 @@ export function ModelRegistryPage() {
             </button>
             <button
               type="button"
-              onClick={() => { setForm(EMPTY_FORM); setFormError(''); setShowModal(true); }}
+              onClick={openAdd}
               disabled={!canModify}
               title={canModify ? 'Add a model' : denyTitle}
               className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
@@ -378,6 +469,19 @@ export function ModelRegistryPage() {
                               {m.cost_per_1k_input === 0 && ' (self-hosted / free)'}
                               {m.supports_tools && ' · tools'}
                               {m.supports_vision && ' · vision'}
+                              {m.base_url && (
+                                <>
+                                  {' · '}
+                                  <span
+                                    title={m.base_url}
+                                    aria-label={`Endpoint ${m.base_url}`}
+                                    className="inline-flex items-center gap-1 font-mono"
+                                  >
+                                    <Plug className="h-3 w-3" />
+                                    {endpointHost(m.base_url)}
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -405,6 +509,17 @@ export function ModelRegistryPage() {
                                 <ArrowDown className="h-4 w-4" />
                               </button>
                             </>
+                          )}
+                          {canModify && (
+                            <button
+                              type="button"
+                              onClick={() => openEdit(m)}
+                              aria-label={`Edit ${m.model_id}`}
+                              title="Edit model"
+                              className="rounded-lg p-2 text-muted-foreground hover:bg-muted"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
                           )}
                           <button
                             type="button"
@@ -482,22 +597,29 @@ export function ModelRegistryPage() {
 
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-card shadow-xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mr-modal-title"
+            className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-card shadow-xl"
+          >
             <div className="border-b border-border px-6 py-4">
-              <h3 className="text-lg font-semibold">Add / override a model</h3>
+              <h3 id="mr-modal-title" className="text-lg font-semibold">
+                {editingKey ? 'Edit model' : 'Add / override a model'}
+              </h3>
               <p className="mt-1 text-xs text-muted-foreground">
                 Register a model your provider can serve. Set its cost so the cheapest one is used
                 first when no preference order is saved for its capability.
               </p>
             </div>
-            <div className="space-y-4 px-6 py-4">
+            <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="mr-model-id" className="mb-1 block text-xs font-medium text-muted-foreground">Model ID *</label>
                   <input
                     id="mr-model-id"
                     value={form.model_id}
-                    onChange={(e) => setForm((f) => ({ ...f, model_id: e.target.value }))}
+                    onChange={(e) => setField('model_id', e.target.value)}
                     placeholder="e.g. openai/gpt-oss-20b"
                     className={INPUT_CLS}
                   />
@@ -507,19 +629,65 @@ export function ModelRegistryPage() {
                   <select
                     id="mr-provider"
                     value={form.provider}
-                    onChange={(e) => setForm((f) => ({ ...f, provider: e.target.value }))}
+                    onChange={(e) => setField('provider', e.target.value)}
                     className={INPUT_CLS}
                   >
+                    {/* Keep an unknown provider from an existing row selectable when editing. */}
+                    {!(PROVIDERS as readonly string[]).includes(form.provider) && form.provider && (
+                      <option value={form.provider}>{form.provider}</option>
+                    )}
                     {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
                 </div>
+              </div>
+              {editingKey && (
+                <p className="-mt-2 text-xs text-muted-foreground">
+                  Model ID and provider identify the entry — changing either creates a new entry
+                  instead of updating <span className="font-mono">{editingKey}</span>.
+                </p>
+              )}
+              <div>
+                <label htmlFor="mr-base-url" className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Endpoint URL (optional)
+                </label>
+                <input
+                  id="mr-base-url"
+                  type="url"
+                  inputMode="url"
+                  value={form.base_url}
+                  onChange={(e) => setField('base_url', e.target.value)}
+                  placeholder="http://192.168.63.104:30080/v1"
+                  aria-describedby="mr-base-url-help"
+                  className={INPUT_CLS}
+                />
+                <p id="mr-base-url-help" className="mt-1 text-xs text-muted-foreground">
+                  Base URL of an OpenAI-compatible server (vLLM, Ollama /v1, on-prem). Leave empty to
+                  use the provider's configured API.
+                </p>
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => testConn.mutate({ f: form, sig: testSignature(form) })}
+                    disabled={!canModify || !form.model_id.trim() || !form.base_url.trim() || testConn.isPending}
+                    title={canModify ? 'Probe the endpoint with this model' : denyTitle}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    {testConn.isPending
+                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      : <Plug className="h-3.5 w-3.5" />}
+                    Test connection
+                  </button>
+                </div>
+                {testOutcome && testOutcome.sig === testSignature(form) && (
+                  <TestOutcomeBlock outcome={testOutcome} modelId={form.model_id.trim()} />
+                )}
               </div>
               <div>
                 <label htmlFor="mr-display-name" className="mb-1 block text-xs font-medium text-muted-foreground">Display name</label>
                 <input
                   id="mr-display-name"
                   value={form.display_name}
-                  onChange={(e) => setForm((f) => ({ ...f, display_name: e.target.value }))}
+                  onChange={(e) => setField('display_name', e.target.value)}
                   placeholder="Optional"
                   className={INPUT_CLS}
                 />
@@ -531,7 +699,7 @@ export function ModelRegistryPage() {
                     id="mr-cost-in"
                     type="number" step="0.00001" min="0"
                     value={form.cost_per_1k_input}
-                    onChange={(e) => setForm((f) => ({ ...f, cost_per_1k_input: e.target.value }))}
+                    onChange={(e) => setField('cost_per_1k_input', e.target.value)}
                     className={INPUT_CLS}
                   />
                 </div>
@@ -541,7 +709,7 @@ export function ModelRegistryPage() {
                     id="mr-cost-out"
                     type="number" step="0.00001" min="0"
                     value={form.cost_per_1k_output}
-                    onChange={(e) => setForm((f) => ({ ...f, cost_per_1k_output: e.target.value }))}
+                    onChange={(e) => setField('cost_per_1k_output', e.target.value)}
                     className={INPUT_CLS}
                   />
                 </div>
@@ -551,7 +719,7 @@ export function ModelRegistryPage() {
                     id="mr-quality"
                     type="number" step="0.05" min="0" max="1"
                     value={form.quality_score}
-                    onChange={(e) => setForm((f) => ({ ...f, quality_score: e.target.value }))}
+                    onChange={(e) => setField('quality_score', e.target.value)}
                     className={INPUT_CLS}
                   />
                 </div>
@@ -579,13 +747,13 @@ export function ModelRegistryPage() {
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={form.supports_tools}
-                    onChange={(e) => setForm((f) => ({ ...f, supports_tools: e.target.checked }))}
+                    onChange={(e) => setField('supports_tools', e.target.checked)}
                     className="h-4 w-4 rounded border-input accent-primary" />
                   Supports tools
                 </label>
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={form.supports_vision}
-                    onChange={(e) => setForm((f) => ({ ...f, supports_vision: e.target.checked }))}
+                    onChange={(e) => setField('supports_vision', e.target.checked)}
                     className="h-4 w-4 rounded border-input accent-primary" />
                   Supports vision
                 </label>
@@ -597,7 +765,7 @@ export function ModelRegistryPage() {
               )}
             </div>
             <div className="flex justify-end gap-3 border-t border-border px-6 py-4">
-              <button onClick={() => setShowModal(false)} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent">Cancel</button>
+              <button onClick={closeModal} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent">Cancel</button>
               <button
                 onClick={() => {
                   if (!form.model_id.trim() || form.capabilities.length === 0) {
@@ -617,5 +785,50 @@ export function ModelRegistryPage() {
         </div>
       )}
     </JARVISPageShell>
+  );
+}
+
+const MAX_SERVED_SHOWN = 8;
+
+function TestOutcomeBlock({ outcome, modelId }: { outcome: TestOutcome; modelId: string }) {
+  if (outcome.kind === 'error' || !outcome.result.ok) {
+    const message = outcome.kind === 'error'
+      ? outcome.message
+      : outcome.result.error || outcome.result.detail || 'Connection failed';
+    return (
+      <div
+        role="alert"
+        data-testid="endpoint-test-result"
+        className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-destructive dark:border-red-800 dark:bg-red-900/20"
+      >
+        <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+        <span className="min-w-0 break-words">Connection failed: {message}</span>
+      </div>
+    );
+  }
+  const r = outcome.result;
+  const served = r.served_models ?? [];
+  const shown = served.slice(0, MAX_SERVED_SHOWN).join(', ');
+  const more = served.length > MAX_SERVED_SHOWN ? ` (+${served.length - MAX_SERVED_SHOWN} more)` : '';
+  return (
+    <div
+      role="status"
+      data-testid="endpoint-test-result"
+      className="mt-2 space-y-1 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300"
+    >
+      <p className="flex items-center gap-1.5 font-medium">
+        <CircleCheck className="h-4 w-4 flex-shrink-0" />
+        Connected · {Math.round(r.latency_ms)} ms · {r.probe}
+      </p>
+      {r.detail && <p className="break-words">{r.detail}</p>}
+      {r.model_listed === false && (
+        <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span className="min-w-0 break-words">
+            The server does not list {modelId}; it serves: {shown || 'no models'}{more}
+          </span>
+        </p>
+      )}
+    </div>
   );
 }

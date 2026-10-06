@@ -78,6 +78,7 @@ ingestion:
 # accepts only the platform admin key.
 platformAdminTenantIds: ""
 
+
 ocr:
   # false (default) = skip Tesseract; the LLM-vision OCR model reads every page.
   # true = Tesseract first, LLM vision only for low-confidence pages.

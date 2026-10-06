@@ -46,6 +46,9 @@ _FIELDS = (
     "avg_latency_ms",
     "is_available",
     "origin",  # "catalog" for catalog imports; absent = added by the operator
+    # Optional OpenAI-compatible server for this model (vLLM / Ollama / on-prem),
+    # e.g. http://192.168.63.104:30080/v1 — see app.ai_router.model_endpoints.
+    "base_url",
 )
 
 

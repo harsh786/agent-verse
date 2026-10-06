@@ -164,6 +164,7 @@ def _load_overrides(reg: ModelRegistry) -> None:
                     ),
                     quality_score=float(e.get("quality_score", 0.7) or 0.7),
                     is_available=bool(e.get("is_available", True)),
+                    base_url=str(e.get("base_url") or "").strip() or None,
                     extra={"source": "env" if from_env else "override", "origin": origin},
                 )
             )

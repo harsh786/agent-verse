@@ -10,7 +10,10 @@ failover — was therefore sent to the wrong API and failed.
 registry override (UI / catalog import) assigns to a *different*, credentialed
 provider, it calls that provider's adapter (built once, from the deployment's
 env keys); everything else goes to the wrapped provider exactly as before —
-env-seeded models, models the wrapped cluster serves, unknown models. It is
+env-seeded models, models the wrapped cluster serves, unknown models. A
+model registered with its own ``base_url`` (e.g. a vLLM server on the LAN) is
+called at that URL, after the model-endpoint egress check
+(``app.ai_router.model_endpoints``). It is
 transparent otherwise (``__getattr__`` delegation, like ``TracedProvider``).
 Embeddings always use the wrapped provider (an index's vectors must come from
 one model).
@@ -82,18 +85,39 @@ def _provider_config(provider: str, model: str) -> Any | None:
     return None
 
 
-def _override_providers(model: str) -> list[str]:
-    """Providers that registry OVERRIDES assign *model* to, in execution order."""
+def _overrides(model: str) -> list[Any]:
+    """Registry OVERRIDES (UI / catalog) for *model* that may serve now."""
     try:
         from app.ai_router.registry import model_registry
         from app.ai_router.selection import is_eligible
 
         return [
-            m.provider
+            m
             for m in model_registry.list_configured()
             if m.model_id == model
             and (m.extra or {}).get("source") == "override"
             and is_eligible(m)
+        ]
+    except Exception:  # pragma: no cover - never block a call
+        return []
+
+
+def _override_providers(model: str) -> list[str]:
+    """Providers that registry OVERRIDES assign *model* to, in execution order."""
+    return [m.provider for m in _overrides(model)]
+
+
+def _endpoint_overrides(model: str) -> list[Any]:
+    """Overrides of *model* that name their own endpoint (``base_url``)."""
+    try:
+        from app.ai_router.registry import model_registry
+
+        return [
+            m
+            for m in model_registry.list_configured()
+            if m.model_id == model
+            and getattr(m, "base_url", None)
+            and (m.extra or {}).get("source") == "override"
         ]
     except Exception:  # pragma: no cover - never block a call
         return []
@@ -133,10 +157,55 @@ class ModelDispatchProvider:
             self._adapters.setdefault(key, adapter)
             return self._adapters[key]
 
+    def _endpoint_adapter(self, endpoint: Any) -> Any | None:
+        """An OpenAI-compatible client for a model's own ``base_url`` (cached).
+
+        The URL is re-checked against the model-endpoint egress policy here, so
+        an allowlist change takes effect on the next adapter build.
+        """
+        from app.ai_router.model_endpoints import (
+            check_model_endpoint,
+            endpoint_api_key,
+            onprem_extra_body,
+        )
+
+        key = f"url:{endpoint.provider}|{endpoint.base_url}"
+        with self._lock:
+            if key in self._adapters:
+                return self._adapters[key]
+        adapter: Any = None
+        try:
+            from app.providers.openai_compatible import OpenAICompatibleProvider
+
+            base = check_model_endpoint(str(endpoint.base_url))
+            adapter = OpenAICompatibleProvider(
+                api_key=endpoint_api_key(endpoint.provider),
+                base_url=base,
+                default_model=endpoint.model_id,
+                embed_model=endpoint.model_id,
+                extra_body=onprem_extra_body(endpoint.provider),
+            )
+            adapter._agentverse_provider_type = _norm(endpoint.provider) or "openai_compatible"
+        except Exception as exc:
+            logger.warning(
+                "model_dispatch_endpoint_refused model=%s error=%s",
+                endpoint.model_id, str(exc)[:200],
+            )
+            adapter = None
+        with self._lock:
+            self._adapters.setdefault(key, adapter)
+            return self._adapters[key]
+
     def target_for(self, model: str | None) -> Any:
         """The provider object that should serve *model*."""
         if not model:
             return self._inner
+        # A model registered with its own endpoint (vLLM / Ollama / on-prem URL)
+        # is served there, whatever the platform provider is.
+        for endpoint in _endpoint_overrides(model):
+            adapter = self._endpoint_adapter(endpoint)
+            if adapter is not None:
+                return adapter
         endpoints = getattr(self._inner, "_endpoints", None)
         if isinstance(endpoints, dict) and model in endpoints:
             return self._inner  # the wrapped cluster serves it itself

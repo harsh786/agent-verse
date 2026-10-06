@@ -153,7 +153,17 @@ export function CatalogImportDialog({ adminKey, canModify, onClose, onImported }
                           disabled={!canModify}
                           className="h-4 w-4 rounded border-input accent-primary"
                         />
-                        <span className="min-w-0 flex-1 truncate">{m.display_name || m.model_id}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {m.display_name || m.model_id}
+                          {m.base_url && (
+                            <span
+                              title={m.base_url}
+                              className="ml-2 font-mono text-[10px] text-muted-foreground"
+                            >
+                              {m.base_url}
+                            </span>
+                          )}
+                        </span>
                         <span className="text-xs text-muted-foreground">
                           {m.capabilities.join(', ')} · ${m.cost_per_1k_input.toFixed(5)}/1k in
                         </span>

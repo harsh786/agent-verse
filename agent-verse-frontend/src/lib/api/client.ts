@@ -862,6 +862,11 @@ export interface ConfiguredModel {
   source: 'env' | 'override';
   /** 1-based effective execution order within the capability. */
   rank: number;
+  /**
+   * Base URL of the OpenAI-compatible server that serves this model (vLLM,
+   * Ollama `/v1`, on-prem). null = the provider's configured API.
+   */
+  base_url: string | null;
 }
 
 export interface CapabilityGroup {
@@ -893,6 +898,8 @@ export interface CatalogModel {
   supports_vision: boolean;
   quality_score: number;
   already_configured: boolean;
+  /** Set when the catalog entry is served by a specific OpenAI-compatible endpoint. */
+  base_url?: string | null;
 }
 
 export interface CatalogProvider {
@@ -911,6 +918,26 @@ export interface CatalogProvider {
 // operator tenant. Every registry call forwards the key when one was typed.
 const _adminHeaders = (adminKey?: string): Record<string, string> =>
   adminKey ? { "X-Admin-Key": adminKey } : {};
+
+/** POST /models/configured/test-endpoint — probe an OpenAI-compatible endpoint. */
+export interface ModelEndpointTestRequest {
+  provider: string;
+  model_id: string;
+  base_url: string;
+  capabilities: string[];
+}
+
+/** `ok: false` still arrives as HTTP 200 with `error` set; a refused URL is a 400. */
+export interface ModelEndpointTestResult {
+  ok: boolean;
+  latency_ms: number;
+  probe: 'chat' | 'embedding' | 'rerank';
+  /** null when the server has no model listing to check against. */
+  model_listed: boolean | null;
+  served_models: string[];
+  detail: string;
+  error: string | null;
+}
 
 /** GET /models/plan-cap — would this model be clamped to the caller's plan tier? */
 export interface ModelPlanCap {
@@ -949,6 +976,12 @@ export const modelsApi = {
       `/models/configured/${encodeURIComponent(provider)}/${encodeURIComponent(modelId)}`,
       { method: "DELETE", headers: _adminHeaders(adminKey) }
     ),
+  testEndpoint: (body: ModelEndpointTestRequest, adminKey?: string) =>
+    request<ModelEndpointTestResult>("/models/configured/test-endpoint", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: _adminHeaders(adminKey),
+    }),
   reseed: (adminKey?: string) =>
     request<{ status: string; configured_models: number }>("/models/configured/reseed", {
       method: "POST",

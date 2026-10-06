@@ -146,11 +146,48 @@ class HostedReranker:
         return pairs
 
 
+def _registry_rerank_endpoint() -> tuple[str, str] | None:
+    """``(rerank URL, model)`` of the first ranked registry reranker that names its
+    own endpoint (Model Registry ``base_url``), or None.
+
+    Used only when no ``RAG_HOSTED_RERANKER_URL`` is configured, so a reranker
+    added in the UI (e.g. a vLLM Qwen3-Reranker at http://host:30083/v1) works.
+    """
+    try:
+        from app.ai_router.model_endpoints import check_model_endpoint
+        from app.ai_router.models import TaskType
+        from app.ai_router.selection import ordered_configured_models
+
+        for m in ordered_configured_models(TaskType.RERANK):
+            base = str(getattr(m, "base_url", "") or "")
+            if not base:
+                continue
+            base = check_model_endpoint(base)
+            return (base if base.endswith("/rerank") else f"{base}/rerank"), m.model_id
+    except Exception as exc:
+        logger.warning("registry_rerank_endpoint_unusable error=%s", str(exc)[:160])
+    return None
+
+
 def hosted_reranker_from_settings(settings: Any) -> HostedReranker | None:
-    """Build a HostedReranker from Settings, or None when no URL is configured."""
+    """Build a HostedReranker from Settings, or None when no URL is configured.
+
+    Without ``RAG_HOSTED_RERANKER_URL``, a Model Registry reranker with its own
+    endpoint is used (that URL already passed the model-endpoint egress policy).
+    """
     url = str(getattr(settings, "rag_hosted_reranker_url", "") or "").strip()
     if not url:
-        return None
+        registry = _registry_rerank_endpoint()
+        if registry is None:
+            return None
+        reg_url, reg_model = registry
+        return HostedReranker(
+            url=reg_url,
+            api_key=str(getattr(settings, "rag_hosted_reranker_api_key", "") or ""),
+            model=reg_model,
+            timeout_seconds=float(getattr(settings, "rag_hosted_reranker_timeout_seconds", 10.0)),
+            allow_internal=True,  # checked by check_model_endpoint above
+        )
     _cfg_model = str(getattr(settings, "rag_hosted_reranker_model", "rerank-english-v3.0"))
     # Prefer the operator's preferred (else cheapest) CONFIGURED reranker that
     # this endpoint's provider serves, else the settings model. An unrecognised
@@ -177,5 +214,8 @@ def hosted_reranker_from_settings(settings: Any) -> HostedReranker | None:
 
 
 def is_hosted_reranker_configured(settings: Any) -> bool:
-    """True when a hosted reranker URL is set (the strategy can be used)."""
-    return bool(str(getattr(settings, "rag_hosted_reranker_url", "") or "").strip())
+    """True when a hosted reranker URL is set, or a registry reranker names its
+    own endpoint (the strategy can be used)."""
+    if str(getattr(settings, "rag_hosted_reranker_url", "") or "").strip():
+        return True
+    return _registry_rerank_endpoint() is not None

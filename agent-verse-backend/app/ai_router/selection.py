@@ -127,6 +127,8 @@ def is_eligible(m: Any) -> bool:
     """
     if (getattr(m, "extra", None) or {}).get("source") != "override":
         return True
+    if getattr(m, "base_url", None):
+        return True  # it names its own endpoint (checked when it was saved)
     from app.ai_router.model_catalog import provider_ready
 
     return provider_ready(str(getattr(m, "provider", "")))

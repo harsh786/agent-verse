@@ -370,6 +370,7 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         "provider_ready": is_eligible(m),
         "source": (m.extra or {}).get("source", "env"),
         "origin": (m.extra or {}).get("origin", ""),
+        "base_url": getattr(m, "base_url", None),
         "rank": rank,
     }
 
@@ -575,6 +576,119 @@ async def reset_preference(request: Request, capability: str) -> dict[str, Any]:
     return {"status": "reset", "capability": cap.value}
 
 
+def _checked_base_url(raw: Any) -> str:
+    """A model's own endpoint URL, normalised, or 400 when it may not be used."""
+    from app.ai_router.model_endpoints import ModelEndpointError, check_model_endpoint
+
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    try:
+        return check_model_endpoint(value)
+    except ModelEndpointError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+_PROBE_TIMEOUT_S = 30.0
+
+
+@router.post("/configured/test-endpoint")
+async def test_model_endpoint(request: Request) -> dict[str, Any]:
+    """Check that a model's own endpoint answers (platform admin).
+
+    Body ``{provider, model_id, base_url, capabilities}``. Lists the server's
+    models (``GET {base_url}/models``), then makes one real call for the
+    capability: a short chat completion (reasoning / vision / OCR), an embedding,
+    or a rerank. ``ok: false`` (HTTP 200) carries the error; 400 = URL refused.
+    """
+    _require_tenant(request)
+    _require_platform_admin(request)
+    import time
+
+    import httpx
+
+    from app.ai_router.model_endpoints import endpoint_api_key, onprem_extra_body
+
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    model_id = str(body.get("model_id", "") or "").strip()
+    provider = str(body.get("provider", "") or "").strip() or "custom"
+    caps = {str(c) for c in (body.get("capabilities") or []) if c}
+    base = _checked_base_url(body.get("base_url"))
+    if not model_id or not base:
+        raise HTTPException(400, "model_id and base_url are required")
+
+    probe = "rerank" if caps == {"rerank"} else "embedding" if caps == {"embedding"} else "chat"
+    headers = {"Authorization": f"Bearer {endpoint_api_key(provider)}"}
+    result: dict[str, Any] = {
+        "ok": False,
+        "latency_ms": 0.0,
+        "probe": probe,
+        "model_listed": None,
+        "served_models": [],
+        "detail": "",
+        "error": None,
+    }
+    start = time.monotonic()
+    try:
+        # follow_redirects=False: a redirect must not walk the probe elsewhere.
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S, follow_redirects=False) as client:
+            try:
+                listed = await client.get(f"{base}/models", headers=headers)
+                if listed.status_code == 200:
+                    ids = [
+                        str(m.get("id"))
+                        for m in (listed.json().get("data") or [])
+                        if isinstance(m, dict) and m.get("id")
+                    ]
+                    result["served_models"] = ids[:50]
+                    result["model_listed"] = model_id in ids
+            except (httpx.HTTPError, ValueError):
+                pass  # not every server lists models; the real call decides
+
+            if probe == "chat":
+                payload: dict[str, Any] = {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": "Reply with just the word OK"}],
+                    "max_tokens": 16,
+                }
+                payload.update(onprem_extra_body(provider) or {})
+                resp = await client.post(f"{base}/chat/completions", json=payload, headers=headers)
+            elif probe == "embedding":
+                resp = await client.post(
+                    f"{base}/embeddings", json={"model": model_id, "input": ["ping"]},
+                    headers=headers,
+                )
+            else:
+                url = base if base.endswith("/rerank") else f"{base}/rerank"
+                resp = await client.post(
+                    url,
+                    json={"model": model_id, "query": "ping", "documents": ["ping", "pong"]},
+                    headers=headers,
+                )
+        result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+        if resp.status_code >= 400:
+            result["error"] = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            return result
+        data = resp.json()
+        if probe == "chat":
+            choice = (data.get("choices") or [{}])[0]
+            text = str((choice.get("message") or {}).get("content") or "").strip()
+            result["detail"] = f"replied: {text[:80]!r}" if text else "empty reply"
+        elif probe == "embedding":
+            vec = ((data.get("data") or [{}])[0]).get("embedding") or []
+            result["detail"] = f"{len(vec)}-dimension embedding"
+        else:
+            result["detail"] = f"{len(data.get('results') or [])} documents scored"
+        result["ok"] = True
+    except httpx.HTTPError as exc:
+        result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+        result["error"] = f"{type(exc).__name__}: {str(exc)[:300] or 'connection failed'}"
+    except ValueError as exc:
+        result["error"] = f"invalid response: {str(exc)[:200]}"
+    return result
+
+
 @router.post("/configured")
 async def upsert_configured_model(request: Request) -> dict[str, Any]:
     """Add or override a configured model. Persists to the store and takes effect
@@ -614,6 +728,9 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
         "quality_score": float(body.get("quality_score", 0.7) or 0.7),
         "is_available": bool(body.get("is_available", True)),
     }
+    base_url = _checked_base_url(body.get("base_url"))
+    if base_url:
+        endpoint["base_url"] = base_url
     store = get_model_registry_store()
     if store is None:
         raise HTTPException(503, "model registry store unavailable")

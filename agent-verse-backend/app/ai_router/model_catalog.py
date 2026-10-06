@@ -36,6 +36,9 @@ class CatalogModel:
     cost_per_1k_output: float = 0.0
     quality_score: float = 0.7
     display_name: str = ""
+    # The model's own OpenAI-compatible server, when the deployment knows it
+    # (on-prem vLLM endpoints from ONPREM_*); empty = the provider's API.
+    base_url: str = ""
 
     def endpoint(self, provider: str) -> dict[str, Any]:
         caps = list(self.capabilities)
@@ -54,6 +57,7 @@ class CatalogModel:
             # Imported from the catalog: ranks after the deployment's own models
             # until the operator puts it in the preference order.
             "origin": "catalog",
+            **({"base_url": self.base_url} if self.base_url else {}),
         }
 
 
@@ -178,15 +182,18 @@ def _onprem_provider() -> CatalogProvider:
     gemma = str(getattr(s, "onprem_gemma_model", "") or "google/gemma-4-E2B")
     embed = str(getattr(s, "onprem_embedding_model", "") or "Qwen/Qwen3-Embedding-0.6B")
     rerank = str(getattr(s, "onprem_reranker_model", "") or "Qwen/Qwen3-Reranker-0.6B")
+    def _url(attr: str) -> str:
+        return str(getattr(s, attr, "") or "").strip().rstrip("/")
+
     return CatalogProvider(
         "onprem",
         "Qwen on-prem (vLLM)",
-        "ONPREM_ENABLED + ONPREM_QWEN_BASE_URL",
+        "ONPREM_ENABLED + ONPREM_QWEN_BASE_URL, or an endpoint URL per model",
         (
-            _M(qwen, _REASON, 0.0, 0.0, 0.74),
-            _M(gemma, _REASON, 0.0, 0.0, 0.62),
-            _M(embed, _EMBED, 0.0, 0.0, 0.76),
-            _M(rerank, _RERANK, 0.0, 0.0, 0.76),
+            _M(qwen, _REASON, 0.0, 0.0, 0.74, base_url=_url("onprem_qwen_base_url")),
+            _M(gemma, _REASON, 0.0, 0.0, 0.62, base_url=_url("onprem_gemma_base_url")),
+            _M(embed, _EMBED, 0.0, 0.0, 0.76, base_url=_url("onprem_embedding_base_url")),
+            _M(rerank, _RERANK, 0.0, 0.0, 0.76, base_url=_url("onprem_reranker_url")),
         ),
     )
 
