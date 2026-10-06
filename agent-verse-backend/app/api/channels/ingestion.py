@@ -7,7 +7,8 @@ any tenant data. Each one fails closed:
 
 * ``slack``   — Slack signing-secret HMAC + 5-minute timestamp window
   (``app.state.slack_signing_secret`` or ``SLACK_SIGNING_SECRET``).
-* ``teams``   — Bot Framework JWT (``TEAMS_APP_ID``), via ``MicrosoftTeamsAdapter``.
+* ``teams``   — Bot Framework JWT for the platform bot (``TEAMS_APP_ID``) or the
+  bound tenant's own bot app; the org must be bound (403 otherwise).
 * ``discord`` — Ed25519 interaction signature (``DISCORD_PUBLIC_KEY``).
 * ``email`` / ``sms`` / ``voice`` / ``form`` / ``meeting`` — an operator shared
   secret per channel (``app.state.channel_webhook_secrets[channel]`` or
@@ -319,29 +320,111 @@ def _teams_org_id(body: dict[str, Any]) -> str:
     return ""
 
 
+class _ChannelLookupUnavailableError(RuntimeError):
+    """The channel → tenant table could not be read (answer 503, never guess)."""
+
+
+async def _teams_binding(request: Request, org_id: str) -> tuple[str, str] | None:
+    """``(tenant_id, bound_app_id)`` of the routable mapping for a Microsoft 365
+    org, or None when the org is not bound. A DB error raises (the caller
+    answers 503 so Bot Framework retries) instead of reading as "unbound".
+
+    ``bound_app_id`` is the tenant's own Bot Framework app (a TRG-42 gateway
+    binding); "" when the org talks to the platform bot only.
+    """
+    db = _lookup_db(request)
+    if db is None or not org_id:
+        return None
+    from sqlalchemy import text
+
+    from app.api.channels.verification import STATUS_LEGACY, STATUS_VERIFIED
+    from app.db.rls import system_session
+
+    try:
+        async with db() as session, session.begin(), system_session(session):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT tenant_id, channel_config FROM channel_tenant_mappings "
+                        "WHERE channel_type = :ct AND channel_id = :ci "
+                        "AND status IN (:verified, :legacy) LIMIT 1"
+                    ),
+                    {
+                        "ct": "teams",
+                        "ci": org_id,
+                        "verified": STATUS_VERIFIED,
+                        "legacy": STATUS_LEGACY,
+                    },
+                )
+            ).fetchone()
+    except Exception as exc:
+        _log.warning("teams_binding_lookup_failed: %s", str(exc)[:200])
+        raise _ChannelLookupUnavailableError(str(exc)[:200]) from exc
+    if row is None:
+        return None
+    try:
+        config = row[1]
+    except (IndexError, KeyError):
+        config = None
+    app_id = str(config.get("app_id") or "") if isinstance(config, dict) else ""
+    return str(row[0]), app_id
+
+
 @router.post("/teams/events")
 async def teams_events(request: Request) -> dict:
-    """Handle Microsoft Teams webhook (Bot Framework JWT authenticated)."""
-    from app.gateway.channels.teams import MicrosoftTeamsAdapter
+    """Handle Microsoft Teams webhook (Bot Framework JWT authenticated).
+
+    DEF-1: the tenant is bound by what the VERIFIED token and activity say:
+
+    1. The Bot Framework JWT is validated (RS256 against the cached Bot
+       Framework JWKS, issuer, expiry, ``serviceurl`` claim = activity
+       ``serviceUrl``, key endorsements) — 401 otherwise.
+    2. Its audience (the bot app id) must be the platform bot
+       (``TEAMS_APP_ID``) or the Bot Framework app the bound tenant registered
+       for THIS Microsoft 365 org — a tenant's own bot cannot carry another
+       org's activities into someone else's tenant (401).
+    3. The org (``channelData.tenant.id`` / ``conversation.tenantId``) must be
+       bound to a tenant by a verified mapping; unknown or unbound orgs get 403.
+       ``serviceUrl`` is never used: it is a regional endpoint shared by every
+       Teams organisation, and mapping it routed every org to one tenant.
+    """
+    from app.gateway.channels.teams import decode_bot_framework_token, token_audience
 
     body_bytes = await request.body()
-    await _require_adapter_auth(MicrosoftTeamsAdapter(), request, body_bytes)
+    try:
+        activity = json.loads(body_bytes) if body_bytes else {}
+    except ValueError:
+        activity = {}
+    if not isinstance(activity, dict):
+        activity = {}
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    claims = await decode_bot_framework_token(headers, activity)
+    if claims is None:
+        raise HTTPException(401, "Invalid channel signature")
+    audience = token_audience(claims)
+    platform_app = os.getenv("TEAMS_APP_ID", "").strip()
     body = _parse_json(body_bytes)
-    # The tenant comes only from the registered channel mapping, keyed on the
-    # Microsoft 365 tenant id of the activity. A valid Bot Framework token proves
-    # the call is from Microsoft for OUR app, not which AgentVerse tenant it is
-    # for — never a caller-supplied X-Tenant-ID header, never the shared serviceUrl.
     org_id = _teams_org_id(body)
-    if await _consume_ownership_proof(request, "teams", org_id, body):
+
+    via_platform = bool(platform_app) and audience == platform_app
+    try:
+        binding = await _teams_binding(request, org_id)
+    except _ChannelLookupUnavailableError:
+        raise HTTPException(503, "Channel mappings are temporarily unavailable") from None
+    bound_app = binding[1] if binding else ""
+    if not via_platform and not (bound_app and audience == bound_app):
+        raise HTTPException(401, "Invalid channel signature")
+
+    if via_platform and await _consume_ownership_proof(request, "teams", org_id, body):
         return {"type": "message", "text": "Channel verified"}
-    tenant_id = await _resolve_tenant_from_channel("teams", org_id, _lookup_db(request))
-    if not tenant_id:
-        _log.warning("teams_event_unmapped_org org_id=%s", org_id or "<missing>")
+    if binding is None:
+        _log.warning("teams_event_unbound_org org_id=%s", org_id or "<missing>")
+        raise HTTPException(403, "This Microsoft 365 organisation is not bound to a tenant")
+    tenant_id = binding[0]
     gateway = _get_gateway(request)
-    if gateway and tenant_id:
+    if gateway:
         await gateway.ingest("teams", body, tenant_id=tenant_id)
-    if tenant_id:
-        await _emit_chat_event(request, "teams", body, tenant_id, verified=True)
+    await _emit_chat_event(request, "teams", body, tenant_id, verified=True)
     return {"type": "message", "text": "Received"}
 
 

@@ -201,12 +201,18 @@ _RELAY = {"X-Webhook-Secret": _RELAY_SECRET}
 
 @pytest.fixture
 def app_with_gateway_and_db(monkeypatch):
+    from app.gateway.channels import teams as teams_module
     from app.gateway.channels.discord import DiscordChannelAdapter
-    from app.gateway.channels.teams import MicrosoftTeamsAdapter
 
-    # Adapter signature schemes are covered in tests/gateway/channels; here we
-    # only exercise the post-auth tenant resolution + ingestion path.
-    monkeypatch.setattr(MicrosoftTeamsAdapter, "verify_auth", AsyncMock(return_value=True))
+    # Adapter signature schemes are covered in tests/gateway/channels (and the
+    # Teams token in tests/api/test_teams_events_jwt_binding.py); here we only
+    # exercise the post-auth tenant resolution + ingestion path.
+    monkeypatch.setenv("TEAMS_APP_ID", "platform-app")
+    monkeypatch.setattr(
+        teams_module,
+        "decode_bot_framework_token",
+        AsyncMock(return_value={"aud": "platform-app"}),
+    )
     monkeypatch.setattr(DiscordChannelAdapter, "verify_auth", AsyncMock(return_value=True))
     app = FastAPI()
     app.include_router(router)
