@@ -127,8 +127,18 @@ def _get_db(request: Request) -> Any:
 
 @router.get("/compliance/export")
 async def request_data_export(request: Request) -> dict[str, Any]:
+    from app.enterprise.compliance import ExportNotRecordedError
+
     ctx = _require_tenant(request)
-    req = await _compliance(request).request_data_export(tenant_ctx=ctx)
+    try:
+        req = await _compliance(request).request_data_export(tenant_ctx=ctx)
+    except ExportNotRecordedError as exc:
+        # Never hand out a download link no other replica can resolve.
+        raise HTTPException(
+            status_code=503,
+            detail="GDPR export could not be recorded; retry",
+            headers={"Retry-After": "5"},
+        ) from exc
     out: dict[str, Any] = {
         "request_id": req.request_id,
         "status": req.status,

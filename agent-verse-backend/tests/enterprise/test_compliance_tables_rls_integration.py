@@ -119,6 +119,11 @@ GRANT_TABLES = (
     "compliance_requests",
     "goals",
     "audit_log",
+    # The async GDPR export also reads these (salvage RV-08); the real app role
+    # has DML on every table (app/db/app_role.py).
+    "agents",
+    "schedules",
+    "knowledge_collections",
     # Erasure is gated on legal_holds (fail-closed); the role must be able to read it.
     "legal_holds",
     # Golden tasks are written through EvalSuiteStore, which bumps the suite's

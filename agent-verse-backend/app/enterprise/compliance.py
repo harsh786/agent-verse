@@ -37,6 +37,14 @@ ERASURE_GRACE_DAYS = 30
 # of loading the whole table or truncating silently.
 SYNC_EXPORT_MAX_ROWS = 10_000
 
+
+class ExportNotRecordedError(RuntimeError):
+    """A finished export could not be written to ``compliance_requests``.
+
+    A ``ready`` export must be durable before its download link is handed out:
+    other replicas resolve the link from Postgres only.
+    """
+
 # Postgres SQLSTATEs meaning "this table/column does not exist in this schema"
 # (the ordered table list is a superset across deployments) — not a failure.
 _NOT_APPLICABLE_SQLSTATES = frozenset({"42P01", "42703"})
@@ -110,7 +118,12 @@ class ComplianceController:
 
     # ── internal DB helpers ────────────────────────────────────────────────────
 
-    async def _db_save_request(self, req: DataExportRequest) -> None:
+    async def _db_save_request(self, req: DataExportRequest, *, strict: bool = False) -> None:
+        """Upsert *req* into ``compliance_requests`` (tenant RLS).
+
+        Best-effort by default (logged). With *strict* a failed write raises
+        :class:`ExportNotRecordedError`.
+        """
         if self._db is None:
             return
         try:
@@ -142,9 +155,11 @@ class ComplianceController:
                     },
                 )
         except Exception as exc:
-            import logging
-
             logging.getLogger(__name__).warning("compliance_request_save_failed: %s", exc)
+            if strict:
+                raise ExportNotRecordedError(
+                    f"export {req.request_id} could not be recorded: {type(exc).__name__}"
+                ) from exc
 
     async def _db_load_request(self, request_id: str, tenant_id: str) -> DataExportRequest | None:
         if self._db is None:
@@ -330,8 +345,11 @@ class ComplianceController:
             }
             req.download_url = f"/compliance/export/{req.request_id}/download"
 
-        # Persist to DB (best-effort); also keep in memory as fallback
-        await self._db_save_request(req)
+        # A ready export is recorded before its download link is handed out:
+        # other replicas resolve the link from Postgres only, so an unrecorded
+        # "ready" answer would 404 there (salvage RV-08). A failed export has no
+        # link to break and is still reported when it cannot be recorded.
+        await self._db_save_request(req, strict=req.status == "ready")
         self._export_requests[req.request_id] = req
         return req
 
