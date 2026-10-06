@@ -39,8 +39,14 @@ class GoldenTask:
         expected_output: str | None = None,
         max_iterations: int = 15,
         max_cost_usd: float = 1.0,
+        expected_citations: list[str] | None = None,
+        source_goal_id: str | None = None,
     ) -> None:
         self.task_id = task_id or uuid.uuid4().hex
+        # Sources a run must cite (a scored check), and the goal the task was
+        # promoted from (provenance only).
+        self.expected_citations = [c for c in (expected_citations or []) if str(c).strip()]
+        self.source_goal_id = source_goal_id or None
         self.suite_id = suite_id
         self.goal = goal
         self.min_score = min_score
@@ -71,6 +77,7 @@ class GoldenTask:
             self.expected_tool_calls
             or self.forbidden_tools
             or self.expected_output_contains
+            or self.expected_citations
             or (self.expected_output or "").strip()
         )
 
@@ -253,6 +260,28 @@ class LLMJudge:
 _TERMINAL_EVENTS = frozenset({"goal_complete", "goal_failed", "goal_cancelled", "goal_rejected"})
 
 
+def cited_sources(events: list[dict[str, Any]]) -> list[str]:
+    """Distinct citation sources a goal's events carry, in first-seen order.
+
+    Retrieval (``knowledge_retrieved``) and answer synthesis
+    (``synthesis_complete``) attach ``citations: [{"source": ...}, ...]``.
+    Flat and bridge-wrapped events read the same.
+    """
+    from app.services.result_artifacts import unwrap_event
+
+    seen: dict[str, None] = {}
+    for raw in events:
+        event = unwrap_event(raw)
+        citations = event.get("citations")
+        if not isinstance(citations, list):
+            continue
+        for c in citations:
+            source = c.get("source") if isinstance(c, dict) else None
+            if isinstance(source, str) and source.strip():
+                seen.setdefault(source.strip(), None)
+    return list(seen)
+
+
 async def cancel_unscored_goal(goal_service: Any, goal_id: str, tenant_ctx: Any) -> None:
     """Cancel an eval goal that will not be scored; a failure is logged, not raised."""
     cancel = getattr(goal_service, "cancel_goal", None)
@@ -347,6 +376,13 @@ async def score_golden_task(
         )
     for phrase in task.expected_output_contains:
         _check(phrase.lower() in all_output.lower(), f"Output missing '{phrase}'")
+    if task.expected_citations:
+        cited = cited_sources(events)
+        for source in task.expected_citations:
+            _check(
+                any(source.lower() == c.lower() for c in cited),
+                f"Required citation '{source}' was not cited",
+            )
 
     result = GoldenTaskResult(
         task_id=task.task_id,

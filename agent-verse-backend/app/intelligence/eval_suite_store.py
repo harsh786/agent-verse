@@ -53,7 +53,8 @@ MAX_TASK_PAGE = 500
 
 _TASK_COLUMNS = (
     "task_id, goal, expected_phrases, expected_tool_calls, forbidden_tools, "
-    "expected_output, min_score, max_iterations, tags, valid_from"
+    "expected_output, min_score, max_iterations, tags, expected_citations, "
+    "source_goal_id, valid_from"
 )
 
 _MEM_SUITES: dict[str, dict[str, dict[str, Any]]] = {}
@@ -108,6 +109,8 @@ def task_to_dict(task: GoldenTask) -> dict[str, Any]:
         "min_score": task.min_score,
         "max_iterations": task.max_iterations,
         "tags": list(task.tags),
+        "expected_citations": list(task.expected_citations),
+        "source_goal_id": task.source_goal_id or "",
     }
 
 
@@ -125,6 +128,8 @@ def task_from_dict(suite_id: str, data: dict[str, Any]) -> GoldenTask:
         min_score=float(data["min_score"]) if data.get("min_score") is not None else 0.8,
         max_iterations=int(data.get("max_iterations") or 15),
         tags=list(data.get("tags") or []),
+        expected_citations=list(data.get("expected_citations") or []),
+        source_goal_id=str(data.get("source_goal_id") or "") or None,
     )
 
 
@@ -140,7 +145,7 @@ def _clean(task: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "goal": "", "expected_tools": [], "forbidden_tools": [],
         "expected_output_contains": [], "expected_output": "", "min_score": 0.8,
-        "max_iterations": 15, "tags": [],
+        "max_iterations": 15, "tags": [], "expected_citations": [], "source_goal_id": "",
     }
     for key, default in defaults.items():
         if partial and task.get(key) is None:
@@ -171,7 +176,9 @@ def _task_row(r: Any) -> dict[str, Any]:
         "min_score": float(r[6]),
         "max_iterations": int(r[7]),
         "tags": list(_loads(r[8]) or []),
-        "revision": int(r[9]),
+        "expected_citations": list(_loads(r[9]) or []),
+        "source_goal_id": r[10] or "",
+        "revision": int(r[11]),
     }
 
 
@@ -646,10 +653,12 @@ class EvalSuiteStore:
             sa_text(
                 "INSERT INTO golden_tasks (id, tenant_id, eval_suite_id, task_id, goal, "
                 " expected_phrases, expected_tool_calls, forbidden_tools, expected_output, "
-                " min_score, max_iterations, tags, valid_from, position) VALUES "
+                " min_score, max_iterations, tags, expected_citations, source_goal_id, "
+                " valid_from, position) VALUES "
                 "(:id, :tid, :sid, :task_id, :goal, CAST(:phrases AS jsonb), "
                 " CAST(:tools AS jsonb), CAST(:forbidden AS jsonb), :expected_output, "
-                " :min_score, :max_iterations, CAST(:tags AS jsonb), :v, :pos)"
+                " :min_score, :max_iterations, CAST(:tags AS jsonb), "
+                " CAST(:citations AS jsonb), :source_goal, :v, :pos)"
             ),
             [
                 {
@@ -660,7 +669,10 @@ class EvalSuiteStore:
                     "forbidden": json.dumps(task["forbidden_tools"]),
                     "expected_output": task["expected_output"],
                     "min_score": task["min_score"], "max_iterations": task["max_iterations"],
-                    "tags": json.dumps(task["tags"]), "v": version, "pos": position,
+                    "tags": json.dumps(task["tags"]),
+                    "citations": json.dumps(task.get("expected_citations") or []),
+                    "source_goal": (task.get("source_goal_id") or None),
+                    "v": version, "pos": position,
                 }
                 for task, position in rows
             ],

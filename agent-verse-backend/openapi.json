@@ -112,6 +112,14 @@
       },
       "AddGoldenTaskRequest": {
         "properties": {
+          "expected_citations": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Expected Citations",
+            "type": "array"
+          },
           "expected_output": {
             "default": "",
             "maxLength": 10000,
@@ -161,6 +169,18 @@
             "minimum": 0.0,
             "title": "Min Score",
             "type": "number"
+          },
+          "source_goal_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Goal Id"
           },
           "tags": {
             "default": [],
@@ -1597,7 +1617,8 @@
             "type": "string"
           },
           "timeout_seconds": {
-            "default": 300,
+            "default": 0,
+            "minimum": 0.0,
             "title": "Timeout Seconds",
             "type": "integer"
           },
@@ -3175,81 +3196,6 @@
           }
         },
         "title": "DatadogWebhookPayload",
-        "type": "object"
-      },
-      "DatasetCreateRequest": {
-        "properties": {
-          "description": {
-            "default": "",
-            "title": "Description",
-            "type": "string"
-          },
-          "domain": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Domain"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "split": {
-            "default": "regression",
-            "title": "Split",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "DatasetCreateRequest",
-        "type": "object"
-      },
-      "DatasetItemRequest": {
-        "properties": {
-          "expected_output": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected Output"
-          },
-          "goal": {
-            "title": "Goal",
-            "type": "string"
-          },
-          "human_label": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Human Label"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "default": {},
-            "title": "Metadata",
-            "type": "object"
-          }
-        },
-        "required": [
-          "goal"
-        ],
-        "title": "DatasetItemRequest",
         "type": "object"
       },
       "DecideRequest": {
@@ -6273,6 +6219,59 @@
         "title": "PredictCostRequest",
         "type": "object"
       },
+      "PromoteGoalRequest": {
+        "description": "Options for promoting a completed goal to a golden task (a10-F235-01).",
+        "properties": {
+          "context": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Context",
+            "type": "string"
+          },
+          "expected_output_contains": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Expected Output Contains",
+            "type": "array"
+          },
+          "include_citations": {
+            "default": true,
+            "title": "Include Citations",
+            "type": "boolean"
+          },
+          "include_tools": {
+            "default": true,
+            "title": "Include Tools",
+            "type": "boolean"
+          },
+          "max_iterations": {
+            "default": 15,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Iterations",
+            "type": "integer"
+          },
+          "min_score": {
+            "default": 0.8,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Min Score",
+            "type": "number"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "title": "PromoteGoalRequest",
+        "type": "object"
+      },
       "PublishTemplateRequest": {
         "properties": {
           "agent_id": {
@@ -6813,6 +6812,18 @@
           "collection_id"
         ],
         "title": "RepoIngestRequest",
+        "type": "object"
+      },
+      "ResolveConflictRequest": {
+        "properties": {
+          "resolution": {
+            "default": "manual resolution",
+            "maxLength": 4000,
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "title": "ResolveConflictRequest",
         "type": "object"
       },
       "RollbackExperimentRequest": {
@@ -9322,6 +9333,21 @@
       "UpdateGoldenTaskRequest": {
         "description": "Edit a golden task; only the given fields change (a new dataset version).",
         "properties": {
+          "expected_citations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Citations"
+          },
           "expected_output": {
             "anyOf": [
               {
@@ -19080,7 +19106,7 @@
     },
     "/api/v1/workflows/import-yaml": {
       "post": {
-        "description": "Import a workflow definition from a YAML body.",
+        "description": "Import a workflow definition from a YAML body (always a NEW draft workflow).\n\nWebhook HMAC secrets (B2-GAP-3): an exported YAML carries ``auth: hmac``\nwebhooks with the secret masked (``hmac_secret: '********'``) \u2014 exports never\ncontain it. Importing such a file is refused with **422** naming the fix: put\na new secret in ``hmac_secret`` (and configure the sender with it), or remove\n``auth: hmac``. The import is never created with an empty secret (it would\nrefuse every delivery), never copies a secret from another workflow, and no\nsecret is generated or echoed back. A plaintext ``hmac_secret`` in the YAML\nis stored vault-encrypted and masked in the response.",
         "operationId": "import_yaml_api_v1_workflows_import_yaml_post",
         "responses": {
           "201": {
@@ -28896,186 +28922,6 @@
         ]
       }
     },
-    "/eval/golden-datasets": {
-      "get": {
-        "operationId": "list_golden_datasets_eval_golden_datasets_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response List Golden Datasets Eval Golden Datasets Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Golden Datasets",
-        "tags": [
-          "eval"
-        ]
-      },
-      "post": {
-        "operationId": "create_golden_dataset_eval_golden_datasets_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DatasetCreateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Golden Dataset Eval Golden Datasets Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Golden Dataset",
-        "tags": [
-          "eval"
-        ]
-      }
-    },
-    "/eval/golden-datasets/promote-goal/{goal_id}": {
-      "post": {
-        "description": "Promote a completed goal to a golden dataset item (not implemented).",
-        "operationId": "promote_goal_to_golden_eval_golden_datasets_promote_goal__goal_id__post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "goal_id",
-            "required": true,
-            "schema": {
-              "title": "Goal Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "dataset_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Dataset Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Promote Goal To Golden Eval Golden Datasets Promote Goal  Goal Id  Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Promote Goal To Golden",
-        "tags": [
-          "eval"
-        ]
-      }
-    },
-    "/eval/golden-datasets/{dataset_id}/items": {
-      "post": {
-        "description": "Add a goal result to a golden dataset (not implemented).",
-        "operationId": "add_golden_item_eval_golden_datasets__dataset_id__items_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "dataset_id",
-            "required": true,
-            "schema": {
-              "title": "Dataset Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DatasetItemRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Add Golden Item Eval Golden Datasets  Dataset Id  Items Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Add Golden Item",
-        "tags": [
-          "eval"
-        ]
-      }
-    },
     "/events": {
       "get": {
         "description": "Platform-wide SSE. Uses Redis pub/sub when available, heartbeats as fallback.",
@@ -34595,6 +34441,77 @@
         ]
       }
     },
+    "/intelligence/eval-suites/{suite_id}/tasks/from-goal/{goal_id}": {
+      "post": {
+        "description": "Promote one of the caller's completed goals to a golden task of one of its suites.\n\nThe task's input is the goal text (plus ``context``); its expectation is the\ngoal's verified final answer, the tools the run called and the sources it\ncited. It is added as a new dataset version. 404: goal or suite not the\ncaller's; 409: already promoted into this suite; 422: the goal is not a\ncompleted, executed run with an answer. Audited (durably, before the write).",
+        "operationId": "promote_goal_to_golden_task_intelligence_eval_suites__suite_id__tasks_from_goal__goal_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "suite_id",
+            "required": true,
+            "schema": {
+              "title": "Suite Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "goal_id",
+            "required": true,
+            "schema": {
+              "title": "Goal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PromoteGoalRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Promote Goal To Golden Task Intelligence Eval Suites  Suite Id  Tasks From Goal  Goal Id  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Promote Goal To Golden Task",
+        "tags": [
+          "intelligence"
+        ]
+      }
+    },
     "/intelligence/eval-suites/{suite_id}/tasks/{task_id}": {
       "delete": {
         "description": "Remove a golden task from the dataset (a new version; old versions keep it).",
@@ -38856,7 +38773,7 @@
     },
     "/memory-v2/conflicts/all": {
       "get": {
-        "description": "List detected memory conflicts.",
+        "description": "List the tenant's detected memory conflicts (newest first, bounded).",
         "operationId": "list_conflicts_memory_v2_conflicts_all_get",
         "responses": {
           "200": {
@@ -38880,7 +38797,7 @@
     },
     "/memory-v2/conflicts/{conflict_id}/resolve": {
       "post": {
-        "description": "Resolve a memory conflict.",
+        "description": "Resolve a memory conflict (durably, with a DB).",
         "operationId": "resolve_conflict_memory_v2_conflicts__conflict_id__resolve_post",
         "parameters": [
           {
@@ -38893,6 +38810,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ResolveConflictRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -38997,7 +38931,7 @@
     },
     "/memory-v2/{memory_id}": {
       "delete": {
-        "description": "Soft-delete a memory (GDPR compliant \u2014 marks as deleted). 503 if not durable.",
+        "description": "Delete a memory and the conflicts that name it (GDPR erasure). 503 if not durable.\n\nThe row is removed. It used to stay with ``lifecycle_state: deleted`` inside\nits JSON, which long-term recall and listing never read, so the \"deleted\"\ncontent kept being recalled into planner prompts (a10-F238-05).",
         "operationId": "delete_memory_memory_v2__memory_id__delete",
         "parameters": [
           {
@@ -46946,7 +46880,7 @@
     },
     "/triggers/dlq/{dlq_id}/retry": {
       "post": {
-        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.",
+        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.\n\nThe retry is dispatched under the dedup key the original firing had\n(``trigger_dlq.idempotency_key``, B2-OPEN-2), so it is idempotent with a\nsender redelivery of the same firing: after a successful redelivery the\nretry is a ``dedup`` no-op, and a redelivery after the retry is deduped.\nEither way the entry is resolved. A throttled retry is not dead-lettered\nagain \u2014 this entry stays open for the next retry.",
         "operationId": "retry_dlq_entry_triggers_dlq__dlq_id__retry_post",
         "parameters": [
           {
@@ -47091,7 +47025,7 @@
     },
     "/triggers/webhooks/{webhook_type}/{token}": {
       "post": {
-        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).",
+        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).\n\nReplay protection of a signed generic delivery (B2-GAP-1): the delivery-id\nheaders are not signed, so identity comes from the signed bytes. A legacy\nbody-only signature dedupes on the signed body, unwindowed, and the body of\nevery delivery that ran is remembered (``vendor_webhook_replay_guard``) for as\nlong as the secret that signed it is accepted: the same signed body never\nfires twice. Senders whose events can repeat a byte-identical body must use\nthe timestamped scheme, whose exact signed bytes are guarded for the window.",
         "operationId": "receive_typed_webhook_triggers_webhooks__webhook_type___token__post",
         "parameters": [
           {
