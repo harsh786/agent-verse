@@ -231,7 +231,7 @@ _GOAL_QUEUES = _MAIN_GOAL_QUEUES | _SUBGOAL_QUEUES | {f"workflows.{p}" for p in 
 
 
 def _assert_schedule_pool(pools: list[set[str]], where: str) -> None:
-    dedicated = [q for q in pools if _SCHEDULE_QUEUES <= q and not q & _GOAL_QUEUES]
+    dedicated = [q for q in pools if q >= _SCHEDULE_QUEUES and not q & _GOAL_QUEUES]
     assert dedicated, (
         f"{where}: no worker consumes {sorted(_SCHEDULE_QUEUES)} without also running goals"
     )
