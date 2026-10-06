@@ -1397,16 +1397,26 @@ class ChatService:
     ) -> str:
         """Submit a GOAL-intent chat turn to the real GoalService and return its
         ``goal_id``. Binds the conversation via ``execution_context`` so async
-        completion can be delivered back into this thread (Phase 2)."""
+        completion can be delivered back into this thread (Phase 2).
+
+        CHAT-D-3: the goal runs with the session's configured agent, read from
+        the same store the session lives in (the database when a repository is
+        wired — it used to read process memory, find nothing, and let the goal
+        auto-route to another agent). A session that no longer exists fails
+        closed (LookupError) instead of running on a default agent. The caller
+        has already authorized the session, so this read is not owner-narrowed.
+        """
         if self._goal_service is None:
             raise RuntimeError("chat GOAL execution requires a GoalService to be wired")
-        session = self.get_session(session_id, tenant_id)
+        session = await self.aget_session(session_id, tenant_id)
+        if session is None:
+            raise LookupError(f"chat session {session_id} not found")
         result = await self._goal_service.submit_goal(
             goal=user_message,
             priority="normal",
             dry_run=False,
             tenant_ctx=tenant_ctx,
-            agent_id=agent_id or (session.agent_id if session else None),
+            agent_id=agent_id or session.agent_id,
             execution_context={
                 "source": "chat",
                 "conversation_id": session_id,
@@ -2025,7 +2035,9 @@ class ChatService:
                 replies.append(await self._fulfill_remember(act, tenant_id))
                 executed.append("remember")
             elif isinstance(act, GoalAction):
-                replies.append(await self._fulfill_goal(act, tenant_id, tenant_ctx))
+                replies.append(
+                    await self._fulfill_goal(act, tenant_id, tenant_ctx, session_id=session_id)
+                )
                 executed.append("goal")
             elif isinstance(act, QAAction):
                 replies.append(
@@ -2078,14 +2090,35 @@ class ChatService:
             await self._memory_writer(act.fact, tenant_id)
         return f"✅ Got it — I'll remember: {act.fact}"
 
-    async def _fulfill_goal(self, act: Any, tenant_id: str, tenant_ctx: Any) -> str:
+    async def _fulfill_goal(
+        self, act: Any, tenant_id: str, tenant_ctx: Any, *, session_id: str
+    ) -> str:
+        """Submit a goal action of a channel turn with the session's agent (CHAT-D-3).
+
+        Says it started only when the goal was accepted: a failed submit (budget,
+        unknown agent, outage) is reported, never claimed as started.
+        """
         if self._goal_service is None:
-            return f"On it — I'll work on: {act.goal}"
+            return f"I can't run goals here yet, so I couldn't start: {act.goal}"
         ctx = tenant_ctx or self._tenant_ctx(tenant_id)
-        with contextlib.suppress(Exception):
+        try:
+            session = await self.aget_session(session_id, tenant_id)
+            if session is None:
+                raise LookupError(f"chat session {session_id} not found")
             await self._goal_service.submit_goal(
-                goal=act.goal, priority="normal", dry_run=False, tenant_ctx=ctx, agent_id=None,
+                goal=act.goal, priority="normal", dry_run=False, tenant_ctx=ctx,
+                agent_id=session.agent_id,
+                execution_context={
+                    "source": "chat", "conversation_id": session_id, "session_id": session_id,
+                },
             )
+        except Exception as exc:
+            _logger.warning(
+                "chat_goal_action_not_started", session_id=session_id,
+                error=type(exc).__name__,
+            )
+            # The reason stays in the log (a driver error never reaches a channel).
+            return f"⚠️ I could not start: {act.goal}. Please try again later."
         return f"🚀 On it — I've started working on: {act.goal}. I'll follow up here."
 
     @staticmethod

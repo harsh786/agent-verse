@@ -468,14 +468,27 @@ async def stream_session(
             yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
         elif intent == "GOAL":
             if svc.can_run_goals:
-                # Real engine: submit to GoalService, stream its real events.
-                goal_id = await svc.run_goal(
-                    session_id=session_id,
-                    tenant_id=tenant.tenant_id,
-                    tenant_ctx=tenant,
-                    message_id=message_id,
-                    user_message=content,
-                )
+                # Real engine: submit to GoalService with the session's agent
+                # (CHAT-D-3), stream its real events.
+                try:
+                    goal_id = await svc.run_goal(
+                        session_id=session_id,
+                        tenant_id=tenant.tenant_id,
+                        tenant_ctx=tenant,
+                        message_id=message_id,
+                        user_message=content,
+                    )
+                except LookupError:
+                    from app.chat.events import ChatEventType, sse_event
+
+                    yield sse_event(
+                        ChatEventType.ERROR, session_id=session_id, message_id=message_id,
+                        message="This chat no longer exists.",
+                    )
+                    yield sse_event(
+                        ChatEventType.DONE, session_id=session_id, message_id=message_id
+                    )
+                    return
                 async for chunk in svc.stream_goal(
                     goal_id=goal_id,
                     tenant_ctx=tenant,
