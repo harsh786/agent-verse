@@ -605,8 +605,14 @@ Respond with ONLY valid JSON:
                 control_config = row[0]
                 if isinstance(control_config, str):
                     control_config = json.loads(control_config)
+                # As when applying a winner (a05-F095-04), the snapshot's
+                # autonomy_mode is never written: restoring it could re-promote
+                # an agent demoted since, bypassing the rollout gate.
+                control_config = {
+                    k: v for k, v in (control_config or {}).items() if k != "autonomy_mode"
+                }
 
-                await self._write_agent_config(db, tenant_id, agent_id, control_config or {})
+                await self._write_agent_config(db, tenant_id, agent_id, control_config)
                 await db.execute(
                     _t("""
                         UPDATE improvement_experiments
