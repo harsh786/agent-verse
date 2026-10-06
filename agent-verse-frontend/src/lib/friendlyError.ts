@@ -21,7 +21,7 @@ const MAX_PLAIN_MESSAGE = 160;
 // ones they are often wrapped in (a TLS or refused error also says "Timeout").
 const RULES: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
   [/ssrf|disallowed (url|host|address)|egress|rejected by the ssrf|(private|internal|loopback|link-local|reserved|non-public) (address|host|ip|network|destination)|not a public/i,
-    'This address is blocked: connections to private, internal or loopback hosts are not allowed.'],
+    'This address is blocked by the server\'s network egress policy: cloud-metadata and link-local addresses are never reachable, and private hosts only when private network access is enabled.'],
   [/no connection uri|configure credentials|credentials_required|needs a connection uri or a host/i,
     'No connection URI is configured for this connection.'],
   [/must start with mongodb/i, 'The connection URI must start with mongodb:// or mongodb+srv://.'],

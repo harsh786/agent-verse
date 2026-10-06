@@ -23,7 +23,7 @@ export function ElasticsearchForm({ value, onChange }: FormProps) {
 
   return (
     <div className="space-y-3">
-      <Field label="Cluster URL" htmlFor="es-url" hint="http(s)://host:9200 — internal addresses are refused unless the operator allowlists them.">
+      <Field label="Cluster URL" htmlFor="es-url" hint="http(s)://host:9200 — private / internal hosts are allowed unless the operator turned private network access off; cloud-metadata addresses never are.">
         <input id="es-url" type="text" value={str('url')} onChange={e => set('url', e.target.value)} placeholder="https://search.example.com:9200" className={inputCls} />
       </Field>
       <Field label="Index" htmlFor="es-index" hint="An index, alias, data stream, comma list or pattern (logs-*). Every matching index is read.">
