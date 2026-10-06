@@ -121,7 +121,7 @@ agent redeploys — rerun it. Behaviour changes made on purpose → update the o
 | # | Task | Code | Live verified | Status |
 |---|---|---|---|---|
 | A1 | File upload (PDF, DOCX, PPTX, XLSX, CSV, HTML, MD, OCR, ZIP) | ✅ | ✅ 9/10 (+table ranking fixed in P2) | DONE |
-| — | OCR parallelism (owner request 2026-10-06) | ✅ merged `36a353a61` | benchmark only (~5x on 20-page scan) | MERGED, NOT PUSHED — suite issues (§4); live check queued |
+| — | OCR parallelism (owner request 2026-10-06) | ✅ pushed | benchmark only (~5x on 20-page scan) | DONE in code; live check queued |
 | A2 | S3 / MinIO | ✅ | ✅ | DONE |
 | A3 | PostgreSQL / MySQL | ✅ | ✅ | DONE |
 | A5 | MongoDB / Redis / Elasticsearch | ✅ | ✅ 33/33 | DONE |
@@ -129,24 +129,24 @@ agent redeploys — rerun it. Behaviour changes made on purpose → update the o
 | A12 | Agent-generated knowledge | ✅ | ✅ 5/5 | DONE (memory consolidations → P6) |
 | B1 | Time triggers | ✅ | ✅ 12/12 | DONE |
 | B2 | Webhook / REST / event triggers | ✅ | ✅ 10/10 + multi-replica 12/12 | DONE |
-| B7 | Platform events (goal completed/failed, score below, HITL approved/rejected, memory created) | ✅ B7-1..5 | ⏳ live agent running | IN PROGRESS |
+| B7 | Platform events (goal completed/failed, score below, HITL approved/rejected, memory created) | ✅ B7-1..5 + B7-L1..L4 | ✅ 9/9 + INGRESS/TIME regression | DONE (`b7495f911`) |
 | B3 | GitHub / Stripe / Jira / Teams webhooks | ✅ DEF-5 | ❌ | code done; live check deferred (item 11) |
 | C1–C5 | Telegram / WhatsApp / Slack / Teams / generic-webhook channels | ✅ DEF-1..3 | ❌ | code done; live check deferred (item 13) |
 | A6 | Kafka | ✅ DEF-4 (commit after index, real Kafka container test) | ❌ | code done; live check deferred (item 14) |
 | A7 | Google Drive / SharePoint / Confluence / Notion | ❌ | ❌ | NOT STARTED (deferred, item 10) |
 | B8 | Conversational triggers | ❌ | ❌ | NOT STARTED (deferred, item 12) |
 | B9–B11 | — | — | — | PARKED by owner |
-| — | GDPR export gaps from orphaned worktree (RV-08) | ✅ merged (salvage) | n/a | MERGED, NOT PUSHED (pending suite) |
+| — | GDPR export gaps from orphaned worktree (RV-08) | ✅ pushed | n/a | DONE |
 | — | Live re-checks P2 retrieval, P4 workflows/HITL, P5 agent core, P7 evals, P8 guardrails/grants | ✅ code pushed | ❌ | NOT STARTED (queue §5 item 3) |
 | — | P6 memories & self-improvement | ❌ | ❌ | NOT STARTED |
 | — | P9 scale (million docs) · P10 frontend e2e · P11 full rerun | ❌ | ❌ | NOT STARTED |
 
 ## 4. In flight (resume these first)
 
-State at 2026-10-06 (origin/main = `871573514`). LOCAL main is ahead with two merges NOT yet pushed:
-`36a353a61` OCR parallelism and the worktree-salvage merge (GDPR export gaps). Do not push until the suite is green.
+State at 2026-10-06: origin/main = local main = `b7495f911`. Everything is merged and pushed (B7 live, OCR parallelism,
+worktree salvage, test fixes); the suite is green: backend 33,463 passed, frontend 5,238 passed.
 
-**Suite status on `36a353a61` (OCR merge) — must fix before push:**
+**Resolved (kept for history), suite on `36a353a61`:**
 - `tests/ocr/test_engine_parallel.py::test_real_render_is_page_by_page_at_the_configured_dpi` FAILS in the full run.
 - `tests/ingestion/test_ocr_pdf_pages_parallel.py::test_render_pdf_page_accepts_a_path_and_maps_poppler_errors` FAILS in the full run.
 - One chunk passes every test, then the interpreter aborts at exit:
@@ -154,7 +154,8 @@ State at 2026-10-06 (origin/main = `871573514`). LOCAL main is ahead with two me
   OCR `ThreadPoolExecutor` / tesseract or poppler threads are still alive at interpreter shutdown; add an orderly
   shutdown (atexit / pool `shutdown(wait=True)`) and a test-session teardown.
 
-Root-cause both failures (order dependence or host poppler), fix them, rerun the suite (`run.sh`), gate, push.
+Fixed: both tests now skip without the optional `pdf2image` extra (`43bd97335`). The exit abort did not reproduce on rerun
+or in the next full suite — a watch item only.
 
 | Item | Branch / worktree | State |
 |---|---|---|
@@ -231,14 +232,14 @@ After merge, verify live on the stack (A1 upload scenarios plus a concurrent mul
 - The live stack currently runs app containers from the p3b7 worktree (B7 live agent).
 - The launchd `run_forever.py` starts its own beat whenever compose's beat disappears (even briefly during redeploy);
   this is an owner decision, pending.
-- Local MinIO egress: `192.168.63.104` is on the local `.env` allowlist, but nothing listens there from this Mac. The
-  owner was asked which deployment hosts it (set the two `INGESTION_*` vars there; all deployment templates support
-  them since `10c22195d`).
+- Owner MinIO `http://192.168.63.104:30900` (k8s NodePort): `192.168.63.104` is on the local `.env` allowlist (the
+  allowlist matches hosts, so every port is covered). It is reachable from the live worker through the guarded client
+  (health 200, anonymous 403). Port 9000 there is closed.
 
 ## 5. Queue (strict order)
 
-1. Fix the OCR-merge suite issues (§4), rerun the suite, gate, push.
-2. Finish B7 live (item 9), then a live OCR parallelism check.
+1. OWNER SAID (2026-10-06): do NOT start new implementation until the owner picks what to do next.
+2. Live OCR parallelism check.
 3. **Live re-checks** of code fixes already pushed: P2 retrieval/grounding, P4 workflows/HITL, P5 agent core, P7 evals,
    P8 guardrails/grants (each: redeploy, run the scenarios, fix, merge, push).
 4. **P6** memories & self-improvement (no scenarios yet; includes memory consolidations from A12).
@@ -285,7 +286,8 @@ Remaining backlog after the queue: `pending-all-2026-10-05.json` (re-verify each
 ## 7. Owner decisions (recorded in LIVE-E2E-PLAN.md)
 
 Pending owner questions (2026-10-06):
-- (a) Which deployment hosts MinIO 192.168.63.104?
+- (a) ANSWERED 2026-10-06: the owner's MinIO is `http://192.168.63.104:30900` (a k8s NodePort). Verified from the live
+  worker: guard ALLOWED, `/minio/health/live` 200. Port 9000 there is closed. A full S3 sync needs the owner's access key + bucket.
 - (b) Remove the 501 per-org `/v1/gateway/{org}/config` and `/channels/status` from OpenAPI/UI?
 - (c) launchd `run_forever.py` beat takeover: keep it, add a longer grace period, or disable?
 - (d) Remote branch `origin/feature/isolated-agent-execution-environment` (one Jul-10 commit "Agent Isloation"):
