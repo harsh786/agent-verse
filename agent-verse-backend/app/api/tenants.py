@@ -420,11 +420,27 @@ def _llm_store(request: Request) -> Any:
 
 
 async def _read_llm_config(request: Request, tenant_id: str) -> dict[str, Any] | None:
+    """The tenant's stored LLM config, ``None`` when it has none.
+
+    With a store wired it is the only source, read strictly: a DB read error is
+    a 503 (a08-F195-03 — it was reported as ``configured: false``, and the
+    keep-the-stored-key update then answered "no key is stored"). The
+    process-local copy is consulted only when no store exists at all
+    (a08-F195-01 — it used to back up a store that returned nothing, serving a
+    config the store no longer had).
+    """
+    from app.services.llm_config_store import LLMConfigReadError
+
     store = _llm_store(request)
     if store is not None:
-        cfg = await store.get_config(tenant_id)
-        if cfg is not None:
-            return dict(cfg)
+        try:
+            cfg = await store.get_config(tenant_id, strict=True)
+        except LLMConfigReadError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM configuration could not be read; try again shortly",
+            ) from exc
+        return dict(cfg) if cfg else None
     # No store wired (tests / no infrastructure): the process-local copy.
     local = getattr(request.app.state, "_llm_configs", {}).get(tenant_id)
     return dict(local) if local else None
@@ -526,10 +542,14 @@ async def _save_llm_config(
             raise HTTPException(
                 status_code=503, detail="LLM configuration could not be saved"
             ) from exc
+        # a08-F195-01: no process-local copy beside a store. It used to be
+        # written on every save and read whenever the store answered nothing,
+        # so a config the store no longer had (deleted, or a failed read) was
+        # still served from this replica's memory.
+        return
     if not hasattr(request.app.state, "_llm_configs"):
         request.app.state._llm_configs = {}
-    # Process-local copy only for deployments without a store (tests, no infra);
-    # the goal path reads the store first.
+    # Process-local copy only for deployments without a store (tests, no infra).
     request.app.state._llm_configs[tenant_id] = {
         "provider": provider,
         "base_url": base_url,
