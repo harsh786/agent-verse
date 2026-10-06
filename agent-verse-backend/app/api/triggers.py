@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.tenancy.context import TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.simulation import get_sample_payload
+from app.triggers.webhooks.replay import BODY_SIGNED_VENDORS as _BODY_SIGNED_VENDORS
 
 router = APIRouter(prefix="/triggers", tags=["triggers"])
 logger = structlog.get_logger(__name__)
@@ -1027,10 +1029,6 @@ async def _mark_sns_confirmed(store: Any, records: list[dict[str, Any]], caller:
             )
 
 
-# Vendors whose signature covers only the body (no signed timestamp / id).
-_BODY_SIGNED_VENDORS = frozenset(
-    {"github", "jira", "confluence", "linear", "sentry", "pagerduty", "salesforce", "grafana"}
-)
 
 
 def _vendor_signed_message_id(webhook_type: str, body: Any, body_bytes: bytes) -> str:
@@ -1216,6 +1214,12 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     # (Stripe evt_, Slack event_id, Teams activity id) key on it; the rest on
     # the signed body itself, unwindowed.
     signed_message_id = _vendor_signed_message_id(webhook_type, body, body_bytes)
+    # DEF-NEW-3: the signed-body dedup row (trigger_events) is purged after the
+    # retention period, so a body-only signature must not stay acceptable longer
+    # than its dedup record (app.triggers.webhooks.replay).
+    from app.triggers.webhooks import replay as _replay
+
+    guard_db = _get_db(request)
     matched = 0
     failed = 0
     results: list[Any] = []
@@ -1275,6 +1279,16 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             if not verified:
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
         vendor_signed = bool(secret) and not generic and bool(signed_message_id)
+        guard_key = ""
+        if vendor_signed and webhook_type in _BODY_SIGNED_VENDORS:
+            event_time = _replay.signed_event_time(webhook_type, body)
+            if event_time is not None:
+                # Jira: refuse a delivery older than its dedup record's lifetime.
+                _replay.check_signed_freshness(event_time)
+            elif guard_db is not None:
+                # GitHub & co.: no signed age, so remember the delivery for as
+                # long as the secret that signed it is accepted.
+                guard_key = signed_message_id
         if (
             webhook_type == "slack"
             and isinstance(body, dict)
@@ -1300,13 +1314,37 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                 message_id = signed_message_id
             else:
                 message_id = delivery_message_id
+            guard_trigger = str(getattr(spec, "trigger_id", "") or "")
+            if guard_key and await _replay.already_delivered(
+                guard_db, tenant_id, guard_trigger, guard_key
+            ):
+                # Ran before and its trigger_events row is gone: a replay.
+                logger.warning(
+                    "vendor_webhook_replay_refused",
+                    webhook_type=webhook_type,
+                    tenant_id=tenant_id,
+                    trigger_id=guard_trigger,
+                )
+                results.append(SimpleNamespace(skip_reason="dedup", goal_id=None))
+                continue
             # A throttled delivery is answered 429 (the sender retries) rather
             # than dead-lettered (B2-1).
-            results.append(
-                await dispatcher.dispatch(
-                    spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
-                )
+            event = await dispatcher.dispatch(
+                spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
             )
+            results.append(event)
+            ran = bool(getattr(event, "goal_id", None)) or getattr(
+                event, "skip_reason", None
+            ) in ("dedup", "goal_in_progress")
+            if guard_key and ran:
+                # Only a delivery that ran is remembered: a throttled / failed
+                # one must stay deliverable by the sender's retry.
+                try:
+                    await _replay.record_delivered(guard_db, tenant_id, guard_trigger, guard_key)
+                except Exception as exc:  # trigger_events still dedupes it for now
+                    logger.warning(
+                        "vendor_webhook_replay_guard_write_failed", error=str(exc)[:200]
+                    )
         except Exception as exc:
             # Was suppressed and still answered "accepted", so the platform never
             # redelivered an event that fired nothing.

@@ -138,7 +138,7 @@ async def test_retention_runs_on_maintenance_role() -> None:
     # scalar() → False: no tenant-wide legal hold is in force.
     sessions = [
         _session(default=MagicMock(rowcount=4, scalar=MagicMock(return_value=False)))
-        for _ in range(5)
+        for _ in range(6)
     ]
     sys_session = _Recorder()
     p = _system_patches(_factory(*sessions), sys_session)
@@ -149,6 +149,8 @@ async def test_retention_runs_on_maintenance_role() -> None:
         "goal_events": 4,
         "decision_traces": 4,
         "trigger_events": 4,
+        # DEF-NEW-3: dead replay-guard rows (trigger deleted / secret rotated).
+        "vendor_webhook_replay_guard": 4,
         "memory_records": 4,
     }
     assert sys_session.calls == [(s,) for s in sessions]
