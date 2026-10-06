@@ -1818,6 +1818,9 @@ def create_app(
             from app.triggers.store import ScheduleStore as ScheduleStoreClass
 
             _audit_log_db = AuditLogClass(db_session_factory=db_factory)
+            # a03-F058-01: a write that exhausts its retries is parked in Redis
+            # and replayed by the drain-audit-write-outbox beat task.
+            _audit_log_db.set_outbox_redis(redis_for_runtime)
             _schedule_store_db = ScheduleStoreClass(
                 db_session_factory=db_factory,
                 redis=redis_for_runtime,

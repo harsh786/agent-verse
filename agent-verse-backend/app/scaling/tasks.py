@@ -3301,6 +3301,8 @@ def run_goal(
             from app.reliability.rollback import RollbackEngine
 
             _audit = AuditLog(db_session_factory=db_factory)
+            # a03-F058-01: failed writes are parked for replay, not just counted.
+            _audit.set_outbox_redis(_worker_async_redis())
             _worker_audit = _audit
             # Durable + cross-process: gates raised here are persisted (so the
             # API can find and resolve them) and the waiter also listens on the
