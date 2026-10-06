@@ -993,9 +993,13 @@ async def test_execute_step_cost_tracker_records_usage() -> None:
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_execute_step_bulkhead_full_is_not_executed() -> None:
-    """When bulkhead is full the step is NOT executed (no retry text as output)."""
+async def test_execute_step_bulkhead_full_is_not_executed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When bulkhead stays full past the bounded wait the step is NOT executed."""
     from app.agent.graph_types import StepNotExecutedError
+
+    monkeypatch.setattr("app.reliability.bulkhead.bulkhead_wait_seconds", lambda: 0.05)
 
     mock_bulkhead = MagicMock()
     mock_bulkhead.acquire = AsyncMock(return_value=False)  # Bulkhead full

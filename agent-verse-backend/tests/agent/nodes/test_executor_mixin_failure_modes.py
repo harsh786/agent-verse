@@ -983,8 +983,12 @@ async def test_bulkhead_acquire_exception_fails_closed() -> None:
     assert executor.call_history == []
 
 
-async def test_bulkhead_full_is_not_executed_not_output() -> None:
+async def test_bulkhead_full_is_not_executed_not_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.agent.graph_types import StepNotExecutedError
+
+    monkeypatch.setattr("app.reliability.bulkhead.bulkhead_wait_seconds", lambda: 0.05)
 
     bulkhead = SimpleNamespace(acquire=AsyncMock(return_value=False), release=AsyncMock())
     registry = SimpleNamespace(get_bulkhead=MagicMock(return_value=bulkhead))

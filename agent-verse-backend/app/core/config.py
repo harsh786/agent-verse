@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # this long (a wedged worker), so the reaper takes the goal over.
     goal_loop_stall_seconds: float = Field(default=600.0, ge=1.0)
     goal_watchdog_max_requeues: int = Field(default=1, ge=0, le=5)
+    # A step that finds the tenant's executor bulkhead full waits up to this long
+    # for a slot (backoff + jitter) before it is refused (a08-F199-02).
+    tenant_bulkhead_wait_seconds: float = Field(default=10.0, ge=0.0, le=600.0)
 
     # --- networking / security ---
     cors_origins: Annotated[list[str], NoDecode] = Field(

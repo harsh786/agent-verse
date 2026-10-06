@@ -2535,14 +2535,26 @@ class ExecutorMixin:
 
         _bulkhead_acquired = False
         if _bulkhead is not None:
+            from app.reliability.bulkhead import (
+                BulkheadFullError,
+                acquire_with_wait,
+                bulkhead_wait_seconds,
+            )
+
+            _bh_wait_s = bulkhead_wait_seconds()
             try:
-                if hasattr(_bulkhead, "acquire"):
-                    # RedisBulkhead path
-                    _bulkhead_acquired = await _bulkhead.acquire()
-                else:
-                    # asyncio.Semaphore fallback
-                    await _bulkhead.acquire()
-                    _bulkhead_acquired = True
+                # A full bulkhead is waited on (bounded, backoff + jitter) and
+                # refused only once the wait expires (a08-F199-02).
+                _bh_waited = await acquire_with_wait(_bulkhead, wait_s=_bh_wait_s)
+                _bulkhead_acquired = True
+                if _bh_waited >= 0.5:
+                    self._logger.info(
+                        "bulkhead_slot_waited",
+                        tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                        waited_s=round(_bh_waited, 2),
+                    )
+            except BulkheadFullError:
+                _bulkhead_acquired = False
             except Exception as bulkhead_exc:
                 # Fail closed: the concurrency limit could not be checked, so the
                 # step does not run unthrottled (it used to proceed without a slot).
@@ -2559,8 +2571,8 @@ class ExecutorMixin:
                 )
                 # Not a step result: it used to be returned AS the step's output.
                 raise StepNotExecutedError(
-                    "Bulkhead: too many concurrent operations for this tenant; "
-                    "step was not executed."
+                    "Bulkhead: too many concurrent operations for this tenant; no slot "
+                    f"became free within {_bh_wait_s:g}s; step was not executed."
                 )
 
         # Token streaming — buffer for accumulation and closure for on_token callback.

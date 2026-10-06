@@ -201,6 +201,59 @@ class RedisBulkhead:
         await self.release()
 
 
+class BulkheadFullError(RuntimeError):
+    """No slot became free within the bounded wait."""
+
+
+def bulkhead_wait_seconds() -> float:
+    """``TENANT_BULKHEAD_WAIT_SECONDS`` (default 10 s)."""
+    try:
+        from app.core.config import get_settings
+
+        return float(get_settings().tenant_bulkhead_wait_seconds)
+    except Exception:
+        return 10.0
+
+
+async def acquire_with_wait(
+    bulkhead: Any,
+    *,
+    wait_s: float,
+    base_delay_s: float = 0.05,
+    max_delay_s: float = 1.0,
+) -> float:
+    """Take a slot, waiting up to ``wait_s`` for one; return the seconds waited.
+
+    A full tenant bulkhead used to refuse the step at once (a08-F199-02): a
+    burst (a parallel wave, a supervisor fan-out) failed steps that a moment
+    later would have found a slot. Now a full bulkhead is retried with
+    exponential backoff and full jitter until the deadline, and only then
+    refused with :class:`BulkheadFullError`. An error checking the limit (e.g.
+    Redis down without a fallback) propagates immediately: never a wait on an
+    unknown state. ``asyncio.Semaphore`` (no Redis) waits on the semaphore.
+    """
+    import random
+    import time as _time
+
+    start = _time.monotonic()
+    deadline = start + max(0.0, float(wait_s))
+    if isinstance(bulkhead, asyncio.Semaphore):
+        try:
+            await asyncio.wait_for(bulkhead.acquire(), timeout=max(0.0, float(wait_s)))
+        except TimeoutError as exc:
+            raise BulkheadFullError(f"no slot within {wait_s:g}s") from exc
+        return _time.monotonic() - start
+    delay = base_delay_s
+    while True:
+        if await bulkhead.acquire():
+            return _time.monotonic() - start
+        left = deadline - _time.monotonic()
+        if left <= 0:
+            raise BulkheadFullError(f"no slot within {wait_s:g}s")
+        await asyncio.sleep(min(left, random.uniform(0, delay)))
+        delay = min(max_delay_s, delay * 2)
+
+
 # One process-wide, event-loop-agnostic fallback for every registry in this
 # process: an asyncio.Semaphore binds to one loop, and a worker registry built
 # per goal had a fallback "limit" per goal (a08-F199-04).
