@@ -7557,6 +7557,38 @@ def purge_expired_chat_artifacts() -> dict:
     return _run_async(_run())
 
 
+@celery_app.task(name="agentverse.maintenance.purge_expired_chat_sessions")
+def purge_expired_chat_sessions() -> dict:
+    """Enforce chat_sessions.ttl_days (CHAT-SEC-3): delete expired, unpinned,
+    unheld sessions with their messages and artifacts, in bounded batches.
+
+    Cross-tenant, so it runs on the BYPASSRLS maintenance factory. An owned
+    session's transcript removal is queued (ingestion.chat_transcripts_purge)
+    before the session is deleted; when it cannot be queued the batch is kept
+    and the task raises, so Celery records the failure instead of a silent 0.
+    """
+
+    async def _run() -> dict:
+        import asyncio as _asyncio
+
+        from app.chat.retention import purge_expired_chat_sessions as _purge
+        from app.db.session import get_system_session_factory
+        from app.services.chat_knowledge import enqueue_purge_continuation
+
+        async def _transcripts(tenant_id: str, owner: str, session_ids: list[str]) -> None:
+            await _asyncio.to_thread(
+                enqueue_purge_continuation, tenant_id, user_id=owner,
+                session_ids=session_ids, unconsented_only=False,
+            )
+
+        report = await _purge(get_system_session_factory(), on_owned_sessions=_transcripts)
+        out = report.as_dict()
+        logger.info("chat_sessions_ttl_purged", **out)
+        return out
+
+    return _run_async(_run())
+
+
 @celery_app.task(name="agentverse.maintenance.purge_expired_org_attachments")
 def purge_expired_org_attachments() -> dict:
     """Delete mission attachments past retention (a08-F177-01), in bounded batches.

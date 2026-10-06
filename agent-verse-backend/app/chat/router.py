@@ -123,6 +123,9 @@ class UpdateSessionRequest(BaseModel):
     show_reasoning: bool | None = None
     proactive_suggestions: bool | None = None
     preferred_model: str | None = None
+    # CHAT-SEC-3: days of inactivity after which the session (unless pinned) is
+    # deleted; an explicit null clears it (never expires).
+    ttl_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class SendMessageRequest(BaseModel):
@@ -305,6 +308,8 @@ async def update_session(
 ) -> dict[str, Any]:
     tenant, svc, scope, _s = await _owned(request, session_id)
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "ttl_days" in body.model_fields_set and body.ttl_days is None:
+        updates["ttl_days"] = None  # an explicit null: the session never expires
     s = await svc.aupdate_session(session_id, tenant.tenant_id, scope=scope, **updates)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")

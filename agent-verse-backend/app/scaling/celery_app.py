@@ -378,6 +378,12 @@ celery_app.conf.update(
             "schedule": 3600,
             "options": {"queue": "maintenance"},
         },
+        # CHAT-SEC-3: chat sessions past their ttl_days (pinned and held: kept).
+        "purge-expired-chat-sessions-hourly": {
+            "task": "agentverse.maintenance.purge_expired_chat_sessions",
+            "schedule": 3600,
+            "options": {"queue": "maintenance"},
+        },
         # a08-F177-01: mission attachments past their retention window.
         "purge-expired-org-attachments-hourly": {
             "task": "agentverse.maintenance.purge_expired_org_attachments",
