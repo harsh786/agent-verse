@@ -5075,12 +5075,33 @@ def _interval_due_slot_utc(
     return _INTERVAL_EPOCH + datetime.timedelta(seconds=slot_index * interval_seconds)
 
 
-def _is_business_time(dt_utc: datetime.datetime, tz_name: str = "UTC") -> bool:
-    """True when the instant is Mon-Fri, 09:00-17:00 (local wall-clock in tz)."""
+_DEFAULT_BUSINESS_DAYS = (0, 1, 2, 3, 4)
+
+
+def _is_business_time(
+    dt_utc: datetime.datetime,
+    tz_name: str = "UTC",
+    calendar: dict[str, Any] | None = None,
+) -> bool:
+    """True when the instant is a business moment of *calendar*, in local time.
+
+    Default: Mon-Fri, 09:00-17:00. B1-6: ``business_days`` (Monday = 0),
+    ``business_hours_start`` / ``_end`` (local "HH:MM", end exclusive) and
+    ``holidays`` (local "YYYY-MM-DD" dates) come from the trigger.
+    """
+    cal = calendar or {}
     tz = _resolve_tz(tz_name)
     aware = dt_utc.replace(tzinfo=datetime.UTC) if dt_utc.tzinfo is None else dt_utc
     local = aware.astimezone(tz)
-    return local.weekday() < 5 and 9 <= local.hour < 17
+    days = cal.get("business_days") or _DEFAULT_BUSINESS_DAYS
+    if local.weekday() not in {int(d) for d in days}:
+        return False
+    if local.date().isoformat() in {str(h) for h in cal.get("holidays") or ()}:
+        return False
+    hhmm = local.strftime("%H:%M")
+    start = str(cal.get("business_hours_start") or "09:00")
+    end = str(cal.get("business_hours_end") or "17:00")
+    return start <= hhmm < end
 
 
 def _business_calendar_slots(
@@ -5088,12 +5109,14 @@ def _business_calendar_slots(
     last_fired: datetime.datetime | None,
     now: datetime.datetime,
     tz_name: str = "UTC",
+    calendar: dict[str, Any] | None = None,
 ) -> list[datetime.datetime]:
-    """BUSINESS_CALENDAR: cron slots that fall within business hours only."""
+    """BUSINESS_CALENDAR: cron slots on business days, in business hours, not
+    on a holiday (B1-6)."""
     if not cron_expr:
         return []
     slots = _cron_missed_runs_utc(cron_expr, last_fired, now, tz_name)
-    return [s for s in slots if _is_business_time(s, tz_name)]
+    return [s for s in slots if _is_business_time(s, tz_name, calendar)]
 
 
 # The six time-family trigger types the beat evaluates with _time_trigger_slots.
@@ -5138,7 +5161,7 @@ def _time_trigger_slots(sched: dict[str, Any], now: datetime.datetime) -> list[d
         armed = _schedule_datetime(sched.get("armed_at"))
         floor = max((t for t in (last, armed) if t is not None), default=None)
         if trigger_type == "business_calendar":
-            return _business_calendar_slots(cron_expr, floor, now, tz_name)
+            return _business_calendar_slots(cron_expr, floor, now, tz_name, sched)
         return _cron_missed_runs_utc(cron_expr, floor, now, tz_name)
     if trigger_type == "interval":
         slot = _interval_due_slot_utc(int(sched.get("interval_seconds") or 0), last, now)

@@ -118,6 +118,34 @@ def timezone_error(tz_name: str) -> str | None:
     return None
 
 
+MAX_HOLIDAYS = 500
+_HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def _validate_business_calendar(spec: TriggerSpec) -> None:
+    """Holidays, business days and hours of a business_calendar trigger (B1-6)."""
+    holidays = spec.holidays
+    if not isinstance(holidays, list) or len(holidays) > MAX_HOLIDAYS:
+        raise ValueError(f"holidays must be a list of at most {MAX_HOLIDAYS} YYYY-MM-DD dates")
+    for day in holidays:
+        try:
+            datetime.strptime(str(day), "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"holidays: {day!r} is not a YYYY-MM-DD date") from None
+    days = spec.business_days
+    if (
+        not isinstance(days, list)
+        or not days
+        or any(not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6 for d in days)
+    ):
+        raise ValueError("business_days must list weekday numbers 0 (Monday) to 6 (Sunday)")
+    start, end = spec.business_hours_start, spec.business_hours_end
+    if not (_HHMM.match(str(start)) and _HHMM.match(str(end))) or str(start) >= str(end):
+        raise ValueError(
+            "business_hours_start / business_hours_end must be HH:MM with start before end"
+        )
+
+
 def _require_iso(value: str, missing: str) -> None:
     if not value.strip():
         raise ValueError(missing)
@@ -236,6 +264,7 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
                 "business hours); business_calendar_id alone never fires"
             )
         validate_cron(spec.cron_expression, plan)
+        _validate_business_calendar(spec)
     elif v == "api_poll":
         if not spec.poll_url.strip():
             raise ValueError("api_poll trigger requires poll_url")

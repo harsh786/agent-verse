@@ -135,6 +135,12 @@ class TriggerSpec:
     # (at most the 60 most recent), "latest" only the most recent one, "none"
     # skips a slot more than 90 s late. One-shots fire late once unless "none".
     catch_up: str = "all"
+    # BUSINESS_CALENDAR (B1-6): the cron fires only on business days, inside
+    # business hours, and never on a holiday -- all in the trigger's timezone.
+    holidays: list = field(default_factory=list)  # local "YYYY-MM-DD" dates
+    business_days: list = field(default_factory=lambda: [0, 1, 2, 3, 4])  # Mon=0
+    business_hours_start: str = "09:00"  # local "HH:MM", inclusive
+    business_hours_end: str = "17:00"  # local "HH:MM", exclusive
 
     # ── Family B: Goal/Agent Chain ────────────────────────────────────────────
     watch_goal_id: str = ""  # specific goal ID to watch, or "" = any
