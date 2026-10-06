@@ -50,6 +50,10 @@ Full image references
 {{ .Values.global.imageRegistry }}/{{ .Values.subgoalWorker.image.name }}:{{ .Values.subgoalWorker.image.tag }}
 {{- end }}
 
+{{- define "agentverse.scheduleWorkerImage" -}}
+{{ .Values.global.imageRegistry }}/{{ .Values.scheduleWorker.image.name }}:{{ .Values.scheduleWorker.image.tag }}
+{{- end }}
+
 {{- define "agentverse.frontendImage" -}}
 {{ .Values.global.imageRegistry }}/{{ .Values.frontend.image.name }}:{{ .Values.frontend.image.tag }}
 {{- end }}

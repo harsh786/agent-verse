@@ -233,6 +233,52 @@ spec:
           {{- toYaml .Values.subgoalWorker.resources | nindent 10 }}
 {{- end }}
 ---
+{{- /*
+  Dedicated pool for the time triggers (B1-4): fire_due_schedules and the
+  run_scheduled_goal / poll_trigger tasks never wait behind running goals.
+*/}}
+{{- if .Values.scheduleWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-schedule-worker
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schedule-worker
+spec:
+  replicas: {{ .Values.scheduleWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: schedule-worker
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: schedule-worker
+    spec:
+      initContainers:
+      - name: wait-for-schema
+        image: "{{ .Values.scheduleWorker.image.repository }}:{{ .Values.scheduleWorker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["python", "-m", "app.db.wait_for_schema"]
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
+      containers:
+      - name: schedule-worker
+        image: "{{ .Values.scheduleWorker.image.repository }}:{{ .Values.scheduleWorker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["celery"]
+        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.scheduleWorker.queues | quote }}, "-n", "schedules@%h", "--concurrency", {{ .Values.scheduleWorker.concurrency | quote }}, "--max-tasks-per-child", {{ .Values.scheduleWorker.maxTasksPerChild | quote }}, "--max-memory-per-child", {{ .Values.scheduleWorker.maxMemoryPerChildKb | quote }}]
+        envFrom:
+        - configMapRef:
+            name: {{ include "agentverse.fullname" . }}-config
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
+        resources:
+          {{- toYaml .Values.scheduleWorker.resources | nindent 10 }}
+{{- end }}
+---
 {{- if .Values.beat.enabled }}
 apiVersion: apps/v1
 kind: Deployment

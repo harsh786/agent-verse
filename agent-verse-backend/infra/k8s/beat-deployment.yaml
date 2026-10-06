@@ -37,7 +37,7 @@ spec:
             - -A
             - app.scaling.celery_app
             - beat
-            - --scheduler=redbeat.RedBeatScheduler
+            - --scheduler=app.scaling.beat_scheduler:AgentVerseRedBeatScheduler
             - --loglevel=info
           # Same config + Secret as the API and workers (BYOK-1): beat runs the
           # app's startup checks, which refuse to start without the vault key

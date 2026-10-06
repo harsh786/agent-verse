@@ -249,8 +249,12 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
     # Surface lifecycle timestamps so the UI can show when a trigger was created
     # and when it will next / last fire. Values may be datetime (DB-hydrated) or
     # already-ISO strings; normalise to ISO for the JSON response.
+    # B1-13: the real next run, not the beat's evaluation hint / claim lease.
+    from app.triggers.next_run import next_run_at
+
+    times = {**rec, "next_fire_at": next_run_at(rec)}
     for _ts in ("created_at", "next_fire_at", "last_fired_at"):
-        _val = rec.get(_ts)
+        _val = times.get(_ts)
         if _val is not None:
             out[_ts] = _val.isoformat() if hasattr(_val, "isoformat") else _val
     if spec is not None:
@@ -729,6 +733,53 @@ async def list_trigger_events(
             {"tid": schedule_id, "tenant": tenant_ctx.tenant_id, "lim": limit},
         )
         return [dict(r._mapping) for r in rows]
+
+
+@router.get("/{schedule_id}/delayed-fires", response_model=list[dict[str, Any]])
+async def list_delayed_fires(
+    schedule_id: str, request: Request, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Fires an event-relative relative_delay trigger has armed (B1-8): pending
+    ones first (soonest due first), then the most recently fired. Tenant-scoped
+    by RLS and an explicit ``tenant_id`` predicate."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    if await _store_get(store, schedule_id, tenant_ctx) is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    db = _get_db(request)
+    if db is None:
+        return []
+    limit = max(1, min(limit, 200))
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
+        rows = await session.execute(
+            text(
+                "SELECT id, event_id, due_at, fired_at, created_at "
+                "FROM trigger_delayed_fires "
+                "WHERE schedule_id = :sid AND tenant_id = :tenant "
+                "ORDER BY (fired_at IS NOT NULL), "
+                "CASE WHEN fired_at IS NULL THEN due_at END ASC, fired_at DESC "
+                "LIMIT :lim"
+            ),
+            {"sid": schedule_id, "tenant": tenant_ctx.tenant_id, "lim": limit},
+        )
+        out: list[dict[str, Any]] = []
+        for r in rows.mappings():
+            item = dict(r)
+            for key in ("due_at", "fired_at", "created_at"):
+                if item.get(key) is not None:
+                    item[key] = item[key].isoformat()
+            item["status"] = "fired" if item.get("fired_at") else "pending"
+            out.append(item)
+        return out
 
 
 # ── PATCH (partial update) ────────────────────────────────────────────────────

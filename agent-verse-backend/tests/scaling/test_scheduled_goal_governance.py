@@ -250,6 +250,7 @@ class TestRunScheduledGoalGoverned:
                 return_value=(MagicMock(), MagicMock()),
             ),
             patch("app.scaling.tasks._worker_async_redis", return_value=mock_redis),
+            patch("app.scaling.tasks._schedule_fire_state", new=AsyncMock(return_value=None)),
             patch(
                 "app.scaling.tasks._dispatch_scheduled_via_dispatcher",
                 new=AsyncMock(return_value=mock_event),

@@ -1,3 +1,4 @@
+import { localInputToUtcIso, utcIsoToLocalInput } from '../../datetime';
 import type { TriggerSpec } from '../../types';
 
 interface AdvancedOptionsFormProps {
@@ -61,11 +62,11 @@ export function AdvancedOptionsForm({ value, onChange }: AdvancedOptionsFormProp
           </Field>
         </div>
 
-        <Field label="Expires at" hint="Auto-disable the trigger after this time (optional)">
+        <Field label="Expires at" hint="Auto-disable the trigger after this time (your local time; optional)">
           <input
             type="datetime-local"
-            value={(value.expires_at_iso as string) ?? ''}
-            onChange={(e) => set('expires_at_iso', e.target.value)}
+            value={utcIsoToLocalInput(value.expires_at_iso as string | undefined)}
+            onChange={(e) => set('expires_at_iso', localInputToUtcIso(e.target.value))}
             className={inputCls}
           />
         </Field>

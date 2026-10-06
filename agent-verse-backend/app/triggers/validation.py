@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from app.triggers.models import TriggerSpec, check_plan_interval, validate_cron
 
 _PRIORITIES = {"high", "normal", "low"}
+# Missed-run policies of the time triggers (B1-5), see app.scaling.tasks._apply_catch_up.
+CATCH_UP_POLICIES = ("all", "latest", "none")
 
 
 def _is_iso(value: str) -> bool:
@@ -95,6 +97,92 @@ def is_within(path: str, base: str) -> bool:
     return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
 
 
+def timezone_error(tz_name: str) -> str | None:
+    """Why *tz_name* is not a usable IANA timezone, else None (empty = UTC).
+
+    The beat resolves the zone with ``ZoneInfo`` and fell back to UTC for any
+    name it could not load (B1-2), so a typo ran the schedule hours off.
+    """
+    name = (tz_name or "").strip()
+    if not name or name.upper() == "UTC":
+        return None
+    from zoneinfo import ZoneInfo
+
+    try:
+        ZoneInfo(name)
+    except (ValueError, KeyError, OSError):
+        return (
+            f"Unknown timezone {name!r}: use an IANA zone name such as "
+            "'Asia/Kolkata', 'America/New_York' or 'UTC'"
+        )
+    return None
+
+
+_EVENT_CHANNEL = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
+
+
+def _validate_relative_delay(spec: TriggerSpec) -> None:
+    """A fixed base (``fire_at_iso``) or, B1-8, an event base: each event on
+    ``event_channel`` arms a fire ``relative_offset_seconds`` after the event
+    (or after the timestamp at ``relative_to_field`` in its payload)."""
+    from app.triggers.delayed import MAX_EVENT_DELAY_SECONDS
+
+    if spec.fire_at_iso.strip():
+        if spec.event_channel.strip():
+            raise ValueError(
+                "relative_delay takes either fire_at_iso (a fixed base time) or "
+                "event_channel (the offset counts from each event), not both"
+            )
+        _require_iso(spec.fire_at_iso, "")
+        return
+    channel = spec.event_channel.strip()
+    if not channel:
+        raise ValueError(
+            "relative_delay trigger requires fire_at_iso (a fixed base time) or "
+            "event_channel (fire relative_offset_seconds after each event on it)"
+        )
+    if not _EVENT_CHANNEL.match(channel):
+        raise ValueError(
+            "event_channel may only contain letters, digits and . _ : - (at most 200)"
+        )
+    if not 0 <= int(spec.relative_offset_seconds or 0) <= MAX_EVENT_DELAY_SECONDS:
+        raise ValueError(
+            "relative_offset_seconds must be between 0 and "
+            f"{MAX_EVENT_DELAY_SECONDS} for an event-relative delay"
+        )
+    field = spec.relative_to_field.strip()
+    if field and not re.fullmatch(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*", field):
+        raise ValueError("relative_to_field must be a dotted payload path, e.g. order.shipped_at")
+
+
+MAX_HOLIDAYS = 500
+_HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def _validate_business_calendar(spec: TriggerSpec) -> None:
+    """Holidays, business days and hours of a business_calendar trigger (B1-6)."""
+    holidays = spec.holidays
+    if not isinstance(holidays, list) or len(holidays) > MAX_HOLIDAYS:
+        raise ValueError(f"holidays must be a list of at most {MAX_HOLIDAYS} YYYY-MM-DD dates")
+    for day in holidays:
+        try:
+            datetime.strptime(str(day), "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"holidays: {day!r} is not a YYYY-MM-DD date") from None
+    days = spec.business_days
+    if (
+        not isinstance(days, list)
+        or not days
+        or any(not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6 for d in days)
+    ):
+        raise ValueError("business_days must list weekday numbers 0 (Monday) to 6 (Sunday)")
+    start, end = spec.business_hours_start, spec.business_hours_end
+    if not (_HHMM.match(str(start)) and _HHMM.match(str(end))) or str(start) >= str(end):
+        raise ValueError(
+            "business_hours_start / business_hours_end must be HH:MM with start before end"
+        )
+
+
 def _require_iso(value: str, missing: str) -> None:
     if not value.strip():
         raise ValueError(missing)
@@ -162,6 +250,27 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     from app.triggers.consumers.conversational import validate_conversational_patterns
 
     validate_conversational_patterns(spec)
+    if spec.catch_up not in CATCH_UP_POLICIES:
+        raise ValueError(
+            f"catch_up must be one of: {', '.join(CATCH_UP_POLICIES)} (got {spec.catch_up!r})"
+        )
+    # B1-12: a condition the evaluator cannot run was stored, and every fire
+    # was then skipped as condition_error.
+    conditions = (("condition_cel", spec.condition_expression), ("condition", spec.condition))
+    for label, expr in conditions:
+        if expr and expr.strip():
+            from app.triggers.condition.evaluator import CELEvaluator
+
+            try:
+                CELEvaluator().check(expr)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{label} cannot be evaluated ({exc}); conditions support payload fields "
+                    "(payload.a.b), literals, == != < <= > >=, in, and/or/not (&& || !)"
+                ) from exc
+    # B1-2: an unknown zone used to be stored and then silently evaluated as UTC.
+    if (reason := timezone_error(spec.timezone)) is not None:
+        raise ValueError(reason)
     # TRG-23: HITL queue filters are derived ids (agent:<id> / risk:<tier>).
     if spec.hitl_queue_id:
         from app.governance.hitl_queues import queue_id_error
@@ -188,11 +297,7 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     # deadline_field / business_calendar_id alone passed validation but the
     # beat fires only from fire_at_iso / cron_expression, so they never fired.
     elif v == "relative_delay":
-        _require_iso(
-            spec.fire_at_iso,
-            "relative_delay trigger requires fire_at_iso (the base time the offset is "
-            "added to); payload-relative delays (relative_to_field) are not supported yet",
-        )
+        _validate_relative_delay(spec)
     elif v == "deadline":
         _require_iso(
             spec.fire_at_iso,
@@ -206,6 +311,7 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
                 "business hours); business_calendar_id alone never fires"
             )
         validate_cron(spec.cron_expression, plan)
+        _validate_business_calendar(spec)
     elif v == "api_poll":
         if not spec.poll_url.strip():
             raise ValueError("api_poll trigger requires poll_url")

@@ -234,10 +234,16 @@ celery_app.conf.update(
             "schedule": 30.0,
             "options": {"queue": "maintenance"},
         },
+        # B1-7 / B1-16: every 15 s, so a slot fires at most ~15 s late whatever
+        # second the beat started on (a 60 s interval counted from the beat's
+        # start fired up to 59 s late, and RedBeat keeps a crontab entry on the
+        # second of its first run). Each tick is one indexed claim of due rows;
+        # the beat guard keeps ticks from overlapping. A tick no worker took
+        # in time expires: the next one covers it (slots come from last_fired_at).
         "fire-due-schedules-every-60s": {
             "task": "app.scaling.tasks.fire_due_schedules",
-            "schedule": 60.0,
-            "options": {"queue": "schedules"},
+            "schedule": 15.0,
+            "options": {"queue": "schedules", "expires": 14},
         },
         "record-queue-depths-every-30s": {
             "task": "app.scaling.tasks.record_queue_depths",
@@ -477,8 +483,8 @@ celery_app.conf.update(
         # Item 4: fire published workflows whose cron schedule trigger is due.
         "workflow-fire-due-schedules": {
             "task": "workflow.fire_due_workflow_schedules",
-            "schedule": 60.0,  # every 60 seconds
-            "options": {"queue": "workflows.maintenance"},
+            "schedule": crontab(minute="*"),  # B1-7: second 0 of every minute
+            "options": {"queue": "workflows.maintenance", "expires": 55},
         },
         # Durable timer waits: re-dispatch runs whose ``wait`` step wake time has
         # passed (the wait no longer sleeps inside a worker slot).
@@ -515,7 +521,26 @@ def _goal_visibility_timeout_s() -> int:
 
 _BROKER_TRANSPORT_OPTIONS: dict[str, object] = {
     "visibility_timeout": _goal_visibility_timeout_s(),
+    # B1-15: a dead TCP connection to Redis must fail fast, not block a send
+    # (the beat's publish) until the kernel gives up (~15 min).
+    "socket_timeout": 30,
+    "socket_connect_timeout": 10,
+    "socket_keepalive": True,
+    "health_check_interval": 25,
 }
+
+# B1-15: query options redis-py applies to RedBeat's own client (RedBeat builds
+# it with StrictRedis.from_url and ignores redbeat_redis_options there).
+_REDBEAT_CLIENT_QUERY = (
+    "socket_timeout=15&socket_connect_timeout=5&socket_keepalive=true"
+    "&health_check_interval=25&retry_on_timeout=true"
+)
+
+
+def _with_client_timeouts(url: str) -> str:
+    if url.startswith("sentinel://"):
+        return url
+    return f"{url}{'&' if '?' in url else '?'}{_REDBEAT_CLIENT_QUERY}"
 celery_app.conf.broker_transport_options = dict(_BROKER_TRANSPORT_OPTIONS)
 
 # ── RedBeat HA Beat Scheduler ──────────────────────────────────────────────────
@@ -524,10 +549,14 @@ celery_app.conf.broker_transport_options = dict(_BROKER_TRANSPORT_OPTIONS)
 try:
     import redbeat  # type: ignore[import]  # noqa: F401
 
-    celery_app.conf.beat_scheduler = "redbeat.RedBeatScheduler"
-    celery_app.conf.redbeat_redis_url = REDIS_URL
+    # B1-14: RedBeat that never subscribes the beat to task results.
+    celery_app.conf.beat_scheduler = "app.scaling.beat_scheduler:AgentVerseRedBeatScheduler"
+    celery_app.conf.redbeat_redis_url = _with_client_timeouts(REDIS_URL)
     celery_app.conf.redbeat_lock_key = "agentverse:beat:lock"
     celery_app.conf.redbeat_lock_timeout = 300  # 5 minutes
+    # B1-14: wake at least every 30 s, well inside the 300 s lock (the default
+    # 300 s sleep equalled the lock timeout, so a late wake-up lost the lock).
+    celery_app.conf.beat_max_loop_interval = 30
 except ImportError:
     # redbeat not installed — falls back to default file-based beat scheduler
     pass
@@ -549,7 +578,7 @@ if _SENTINEL_URLS:
     celery_app.conf.redis_backend_use_ssl = REDIS_URL.startswith("rediss://")
 
     # RedBeat also needs the Sentinel URL so the lock key survives failover.
-    if getattr(celery_app.conf, "beat_scheduler", "").endswith("RedBeatScheduler"):
+    if "RedBeatScheduler" in str(getattr(celery_app.conf, "beat_scheduler", "")):
         celery_app.conf.redbeat_redis_url = _BROKER_URL
 
 # Backwards-compatible alias used by some imports

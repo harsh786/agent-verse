@@ -2497,6 +2497,11 @@
             "title": "Name",
             "type": "string"
           },
+          "timezone": {
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
+          },
           "trigger_type": {
             "default": "once",
             "title": "Trigger Type",
@@ -47049,6 +47054,64 @@
           }
         },
         "summary": "Update Trigger",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/triggers/{schedule_id}/delayed-fires": {
+      "get": {
+        "description": "Fires an event-relative relative_delay trigger has armed (B1-8): pending\nones first (soonest due first), then the most recently fired. Tenant-scoped\nby RLS and an explicit ``tenant_id`` predicate.",
+        "operationId": "list_delayed_fires_triggers__schedule_id__delayed_fires_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Delayed Fires Triggers  Schedule Id  Delayed Fires Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Delayed Fires",
         "tags": [
           "triggers"
         ]

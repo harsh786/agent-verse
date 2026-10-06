@@ -30,6 +30,24 @@ class CELEvaluator:
         ]
     )
 
+    def check(self, expression: str) -> None:
+        """Raise ``ValueError`` unless *expression* can be evaluated by the
+        evaluator this deployment uses (B1-12): cel-python's compiler when it
+        is installed, else the safe evaluator's syntax whitelist."""
+        if not expression.strip():
+            return
+        try:
+            import celpy  # type: ignore[import]
+        except ImportError:
+            from app.triggers.condition.safe_eval import check_condition
+
+            check_condition(expression)
+            return
+        try:
+            celpy.Environment().compile(expression)
+        except Exception as exc:
+            raise ValueError(f"invalid CEL expression: {exc}") from exc
+
     def evaluate(self, expression: str, payload: dict) -> bool:
         """Return True if expression evaluates truthy, False otherwise."""
         if not expression.strip():

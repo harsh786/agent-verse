@@ -49,7 +49,8 @@ describe('AdvancedOptionsForm', () => {
     render(<AdvancedOptionsForm value={{}} onChange={onChange} />);
     const input = document.querySelector('input[type="datetime-local"]') as HTMLInputElement;
     fireEvent.change(input, { target: { value: '2027-01-01T00:00' } });
-    expect(lastArg(onChange)).toEqual({ expires_at_iso: '2027-01-01T00:00' });
+    // B1-9: the local time picked is sent as an explicit UTC instant.
+    expect(lastArg(onChange)).toEqual({ expires_at_iso: new Date('2027-01-01T00:00').toISOString() });
   });
 
   test('editing the CEL condition merges into value', () => {

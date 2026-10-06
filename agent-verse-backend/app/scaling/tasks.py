@@ -13,6 +13,7 @@ import re
 import signal as _signal
 import threading
 import time
+import types
 import uuid
 from datetime import UTC
 from typing import Any, cast
@@ -27,6 +28,8 @@ from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app, goal_queue_for
 from app.scaling.retry_policy import is_transient_infra_error
+from app.triggers.time_math import is_business_time as _is_business_time
+from app.triggers.time_math import resolve_tz as _resolve_tz
 
 logger = get_logger(__name__)
 
@@ -4711,6 +4714,34 @@ def _worker_async_redis() -> Any:
         return None
 
 
+async def _schedule_fire_state(db_factory: Any, tenant_id: str, schedule_key: str) -> str | None:
+    """``"deleted"`` / ``"paused"`` when a queued fire must not run, else None (B1-3).
+
+    Reads the schedule row on the tenant's RLS context with an explicit
+    ``tenant_id`` predicate. Without a database (Redis-only schedules) there is
+    nothing to re-check. A database error propagates so the task retries
+    instead of firing a schedule it could not verify.
+    """
+    if db_factory is None:
+        return None
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db_factory() as session, session.begin(), sqlalchemy_rls_context(
+        session, tenant_id
+    ):
+        row = (
+            await session.execute(
+                text("SELECT paused FROM schedules WHERE id = :sid AND tenant_id = :tid"),
+                {"sid": _bare_schedule_id(schedule_key), "tid": tenant_id},
+            )
+        ).first()
+    if row is None:
+        return "deleted"
+    return "paused" if bool(row.paused) else None
+
+
 async def _run_scheduled_goal_governed(
     schedule_id: str,
     tenant_id: str,
@@ -4727,6 +4758,19 @@ async def _run_scheduled_goal_governed(
 ) -> Any:
     """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
     goal_service, db_factory = _build_worker_goal_service()
+    # B1-3: the fire may have waited in the queue; a schedule deleted or paused
+    # since it was enqueued creates no goal.
+    state = await _schedule_fire_state(db_factory, tenant_id, schedule_id)
+    if state is not None:
+        logger.info(
+            "scheduled_fire_suppressed schedule=%s state=%s fire=%s",
+            schedule_id,
+            state,
+            fire_instance_id,
+        )
+        return types.SimpleNamespace(
+            goal_created=False, goal_id=None, skip_reason=f"schedule_{state}"
+        )
     redis = _worker_async_redis()
     sched: dict[str, Any] = {
         "trigger_type": trigger_type or "cron",
@@ -4900,7 +4944,7 @@ def _to_utc_naive(dt: datetime.datetime, assume_tz: datetime.tzinfo) -> datetime
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=assume_tz)
-    return dt.astimezone(datetime.UTC).replace(tzinfo=None)
+    return dt.astimezone(datetime.UTC).replace(tzinfo=None, fold=0)
 
 
 def _norm_utc_naive(dt: datetime.datetime | None) -> datetime.datetime | None:
@@ -4910,17 +4954,6 @@ def _norm_utc_naive(dt: datetime.datetime | None) -> datetime.datetime | None:
     if dt.tzinfo is not None:
         return dt.astimezone(datetime.UTC).replace(tzinfo=None)
     return dt
-
-
-def _resolve_tz(tz_name: str) -> datetime.tzinfo:
-    if not tz_name or tz_name.upper() == "UTC":
-        return datetime.UTC
-    try:
-        from zoneinfo import ZoneInfo
-
-        return ZoneInfo(tz_name)
-    except Exception:
-        return datetime.UTC
 
 
 def _cron_missed_runs_utc(
@@ -4950,10 +4983,19 @@ def _cron_missed_runs_utc(
     assert now_naive is not None
     now_local = now_naive.replace(tzinfo=datetime.UTC).astimezone(tz)
 
+    fixed_hour = _cron_hour_is_fixed(cron_expr)
+
+    def _repeated(slot_utc: datetime.datetime) -> bool:
+        # B1-11: on a fall-back day the repeated hour's second occurrence
+        # (fold=1) of a fixed-hour job is the same wall-clock slot again.
+        # (croniter tags its results fold=1 whatever the zone: recompute it.)
+        local = slot_utc.replace(tzinfo=datetime.UTC, fold=0).astimezone(tz)
+        return fixed_hour and local.fold == 1
+
     if last_fired_utc is None:
         itr = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
-        prev = cast(datetime.datetime, itr.get_prev(datetime.datetime))
-        return [_to_utc_naive(prev, tz)]
+        prev = _to_utc_naive(cast(datetime.datetime, itr.get_prev(datetime.datetime)), tz)
+        return [] if _repeated(prev) else [prev]
 
     last_naive = _norm_utc_naive(last_fired_utc)
     itr = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
@@ -4963,9 +5005,17 @@ def _cron_missed_runs_utc(
         prev_naive = _to_utc_naive(prev_local, tz)
         if last_naive is not None and prev_naive <= last_naive:
             break
-        runs.append(prev_naive)
+        if not _repeated(prev_naive):
+            runs.append(prev_naive)
     runs.reverse()
     return runs
+
+
+def _cron_hour_is_fixed(cron_expr: str) -> bool:
+    """True when the cron's hour field names specific hours (not ``*`` / ``*/n``):
+    such a job runs once in a repeated (fall-back) hour, as cron does (B1-11)."""
+    fields = cron_expr.split()
+    return len(fields) >= 2 and "*" not in fields[1]
 
 
 def _naive(dt: datetime.datetime) -> datetime.datetime:
@@ -5010,6 +5060,7 @@ def _interval_due_slot_utc(
     interval_seconds: int,
     last_fired_utc: datetime.datetime | None,
     now_utc: datetime.datetime,
+    anchor_utc: datetime.datetime | None = None,
 ) -> datetime.datetime | None:
     """INTERVAL: return the deterministic fire slot if the schedule is due, else None.
 
@@ -5024,22 +5075,24 @@ def _interval_due_slot_utc(
     interval firing dispatch twice. Bucketing to a fixed epoch-aligned slot
     ("this interval's slot"), like the cron slot helper already does, keeps
     the key identical across concurrent, near-simultaneous evaluations.
+
+    B1-17: slots are counted from ``anchor_utc`` (the schedule's arming time,
+    stored in Postgres, so every evaluation agrees) instead of the epoch: an
+    epoch-aligned slot fired once late in its window and again at the next
+    boundary (29.9 s apart live for a 60 s interval). Without an anchor (an old
+    Redis mirror payload) the epoch is used.
     """
     if interval_seconds <= 0:
         return None
     if last_fired_utc is not None and (now_utc - last_fired_utc).total_seconds() < interval_seconds:
         return None
-    elapsed = (now_utc - _INTERVAL_EPOCH).total_seconds()
+    origin = anchor_utc if anchor_utc is not None and anchor_utc <= now_utc else _INTERVAL_EPOCH
+    elapsed = (now_utc - origin).total_seconds()
     slot_index = int(elapsed // interval_seconds)
-    return _INTERVAL_EPOCH + datetime.timedelta(seconds=slot_index * interval_seconds)
-
-
-def _is_business_time(dt_utc: datetime.datetime, tz_name: str = "UTC") -> bool:
-    """True when the instant is Mon-Fri, 09:00-17:00 (local wall-clock in tz)."""
-    tz = _resolve_tz(tz_name)
-    aware = dt_utc.replace(tzinfo=datetime.UTC) if dt_utc.tzinfo is None else dt_utc
-    local = aware.astimezone(tz)
-    return local.weekday() < 5 and 9 <= local.hour < 17
+    slot = origin + datetime.timedelta(seconds=slot_index * interval_seconds)
+    if last_fired_utc is not None and slot <= last_fired_utc:
+        return None
+    return slot
 
 
 def _business_calendar_slots(
@@ -5047,12 +5100,108 @@ def _business_calendar_slots(
     last_fired: datetime.datetime | None,
     now: datetime.datetime,
     tz_name: str = "UTC",
+    calendar: dict[str, Any] | None = None,
 ) -> list[datetime.datetime]:
-    """BUSINESS_CALENDAR: cron slots that fall within business hours only."""
+    """BUSINESS_CALENDAR: cron slots on business days, in business hours, not
+    on a holiday (B1-6)."""
     if not cron_expr:
         return []
     slots = _cron_missed_runs_utc(cron_expr, last_fired, now, tz_name)
-    return [s for s in slots if _is_business_time(s, tz_name)]
+    return [s for s in slots if _is_business_time(s, tz_name, calendar)]
+
+
+# The six time-family trigger types the beat evaluates with _time_trigger_slots.
+_TIME_TRIGGER_TYPES = frozenset(
+    {"cron", "interval", "once", "relative_delay", "deadline", "business_calendar"}
+)
+
+
+def _one_shot_target_utc(sched: dict[str, Any]) -> datetime.datetime | None:
+    """The instant a once / relative_delay / deadline trigger fires (UTC-naive)."""
+    base = _schedule_datetime(sched.get("fire_at_iso"))
+    if base is None:
+        return None
+    trigger_type = str(sched.get("trigger_type") or "")
+    if trigger_type == "relative_delay":
+        return base + datetime.timedelta(seconds=int(sched.get("relative_offset_seconds") or 0))
+    if trigger_type == "deadline":
+        return base - datetime.timedelta(seconds=int(sched.get("deadline_warning_seconds") or 0))
+    return base
+
+
+def _time_trigger_slots(sched: dict[str, Any], now: datetime.datetime) -> list[datetime.datetime]:
+    """The slots a time-family trigger fires on this tick, oldest first (UTC-naive).
+
+    Recurring types (cron, business_calendar) fire every slot after
+    ``max(last_fired_at, armed_at)`` (B1-1): ``armed_at`` is when the schedule
+    was created, resumed or its spec edited, so a new schedule never fires a
+    slot from before it existed and a resumed / re-timed one never replays the
+    slots it was paused for, while slots missed by a beat outage still fire.
+    A payload without ``armed_at`` (an old Redis mirror) keeps the previous
+    rule: only the most recent slot when it never fired. Interval fires its
+    current epoch-aligned slot once per interval; the one-shots fire once at
+    their instant (late when the beat was down).
+    """
+    trigger_type = str(sched.get("trigger_type") or "")
+    last = _schedule_datetime(sched.get("last_fired_at"))
+    if trigger_type in ("cron", "business_calendar"):
+        cron_expr = str(sched.get("cron_expression") or "")
+        if not cron_expr:
+            return []
+        tz_name = str(sched.get("timezone") or "UTC")
+        armed = _schedule_datetime(sched.get("armed_at"))
+        floor = max((t for t in (last, armed) if t is not None), default=None)
+        if trigger_type == "business_calendar":
+            return _business_calendar_slots(cron_expr, floor, now, tz_name, sched)
+        return _cron_missed_runs_utc(cron_expr, floor, now, tz_name)
+    if trigger_type == "interval":
+        slot = _interval_due_slot_utc(
+            int(sched.get("interval_seconds") or 0),
+            last,
+            now,
+            _schedule_datetime(sched.get("armed_at")),
+        )
+        return [slot] if slot is not None else []
+    if trigger_type in ("once", "relative_delay", "deadline"):
+        target = _one_shot_target_utc(sched)
+        if target is None or last is not None or _naive(now) < _naive(target):
+            return []
+        return [target]
+    return []
+
+
+# A slot at most this late still counts as on time under catch_up="none" (B1-5):
+# the beat ticks every 60 s, so a healthy tick sees a slot up to ~60 s late.
+_ON_TIME_GRACE_SECONDS = 90
+
+
+def _catch_up_policy(sched: dict[str, Any]) -> str:
+    policy = str(sched.get("catch_up") or "").strip().lower()
+    if policy in ("all", "latest", "none"):
+        return policy
+    # The pre-B1-5 flag (never settable through the API) meant "latest".
+    return "latest" if sched.get("coalesce_missed_runs") else "all"
+
+
+def _apply_catch_up(
+    sched: dict[str, Any], slots: list[datetime.datetime], now: datetime.datetime
+) -> tuple[list[datetime.datetime], list[datetime.datetime]]:
+    """Split due slots into ``(to_fire, skipped)`` by the trigger's ``catch_up``.
+
+    ``all``: every slot (``_time_trigger_slots`` already bounds a cron backlog to
+    the 60 most recent). ``latest``: the most recent slot only. ``none``: slots
+    more than ``_ON_TIME_GRACE_SECONDS`` late are skipped. Interval triggers
+    never replay (they fire their current slot), so they are not filtered.
+    """
+    if not slots or str(sched.get("trigger_type") or "") == "interval":
+        return slots, []
+    policy = _catch_up_policy(sched)
+    if policy == "latest":
+        return slots[-1:], slots[:-1]
+    if policy == "none":
+        cutoff = _naive(now) - datetime.timedelta(seconds=_ON_TIME_GRACE_SECONDS)
+        return [s for s in slots if s >= cutoff], [s for s in slots if s < cutoff]
+    return slots, []
 
 
 _SAFE_TABLE = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -5127,6 +5276,10 @@ def _db_schedule_payload(row: Any) -> dict[str, Any]:
         "paused": bool(getattr(row, "paused", False)),
         "last_fired_at": _datetime_to_naive_iso(getattr(row, "last_fired_at", None)),
         "next_fire_at": _datetime_to_naive_iso(getattr(row, "next_fire_at", None)),
+        # B1-1: no slot at or before this instant fires (resumed / edited, else created).
+        "armed_at": _datetime_to_naive_iso(
+            getattr(row, "armed_at", None) or getattr(row, "created_at", None)
+        ),
     }
     if isinstance(config, dict):
         payload.update(config)
@@ -5193,15 +5346,21 @@ def _next_evaluation_at(
         # TRG-54: polled every interval, not loaded on every tick.
         return now_aware + datetime.timedelta(seconds=_poll_interval_seconds(sched))
     if trigger_type in ("once", "relative_delay", "deadline"):
-        if last is not None:
+        from app.triggers.delayed import is_event_armed
+
+        if last is not None or is_event_armed(
+            trigger_type, str(sched.get("event_channel") or ""), str(sched.get("fire_at_iso") or "")
+        ):
+            # Fired one-shot, or an event-armed delay (its fires are
+            # trigger_delayed_fires rows, B1-8): never due by itself again.
             return _NEVER
-        base = _schedule_datetime(sched.get("fire_at_iso"))
+        base = _one_shot_target_utc(sched)
         if base is None:
             return None
-        if trigger_type == "relative_delay":
-            base += datetime.timedelta(seconds=int(sched.get("relative_offset_seconds") or 0))
-        elif trigger_type == "deadline":
-            base -= datetime.timedelta(seconds=int(sched.get("deadline_warning_seconds") or 0))
+        if _catch_up_policy(sched) == "none" and base < _naive(now) - datetime.timedelta(
+            seconds=_ON_TIME_GRACE_SECONDS
+        ):
+            return _NEVER  # B1-5: missed with catch_up="none": never fires
         return _utc(base)
     return None
 
@@ -5390,6 +5549,85 @@ async def _pause_db_schedule(tenant_id: str, schedule_id: str) -> None:
             schedule_id=schedule_id,
             error=str(exc)[:200],
         )
+
+
+def _fire_due_delayed_fires(now: datetime.datetime) -> int:
+    """Sync entry for the beat: :func:`_fire_due_delayed_fires_async` (B1-8)."""
+    try:
+        return cast(int, _run_async(_fire_due_delayed_fires_async(now)))
+    except Exception as exc:
+        logger.warning("delayed_fires_failed: %s", exc)
+        return 0
+
+
+async def _fire_due_delayed_fires_async(now: datetime.datetime) -> int:
+    """Fire the due event-relative relative_delay fires (B1-8); returns the count.
+
+    Claimed in one statement (SKIP LOCKED, so two beats never claim the same
+    fire), each enqueued through the governed dispatch with the event as its
+    payload and ``delayed:<id>`` as its idempotency input. A fire whose enqueue
+    fails is released for the next tick. A fire armed before the trigger was
+    paused / edited and due before it was re-armed is dropped (as B1-1 drops
+    such slots).
+    """
+    from app.db.session import get_system_session_factory
+    from app.triggers.delayed import (
+        claim_due_delayed_fires,
+        prune_fired_delayed_fires,
+        release_delayed_fires,
+    )
+
+    factory = get_system_session_factory()
+    try:
+        claimed = await claim_due_delayed_fires(factory, now, limit=_due_batch_size())
+    except Exception as exc:
+        logger.warning("delayed_fire_claim_failed: %s", exc)
+        return 0
+    fired = 0
+    failed: list[str] = []
+    for row in claimed:
+        sched = _db_schedule_payload(_RowAttrs(row["schedule"]))
+        tenant_id = str(sched.get("tenant_id") or "")
+        schedule_id = str(sched.get("schedule_id") or "")
+        key = _schedule_key(tenant_id, schedule_id)
+        due = _schedule_datetime(row.get("due_at"))
+        armed = _schedule_datetime(sched.get("armed_at"))
+        created = _schedule_datetime(row.get("created_at"))
+        if armed and due and created and created < armed and due < armed:
+            logger.info("delayed_fire_dropped_rearmed schedule=%s fire=%s", key, row.get("id"))
+            continue
+        fire_instance_id = f"delayed:{row.get('id')}"
+        goal_kwargs = _scheduled_goal_kwargs(key, sched, fire_instance_id=fire_instance_id)
+        if goal_kwargs is None:
+            continue
+        payload = row.get("payload")
+        try:
+            _enqueue_governed_fire(
+                key,
+                sched,
+                goal_template=str(goal_kwargs["goal_template"]),
+                tenant_id=tenant_id,
+                agent_id=str(goal_kwargs.get("agent_id") or ""),
+                fire_instance_id=fire_instance_id,
+                event_payload=payload if isinstance(payload, dict) else {},
+            )
+        except Exception as exc:
+            logger.warning("delayed_fire_enqueue_failed schedule=%s: %s", key, exc)
+            failed.append(str(row.get("id")))
+            _record_schedule_fire_metric("error")
+            continue
+        if due is not None:
+            with contextlib.suppress(Exception):
+                await _update_db_schedule_last_fired_at(tenant_id, schedule_id, due)
+        _record_schedule_fire_metric("success")
+        fired += 1
+        logger.info("Fired relative_delay schedule %s (event fire %s)", key, row.get("id"))
+    if failed:
+        with contextlib.suppress(Exception):
+            await release_delayed_fires(factory, failed)
+    with contextlib.suppress(Exception):
+        await prune_fired_delayed_fires(factory, now)
+    return fired
 
 
 def _db_schedule_discovery_enabled() -> bool:
@@ -6087,12 +6325,21 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             *,
             kind: str,
         ) -> int:
-            """Fire each missed slot (oldest first), or just the last one when the
-            schedule opts into ``coalesce_missed_runs``. Returns the number fired."""
+            """Fire the due slots (oldest first) the schedule's ``catch_up`` policy
+            keeps (B1-5). Returns the number fired."""
             if not slots:
                 return 0
-            if sched.get("coalesce_missed_runs"):
-                slots = [slots[-1]]
+            slots, skipped = _apply_catch_up(sched, slots, now)
+            if skipped:
+                logger.info(
+                    "schedule_missed_slots_skipped schedule=%s policy=%s skipped=%d "
+                    "oldest=%s newest=%s",
+                    key,
+                    _catch_up_policy(sched),
+                    len(skipped),
+                    skipped[0].isoformat(),
+                    skipped[-1].isoformat(),
+                )
             count = 0
             for slot in slots:
                 goal_kwargs = advance_and_dispatch_schedule(
@@ -6129,104 +6376,15 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
                 trigger_type = sched.get("trigger_type", "")
 
-                # ── CRON schedules ────────────────────────────────────────────
-                if trigger_type == "cron":
-                    cron_expr = sched.get("cron_expression", "")
-                    if cron_expr:
-                        tz_name = sched.get("timezone") or "UTC"
-                        last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
-                        try:
-                            missed = _cron_missed_runs_utc(cron_expr, last_fired_dt, now, tz_name)
-                        except Exception as cron_exc:
-                            logger.warning("Cron parse error for %s: %s", key, cron_exc)
-                            continue
-                        fired += dispatch_missed_slots(key, sched, missed, kind="cron")
-
-                # ── INTERVAL schedules ────────────────────────────────────────
-                elif trigger_type == "interval":
-                    interval_s: int = sched.get("interval_seconds", 0)
-                    if interval_s > 0:
-                        last_fired = sched.get("last_fired_at")
-                        last_dt = _schedule_datetime(last_fired) if last_fired is not None else None
-                        slot = _interval_due_slot_utc(interval_s, last_dt, now)
-
-                        if slot is not None:
-                            goal_kwargs = advance_and_dispatch_schedule(
-                                key,
-                                sched,
-                                fired_at=slot,
-                                fire_instance_id=slot.isoformat(),
-                            )
-                            if goal_kwargs is not None:
-                                fired += 1
-                                logger.info(
-                                    "Fired interval schedule %s for tenant %s",
-                                    key,
-                                    goal_kwargs["tenant_id"],
-                                )
-
-                # ── ONCE schedules ────────────────────────────────────────────
-                elif trigger_type == "once":
-                    fire_at = _schedule_datetime(sched.get("fire_at_iso"))
-                    last_fired = sched.get("last_fired_at")
-                    if fire_at and last_fired is None:
-                        # Compare as UTC-naive to avoid tz issues
-                        now_ts = now.replace(tzinfo=None) if now.tzinfo else now
-                        fire_at_ts = fire_at.replace(tzinfo=None) if fire_at.tzinfo else fire_at
-                        if now_ts >= fire_at_ts:
-                            goal_kwargs = advance_and_dispatch_schedule(
-                                key, sched, fired_at=fire_at, fire_instance_id=fire_at.isoformat()
-                            )
-                            if goal_kwargs is not None:
-                                fired += 1
-                                logger.info("Fired once schedule %s", key)
-
-                # ── RELATIVE_DELAY (fire once at base + offset) ────────────────
-                elif trigger_type == "relative_delay":
-                    last_dt = _schedule_datetime(sched.get("last_fired_at"))
-                    due_at = _relative_delay_due_utc(
-                        sched.get("fire_at_iso", ""),
-                        int(sched.get("relative_offset_seconds", 0) or 0),
-                        now,
-                        last_dt,
-                    )
-                    if due_at is not None:
-                        goal_kwargs = advance_and_dispatch_schedule(
-                            key, sched, fired_at=due_at, fire_instance_id=due_at.isoformat()
-                        )
-                        if goal_kwargs is not None:
-                            fired += 1
-                            logger.info("Fired relative_delay schedule %s", key)
-
-                # ── DEADLINE (fire once, warning_seconds before deadline) ──────
-                elif trigger_type == "deadline":
-                    last_dt = _schedule_datetime(sched.get("last_fired_at"))
-                    due_at = _deadline_due_utc(
-                        sched.get("fire_at_iso", ""),
-                        int(sched.get("deadline_warning_seconds", 0) or 0),
-                        now,
-                        last_dt,
-                    )
-                    if due_at is not None:
-                        goal_kwargs = advance_and_dispatch_schedule(
-                            key, sched, fired_at=due_at, fire_instance_id=due_at.isoformat()
-                        )
-                        if goal_kwargs is not None:
-                            fired += 1
-                            logger.info("Fired deadline schedule %s", key)
-
-                # ── BUSINESS_CALENDAR (cron, business hours only) ─────────────
-                elif trigger_type == "business_calendar":
-                    cron_expr = sched.get("cron_expression", "")
-                    if cron_expr:
-                        tz_name = sched.get("timezone") or "UTC"
-                        last_dt = _schedule_datetime(sched.get("last_fired_at"))
-                        try:
-                            slots = _business_calendar_slots(cron_expr, last_dt, now, tz_name)
-                        except Exception as bc_exc:
-                            logger.warning("business_calendar parse error %s: %s", key, bc_exc)
-                            continue
-                        fired += dispatch_missed_slots(key, sched, slots, kind="business_calendar")
+                # ── Time family (cron, interval, once, relative_delay, deadline,
+                #    business_calendar): one evaluation, B1-1 floor included ──
+                if trigger_type in _TIME_TRIGGER_TYPES:
+                    try:
+                        slots = _time_trigger_slots(sched, now)
+                    except Exception as slot_exc:
+                        logger.warning("Time trigger evaluation error for %s: %s", key, slot_exc)
+                        continue
+                    fired += dispatch_missed_slots(key, sched, slots, kind=str(trigger_type))
 
                 # ── FILE_DROP trigger ─────────────────────────────────────────
                 elif trigger_type == "file_drop":
@@ -6469,6 +6627,10 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             except Exception as exc:
                 logger.warning("Error processing schedule key %s: %s", key, exc)
                 continue
+
+        # B1-8: fires armed by events for event-relative relative_delay triggers.
+        if _db_schedule_discovery_enabled():
+            fired += _fire_due_delayed_fires(now)
 
         # TRG-15: record when each DB schedule next needs evaluating, so the
         # next tick's indexed query skips it until then.

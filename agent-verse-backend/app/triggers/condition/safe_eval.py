@@ -162,6 +162,37 @@ def parse_condition(expression: str) -> ast.Expression:
     return tree
 
 
+_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
+    ast.Expression, ast.Constant, ast.Name, ast.Attribute, ast.Subscript, ast.List,
+    ast.Tuple, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not, ast.USub, ast.Compare,
+    ast.Load, *_COMPARE_OPS,
+)
+
+
+def check_condition(expression: str) -> None:
+    """Raise ``ConditionError`` unless *expression* only uses what
+    :func:`evaluate_condition` can run (B1-12): checked when a trigger is
+    saved, so an expression that would fail on every fire is refused instead of
+    stored. Payload-dependent errors (a missing key) can still occur at fire time.
+    """
+    if not expression.strip():
+        return
+    tree = parse_condition(expression)
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ConditionError(f"{type(node).__name__} is not allowed in a condition")
+        if isinstance(node, ast.Constant) and not (
+            node.value is None or isinstance(node.value, bool | int | float | str)
+        ):
+            raise ConditionError("unsupported literal")
+        if isinstance(node, ast.Subscript) and not isinstance(node.slice, ast.Constant):
+            raise ConditionError("only literal subscripts are allowed")
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            raise ConditionError("dunder names are not allowed")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            raise ConditionError("dunder attributes are not allowed")
+
+
 def evaluate_condition(expression: str, payload: Mapping[str, Any]) -> bool:
     """Evaluate ``expression`` against ``payload``; raises ``ConditionError``.
 

@@ -448,6 +448,54 @@ services:
       retries: 3
       start_period: 30s
 
+  # Dedicated pool for the time triggers (B1-4): the beat's fire_due_schedules
+  # and run_scheduled_goal / poll_trigger tasks used to share the goal worker's
+  # two slots, so while goals ran, beat ticks waited and schedules fired minutes
+  # late. These tasks are short (claim due rows, create + enqueue the goal); the
+  # goal itself still runs on `worker` (goals.{plan}). `worker` also consumes
+  # these queues, so a stopped schedule-worker degrades instead of stopping.
+  schedule-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    restart: unless-stopped
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=200", "--max-memory-per-child=700000", "-Q", "schedules,triggers.poll", "-n", "schedules@%h"]
+    environment:
+      # Least-privilege application role; agentverse only for cross-tenant system jobs.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: "false"
+    volumes:
+      - ../app/db/migrations:/app/app/db/migrations:ro
+    deploy:
+      resources:
+        limits:
+          # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB growth).
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d schedules@$(hostname) || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   beat:
     build:
       context: ..

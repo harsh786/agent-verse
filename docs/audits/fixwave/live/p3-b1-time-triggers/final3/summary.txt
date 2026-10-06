@@ -1,0 +1,8 @@
+passed test_cron_fires_once_at_its_local_time 222.4
+failed test_interval_fires_once_per_interval 110.4
+     E           AssertionError: fires not one interval apart: [29.9, 60.2]
+passed test_one_shot_types_fire_exactly_once 175.6
+failed test_missed_runs_after_a_beat_outage_follow_catch_up 324.3
+     E           AssertionError: catch_up=latest fired 2
+passed test_cel_conditions_gate_beat_fires 160.6
+passed test_schedule_lifecycle 0.3

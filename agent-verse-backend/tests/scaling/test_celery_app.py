@@ -47,6 +47,23 @@ def test_beat_schedule_routes_fire_due_schedules_to_schedules_queue() -> None:
     assert options["queue"] == "schedules"
 
 
+def test_time_trigger_ticks_are_frequent_and_never_pile_up() -> None:
+    """B1-7 / B1-16: the trigger tick ran every 60 s counted from the beat's
+    start (live: second 43), so a slot fired up to 59 s late; a crontab entry
+    is kept by RedBeat on the second of its first run (live: second 7). The
+    trigger tick runs every 15 s, the workflow-schedule scan every minute;
+    a tick no worker took in time expires."""
+    from celery.schedules import crontab
+
+    beat_schedule = cast(Mapping[str, Mapping[str, Any]], celery_app.conf.beat_schedule)
+    trig = beat_schedule["fire-due-schedules-every-60s"]
+    assert float(trig["schedule"]) <= 15.0
+    assert 0 < float(cast(Mapping[str, Any], trig["options"])["expires"]) <= 15
+    wf = beat_schedule["workflow-fire-due-schedules"]
+    assert isinstance(wf["schedule"], crontab)
+    assert 0 < float(cast(Mapping[str, Any], wf["options"])["expires"]) < 60
+
+
 def test_beat_schedule_records_queue_depths_on_maintenance_queue() -> None:
     beat_schedule = cast(Mapping[str, Mapping[str, Any]], celery_app.conf.beat_schedule)
     schedule_entry = beat_schedule["record-queue-depths-every-30s"]
@@ -1478,3 +1495,42 @@ def test_fire_due_schedules_skips_unavailable_db(monkeypatch: Any, caplog: Any) 
     assert result["schedules_checked"] == 0
     assert result["schedules_fired"] == 0
     # Note: log message goes through structlog (stdout), not caplog — verify behavior only
+
+
+def test_the_beat_never_waits_for_results_and_wakes_inside_its_lock() -> None:
+    """B1-14: the live beat went silent for 5-15 min and crashed with
+    LockNotOwnedError: its sleep could equal the 300 s RedBeat lock, and every
+    beat-sent task subscribed it to a result channel it never read."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.scaling.beat_scheduler import AgentVerseRedBeatScheduler
+
+    conf = celery_app.conf
+    assert conf.beat_scheduler == "app.scaling.beat_scheduler:AgentVerseRedBeatScheduler"
+    assert conf.beat_max_loop_interval * 5 <= conf.redbeat_lock_timeout
+    entry = SimpleNamespace(options={"queue": "schedules", "expires": 55})
+    sent: list[dict[str, Any]] = []
+    with patch("redbeat.RedBeatScheduler.apply_async",
+               lambda self, e, producer=None, advance=True, **kw: sent.append(dict(e.options))):
+        AgentVerseRedBeatScheduler.apply_async(object.__new__(AgentVerseRedBeatScheduler), entry)
+    assert sent == [{"queue": "schedules", "expires": 55, "ignore_result": True}]
+
+
+def test_beat_redis_clients_fail_fast_on_a_dead_connection() -> None:
+    """B1-15: the live beat stalled 86 s once and 15 min several times (a
+    blocked Redis call with no socket timeout waits for the kernel's TCP
+    give-up, ~924 s). Broker and RedBeat clients carry timeouts + keepalive."""
+    from urllib.parse import parse_qs, urlparse
+
+    import redis
+
+    opts = celery_app.conf.broker_transport_options
+    assert opts["socket_timeout"] == 30 and opts["socket_keepalive"] is True
+    assert opts["health_check_interval"] > 0
+    assert opts["visibility_timeout"] > 86_400  # unchanged
+    url = celery_app.conf.redbeat_redis_url
+    query = parse_qs(urlparse(url).query)
+    assert query["socket_timeout"] == ["15"] and query["socket_keepalive"] == ["true"]
+    kwargs = redis.StrictRedis.from_url(url).connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] == 15.0 and kwargs["socket_keepalive"] is True

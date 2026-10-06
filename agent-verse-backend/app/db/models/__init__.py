@@ -65,7 +65,7 @@ from app.db.models.runtime_records import (  # noqa: E402
     GoalCostBreakdownRow,
     SimulationRunRow,
 )
-from app.db.models.scheduling import Policy, Schedule  # noqa: E402
+from app.db.models.scheduling import Policy, Schedule, TriggerDelayedFire  # noqa: E402
 from app.db.models.skill import Skill  # noqa: E402
 from app.db.models.state_machine import (  # noqa: E402
     StateMachineDefinitionRow,
@@ -102,6 +102,7 @@ __all__ = [  # noqa: RUF022
     # scheduling
     "Policy",
     "Schedule",
+    "TriggerDelayedFire",
     # knowledge
     "KnowledgeCollection",
     "Document",

@@ -99,3 +99,18 @@ describe('FamilyFormRouter', () => {
     expect(screen.getByDisplayValue('42')).toBeInTheDocument();
   });
 });
+
+describe('FamilyFormRouter server errors (B1-9)', () => {
+  test('a refusal is shown for a time trigger too, not only conversational ones', () => {
+    render(
+      <FamilyFormRouter
+        family="time"
+        triggerType="interval"
+        value={{}}
+        onChange={() => {}}
+        serverError="interval trigger requires interval_seconds > 0"
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('interval trigger requires interval_seconds > 0');
+  });
+});

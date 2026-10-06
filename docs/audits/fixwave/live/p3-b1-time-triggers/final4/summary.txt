@@ -1,0 +1,2 @@
+passed test_interval_fires_once_per_interval 141.1
+passed test_missed_runs_after_a_beat_outage_follow_catch_up 308.2
