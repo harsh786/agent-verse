@@ -149,7 +149,17 @@ async def test_max_depth_stops_the_chain() -> None:
     )
     data = json.dumps({"tenant_id": "t", "goal_id": "g", "trigger_chain_depth": MAX_CHAIN_DEPTH})
     await consumer._handle({"type": "message", "channel": "goal.completed", "data": data})
-    dispatcher.dispatch.assert_not_awaited()
+    # B7-L3: the consumer hands a firing past the cap to the dispatcher, whose
+    # loop guard refuses AND audits it (chain_depth_exceeded); it used to drop it
+    # silently here. The payload says the goal would exceed the cap.
+    from app.triggers.lineage import loop_guard_reason
+
+    (call,) = dispatcher.dispatch.await_args_list
+    payload = call.args[1]
+    assert payload["trigger_chain_depth"] == MAX_CHAIN_DEPTH + 1
+    assert loop_guard_reason("goal_completed", "t1", call.args[0], payload) == (
+        "chain_depth_exceeded"
+    )
 
 
 def test_celery_queue_sends_chain_depth_only_when_chained() -> None:
