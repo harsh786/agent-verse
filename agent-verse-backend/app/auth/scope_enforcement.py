@@ -144,6 +144,11 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     # Costs
     ("GET", "/costs"): "costs:read",
     ("POST", "/costs"): "costs:admin",
+    # A read-only pre-run estimate (no Redis/DB writes): the costs:admin entry
+    # above used to cover it, so viewer/operator keys could not predict a cost.
+    # Longest prefix wins in _required_scope. (It is the only POST under /costs
+    # that does not mutate anything.)
+    ("POST", "/costs/predict"): "costs:read",
     ("DELETE", "/costs"): "costs:admin",
     # PUT /costs/budgets was unscoped: any key could rewrite the tenant budget.
     ("PUT", "/costs"): "costs:admin",
