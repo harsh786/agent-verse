@@ -524,7 +524,7 @@ async def _save_llm_config(
     masked_key: str | None,
     vault_key_fingerprint: str | None = None,
 ) -> None:
-    from app.services.llm_config_store import LLMConfigPersistError
+    from app.services.llm_config_store import LLMConfigCacheStaleError, LLMConfigPersistError
 
     store = _llm_store(request)
     if store is not None:
@@ -538,6 +538,9 @@ async def _save_llm_config(
                 masked_key=masked_key,
                 vault_key_fingerprint=vault_key_fingerprint,
             )
+        except LLMConfigCacheStaleError as exc:
+            # Saved durably, but replicas may still serve the old config (a08-F195-04).
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except LLMConfigPersistError as exc:
             raise HTTPException(
                 status_code=503, detail="LLM configuration could not be saved"

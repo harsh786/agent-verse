@@ -33,6 +33,13 @@ class LLMConfigReadError(RuntimeError):
     """The durable read failed: whether the tenant configured BYOK is unknown."""
 
 
+class LLMConfigCacheStaleError(LLMConfigPersistError):
+    """The durable write succeeded but the shared cache still holds the previous
+    config (it could be neither overwritten nor deleted), so other replicas keep
+    serving it — the old key included — until its TTL runs out. The write is
+    idempotent: retry it."""
+
+
 class LLMConfigStore:
     """Reads and writes per-tenant LLM provider config.
 
@@ -81,7 +88,16 @@ class LLMConfigStore:
             except Exception as exc:
                 logger.warning("llm_config_db_write_failed tenant=%s: %s", tenant_id, exc)
                 raise LLMConfigPersistError(str(exc)) from exc
-        await self._cache_set(tenant_id, config)
+        if await self._cache_set(tenant_id, config):
+            return
+        if self._db is None:
+            # Redis-only: the cache IS the store, so nothing was saved.
+            raise LLMConfigPersistError("the LLM config store (Redis) rejected the write")
+        # a08-F195-04: a failed overwrite only used to be logged, so every other
+        # replica kept serving the previous config (and key) for up to the TTL.
+        # Drop the entry instead (the next read loads the new row); if even that
+        # fails, say so rather than reporting a clean save.
+        await self._cache_invalidate_or_raise(tenant_id)
 
     async def get_config(self, tenant_id: str, *, strict: bool = False) -> dict[str, Any] | None:
         """Return the config for *tenant_id*, or None if not configured.
@@ -114,11 +130,9 @@ class LLMConfigStore:
             except Exception as exc:
                 logger.warning("llm_config_db_delete_failed tenant=%s: %s", tenant_id, exc)
                 raise LLMConfigPersistError(str(exc)) from exc
-        if self._redis is not None:
-            try:
-                await self._redis.delete(self._key(tenant_id))
-            except Exception as exc:
-                logger.warning("Failed to delete LLM config from Redis for %s: %s", tenant_id, exc)
+        # a08-F195-04: a failed delete used to be logged only, so other replicas
+        # kept serving (and using) the removed key from the cache for the TTL.
+        await self._cache_invalidate_or_raise(tenant_id)
 
     # ── cache ──────────────────────────────────────────────────────────────
 
@@ -132,15 +146,31 @@ class LLMConfigStore:
             logger.warning("Failed to read LLM config from Redis for %s: %s", tenant_id, exc)
             return None
 
-    async def _cache_set(self, tenant_id: str, config: dict[str, Any]) -> None:
+    async def _cache_set(self, tenant_id: str, config: dict[str, Any]) -> bool:
+        """Write the cache entry; True when written (or there is no cache)."""
         if self._redis is None:
-            return
+            return True
         try:
             # With a DB behind it the cache entry expires; Redis-only keeps it.
             ttl = _CACHE_TTL_SECONDS if self._db is not None else None
             await self._redis.set(self._key(tenant_id), json.dumps(config), ex=ttl)
+            return True
         except Exception as exc:
             logger.warning("Failed to store LLM config in Redis for %s: %s", tenant_id, exc)
+            return False
+
+    async def _cache_invalidate_or_raise(self, tenant_id: str) -> None:
+        """Delete the cache entry; raise LLMConfigCacheStaleError if that fails."""
+        if self._redis is None:
+            return
+        try:
+            await self._redis.delete(self._key(tenant_id))
+        except Exception as exc:
+            logger.error("llm_config_cache_invalidation_failed tenant=%s: %s", tenant_id, exc)
+            raise LLMConfigCacheStaleError(
+                "the LLM configuration was saved, but other replicas may keep using the "
+                "previous one for up to 5 minutes; retry the request"
+            ) from exc
 
     # ── database (tenant RLS) ──────────────────────────────────────────────
 
