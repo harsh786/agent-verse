@@ -481,3 +481,29 @@ def test_events_fire_once_with_two_api_replicas(api: LiveAPI, cleanup: Any,
          "trigger-consumer:event"], capture_output=True, text=True, timeout=30).stdout.count("name")
     assert seen == list(range(n)), f"each event exactly once: {seen}"
     _cancel(api, cleanup, sid)
+
+
+@pytest.mark.scenario("INGRESS-QUOTA")
+def test_free_plan_trigger_quota(other: LiveAPI, evidence: dict[str, Any]) -> None:
+    """The free tenant can hold at most PLAN_MAX_TRIGGERS['free'] (5) triggers."""
+    cap = int(os.getenv("RW_FREE_TRIGGER_CAP", "5"))
+    existing = other.get("/triggers").json()
+    made: list[str] = []
+    codes: list[int] = []
+    try:
+        for i in range(cap - len(existing) + 1):
+            r = other.post("/triggers", json={
+                "spec": {"trigger_type": "webhook", "name": f"rw-in-quota-{i}-{tag()}"},
+                "goal_template": "quota probe " + ACK})
+            codes.append(r.status_code)
+            if r.status_code == 201:
+                made.append(r.json()["schedule_id"])
+                register_secret(str((r.json().get("spec") or {}).get("webhook_token") or ""))
+    finally:
+        for sid in made:
+            other.delete(f"/triggers/{sid}")
+    evidence.update(existing=len(existing), codes=codes)
+    if len(existing) >= cap:
+        assert codes == [403], codes
+    else:
+        assert codes[:-1] == [201] * (cap - len(existing)) and codes[-1] == 403, codes
