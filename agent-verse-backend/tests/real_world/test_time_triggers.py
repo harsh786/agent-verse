@@ -663,8 +663,9 @@ def test_missed_runs_after_a_beat_outage_follow_catch_up(ent: LiveAPI,
         first_tick = wait_until(lambda: _first_tick_after(released), timeout=180, interval=5,
                                 desc="the first trigger tick after the outage")
         _sleep_until(first_tick + timedelta(seconds=40))
+        # Only the first tick's fires (ticks are 15 s apart, B1-16).
         burst = {p: len([r for r in _goal_runs(ent, sid, after=stopped)
-                         if _ts(r["started_at"]) <= first_tick + timedelta(seconds=30)])  # type: ignore[operator]
+                         if _ts(r["started_at"]) <= first_tick + timedelta(seconds=10)])  # type: ignore[operator]
                  for p, sid in ids.items()}
         during = {p: len([r for r in _goal_runs(ent, sid, after=stopped + timedelta(seconds=5))
                           if _ts(r["started_at"]) < released])  # type: ignore[operator]
