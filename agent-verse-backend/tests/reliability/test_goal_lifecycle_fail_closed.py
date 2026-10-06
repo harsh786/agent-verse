@@ -14,7 +14,6 @@ import pytest
 
 from app.reliability.goal_lifecycle import (
     GoalCancelledError,
-    check_pause_cancel,
     is_cancelled,
     is_cancelled_sync,
     is_paused,
@@ -63,10 +62,17 @@ async def test_clean_reads_are_unchanged() -> None:
     assert await is_paused("g", ok) is True
 
 
+# The step-boundary pause gate is the worker's own (_make_worker_pause_gate);
+# the duplicate check_pause_cancel had no callers and was removed (a08-F193-02).
+
+
 @pytest.mark.asyncio
-async def test_check_pause_cancel_stops_instead_of_running_on_when_redis_is_down() -> None:
+async def test_worker_gate_stops_instead_of_running_on_when_redis_is_down() -> None:
+    from app.scaling.tasks import _make_worker_pause_gate
+
+    gate = _make_worker_pause_gate("g", _broken_sync(), None)
     with pytest.raises(GoalCancelledError):
-        await check_pause_cancel("g", _broken_sync())
+        await gate()
 
 
 @pytest.mark.asyncio
@@ -74,7 +80,7 @@ async def test_a_read_blip_during_a_pause_does_not_resume_the_goal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Paused → one failed pause read → the goal must still be paused, not resumed."""
-    import app.reliability.goal_lifecycle as gl
+    import app.scaling.tasks as tasks_mod
 
     reads: list[str] = []
 
@@ -98,8 +104,8 @@ async def test_a_read_blip_during_a_pause_does_not_resume_the_goal(
     async def fast_sleep(s: float) -> None:
         sleeps.append(s)
 
-    monkeypatch.setattr(gl.asyncio, "sleep", fast_sleep)
-    await check_pause_cancel("g", r)
-    # Fail-open: the blip read ended the pause before any poll (0 sleeps).
+    monkeypatch.setattr(tasks_mod.asyncio, "sleep", fast_sleep)
+    await tasks_mod._make_worker_pause_gate("g", r, None)()
+    # Fail-open: the blip read would end the pause before any poll (0 sleeps).
     # Fail-closed: it keeps waiting until the flag is really gone (2 polls).
     assert len(sleeps) == 2

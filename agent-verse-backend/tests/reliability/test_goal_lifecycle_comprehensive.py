@@ -1,7 +1,6 @@
 """Comprehensive tests for app/reliability/goal_lifecycle.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,7 +11,6 @@ from app.reliability.goal_lifecycle import (
     _PAUSE_TTL,
     _PAUSE_FLAG,
     GoalCancelledError,
-    check_pause_cancel,
     clear_signals,
     is_cancelled_sync,
     is_paused_sync,
@@ -159,73 +157,6 @@ class TestIsCancelledSync:
         mock_redis.get = MagicMock(return_value=None)
         is_cancelled_sync("goal-xyz", mock_redis)
         mock_redis.get.assert_called_once_with(_CANCEL_FLAG.format(goal_id="goal-xyz"))
-
-
-# ── check_pause_cancel ────────────────────────────────────────────────────────
-
-class TestCheckPauseCancel:
-    async def test_passes_when_no_signals(self) -> None:
-        mock_redis = MagicMock()
-        mock_redis.get = MagicMock(return_value=None)
-        await check_pause_cancel("goal-1", mock_redis)  # no exception
-
-    async def test_raises_when_cancelled(self) -> None:
-        mock_redis = MagicMock()
-
-        def get_side_effect(key: str) -> str | None:
-            if "cancel" in key:
-                return "1"
-            return None
-
-        mock_redis.get = MagicMock(side_effect=get_side_effect)
-        with pytest.raises(GoalCancelledError, match="cancelled"):
-            await check_pause_cancel("goal-1", mock_redis)
-
-    async def test_paused_then_resumed_continues(self) -> None:
-        """When not paused and not cancelled, check_pause_cancel passes."""
-        mock_redis = MagicMock()
-        mock_redis.get = MagicMock(return_value=None)
-        # Should not raise
-        await check_pause_cancel("goal-2", mock_redis)
-
-    async def test_cancelled_while_paused_raises(self) -> None:
-        """If cancelled while paused, GoalCancelledError is raised."""
-        call_sequence = iter([
-            # First call: cancelled check → no
-            None,
-            # Second call: paused check → yes
-            "1",
-            # Third call: paused check in loop → no (resumed)
-            None,
-            # Fourth call: cancelled check in loop → YES (cancelled while paused)
-            "1",
-        ])
-
-        def get_side_effect(key: str) -> str | None:
-            try:
-                return next(call_sequence)
-            except StopIteration:
-                return None
-
-        mock_redis = MagicMock()
-        mock_redis.get = MagicMock(side_effect=get_side_effect)
-
-        # This test verifies the code path by observing the behavior with mocks
-        # The exact flow: not_cancelled → paused → loop: not_paused → cancelled → raises
-        # Due to asyncio.sleep in the loop, we mock it
-        original_sleep = asyncio.sleep
-
-        async def fast_sleep(t: float) -> None:
-            pass
-
-        import unittest.mock as _um
-        with _um.patch("asyncio.sleep", side_effect=fast_sleep):
-            # call sequence will exhaust → returns None
-            # just verify no unhandled error
-            try:
-                await check_pause_cancel("goal-1", mock_redis)
-            except GoalCancelledError:
-                pass  # expected
 
 
 # ── GoalCancelledError ────────────────────────────────────────────────────────

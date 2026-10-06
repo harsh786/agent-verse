@@ -12,12 +12,15 @@ Usage:
     # From Celery worker (sync check before each step):
     if is_cancelled_sync("goal-123", sync_redis):
         raise GoalCancelledError("Cancelled by operator")
-    await check_pause_cancel("goal-123", sync_redis)  # blocks if paused
+
+The step-boundary gates that block while paused are the runners' own:
+``app.scaling.tasks._make_worker_pause_gate`` / ``_run_with_signals`` (worker)
+and ``GoalService._make_pause_gate`` (in-process). The caller-less
+``check_pause_cancel`` duplicate was removed (a08-F193-02).
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from typing import Any
 
@@ -174,24 +177,3 @@ def is_cancelled_sync(goal_id: str, redis_sync: Any) -> bool:
         return bool(redis_sync.get(_CANCEL_FLAG.format(goal_id=goal_id)))
     except Exception as exc:
         return _read_failed("cancel", goal_id, exc)
-
-
-async def check_pause_cancel(goal_id: str, redis_sync: Any) -> None:
-    """Check pause/cancel signals. Call between each wave step.
-
-    - If cancelled: raises GoalCancelledError immediately
-    - If paused: blocks with polling until resumed or cancelled (max 4 hours)
-    """
-    if is_cancelled_sync(goal_id, redis_sync):
-        raise GoalCancelledError(f"Goal {goal_id} cancelled by operator")
-
-    if is_paused_sync(goal_id, redis_sync):
-        logger.info("goal_paused_waiting_for_resume", goal_id=goal_id)
-        max_wait = 4 * 3600  # 4 hours max pause
-        waited = 0
-        while is_paused_sync(goal_id, redis_sync) and waited < max_wait:
-            await asyncio.sleep(5)
-            waited += 5
-            if is_cancelled_sync(goal_id, redis_sync):
-                raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
-        logger.info("goal_resumed", goal_id=goal_id, waited_seconds=waited)

@@ -1,10 +1,9 @@
 """Tests for GoalLifecycle cross-process signal bus."""
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.reliability.goal_lifecycle import (
-    check_pause_cancel,
     clear_signals,
     signal_pause,
     signal_resume,
@@ -34,15 +33,6 @@ async def test_clear_signals_deletes_both_flags():
     mock_redis.delete.assert_called_once()
     call_args = str(mock_redis.delete.call_args)
     assert "goal_paused" in call_args and "goal_cancelled" in call_args
-
-
-@pytest.mark.asyncio
-async def test_check_pause_cancel_passes_when_no_signals():
-    mock_redis = MagicMock()
-    mock_redis.get = MagicMock(return_value=None)
-
-    # Should not raise when no signals
-    await check_pause_cancel("goal-ok", mock_redis)
 
 
 @pytest.mark.asyncio

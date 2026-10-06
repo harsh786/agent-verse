@@ -14,6 +14,7 @@ Covers uncovered paths:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -315,11 +316,9 @@ class TestRunGoalPaths:
 
     def _lock_acquired_ctx(self):
         """Context that makes the distributed lock always succeed."""
-        mock_lock = MagicMock()
-        mock_lock.acquire = AsyncMock(return_value=True)
-        mock_lock.release = AsyncMock()
-        return patch("app.reliability.distributed_lock.GoalExecutionLock",
-                     return_value=mock_lock)
+        # The patched async GoalExecutionLock was never used by run_goal and is
+        # gone (a08-F193-02); its lock is _SyncGoalLock.
+        return contextlib.nullcontext()
 
     def test_dry_run_returns_complete(self):
         from app.scaling.tasks import run_goal
