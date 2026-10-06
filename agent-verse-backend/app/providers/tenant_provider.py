@@ -92,11 +92,11 @@ def _pinned_http_client(base_url: str) -> Any:
     """
     from urllib.parse import urlparse
 
-    from app.net.ssrf_guard import public_async_client
+    from app.net.ssrf_guard import private_access_networks, public_async_client
 
     host = (urlparse(base_url).hostname or "").lower()
     allowed = [host] if host and host in _allowed_private_hosts() else None
-    return public_async_client(allowed_domains=allowed)
+    return public_async_client(allowed_domains=allowed, allowed_networks=private_access_networks())
 
 
 def _assert_tenant_base_url_allowed(base_url: str) -> None:
@@ -109,13 +109,17 @@ def _assert_tenant_base_url_allowed(base_url: str) -> None:
     """
     from urllib.parse import urlparse
 
-    from app.net.ssrf_guard import assert_public_url
+    from app.net.ssrf_guard import assert_public_url, private_access_networks
 
     host = (urlparse(base_url).hostname or "").lower()
     if host and host in _allowed_private_hosts():
         return
     try:
-        assert_public_url(base_url, context="tenant_llm_base_url")
+        # ALLOW_PRIVATE_NETWORK_ACCESS (default on): a model endpoint on a
+        # private host / IP is allowed; cloud metadata / link-local stay blocked.
+        assert_public_url(
+            base_url, context="tenant_llm_base_url", allowed_networks=private_access_networks()
+        )
     except ValueError as exc:  # SSRFError subclasses ValueError
         raise TenantProviderError(
             f"Tenant LLM base_url is not an allowed public endpoint: {exc}"

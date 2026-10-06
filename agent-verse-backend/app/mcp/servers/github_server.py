@@ -126,7 +126,12 @@ async def call_tool(
     token = creds.get("token") or creds.get("api_token") or creds.get("password") or ""
     tenant_base = str(creds.get("url") or creds.get("base_url") or "")
     base_url = tenant_base or tenant_getenv("GITHUB_BASE_URL", "https://api.github.com")
-    from app.net.ssrf_guard import SSRFError, assert_public_url_async, public_async_client
+    from app.net.ssrf_guard import (
+        SSRFError,
+        assert_public_url_async,
+        private_access_networks,
+        public_async_client,
+    )
 
     # An operator GITHUB_BASE_URL (GHES on the LAN) is trusted config: its own
     # host is the connect-time allowlist. A tenant URL gets none.
@@ -134,7 +139,9 @@ async def call_tool(
     if tenant_base:
         # Tenant-supplied (GitHub Enterprise) URL was used unchecked — SSRF.
         try:
-            await assert_public_url_async(base_url, context="github connector")
+            await assert_public_url_async(
+                base_url, context="github connector", allowed_networks=private_access_networks()
+            )
         except SSRFError:
             return {"error": "GitHub URL blocked by SSRF guard"}
     elif not in_tenant_scope() and tenant_getenv("GITHUB_BASE_URL"):
@@ -148,7 +155,9 @@ async def call_tool(
     try:
         # Pinned to the checked address: a plain client re-resolved the name.
         async with public_async_client(
-            allowed_domains=pin_allowlist, base_url=base_url, headers=headers, timeout=30.0
+            allowed_domains=pin_allowlist,
+        allowed_networks=private_access_networks(),
+        base_url=base_url, headers=headers, timeout=30.0
         ) as client:
             return await _dispatch_github_tool(tool_name, arguments, client)
     except httpx.HTTPStatusError as exc:

@@ -13,6 +13,7 @@ data:
   # Every app workload (API, workers, beat) reads this one ConfigMap.
   INGESTION_ALLOW_INTERNAL_SOURCES: {{ .Values.ingestion.allowInternalSources | quote }}
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: {{ .Values.ingestion.internalSourceAllowlist | quote }}
+  ALLOW_PRIVATE_NETWORK_ACCESS: {{ .Values.ingestion.allowPrivateNetworkAccess | quote }}
   # Model Registry operator tenants (values: platformAdminTenantIds).
   {{- if .Values.platformAdminTenantIds }}
   PLATFORM_ADMIN_TENANT_IDS: {{ .Values.platformAdminTenantIds | quote }}

@@ -56,6 +56,9 @@ secrets:
 ingestion:
   allowInternalSources: false
   internalSourceAllowlist: ""
+  # Private / internal hosts and IPs for ingestion, connectors and model
+  # endpoints (cloud metadata / link-local still blocked). false = public only.
+  allowPrivateNetworkAccess: true
 
 # OCR-PAR: OCR parallelism, one bounded pool per process shared by every document
 # (uploads, /ocr, ZIP members, ingestion jobs). maxConcurrency = OCR threads and

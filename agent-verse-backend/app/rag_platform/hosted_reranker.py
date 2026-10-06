@@ -23,7 +23,12 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
+from app.net.ssrf_guard import (
+    SSRFError,
+    assert_public_url,
+    private_access_networks,
+    public_async_client,
+)
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -72,7 +77,11 @@ class HostedReranker:
         # operator explicitly trusts an internal endpoint.
         if not self._allow_internal:
             try:
-                assert_public_url(self._url, context="hosted_reranker")
+                assert_public_url(
+                    self._url,
+                    context="hosted_reranker",
+                    allowed_networks=private_access_networks(),
+                )
             except (SSRFError, ValueError) as exc:
                 raise HostedRerankerError(f"hosted reranker url blocked: {exc}") from exc
 
@@ -106,7 +115,11 @@ class HostedReranker:
         # trusted internal endpoint gets its own host as the allowlist: private
         # ranges open, cloud metadata still refused.
         allowlist = [(urlparse(self._url).hostname or "").lower()] if self._allow_internal else None
-        async with public_async_client(allowed_domains=allowlist, timeout=self._timeout) as client:
+        async with public_async_client(
+            allowed_domains=allowlist,
+            allowed_networks=private_access_networks(),
+            timeout=self._timeout,
+        ) as client:
             resp = await client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()

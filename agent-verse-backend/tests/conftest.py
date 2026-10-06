@@ -89,6 +89,10 @@ os.environ.setdefault("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
 # Unit tests must not load the real cross-encoder in the background at every app
 # startup (RERANK-PRELOAD); tests that exercise the warm-up opt in explicitly.
 os.environ.setdefault("RAG_RERANK_PRELOAD", "false")
+# The SSRF tests assert the public-only policy; production defaults
+# ALLOW_PRIVATE_NETWORK_ACCESS on (owner decision 2026-10-06), covered by
+# tests/net/test_private_network_access.py.
+os.environ.setdefault("ALLOW_PRIVATE_NETWORK_ACCESS", "false")
 # OCR tests exercise the Tesseract-first path; production defaults Tesseract OFF
 # (OCR_TESSERACT_ENABLED, owner decision 2026-10-06), covered by its own test.
 os.environ.setdefault("OCR_TESSERACT_ENABLED", "true")

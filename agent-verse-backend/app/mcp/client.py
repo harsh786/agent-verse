@@ -145,14 +145,22 @@ def _assert_egress_allowed(url: str, *, context: str) -> None:
 
         assert_source_dsn(url, context=context)
         return
-    assert_public_url(url, context=context)
+    from app.net.ssrf_guard import private_access_networks
+
+    # ALLOW_PRIVATE_NETWORK_ACCESS (default on): connectors may reach private
+    # hosts; cloud metadata / link-local stay blocked.
+    assert_public_url(url, context=context, allowed_networks=private_access_networks())
 
 
 async def _assert_public_url_async(url: str, *, context: str) -> None:
     """:func:`assert_public_url` off the event loop (SSRF-04; blocking DNS)."""
     import asyncio
 
-    await asyncio.to_thread(assert_public_url, url, context=context)
+    from app.net.ssrf_guard import private_access_networks
+
+    await asyncio.to_thread(
+        assert_public_url, url, context=context, allowed_networks=private_access_networks()
+    )
 
 
 async def _assert_egress_allowed_async(url: str, *, context: str) -> None:
@@ -365,7 +373,11 @@ class MCPClient:
         checked public IP, connected 127.0.0.1 / 169.254.169.254). Redirects are
         not followed (as before).
         """
-        client: httpx.AsyncClient = public_async_client(timeout=self._timeout)
+        from app.net.ssrf_guard import private_access_networks
+
+        client: httpx.AsyncClient = public_async_client(
+            timeout=self._timeout, allowed_networks=private_access_networks()
+        )
         return client
 
     def _get_circuit_breaker(self, server_id: str, tenant_id: str = "") -> Any:

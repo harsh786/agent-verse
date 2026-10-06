@@ -193,12 +193,16 @@ class OpenAICompatibleFineTuneProvider:
     def _session(self) -> Any:
         if self._client is not None:
             return _Borrowed(self._client)
-        from app.net.ssrf_guard import public_async_client
+        from app.net.ssrf_guard import private_access_networks, public_async_client
 
         allowlist = [(urlparse(self._base_url).hostname or "").lower()] if (
             self._allow_internal
         ) else None
-        return public_async_client(allowed_domains=allowlist, timeout=self._timeout)
+        return public_async_client(
+            allowed_domains=allowlist,
+            allowed_networks=private_access_networks(),
+            timeout=self._timeout,
+        )
 
     async def _upload(self, client: Any, filename: str, content: str) -> str:
         data = await self._request(
@@ -219,10 +223,16 @@ class OpenAICompatibleFineTuneProvider:
     ) -> Any:
         url = f"{self._base_url}{path}"
         if not self._allow_internal and self._client is None:
-            from app.net.ssrf_guard import SSRFError, assert_public_url_async
+            from app.net.ssrf_guard import (
+                SSRFError,
+                assert_public_url_async,
+                private_access_networks,
+            )
 
             try:
-                await assert_public_url_async(url, context="raft_fine_tune")
+                await assert_public_url_async(
+                    url, context="raft_fine_tune", allowed_networks=private_access_networks()
+                )
             except (SSRFError, ValueError) as exc:
                 raise CompatFineTuneError(f"fine-tuning endpoint blocked: {exc}") from exc
         all_headers = {"Authorization": f"Bearer {self._api_key}", **(headers or {})}

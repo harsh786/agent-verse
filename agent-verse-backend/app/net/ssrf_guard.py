@@ -83,6 +83,46 @@ class SSRFError(ValueError):
 
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
+# Every address. As ``allowed_networks`` it means "private and internal
+# addresses are reachable" — the never-reachable ones (cloud metadata,
+# link-local, 0.0.0.0, multicast) and metadata hostnames stay blocked.
+ANY_NETWORK: list[IPNetwork] = [
+    ipaddress.ip_network("0.0.0.0/0"),
+    ipaddress.ip_network("::/0"),
+]
+
+
+def private_network_access_enabled() -> bool:
+    """``ALLOW_PRIVATE_NETWORK_ACCESS`` (default true, owner decision 2026-10-06).
+
+    On: ingestion sources (HTTP, MinIO/S3, crawl, repositories), connectors
+    (MongoDB and every database/broker source, MCP / tool connectors) and model
+    endpoints (LLM base URLs, embedding / reranker / fine-tune endpoints) may
+    reach private and internal hosts and IPs in every environment. Cloud
+    metadata, link-local and 0.0.0.0 stay blocked. Off: the previous policy
+    (public only, plus the operator allowlists).
+    """
+    import os
+
+    raw = os.getenv("ALLOW_PRIVATE_NETWORK_ACCESS")
+    if raw is None or not raw.strip():
+        try:
+            from app.core.config import get_settings
+
+            return bool(getattr(get_settings(), "allow_private_network_access", True))
+        except Exception:  # pragma: no cover - settings unavailable: the default
+            return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def private_access_networks(
+    fallback: list[IPNetwork] | None = None,
+) -> list[IPNetwork] | None:
+    """``allowed_networks`` for an ingestion / connector / model-endpoint call:
+    every network when private access is on, else *fallback* (the operator's
+    own allowlist, or ``None``)."""
+    return ANY_NETWORK if private_network_access_enabled() else fallback
+
 
 def parse_allowed_networks(raw: str) -> list[IPNetwork]:
     """The CIDR entries (``a.b.c.d/n``, ``fc00::/7``) of a comma-separated list.
@@ -270,13 +310,21 @@ def assert_public_url(
 
 
 async def assert_public_url_async(
-    url: str, *, context: str = "", allowed_domains: list[str] | None = None
+    url: str,
+    *,
+    context: str = "",
+    allowed_domains: list[str] | None = None,
+    allowed_networks: list[IPNetwork] | None = None,
 ) -> list[str]:
     """:func:`assert_public_url` without blocking the event loop on DNS."""
     import asyncio
 
     return await asyncio.to_thread(
-        assert_public_url, url, context=context, allowed_domains=allowed_domains
+        assert_public_url,
+        url,
+        context=context,
+        allowed_domains=allowed_domains,
+        allowed_networks=allowed_networks,
     )
 
 
@@ -288,6 +336,7 @@ async def request_public(
     context: str = "",
     max_redirects: int = 5,
     allowed_domains: list[str] | None = None,
+    allowed_networks: list[IPNetwork] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Send ``method url`` with ``client`` re-validating the URL at EVERY hop.
@@ -299,7 +348,12 @@ async def request_public(
     """
     current_url, current_method = url, method.upper()
     for _hop in range(max_redirects + 1):
-        await assert_public_url_async(current_url, context=context, allowed_domains=allowed_domains)
+        await assert_public_url_async(
+            current_url,
+            context=context,
+            allowed_domains=allowed_domains,
+            allowed_networks=allowed_networks,
+        )
         resp = await client.request(current_method, current_url, **kwargs)
         if not resp.is_redirect:
             return resp

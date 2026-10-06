@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit, urlunsplit
 
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, private_access_networks
 
 _ALLOWED_SUFFIXES = frozenset({".py", ".md", ".ts", ".js"})
 _SECRET_NAME_PARTS = (
@@ -82,9 +82,11 @@ def resolve_repository_source(url: str) -> RepositorySource:
     if any(ord(char) < 32 for char in url):
         raise RepositorySecurityError("Repository URL contains control characters")
     try:
-        validated_ips = assert_public_url(url, context="repository ingestion")
+        validated_ips = assert_public_url(
+            url, context="repository ingestion", allowed_networks=private_access_networks()
+        )
     except (SSRFError, ValueError) as exc:
-        raise RepositorySecurityError("Repository URL is not public") from exc
+        raise RepositorySecurityError(f"Repository URL is not allowed: {exc}") from exc
     host = parsed.hostname.lower().rstrip(".")
     try:
         port = parsed.port

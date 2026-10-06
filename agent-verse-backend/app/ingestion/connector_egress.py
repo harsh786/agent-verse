@@ -124,7 +124,19 @@ def _effective_allowlist() -> list[str] | None:
 
 def _effective_networks() -> list[IPNetwork] | None:
     """The operator's allowed private networks (CIDR entries of the allowlist),
-    honoured only when the escape hatch is also on."""
+    honoured only when the escape hatch is also on.
+
+    ``ALLOW_PRIVATE_NETWORK_ACCESS`` (default on) opens every private and
+    internal address for ingestion sources and connectors — MinIO/S3, HTTP,
+    crawl, MongoDB, Postgres, Kafka, … — in every environment; cloud metadata,
+    link-local and 0.0.0.0 stay blocked (``ssrf_guard.private_access_networks``).
+    """
+    from app.net.ssrf_guard import private_network_access_enabled
+
+    if private_network_access_enabled():
+        from app.net.ssrf_guard import ANY_NETWORK
+
+        return ANY_NETWORK
     try:
         from app.core.config import get_settings
 
@@ -947,7 +959,11 @@ def require_pinnable_driver(driver: str, *, context: str) -> None:
         strict = bool(getattr(get_settings(), "ingestion_egress_strict_pinning", True))
     except Exception:  # pragma: no cover - settings unavailable: fail closed
         strict = True
-    if strict:
+    from app.net.ssrf_guard import private_network_access_enabled
+
+    # With private network access on, a re-resolution to an internal address
+    # is allowed anyway — pinning protects nothing more, so the driver runs.
+    if strict and not private_network_access_enabled():
         raise ConnectorEgressBlockedError(
             f"SSRF guard [{context}]: {driver} resolves hosts itself, so its connections "
             "cannot be pinned to checked addresses (DNS rebinding); refused while "

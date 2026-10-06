@@ -266,7 +266,12 @@ async def _call_tool_inner(
     base = _absolute_http_url(tenant_base or _env("JIRA_BASE_URL"))
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
-    from app.net.ssrf_guard import SSRFError, assert_public_url_async, public_async_client
+    from app.net.ssrf_guard import (
+        SSRFError,
+        assert_public_url_async,
+        private_access_networks,
+        public_async_client,
+    )
 
     # The platform's own JIRA_BASE_URL env is operator config: it may be an
     # internal host, so its own name is the connect-time allowlist (private
@@ -276,7 +281,9 @@ async def _call_tool_inner(
         # The tenant-supplied instance URL was used unchecked (SSRF: a connector
         # could point at the metadata service or an internal host).
         try:
-            await assert_public_url_async(base, context="jira connector")
+            await assert_public_url_async(
+                base, context="jira connector", allowed_networks=private_access_networks()
+            )
         except SSRFError:
             return {"error": "Jira URL blocked by SSRF guard"}
     else:
@@ -300,7 +307,9 @@ async def _call_tool_inner(
     # Pinned to the checked address (a plain client re-resolved the name —
     # DNS rebinding past the check above).
     async with public_async_client(
-        allowed_domains=pin_allowlist, base_url=base, headers=headers, timeout=30.0
+        allowed_domains=pin_allowlist,
+        allowed_networks=private_access_networks(),
+        base_url=base, headers=headers, timeout=30.0
     ) as client:
         if tool_name == "jira_search_issues":
             default_fields = [

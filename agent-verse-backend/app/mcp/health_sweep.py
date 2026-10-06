@@ -79,14 +79,16 @@ def classify_health(status_code: int) -> str:
 
 async def probe_connector(cfg: Any) -> dict[str, Any]:
     """SSRF-guarded GET {base}/health on the connector (pinned client)."""
-    from app.net.ssrf_guard import public_async_client, request_public
+    from app.net.ssrf_guard import private_access_networks, public_async_client, request_public
 
     base = (cfg.base_url or cfg.url or "").rstrip("/")
     t0 = time.monotonic()
+    nets = private_access_networks()
     try:
-        async with public_async_client(timeout=PROBE_TIMEOUT_S) as client:
+        async with public_async_client(timeout=PROBE_TIMEOUT_S, allowed_networks=nets) as client:
             resp = await request_public(
-                client, "GET", f"{base}/health", context="mcp health check"
+                client, "GET", f"{base}/health", context="mcp health check",
+                allowed_networks=nets,
             )
     except Exception as exc:
         return {"status": "unreachable", "latency_ms": None, "error": str(exc)[:200]}

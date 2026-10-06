@@ -60,6 +60,7 @@ from app.knowledge.ingestors.limits import (
 from app.net.ssrf_guard import (
     SSRFError,
     assert_public_url_async,
+    private_access_networks,
 )
 from app.providers.guarded_completion import DecisionBudgetExceededError
 from app.rag.contracts import (
@@ -3227,7 +3228,9 @@ async def ingest_from_rpa_url(
     for url in body.urls:
         # SSRF guard — reject internal/metadata URLs before fetching.
         try:
-            await assert_public_url_async(url, context="/ingest/rpa-url")
+            await assert_public_url_async(
+                url, context="/ingest/rpa-url", allowed_networks=private_access_networks()
+            )
         except SSRFError as exc:
             results.append(
                 {

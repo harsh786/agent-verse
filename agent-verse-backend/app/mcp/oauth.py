@@ -360,10 +360,17 @@ class OAuthFlowManager:
         effective_redirect_uri = flow.redirect_uri or redirect_uri
         # token_url comes from the tenant's connector config: never POST the
         # authorization code (and client credentials) to an internal host.
-        from app.net.ssrf_guard import assert_public_url_async, public_async_client
+        from app.net.ssrf_guard import (
+            assert_public_url_async,
+            private_access_networks,
+            public_async_client,
+        )
 
+        _nets = private_access_networks()
         try:
-            await assert_public_url_async(token_url, context="oauth_token_url")
+            await assert_public_url_async(
+                token_url, context="oauth_token_url", allowed_networks=_nets
+            )
         except ValueError as exc:
             _log.warning("OAuth token_url blocked: %s", token_url)
             raise OAuthTokenUrlRejectedError() from exc
@@ -372,7 +379,7 @@ class OAuthFlowManager:
         try:
             # Pinned to the address validated at connect time: a plain client
             # re-resolved token_url (DNS rebinding past the check above).
-            async with public_async_client(timeout=15.0) as client:
+            async with public_async_client(timeout=15.0, allowed_networks=_nets) as client:
                 resp = await client.post(
                     token_url,
                     data={
@@ -797,15 +804,21 @@ class OAuthFlowManager:
             # token (and client id) must never be POSTed to an internal host.
             # Every hop is re-validated and the socket is pinned to the checked
             # address (no DNS-rebinding window).
-            from app.net.ssrf_guard import public_async_client, request_public
+            from app.net.ssrf_guard import (
+                private_access_networks,
+                public_async_client,
+                request_public,
+            )
 
+            _nets = private_access_networks()
             try:
-                async with public_async_client(timeout=15.0) as client:
+                async with public_async_client(timeout=15.0, allowed_networks=_nets) as client:
                     resp = await request_public(
                         client,
                         "POST",
                         resolved_token_url,
                         context="oauth_token_url",
+                        allowed_networks=_nets,
                         data={
                             "grant_type": "refresh_token",
                             "refresh_token": existing.refresh_token,

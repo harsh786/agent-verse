@@ -134,7 +134,11 @@ class KnowledgeIngestTool:
         # URL → fetch
         if content_or_url.startswith(("http://", "https://")):
             try:
-                from app.net.ssrf_guard import public_async_client, request_public
+                from app.net.ssrf_guard import (
+                    private_access_networks,
+                    public_async_client,
+                    request_public,
+                )
 
                 # The URL is agent/workflow-controlled (often straight from a
                 # trigger payload) and the response is indexed into the tenant's
@@ -142,9 +146,11 @@ class KnowledgeIngestTool:
                 # and no egress guard at all: request_public checks the URL and
                 # re-validates every redirect hop; the pinned client connects
                 # only to the address checked (no DNS-rebinding window).
-                async with public_async_client(timeout=30) as c:
+                _nets = private_access_networks()
+                async with public_async_client(timeout=30, allowed_networks=_nets) as c:
                     r = await request_public(
-                        c, "GET", content_or_url, context="knowledge.ingest"
+                        c, "GET", content_or_url, context="knowledge.ingest",
+                        allowed_networks=_nets,
                     )
                     r.raise_for_status()
                     content_bytes = r.content

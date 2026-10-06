@@ -30,6 +30,7 @@ from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import (
     SSRFError,
     assert_public_url_async,
+    private_access_networks,
     public_async_client,
 )
 from app.providers.vault import (
@@ -565,7 +566,7 @@ async def _assert_connector_urls_public(
     Registration checked only ``body.url``; update and OpenAPI import checked
     nothing, so a tenant could PUT a connector to http://169.254.169.254/.
     """
-    from app.net.ssrf_guard import assert_public_url_async
+    from app.net.ssrf_guard import assert_public_url_async, private_access_networks
 
     candidates = [url or ""]
     for key in _ENDPOINT_AUTH_KEYS:
@@ -592,7 +593,9 @@ async def _assert_connector_urls_public(
         if "://" not in candidate:
             candidate = f"https://{candidate}"  # same default as MCPClient
         try:
-            await assert_public_url_async(candidate, context=context)
+            await assert_public_url_async(
+                candidate, context=context, allowed_networks=private_access_networks()
+            )
         except (SSRFError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -967,7 +970,11 @@ def _probe_client() -> httpx.AsyncClient:
     ``httpx.AsyncClient`` resolved the name again, so a DNS answer flipping to
     127.0.0.1 / 169.254.169.254 (rebinding) was probed with the tenant's token.
     """
-    client: httpx.AsyncClient = public_async_client(timeout=10.0)
+    from app.net.ssrf_guard import private_access_networks
+
+    client: httpx.AsyncClient = public_async_client(
+        timeout=10.0, allowed_networks=private_access_networks()
+    )
     return client
 
 
@@ -1243,7 +1250,9 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     for _url in {cfg.url or "", cfg.base_url or ""}:
         if _url.startswith(("http://", "https://")):
             try:
-                await assert_public_url_async(_url, context="connector test")
+                await assert_public_url_async(
+                    _url, context="connector test", allowed_networks=private_access_networks()
+                )
             except SSRFError as ssrf_exc:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -1319,7 +1328,9 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     # re-validates the IPs it actually connects to. Outside the probe's
     # try/except so a refusal is a 400, not a "failed" test.
     try:
-        await assert_public_url_async(url, context="connector test")
+        await assert_public_url_async(
+            url, context="connector test", allowed_networks=private_access_networks()
+        )
     except (SSRFError, ValueError) as ssrf_exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

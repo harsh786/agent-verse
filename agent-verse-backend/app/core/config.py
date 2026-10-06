@@ -616,6 +616,13 @@ class Settings(BaseSettings):
     # alone punches no hole, and nothing a tenant can put in connection_config
     # reaches either setting.
     ingestion_allow_internal_sources: bool = False
+    # Owner decision 2026-10-06: ingestion sources (MinIO/S3, HTTP, crawl,
+    # repositories), connectors (MongoDB and every database / broker source,
+    # MCP / tool connectors, their OAuth token URLs) and model endpoints (tenant
+    # LLM base URLs, hosted reranker, fine-tune endpoint) may reach PRIVATE and
+    # internal hosts / IPs, in every environment. Cloud metadata, link-local and
+    # 0.0.0.0 stay blocked. false restores public-only + the allowlists above.
+    allow_private_network_access: bool = True
     # MongoDB (MCP builtin + ingestion): a tenant can never weaken TLS
     # verification (tlsInsecure / tlsAllowInvalid* / ...; MDB-07). This dev-only
     # switch additionally lets a connection run WITHOUT TLS (tls=false /
