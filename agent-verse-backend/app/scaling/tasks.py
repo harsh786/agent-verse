@@ -2279,17 +2279,27 @@ def _worker_llm_circuit_breaker(tenant_id: str) -> Any:
     return build_llm_circuit_breaker(_worker_async_redis(), tenant_id)
 
 
+_WORKER_BULKHEAD: tuple[str, Any] | None = None
+
+
 def _worker_bulkhead_registry() -> Any:
-    """The distributed per-tenant bulkhead the API path gives its graphs (or None)."""
+    """The distributed per-tenant bulkhead the API path gives its graphs (or None).
+
+    One registry per worker process (a08-F199-04): it used to build a new
+    registry and a new ``redis.asyncio`` client for every run_goal and never
+    close them. The client is per task loop and closed at its teardown
+    (``LoopLocalRedis``); the Redis-down fallback limit is process-wide.
+    """
+    global _WORKER_BULKHEAD
     try:
-        import redis.asyncio as _aioredis_bh
+        from app.reliability.bulkhead import LoopLocalRedis, RedisBulkheadRegistry
 
-        from app.reliability.bulkhead import RedisBulkheadRegistry
-
-        return RedisBulkheadRegistry(
-            redis=_aioredis_bh.from_url(REDIS_URL, decode_responses=True),
-            default_max_concurrent=20,
-        )
+        if _WORKER_BULKHEAD is None or _WORKER_BULKHEAD[0] != REDIS_URL:
+            _WORKER_BULKHEAD = (
+                REDIS_URL,
+                RedisBulkheadRegistry(redis=LoopLocalRedis(REDIS_URL), default_max_concurrent=20),
+            )
+        return _WORKER_BULKHEAD[1]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("worker_bulkhead_registry_wire_failed: %s", exc)
         return None
