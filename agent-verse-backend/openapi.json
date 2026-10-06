@@ -31,6 +31,7 @@
           "callback_url": {
             "anyOf": [
               {
+                "maxLength": 500,
                 "type": "string"
               },
               {
@@ -41,22 +42,30 @@
           },
           "context": {
             "additionalProperties": true,
-            "default": {},
             "title": "Context",
             "type": "object"
           },
           "goal": {
+            "maxLength": 10000,
+            "minLength": 1,
             "title": "Goal",
             "type": "string"
           },
           "priority": {
             "default": "normal",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
             "title": "Priority",
             "type": "string"
           },
           "requester_agent_id": {
             "anyOf": [
               {
+                "maxLength": 255,
                 "type": "string"
               },
               {
@@ -1033,6 +1042,43 @@
           "expected_version"
         ],
         "title": "CanonicalTransitionRequest",
+        "type": "object"
+      },
+      "CertificationRunRequest": {
+        "properties": {
+          "connector": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Connector",
+            "type": "string"
+          },
+          "level": {
+            "default": "static",
+            "enum": [
+              "static",
+              "mocked"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "server_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Id"
+          }
+        },
+        "required": [
+          "connector"
+        ],
+        "title": "CertificationRunRequest",
         "type": "object"
       },
       "ChannelMappingDecision": {
@@ -12915,7 +12961,7 @@
     },
     "/admin/tenants": {
       "get": {
-        "description": "List all tenants with basic stats. Optional ``search`` filters by name/email/id\nserver-side (so it covers all tenants, not just the current page).",
+        "description": "List all tenants. Optional ``search`` filters by name/email/id server-side\n(so it covers all tenants, not just the current page). Database errors are a\n503, never an empty list.",
         "operationId": "list_tenants_admin_tenants_get",
         "parameters": [
           {
@@ -12924,6 +12970,8 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 500,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -12934,6 +12982,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
             }
@@ -12987,7 +13036,7 @@
     },
     "/admin/tenants/{tenant_id}": {
       "get": {
-        "description": "Get tenant detail with usage.",
+        "description": "Get tenant detail with today's spend against its daily budget.\n\n``usage`` is ``null`` with ``usage_error`` set when the spend cannot be\nread \u2014 never an empty object that looks like \"no spend\".",
         "operationId": "get_tenant_detail_admin_tenants__tenant_id__get",
         "parameters": [
           {
@@ -13087,7 +13136,7 @@
     },
     "/admin/usage": {
       "get": {
-        "description": "Aggregate platform-wide usage from the goals and tenants tables.\n\nNo database configured -> 501; database error -> 503 (never zeros).\n``avg_latency_ms`` is the mean wall-clock time of goals completed today\n(UTC), ``null`` when none has.",
+        "description": "Aggregate platform-wide usage from the goals and tenants tables.\n\nNo database configured -> 501; database error -> 503 (never zeros).\n``avg_latency_ms`` is the mean wall-clock time of goals completed today\n(UTC), ``null`` when none has. Results are reused for up to\n:data:`USAGE_CACHE_TTL_S` seconds per replica (``as_of``).",
         "operationId": "get_platform_usage_admin_usage_get",
         "responses": {
           "200": {
@@ -21311,13 +21360,19 @@
     },
     "/auth/sessions": {
       "delete": {
-        "description": "Revoke all other login sessions \u2014 not implemented (501).",
+        "description": "Revoke every session of the caller except the one making this request.",
         "operationId": "revoke_all_other_sessions_auth_sessions_delete",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Revoke All Other Sessions Auth Sessions Delete",
+                  "type": "object"
+                }
               }
             },
             "description": "Successful Response"
@@ -21329,13 +21384,20 @@
         ]
       },
       "get": {
-        "description": "List login sessions \u2014 not implemented (501).",
+        "description": "The caller's live login sessions, newest first.",
         "operationId": "list_active_sessions_auth_sessions_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Active Sessions Auth Sessions Get",
+                  "type": "array"
+                }
               }
             },
             "description": "Successful Response"
@@ -21349,7 +21411,7 @@
     },
     "/auth/sessions/{session_id}": {
       "delete": {
-        "description": "Revoke one login session \u2014 not implemented (501).",
+        "description": "Revoke one of the caller's own sessions (its token stops working everywhere).",
         "operationId": "revoke_session_auth_sessions__session_id__delete",
         "parameters": [
           {
@@ -21363,12 +21425,7 @@
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
+          "204": {
             "description": "Successful Response"
           },
           "422": {
@@ -26764,7 +26821,7 @@
     },
     "/connectors/capabilities": {
       "get": {
-        "description": "List all discovered tool capabilities for this tenant.",
+        "description": "One page of the tenant's discovered tool capabilities (a02-F032-05).\n\nIt returned every row for the tenant with no LIMIT. Pages are ordered by\n(tool_name, connector_id); ``X-Next-Offset`` is set when there is more.",
         "operationId": "list_capabilities_connectors_capabilities_get",
         "parameters": [
           {
@@ -26773,8 +26830,33 @@
             "required": false,
             "schema": {
               "default": "",
+              "maxLength": 200,
               "title": "Q",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -26813,7 +26895,7 @@
     },
     "/connectors/capabilities/missing": {
       "get": {
-        "description": "Identify capabilities needed for a goal but not yet available.",
+        "description": "Catalog connectors the goal names that the tenant has not registered.\n\na02-F032-01: catalog names used to be matched as substrings of the goal and\ncompared with TOOL names (never equal to a connector name), and\n``can_proceed`` was true whenever any tool existed. Now the goal must name a\nconnector as a word or phrase, it is missing when no registered connector is\nof that type (by name or built-in type), and ``can_proceed`` is true only\nwhen nothing the goal names is missing and discovery of the registered\nconnectors was complete (a02-F032-02: failures are reported, not hidden).",
         "operationId": "missing_capabilities_connectors_capabilities_missing_get",
         "parameters": [
           {
@@ -26821,6 +26903,8 @@
             "name": "goal",
             "required": true,
             "schema": {
+              "maxLength": 10000,
+              "minLength": 1,
               "title": "Goal",
               "type": "string"
             }
@@ -26858,7 +26942,7 @@
     },
     "/connectors/capabilities/search": {
       "get": {
-        "description": "Semantic + keyword search over discovered capabilities.",
+        "description": "Semantic + keyword search over the tenant's live connector tools.\n\nA connector whose discovery fails is listed in ``connector_errors`` and\n``complete`` is false (it used to read as \"no tools\"). Rate-limited per\ntenant; descriptor embeddings are cached and new ones are charged to the\ntenant's budget (429 when exhausted, 503 when it cannot be verified).",
         "operationId": "search_capabilities_connectors_capabilities_search_get",
         "parameters": [
           {
@@ -26866,6 +26950,8 @@
             "name": "q",
             "required": true,
             "schema": {
+              "maxLength": 500,
+              "minLength": 1,
               "title": "Q",
               "type": "string"
             }
@@ -26923,6 +27009,77 @@
           }
         },
         "summary": "List Catalog",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/connectors/certification/run": {
+      "post": {
+        "description": "Certify a connector: ``static`` checks the manifest entry; ``mocked``\ndiscovers the caller's connector ``server_id`` and runs the manifest's\nread-only tool on it. Unknown connector \u2192 the result says failed; another\ntenant's (or an unknown) connector \u2192 404.",
+        "operationId": "run_certification_connectors_certification_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificationRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Certification Connectors Certification Run Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Certification",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/connectors/certification/targets": {
+      "get": {
+        "description": "The connectors of the certification manifest (no secrets, only shape).",
+        "operationId": "certification_targets_connectors_certification_targets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Certification Targets Connectors Certification Targets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Certification Targets",
         "tags": [
           "connectors"
         ]
@@ -46229,6 +46386,19 @@
       }
     },
     "/tenants/me/llm": {
+      "delete": {
+        "description": "Remove this tenant's LLM provider config, stored API key included.\n\na08-F195-05: there was no way to remove a stored BYOK key (only GET/PUT).\nAdmin only and audited. Afterwards the tenant's LLM calls use the platform\nprovider where the deployment offers one (as before any key was set).\nIdempotent: removing a config that does not exist is also 204. A store\nerror is a 503 \u2014 the key is never reported removed while it is still used.",
+        "operationId": "delete_llm_config_tenants_me_llm_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Llm Config",
+        "tags": [
+          "tenants"
+        ]
+      },
       "get": {
         "description": "Return the current LLM provider config for this tenant (key never exposed).",
         "operationId": "get_llm_config_tenants_me_llm_get",
@@ -46402,7 +46572,7 @@
     },
     "/tenants/me/notifications": {
       "get": {
-        "description": "Get tenant notification preferences.",
+        "description": "Get tenant notification preferences.\n\na08-F196-05: goal outcome notifications are opt-in. ``goalComplete`` /\n``goalFailed`` are off unless the tenant switched them on with the current\nPUT; a record saved before they were delivered counts as never set.",
         "operationId": "get_notifications_tenants_me_notifications_get",
         "responses": {
           "200": {
@@ -46424,7 +46594,7 @@
         ]
       },
       "put": {
-        "description": "Update tenant notification preferences.",
+        "description": "Update tenant notification preferences (merged into the current ones).",
         "operationId": "update_notifications_tenants_me_notifications_put",
         "responses": {
           "200": {
@@ -46577,13 +46747,20 @@
     },
     "/tenants/me/sessions": {
       "get": {
-        "description": "List login sessions \u2014 not implemented (501).\n\nThis always returned ``[]`` although nothing records sessions, so the UI\nshowed \"no other sessions\" as if that were verified. See app/api/sessions.py.",
+        "description": "The caller's live login (SSO) sessions \u2014 same data as ``GET /auth/sessions``.\n\n409 for an API-key caller (it holds no login session); see app/api/sessions.py.",
         "operationId": "list_sessions_tenants_me_sessions_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Sessions Tenants Me Sessions Get",
+                  "type": "array"
+                }
               }
             },
             "description": "Successful Response"
@@ -46597,7 +46774,7 @@
     },
     "/tenants/me/sessions/{session_id}": {
       "delete": {
-        "description": "Revoke a login session \u2014 not implemented (501); the UI calls this path.",
+        "description": "Revoke one of the caller's own login sessions (the UI calls this path).",
         "operationId": "revoke_tenant_session_tenants_me_sessions__session_id__delete",
         "parameters": [
           {
@@ -46611,12 +46788,7 @@
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
+          "204": {
             "description": "Successful Response"
           },
           "422": {
