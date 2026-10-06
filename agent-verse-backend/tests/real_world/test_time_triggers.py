@@ -582,8 +582,11 @@ def test_natural_language_time_schedules(ent: LiveAPI, evidence: dict[str, Any])
 
 def _ticks_checked(since: datetime) -> list[int]:
     proc = _docker("logs", "--since", since.strftime("%Y-%m-%dT%H:%M:%S"), SCHEDULE_WORKER)
-    return [int(m.group(1)) for m in re.finditer(r"'schedules_checked': (\d+)",
-                                                 proc.stdout + proc.stderr)]
+    # Only fire_due_schedules results (fire_due_org_mission_schedules also
+    # reports a schedules_checked count).
+    return [int(m.group(1)) for m in re.finditer(
+        r"tasks\.fire_due_schedules\[[^\]]+\] succeeded[^{]*\{[^}]*'schedules_checked': (\d+)",
+        proc.stdout + proc.stderr)]
 
 
 @pytest.mark.scenario("TIME-SCALE-DUE-INDEX")
@@ -602,7 +605,11 @@ def test_far_future_schedules_are_not_reread_every_tick(ent: LiveAPI,
         checked = _ticks_checked(created)
         evidence.update(schedules=n, checked_per_tick=checked)
         assert len(checked) >= 2, f"no ticks seen in {SCHEDULE_WORKER}'s log: {checked}"
-        assert max(checked[1:]) < n // 4, f"later ticks re-read the far-future rows: {checked}"
+        # At most one tick evaluates the new rows (they had no next_fire_at
+        # yet); every other tick claims only due rows.
+        big = [c for c in checked if c >= n // 4]
+        assert len(big) <= 1 and checked[-1] < n // 4, (
+            f"ticks keep re-reading the far-future rows: {checked}")
     finally:
         _cleanup(ent, todo)
 
