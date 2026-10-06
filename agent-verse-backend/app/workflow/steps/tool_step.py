@@ -217,6 +217,12 @@ class ToolStepNode:
                 if not result.success:
                     raise RuntimeError(result.error or f"tool '{self.step.tool}' failed")
                 output = {"success": True, "output": result.output, "error": ""}
+                if getattr(result, "stale", False) is True:
+                    # a02-F030-04: served from the read cache while the
+                    # connector's circuit is open — earlier data, not live.
+                    from app.mcp.client import stale_result_notice
+
+                    output = {**output, "stale": True, "notice": stale_result_notice(result)}
             else:
                 output = result if isinstance(result, dict) else {"result": result}
             if approval is not None:

@@ -1284,6 +1284,16 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
                 tenant_ctx=tenant,
             )
             latency_ms = round((time.time() - started) * 1000)
+            if result.success and getattr(result, "stale", False) is True:
+                # a02-F030-04: a cached result served because the circuit is
+                # open proves nothing about the connector now.
+                return {
+                    "server_id": server_id,
+                    "reachable": False,
+                    "status": "failed",
+                    "error": "Connector unavailable (circuit open); only a cached result exists.",
+                    "latency_ms": latency_ms,
+                }
             if result.success:
                 return {
                     "server_id": server_id,

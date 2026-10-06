@@ -106,6 +106,31 @@ class ToolCallResult:
     stale: bool = False
 
 
+def stale_result_notice(result: Any) -> str:
+    """The notice a consumer must show with a stale result ("" for a live one).
+
+    A result served from the read cache because the connector's circuit is open
+    is ``success=True`` (it holds real, earlier data) but it is not a live call
+    (a02-F030-04): every consumer that hands the output to a model or a person
+    prefixes this notice and flags the call ``stale``.
+    """
+    if getattr(result, "stale", False) is not True:
+        return ""
+    server = getattr(result, "server_id", "") or "the connector"
+    return (
+        f"[STALE CACHED RESULT] {server} is unavailable (circuit open); this is an "
+        "earlier cached result of the same call, not live data. It may be out of date."
+    )
+
+
+def with_stale_notice(result: Any, text: Any) -> Any:
+    """``text`` prefixed with :func:`stale_result_notice` when ``result`` is stale."""
+    notice = stale_result_notice(result)
+    if not notice:
+        return text
+    return f"{notice}\n\n{text}" if text not in (None, "") else notice
+
+
 def _is_caller_argument_error(error: str | None) -> bool:
     """True when a failed result was caused by the caller's arguments."""
     from app.mcp.tool_intelligence import SelfHealingToolCaller
