@@ -32,6 +32,13 @@ _log = logging.getLogger(__name__)
 _SECRET_REDIS_FIELDS = frozenset({"webhook_token", "token", "password", "api_key", "secret"})
 
 
+def _iso_or_none(value: Any) -> str | None:
+    """A datetime (or ISO string) as an ISO string for the Redis mirror."""
+    if value is None or value == "":
+        return None
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
 def spec_config(spec: TriggerSpec) -> dict[str, Any]:
     """Family-specific fields the beat loop reads, keyed exactly as the loop
     expects them (bridging spec field names, e.g. ``file_drop_path`` →
@@ -267,6 +274,8 @@ class ScheduleStore:
                 "condition": spec.condition or "",
                 "description": spec.description or "",
                 "paused": bool(rec.get("paused", False)),
+                # B1-1: the beat fires no slot at or before this instant.
+                "armed_at": _iso_or_none(rec.get("armed_at") or rec.get("created_at")),
                 # Family-specific fields (file_watch_path, rss_url, poll_url, …)
                 # merged so the beat loop can read them from the schedule dict.
                 **spec_config(spec),
@@ -430,6 +439,7 @@ class ScheduleStore:
             "paused": False,
             "created_at": datetime.now(UTC),
         }
+        rec["armed_at"] = rec["created_at"]
         db_created = False
         if self._db is not None:
             create_kwargs: dict[str, Any] = {"strict": True}
@@ -614,13 +624,19 @@ class ScheduleStore:
         rec = await self._get_for_tenant_async(tenant_id, schedule_id, strict=True)
         if rec is None:
             return None
+        values: dict[str, Any] = {"paused": paused, "next_fire_at": None}
+        if not paused:
+            # B1-1: a resumed schedule fires no slot from while it was paused.
+            values["armed_at"] = datetime.now(UTC)
         if self._db is not None and not await self._db_update_values(
             # Resuming resets next_fire_at so the beat re-evaluates it next tick (TRG-15).
-            schedule_id, tenant_id, {"paused": paused, "next_fire_at": None}
+            schedule_id, tenant_id, values
         ):
             self._data.pop((tenant_id, schedule_id), None)
             return None
         rec["paused"] = paused
+        if "armed_at" in values:
+            rec["armed_at"] = values["armed_at"]
         await self._write_redis_schedule_async(tenant_id, rec, strict=True)
         return rec
 
@@ -667,6 +683,10 @@ class ScheduleStore:
         )
         new_spec.trigger_id = schedule_id  # type: ignore[attr-defined]
         new_rec["spec"] = new_spec
+        if spec is not None or (paused is False and rec.get("paused")):
+            # B1-1: a re-timed or resumed schedule fires no slot from before now
+            # (an edit used to replay every slot of the new cron since the last fire).
+            new_rec["armed_at"] = datetime.now(UTC)
         if self._db is not None:
             values: dict[str, Any] = {
                 "goal_id_template": new_rec.get("goal_template") or new_rec.get("goal_id") or "",
@@ -684,6 +704,8 @@ class ScheduleStore:
                 # An edit may move the next fire earlier: re-evaluate next tick.
                 "next_fire_at": None,
             }
+            if "armed_at" in new_rec:
+                values["armed_at"] = new_rec["armed_at"]
             if spec is not None:
                 values["webhook_signature_secret_enc"] = encrypt_webhook_secret(
                     new_spec.webhook_signature_secret or "",
@@ -740,6 +762,7 @@ class ScheduleStore:
             "created_at": getattr(row, "created_at", None),
             "last_fired_at": getattr(row, "last_fired_at", None),
             "next_fire_at": getattr(row, "next_fire_at", None),
+            "armed_at": getattr(row, "armed_at", None),
             "previous_webhook_secret": decrypt_webhook_secret(
                 str(getattr(row, "webhook_signature_secret_prev_enc", "") or ""), tenant_vault
             ),
@@ -1193,7 +1216,10 @@ class ScheduleStore:
                         Schedule.id == schedule_id,
                         Schedule.tenant_id == tenant_id,
                     )
-                    .values(paused=paused)
+                    .values(
+                        paused=paused,
+                        **({} if paused else {"armed_at": datetime.now(UTC), "next_fire_at": None}),
+                    )
                 )
         except Exception as exc:
             _log.warning("DB schedule update paused failed: %s", exc)

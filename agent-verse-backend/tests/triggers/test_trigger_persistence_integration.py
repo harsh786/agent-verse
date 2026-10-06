@@ -504,3 +504,44 @@ async def test_beat_claims_due_rows_of_a_thousand_tenants_in_one_query(
     assert len(mine) == 999  # one due row per ACTIVE tenant
     assert not any(k.startswith("schedule:bt001000:") for k in mine)
     assert len(statements) == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_and_edit_rearm_the_schedule(
+    dbs: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1-1: resume and a spec edit set ``armed_at`` (the beat's slot floor) on
+    the row; a goal-template-only edit does not, and the beat's payload falls
+    back to ``created_at`` for a never-re-armed schedule."""
+    from app.scaling import tasks
+
+    ctx = _ctx(dbs.t1)
+    store = _replica(dbs)
+    spec = TriggerSpec(trigger_type=TriggerType.CRON, cron_expression="*/5 * * * *")
+    sid = await store.create_async(goal_id="", spec=spec, tenant_ctx=ctx, goal_template="go")
+    row = await _row(dbs, sid)
+    assert row["armed_at"] is None
+    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: dbs.admin)
+    claimed = await tasks._load_db_schedules()
+    assert claimed is not None
+    payload = claimed[f"schedule:{dbs.t1}:{sid}"]
+    assert tasks._schedule_datetime(payload["armed_at"]) == tasks._schedule_datetime(
+        row["created_at"]
+    )
+
+    before = datetime.datetime.now(datetime.UTC)
+    await store.set_paused_async(sid, paused=True, tenant_ctx=ctx)
+    assert (await _row(dbs, sid))["armed_at"] is None
+    await store.set_paused_async(sid, paused=False, tenant_ctx=ctx)
+    resumed = (await _row(dbs, sid))["armed_at"]
+    assert resumed is not None and resumed >= before
+
+    await store.update_async(sid, tenant_ctx=ctx, goal_template="new text")
+    assert (await _row(dbs, sid))["armed_at"] == resumed
+    await store.update_async(
+        sid,
+        tenant_ctx=ctx,
+        spec=TriggerSpec(trigger_type=TriggerType.CRON, cron_expression="*/10 * * * *"),
+    )
+    edited = (await _row(dbs, sid))["armed_at"]
+    assert edited is not None and edited > resumed

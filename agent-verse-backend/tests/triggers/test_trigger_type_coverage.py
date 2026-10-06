@@ -57,6 +57,11 @@ def test_type_is_fired_or_explicitly_unsupported(trigger_type: TriggerType) -> N
     "trigger_type", [t for t, m in TRIGGER_DISPATCH.items() if m is DispatchMechanism.BEAT]
 )
 def test_beat_types_have_a_beat_branch(trigger_type: TriggerType) -> None:
+    from app.scaling.tasks import _TIME_TRIGGER_TYPES
+
+    # The time family shares one evaluation (_time_trigger_slots, B1-1).
+    if trigger_type.value in _TIME_TRIGGER_TYPES:
+        return
     assert f'trigger_type == "{trigger_type.value}"' in _TASKS_SRC, (
         f"{trigger_type.value}: classified BEAT but no beat branch in scaling/tasks.py"
     )

@@ -98,3 +98,8 @@ class Schedule(Base):
     )
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the trigger was last (re)armed: resumed or its spec edited (B1-1,
+    # migration d4f6b8a0c2e3). The beat never fires a slot at or before
+    # ``armed_at or created_at``, so a new, resumed or re-timed schedule does not
+    # replay slots from before it existed / while it was paused.
+    armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

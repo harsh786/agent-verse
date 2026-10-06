@@ -246,6 +246,9 @@ def test_redis_schedule_key_written_updated_and_deleted() -> None:
 
     key = f"schedule:{T.tenant_id}:{sid}"
     payload = json.loads(redis.values[key])
+    # B1-1: the beat's slot floor (creation time until resumed / edited).
+    created = store.get(sid, tenant_ctx=T)["created_at"]  # type: ignore[index]
+    assert payload.pop("armed_at") == created.isoformat()
     assert payload == {
         "schedule_id": sid,
         "tenant_id": T.tenant_id,
