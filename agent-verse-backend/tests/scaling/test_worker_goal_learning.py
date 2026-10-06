@@ -126,3 +126,44 @@ def test_worker_reflexion_service_needs_a_database() -> None:
     from app.scaling import tasks
 
     assert tasks._worker_reflexion_service(None, None) is None
+
+
+def test_failed_worker_goal_stores_its_reason_on_the_goal_row(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GAP-WORKER: 338 of 342 'Required retrieval failed' goals had an empty
+    goals.error_message - the reason only reached the goal_failed event."""
+    from app.agent.state import GoalStatus
+    from app.scaling import tasks
+    from app.services.goal_service import GoalService
+
+    writes: list[tuple[str, str]] = []
+
+    async def _update(self: Any, goal_id: str, tenant_id: str, status: str, **k: Any) -> bool:
+        writes.append((status, str(k.get("error_message", ""))))
+        return True
+
+    monkeypatch.setattr(GoalService, "_db_update_goal_status", _update)
+    worker["status"] = GoalStatus.FAILED
+    result = tasks.run_goal.run("gwl5", "tenant-wl", "collect weekly metrics", "normal", False)
+
+    assert result["status"] == "failed"
+    assert ("failed", "rate limit 429 from metrics API") in writes
+
+
+def test_completed_worker_goal_writes_no_error_message(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.scaling import tasks
+    from app.services.goal_service import GoalService
+
+    writes: list[tuple[str, str]] = []
+
+    async def _update(self: Any, goal_id: str, tenant_id: str, status: str, **k: Any) -> bool:
+        writes.append((status, str(k.get("error_message", ""))))
+        return True
+
+    monkeypatch.setattr(GoalService, "_db_update_goal_status", _update)
+    tasks.run_goal.run("gwl6", "tenant-wl", "collect weekly metrics", "normal", False)
+
+    assert ("complete", "") in writes

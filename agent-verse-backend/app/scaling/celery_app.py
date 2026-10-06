@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import os
+from datetime import timedelta
+from typing import Any
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
@@ -421,7 +424,8 @@ celery_app.conf.update(
         },
         "create-guardrail-partitions": {
             "task": "app.scaling.tasks.create_guardrail_partitions",
-            "schedule": crontab(day_of_month="1", hour="2"),
+            # minute=0: without it the job fired every minute of 02:00-02:59.
+            "schedule": crontab(day_of_month="1", hour="2", minute="0"),
             "options": {"queue": "maintenance"},
         },
         "enforce-hitl-sla": {
@@ -502,6 +506,82 @@ celery_app.conf.update(
         },
     },
 )
+
+
+# ── Beat ticks expire before the next one (GAP-WORKER) ────────────────────────
+# Live (2026-10-06): the goal worker's two slots were held by goals for ~2 h and
+# the beat kept enqueueing its periodic ticks (~2,500/h, every 5-60 s), so
+# ``maintenance`` grew to ~4,700 stale ticks that then ran back to back — the
+# same no-op sweep hundreds of times. A periodic tick is only useful until the
+# next one is sent: every beat entry now carries an ``expires`` shorter than its
+# period, so a tick no worker took in time is discarded (cheaply, on receipt)
+# instead of queueing behind its successors. An explicit ``expires`` is kept.
+_BEAT_EXPIRES_FRACTION = 0.9
+_BEAT_MIN_EXPIRES_S = 1.0
+
+
+def _crontab_min_gap_seconds(schedule: Any) -> float | None:
+    """The shortest gap between two consecutive runs of a celery crontab."""
+    try:
+        from datetime import UTC, datetime
+
+        from croniter import croniter
+
+        expr = " ".join(
+            str(getattr(schedule, attr))
+            for attr in (
+                "_orig_minute",
+                "_orig_hour",
+                "_orig_day_of_month",
+                "_orig_month_of_year",
+                "_orig_day_of_week",
+            )
+        )
+        it = croniter(expr, datetime(2026, 1, 1, tzinfo=UTC))
+        runs = [it.get_next(datetime) for _ in range(64)]
+    except Exception:
+        return None
+    gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(runs)]
+    return min(gaps) if gaps else None
+
+
+def beat_period_seconds(schedule: Any) -> float | None:
+    """A beat entry's period in seconds (``None`` when it cannot be derived)."""
+    if isinstance(schedule, bool):
+        return None
+    if isinstance(schedule, int | float):
+        return float(schedule)
+    if isinstance(schedule, timedelta):
+        return schedule.total_seconds()
+    if isinstance(schedule, crontab):
+        return _crontab_min_gap_seconds(schedule)
+    run_every = getattr(schedule, "run_every", None)  # celery.schedules.schedule
+    if isinstance(run_every, timedelta):
+        return run_every.total_seconds()
+    return None
+
+
+def beat_tick_expires(schedule: Any) -> float | None:
+    """The ``expires`` (seconds after sending) for a tick of *schedule*."""
+    period = beat_period_seconds(schedule)
+    if period is None or period <= 0:
+        return None
+    return max(_BEAT_MIN_EXPIRES_S, round(period * _BEAT_EXPIRES_FRACTION, 1))
+
+
+def apply_beat_tick_expiry(beat_schedule: dict[str, Any]) -> None:
+    """Give every beat entry without an explicit ``expires`` one (in place)."""
+    for entry in beat_schedule.values():
+        options = dict(entry.get("options") or {})
+        if options.get("expires") is not None:
+            continue
+        expires = beat_tick_expires(entry.get("schedule"))
+        if expires is not None:
+            options["expires"] = expires
+            entry["options"] = options
+
+
+apply_beat_tick_expiry(celery_app.conf.beat_schedule)
 
 
 # ── Redelivery window for long goals ───────────────────────────────────────────

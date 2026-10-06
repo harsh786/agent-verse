@@ -179,3 +179,117 @@ def test_db_outage_falls_back_to_the_redis_mirror(monkeypatch: pytest.MonkeyPatc
     )
 
     assert tasks.fire_due_schedules()["schedules_fired"] == 1
+
+
+# ── GAP-WORKER: the mirror fallback never replays a cron's history ────────────
+# Live (2026-10-06 10:11, Postgres restarting): discovery failed, the beat read
+# the Redis mirror, whose payload had no last_fired_at, so every daily 09:00 cron
+# fired each slot since it was created (armed_at, 18 days) - ~20 goals per
+# schedule in one second.
+
+
+def _daily_cron_mirror(**extra: Any) -> dict[str, Any]:
+    return {
+        "schedule_id": "s1",
+        "tenant_id": "t1",
+        "trigger_type": "cron",
+        "cron_expression": "0 9 * * *",
+        "timezone": "UTC",
+        "goal_template": "daily standup",
+        "paused": False,
+        "armed_at": "2026-09-18T07:43:54+00:00",
+        **extra,
+    }
+
+
+class _MirrorOf(_NoScanRedis):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        import json
+
+        self.values = {"schedule:t1:s1": json.dumps(payload)}
+        self.writes: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+
+    def scan_iter(self, **_k: Any) -> Any:
+        return list(self.values)
+
+    def get(self, key: str) -> Any:
+        return self.values.get(key)
+
+    def set(self, key: str, value: str, **kwargs: Any) -> bool:
+        import json
+
+        self.writes.append((key, json.loads(value), kwargs))
+        self.values[key] = value
+        return True
+
+
+def _fire_with_mirror(
+    monkeypatch: pytest.MonkeyPatch, redis: Any, *, db: Any = None
+) -> list[dict[str, Any]]:
+    async def load(now: Any = None) -> Any:
+        return db
+
+    async def fake_last_fired(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def fake_persist(_updates: Any) -> None:
+        return None
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
+    monkeypatch.setenv("REDIS_URL", "redis://fake")
+    monkeypatch.setattr("redis.from_url", lambda *_a, **_k: redis)
+    monkeypatch.setattr(tasks, "_load_db_schedules", load)
+    monkeypatch.setattr(tasks, "_update_db_schedule_last_fired_at", fake_last_fired)
+    monkeypatch.setattr(tasks, "_persist_next_evaluations", fake_persist)
+    monkeypatch.setattr(
+        tasks.run_scheduled_goal, "apply_async", lambda *, kwargs, queue: sent.append(kwargs)
+    )
+    tasks.fire_due_schedules()
+    return sent
+
+
+def test_mirror_fallback_fires_only_the_latest_cron_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis = _MirrorOf(_daily_cron_mirror())
+    sent = _fire_with_mirror(monkeypatch, redis)
+
+    assert len(sent) == 1  # not one per day since 2026-09-18
+    today_9 = dt.datetime.now(dt.UTC).replace(tzinfo=None, hour=9, minute=0, second=0,
+                                               microsecond=0)
+    if today_9 > dt.datetime.now(dt.UTC).replace(tzinfo=None):
+        today_9 -= dt.timedelta(days=1)
+    assert sent[0]["fire_instance_id"] == today_9.isoformat()
+
+
+def test_cap_keeps_interval_and_one_shot_slots() -> None:
+    slots = [dt.datetime(2026, 10, d, 9) for d in (4, 5, 6)]
+    assert tasks._cap_mirror_fallback_slots({"trigger_type": "cron"}, slots) == (
+        slots[-1:],
+        slots[:-1],
+    )
+    assert tasks._cap_mirror_fallback_slots(
+        {"trigger_type": "business_calendar"}, slots
+    )[0] == slots[-1:]
+    for kind in ("interval", "once"):
+        assert tasks._cap_mirror_fallback_slots({"trigger_type": kind}, slots[:1]) == (
+            slots[:1],
+            [],
+        )
+
+
+def test_db_fire_keeps_the_mirror_last_fired_at_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mirror = _daily_cron_mirror(cron_expression="* * * * *")
+    redis = _MirrorOf(mirror)
+    db = {"schedule:t1:s1": {**mirror, "last_fired_at": None, "next_fire_at": None}}
+
+    sent = _fire_with_mirror(monkeypatch, redis, db=db)
+
+    assert sent  # the DB copy is authoritative: its catch-up is unchanged
+    (key, payload, kwargs) = redis.writes[-1]
+    assert key == "schedule:t1:s1"
+    assert payload["last_fired_at"] == sent[-1]["fire_instance_id"]
+    assert kwargs == {"xx": True}  # never re-creates an evicted mirror

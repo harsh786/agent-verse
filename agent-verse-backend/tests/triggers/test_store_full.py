@@ -264,6 +264,8 @@ def test_redis_schedule_key_written_updated_and_deleted() -> None:
         "condition": "",
         "description": "",
         "paused": False,
+        # GAP-WORKER: the mirror carries the slot floor for a beat fallback.
+        "last_fired_at": None,
     }
 
     assert store.pause(sid, tenant_ctx=T) is True

@@ -279,6 +279,53 @@ spec:
           {{- toYaml .Values.scheduleWorker.resources | nindent 10 }}
 {{- end }}
 ---
+{{- /*
+  Dedicated pool for the beat's housekeeping (GAP-WORKER): maintenance +
+  governance never take a goal slot and goals never wait behind beat ticks.
+  worker.queues does not list these queues.
+*/}}
+{{- if .Values.maintenanceWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-maintenance-worker
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: maintenance-worker
+spec:
+  replicas: {{ .Values.maintenanceWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: maintenance-worker
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: maintenance-worker
+    spec:
+      initContainers:
+      - name: wait-for-schema
+        image: "{{ .Values.maintenanceWorker.image.repository }}:{{ .Values.maintenanceWorker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["python", "-m", "app.db.wait_for_schema"]
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
+      containers:
+      - name: maintenance-worker
+        image: "{{ .Values.maintenanceWorker.image.repository }}:{{ .Values.maintenanceWorker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["celery"]
+        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.maintenanceWorker.queues | quote }}, "-n", "maintenance@%h", "--concurrency", {{ .Values.maintenanceWorker.concurrency | quote }}, "--max-tasks-per-child", {{ .Values.maintenanceWorker.maxTasksPerChild | quote }}, "--max-memory-per-child", {{ .Values.maintenanceWorker.maxMemoryPerChildKb | quote }}]
+        envFrom:
+        - configMapRef:
+            name: {{ include "agentverse.fullname" . }}-config
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
+        resources:
+          {{- toYaml .Values.maintenanceWorker.resources | nindent 10 }}
+{{- end }}
+---
 {{- if .Values.beat.enabled }}
 apiVersion: apps/v1
 kind: Deployment

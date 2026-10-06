@@ -54,6 +54,10 @@ Full image references
 {{ .Values.global.imageRegistry }}/{{ .Values.scheduleWorker.image.name }}:{{ .Values.scheduleWorker.image.tag }}
 {{- end }}
 
+{{- define "agentverse.maintenanceWorkerImage" -}}
+{{ .Values.global.imageRegistry }}/{{ .Values.maintenanceWorker.image.name }}:{{ .Values.maintenanceWorker.image.tag }}
+{{- end }}
+
 {{- define "agentverse.frontendImage" -}}
 {{ .Values.global.imageRegistry }}/{{ .Values.frontend.image.name }}:{{ .Values.frontend.image.tag }}
 {{- end }}

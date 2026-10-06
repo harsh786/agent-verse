@@ -53,9 +53,11 @@ worker:
   maxTasksPerChild: 100
   maxMemoryPerChildKb: 700000
   preloadRetrievalModels: false
-  # Must cover every queue celery_app.py routes to (plan-routed goals.* and
-  # workflows.*), or those tasks sit unconsumed. Mirrors infra/helm/agentverse.
-  queues: "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
+  # Together with the dedicated pools below, must cover every queue
+  # celery_app.py routes to (plan-routed goals.* and workflows.*), or those
+  # tasks sit unconsumed. maintenance/governance run on maintenanceWorker only
+  # (GAP-WORKER). Mirrors infra/helm/agentverse.
+  queues: "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
   resources:
     requests:
       cpu: 300m
@@ -105,6 +107,30 @@ scheduleWorker:
   maxTasksPerChild: 200
   maxMemoryPerChildKb: 700000
   queues: "schedules,triggers.poll"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 2Gi  # L-03 budget: 300 MB + 2 x (700 MB cap + 100 MB)
+
+# ── Celery maintenance worker (GAP-WORKER) ───────────────────────────────────
+# Dedicated pool for the beat's housekeeping (maintenance + governance: outbox
+# drains, audit WAL flush, MCP health, HITL expiry, retention, exports). On the
+# shared goal pool thousands of beat ticks queued behind running goals and goals
+# waited behind the ticks. worker.queues does NOT list these queues, so keep
+# this pool enabled wherever the worker runs.
+maintenanceWorker:
+  enabled: true
+  image:
+    name: backend
+    tag: "latest"
+  replicas: 2
+  concurrency: 2
+  maxTasksPerChild: 200
+  maxMemoryPerChildKb: 700000
+  queues: "maintenance,governance"
   resources:
     requests:
       cpu: 100m
