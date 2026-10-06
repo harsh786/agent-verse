@@ -26,7 +26,6 @@ WIRED_OBJECTS: tuple[tuple[str, str], ...] = (
     ("app.chat.router", "_services_api"),
     ("app.auth.agent_credentials", "_agent_credential_store"),
     ("app.knowledge_graph.store", "kg_store"),
-    ("app.optimization.ab_testing", "ab_testing_engine"),
     ("app.intelligence.prompt_optimizer", "_default_optimizer"),
     ("app.org.digital_twin", "_twin"),
     ("app.memory.dept_memory", "_dept_memory"),

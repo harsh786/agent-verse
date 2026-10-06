@@ -59,8 +59,8 @@ SPEC_MODULES = [
     "app.evals.rag_score", "app.evals.safety_score",
     "app.evals.model_score", "app.evals.runtime_scorecard",
     "app.evals.regression_gate",
-    # Layer 11
-    "app.optimization.ab_testing",
+    # Layer 11 — app.optimization.ab_testing was removed (a05-F089-01: no
+    # caller; SelfOptimizerV2 / PromptOptimizer are the live A/B engines).
     # Layer 12
     # NOTE(D-21a): the standalone app.observability.{rag,pattern,model}_trace modules were
     # dead duplicates superseded by RuntimeSSEEmitter and have been deleted.

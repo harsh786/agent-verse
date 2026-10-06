@@ -551,7 +551,10 @@ class VerifierMixin:
 
             _cal_store = getattr(self, "_calibration_store", _default_calibration_store)
             if _cal_store is not None:
-                _cal_task = asyncio.create_task(
+                # Awaited (one INSERT, bounded): a background task is cancelled
+                # by the worker loop's teardown when this is the goal's final
+                # verdict — the one feedback judges (a05-F092-01).
+                await asyncio.wait_for(
                     _cal_store.record_verdict(
                         goal_id=agent_state.goal_id,
                         tenant_id=tenant_ctx.tenant_id,
@@ -559,12 +562,11 @@ class VerifierMixin:
                         verifier_model=_verify_model,
                         iteration=agent_state.iterations,
                         goal_text=agent_state.goal,
-                    )
+                    ),
+                    timeout=5.0,
                 )
-                self._background_tasks.add(_cal_task)
-                _cal_task.add_done_callback(self._background_tasks.discard)
         except Exception as exc:
-            self._logger.debug("calibration_record_failed", error=str(exc)[:60])
+            self._logger.warning("calibration_record_failed", error=str(exc)[:200])
 
         if success:
             # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
@@ -970,6 +972,10 @@ class VerifierMixin:
                     # truthful; the experiment only samples scored goals.
                     import asyncio as _asyncio
 
+                    # One record per goal: a later terminal failure (e.g. budget
+                    # exhausted after this verdict) must not record it again
+                    # (AgentGraph._record_failed_experiment_goal, a05-F087-02).
+                    agent_state.context["_experiment_outcome_recorded"] = True
                     _v2_task = _asyncio.create_task(
                         _self_opt_v2.on_goal_completed(
                             tenant_id=tenant_ctx.tenant_id,
@@ -982,10 +988,8 @@ class VerifierMixin:
                     )
                     self._background_tasks.add(_v2_task)
                     _v2_task.add_done_callback(self._background_tasks.discard)
-            # MEM-29: no ABTestingEngine record here. It filed every goal as a
-            # RAG_STRATEGY result under the SelfOptimizerV2 arm (or "control"),
-            # yet nothing assigns ABTestingEngine arms or reads its stats — the
-            # telemetry was mislabelled. SelfOptimizerV2 records its own arms above.
+            # MEM-29 / a05-F089-01: the arm-less ABTestingEngine is gone; the
+            # live A/B loops are SelfOptimizerV2 (above) and PromptOptimizer.
         else:
             scorecard = None
             # FIX: On permanent failure (retry=False), roll back all registered actions

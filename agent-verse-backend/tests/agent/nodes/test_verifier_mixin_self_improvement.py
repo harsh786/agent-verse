@@ -7,7 +7,7 @@ RegressionGate (catalogues low-scoring goals as regressions), the
 SelfImprovementEngine (decides concrete improvement actions and dispatches
 them — prompt-variant updates, model-routing switches, tool blacklisting),
 emits SSE events for observability, and records results into the A/B testing
-engines (SelfOptimizerV2, module-level ABTestingEngine).
+engine (SelfOptimizerV2).
 
 Earlier work in this session covered the malformed-output / circuit-breaker /
 consensus / grounding-gate / memory-wiring paths (see
@@ -460,7 +460,7 @@ async def test_eval_score_recorded_sse_emission_failure_does_not_crash_verificat
 
 
 # ===========================================================================
-# A/B testing engines (SelfOptimizerV2, module-level ABTestingEngine)
+# A/B testing engine (SelfOptimizerV2)
 # ===========================================================================
 
 
@@ -778,36 +778,3 @@ async def test_guardrail_final_output_gate_error_fails_open_on_normal_risk_goal(
         result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
 
     assert result["agent_state"].cited_answer != "[Output redacted by guardrail policy]"
-
-
-@pytest.mark.asyncio
-async def test_verify_writes_no_mislabelled_ab_testing_telemetry() -> None:
-    """MEM-29: every verified goal was recorded in ABTestingEngine as a
-    RAG_STRATEGY result under the SelfOptimizerV2 arm (or a default "control"),
-    though nothing assigns ABTestingEngine arms or reads its stats. No record
-    is written now; SelfOptimizerV2 keeps recording its own experiment."""
-    mock_eval = MagicMock(spec=EvalRunner)
-    scorecard = MagicMock()
-    scorecard.average_score.return_value = 0.9
-    mock_eval.score_and_persist = AsyncMock(return_value=scorecard)
-    graph = _make_graph(
-        verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']),
-        eval_runner=mock_eval,
-    )
-    so_v2 = MagicMock()
-    so_v2.on_goal_completed = AsyncMock()
-    graph._app_state = MagicMock(self_optimizer_v2=so_v2)
-    graph._agent_id = "agent-1"
-    agent_state = _agent_state("an experiment goal")
-    agent_state.context["_experiment_arm"] = "candidate-arm"
-    agent_state.context["eval_scorecard"] = {"average_score": 0.9}
-    agent_state.steps.append(StepResult(description="s", status=StepStatus.COMPLETE, output="ok"))
-
-    with patch(
-        "app.optimization.ab_testing.ab_testing_engine.record_result_async", new=AsyncMock()
-    ) as recorded:
-        await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
-        await asyncio.sleep(0)
-
-    recorded.assert_not_called()
-    so_v2.on_goal_completed.assert_awaited_once()

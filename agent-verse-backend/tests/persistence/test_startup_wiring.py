@@ -79,15 +79,6 @@ async def test_reflexion_store_recall_rehydrates_after_ttl_even_with_local_lesso
         assert mock_load.call_count == 2
 
 
-def test_ab_testing_engine_accepts_db_factory():
-    """ABTestingEngine.__init__ must accept db_factory."""
-    import inspect
-
-    from app.optimization.ab_testing import ABTestingEngine
-    sig = inspect.signature(ABTestingEngine.__init__)
-    assert "db_factory" in sig.parameters
-
-
 async def test_orchestration_persistence_wildcard_load_is_refused():
     """load_tool_trust_from_db('*') must NOT scan every tenant's tool_trust_records.
 

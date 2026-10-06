@@ -965,6 +965,15 @@ async def apply_experiment(request: Request, experiment_id: str) -> dict:
         reason = result.get("reason")
         if reason == "not_found":
             raise _HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
+        if reason == "rollout_gate":
+            raise _HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot apply experiment: the agent is fully-autonomous and its eval "
+                    "rollout gate vouches only for its current config. Demote it to "
+                    "bounded-autonomous, apply, re-run its eval suite, then promote it."
+                ),
+            )
         raise _HTTPException(status_code=409, detail=f"Cannot apply experiment: {reason}")
     return {
         "experiment_id": experiment_id,

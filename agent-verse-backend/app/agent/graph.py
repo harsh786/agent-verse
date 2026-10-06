@@ -630,6 +630,49 @@ class AgentGraph(
                 error=f"{type(exc).__name__}: {str(exc)[:200]}",
             )
 
+    async def _record_failed_experiment_goal(
+        self, final: AgentState, tenant_ctx: TenantContext
+    ) -> None:
+        """a05-F087-02: a FAILED goal of a SelfOptimizerV2 experiment arm is recorded.
+
+        The verify node records the arm only on success, so a candidate config
+        that made goals fail was never penalised — its arm only ever saw the
+        goals it got right. A terminal failure is recorded as a scored goal with
+        ``eval_score`` 0.0. Awaited and bounded (a background task is cancelled
+        by the worker loop's teardown); never fails the goal.
+        """
+        context = final.context if isinstance(final.context, dict) else None
+        if (
+            final.status != GoalStatus.FAILED
+            or context is None
+            or not context.get("_experiment_arm")
+            or context.get("_experiment_outcome_recorded")
+            or not self._agent_id
+        ):
+            return
+        optimizer = getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+        if optimizer is None:
+            return
+        context["_experiment_outcome_recorded"] = True
+        try:
+            await asyncio.wait_for(
+                optimizer.on_goal_completed(
+                    tenant_id=tenant_ctx.tenant_id,
+                    agent_id=self._agent_id,
+                    goal_id=final.goal_id,
+                    eval_score=0.0,
+                    cost_usd=float(context.get("total_cost_usd", 0.0) or 0.0),
+                    latency_ms=0,
+                ),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "experiment_failed_goal_record_failed",
+                goal_id=final.goal_id,
+                error=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+
     async def run(
         self,
         *,
@@ -934,6 +977,7 @@ class AgentGraph(
                     if final.status == GoalStatus.FAILED and event_callback:
                         await self._emit({"type": "goal_failed", "reason": final.error_message})
                     await self._learn_procedural_outcome(final, tenant_ctx)
+                    await self._record_failed_experiment_goal(final, tenant_ctx)
                     return final
                 except PermissionError as exc:
                     # "Planning unavailable: ..." / "Verification unavailable: ..." come

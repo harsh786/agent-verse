@@ -3471,9 +3471,11 @@ def run_goal(
             except Exception as _p3s_exc:
                 logger.debug("phase3_synthesizer_unavailable: %s", _p3s_exc)
             try:
-                from app.intelligence.verifier_calibration import _default_calibration_store
+                from app.intelligence.verifier_calibration import calibration_store_for
 
-                _phase3_calibration = _default_calibration_store
+                # Bound to this worker's DB (a05-F092-01): the module default is
+                # bound only in the API lifespan, so worker verdicts were lost.
+                _phase3_calibration = calibration_store_for(db_factory)
             except Exception as _p3c_exc:
                 logger.debug("phase3_calibration_unavailable: %s", _p3c_exc)
             try:

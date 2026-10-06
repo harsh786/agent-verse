@@ -279,3 +279,19 @@ class VerifierCalibrationStore:
 # ---------------------------------------------------------------------------
 
 _default_calibration_store = VerifierCalibrationStore()
+
+
+def calibration_store_for(db_factory: Any) -> VerifierCalibrationStore:
+    """The calibration store a goal run records its verdicts through.
+
+    a05-F092-01: only the API lifespan bound the module default store to the
+    database, so goals verified by a Celery worker (which used that unbound
+    default) were never persisted — feedback on them updated nothing and
+    ``/intelligence/calibration`` left them out. Every run with a DB factory
+    now writes through a store bound to it.
+    """
+    if db_factory is None:
+        return _default_calibration_store
+    if _default_calibration_store._db is db_factory:
+        return _default_calibration_store
+    return VerifierCalibrationStore(db_factory)

@@ -55,6 +55,9 @@ _EXACT_SEARCH_MAX_ROWS = 5_000
 # Larger tenants keep the HNSW index, with pgvector >= 0.8 iterative scans so
 # the tenant filter cannot empty the candidate set.
 _HNSW_EF_SEARCH = 200
+# The lexical leg compares at most this much of the query (trigram cost grows
+# with its length; the summaries it is matched against are short).
+_LEXICAL_QUERY_MAX_CHARS = 500
 
 
 def _candidate_limit(request: MemoryRecallRequest) -> int:
@@ -121,11 +124,27 @@ def recall_candidate_queries(
             .limit(limit)
         )
     else:
+        hint = request.query.strip()[:_LEXICAL_QUERY_MAX_CHARS]
+        # a05-F081-03: the pg_trgm ``%`` / ``<%`` operators make the lexical
+        # leg index-backed (``ix_memory_records_safe_summary_trgm``, GIN) —
+        # ORDER BY similarity() alone scanned and sorted every eligible row of
+        # the tenant. Same shape as episodic (MEM-40) and execution (MEM-36)
+        # recall; rows below the trigram thresholds still reach the blended
+        # score through the recency leg.
         relevance = (
             select(model)
-            .where(*filters)
+            .where(
+                *filters,
+                or_(
+                    model.safe_summary.op("%")(hint),
+                    literal(hint).op("<%")(model.safe_summary),
+                ),
+            )
             .order_by(
-                func.similarity(model.safe_summary, request.query).desc(),
+                func.greatest(
+                    func.similarity(model.safe_summary, hint),
+                    func.word_similarity(hint, model.safe_summary),
+                ).desc(),
                 model.updated_at.desc(),
                 model.id,
             )
@@ -134,6 +153,9 @@ def recall_candidate_queries(
     recency = (
         select(model).where(*filters).order_by(model.updated_at.desc(), model.id).limit(limit)
     )
+    if query_embedding is None and not request.query.strip():
+        # A blank query has no lexical relevance to rank by: recency only.
+        return (recency,)
     return (relevance, recency)
 
 

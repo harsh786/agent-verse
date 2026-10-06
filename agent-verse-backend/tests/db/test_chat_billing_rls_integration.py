@@ -260,25 +260,27 @@ async def test_budget_update_persists_under_rls(factories: tuple) -> None:
 
 @pytest.mark.asyncio
 async def test_ab_results_are_tenant_scoped(factories: tuple) -> None:
-    from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-
+    # The ABTestingEngine that wrote this table had no caller and was removed
+    # (a05-F089-01); the table's policies are still exercised directly.
     _, app_factory = factories
-    writer = ABTestingEngine(db_factory=app_factory)
-    await writer.record_result_async(
-        "g-1", ExperimentType.RAG_STRATEGY, "control", 0.9, tenant_id=TENANT_A
-    )
+    async with app_factory() as s, s.begin(), sqlalchemy_rls_context(s, TENANT_A):
+        await s.execute(
+            text(
+                "INSERT INTO ab_test_results (id, goal_id, tenant_id, experiment_type, "
+                "arm_id, score, created_at) "
+                "VALUES ('ab-1', 'g-1', :t, 'rag_strategy', 'control', 0.9, NOW())"
+            ),
+            {"t": TENANT_A},
+        )
 
-    reader = ABTestingEngine(db_factory=app_factory)
-    assert await reader.load_from_db(tenant_id=TENANT_A) == 1
-    assert await reader.load_from_db(tenant_id=TENANT_B) == 0
-    stats = reader.get_arm_stats(ExperimentType.RAG_STRATEGY, "control", tenant_id=TENANT_A)
-    assert stats["call_count"] == 1
-    assert (
-        reader.get_arm_stats(ExperimentType.RAG_STRATEGY, "control", tenant_id=TENANT_B)[
-            "call_count"
-        ]
-        == 0
-    )
+    async def _count(tenant: str) -> int:
+        async with app_factory() as s, s.begin(), sqlalchemy_rls_context(s, tenant):
+            return int(
+                (await s.execute(text("SELECT count(*) FROM ab_test_results"))).scalar_one()
+            )
+
+    assert await _count(TENANT_A) == 1
+    assert await _count(TENANT_B) == 0
 
 
 @pytest.mark.asyncio

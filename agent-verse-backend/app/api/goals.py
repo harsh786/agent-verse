@@ -1379,23 +1379,33 @@ async def submit_goal_feedback(
     # The human verdict is the verifier's ground truth (calibration). Written in
     # Postgres by goal, so it reaches a verdict recorded by any replica or worker
     # (it used to scan this process's in-memory buffer and swallow errors).
+    # a05-F092-01: say whether the verdict was really judged — a goal with no
+    # recorded verdict used to update 0 rows with no signal at all.
+    calibration = "not_requested"
     if body.is_correct is not None:
+        import logging
+
         from app.intelligence.verifier_calibration import _default_calibration_store
 
         cal_store = getattr(request.app.state, "calibration_store", None) or (
             _default_calibration_store
         )
         try:
-            await cal_store.record_actual_outcome_by_goal(
+            updated = await cal_store.record_actual_outcome_by_goal(
                 goal_id=goal_id, tenant_id=tenant_ctx.tenant_id, actual_success=body.is_correct
             )
         except Exception as cal_exc:
-            import logging
-
             # The feedback itself is still stored below; only calibration lags.
+            calibration = "failed"
             logging.getLogger(__name__).warning(
                 "verifier_calibration_feedback_failed goal_id=%s: %s", goal_id, cal_exc
             )
+        else:
+            calibration = "recorded" if updated else "no_verdict"
+            if not updated:
+                logging.getLogger(__name__).warning(
+                    "verifier_calibration_feedback_no_verdict goal_id=%s", goal_id
+                )
 
     # Persist to goal_feedback table (migration 0082)
     try:
@@ -1443,6 +1453,9 @@ async def submit_goal_feedback(
         "goal_id": goal_id,
         "status": "feedback_recorded",
         "rating": body.rating,
+        # recorded | no_verdict (no verifier verdict on record for this goal) |
+        # failed (calibration store error) | not_requested (no is_correct given)
+        "calibration": calibration,
     }
 
 

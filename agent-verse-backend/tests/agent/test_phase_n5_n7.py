@@ -1,26 +1,5 @@
-"""Phase N5-N7: ABTesting wiring + SSE events + action dispatch."""
+"""Phase N5-N7: SSE events + action dispatch (the ABTestingEngine was removed, a05-F089-01)."""
 from __future__ import annotations
-
-
-def test_ab_testing_engine_has_record_result_async():
-    from app.optimization.ab_testing import ABTestingEngine
-    engine = ABTestingEngine()
-    assert hasattr(engine, "record_result_async")
-
-
-async def test_ab_testing_engine_record_async_no_db():
-    from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-    engine = ABTestingEngine()
-    # Must not raise without DB
-    await engine.record_result_async(
-        "g1", ExperimentType.RAG_STRATEGY, "control", 0.85, tenant_id="t1"
-    )
-    stats = engine.get_arm_stats(ExperimentType.RAG_STRATEGY, "control", tenant_id="t1")
-    assert stats["call_count"] == 1
-    # Tenant-scoped: another tenant's view of the same arm is empty.
-    assert engine.get_arm_stats(
-        ExperimentType.RAG_STRATEGY, "control", tenant_id="t2"
-    )["call_count"] == 0
 
 
 def test_runtime_decision_trace_has_all_5_events():
@@ -71,10 +50,3 @@ def test_self_improvement_blacklist_records_tool():
     store = ToolReliabilityStore.__new__(ToolReliabilityStore)
     assert hasattr(store, "record")
 
-
-def test_ab_testing_engine_singleton_has_db_factory():
-    """Module-level ab_testing_engine must be wired with db_factory in main.py."""
-    from app.optimization.ab_testing import ab_testing_engine
-    # ab_testing_engine._db_factory should be set in main.py lifespan
-    # Just verify the singleton exists
-    assert ab_testing_engine is not None

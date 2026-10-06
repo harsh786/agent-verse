@@ -537,8 +537,26 @@ class TestRecallCandidateQueries:
         relevance, _ = recall_candidate_queries(
             self._request(), query_embedding=None, embedding_model=None
         )
-        order = self._sql(relevance).split("ORDER BY", 1)[1]
-        assert order.strip().startswith("similarity(memory_records.safe_summary")
+        sql = self._sql(relevance)
+        order = sql.split("ORDER BY", 1)[1]
+        assert order.strip().startswith("greatest(similarity(memory_records.safe_summary")
+        # a05-F081-03: an index-usable trigram predicate bounds the leg; ORDER
+        # BY similarity() alone scanned and sorted every eligible tenant row.
+        # (the pyformat dialect escapes the operator's % as %%)
+        where = sql.split("WHERE", 1)[1].split("ORDER BY", 1)[0].replace("%%", "%")
+        assert "memory_records.safe_summary %" in where
+        assert "<% memory_records.safe_summary" in where
+
+    def test_blank_lexical_query_reads_only_the_recency_leg(self):
+        from app.memory.postgres_repository import recall_candidate_queries
+
+        stmts = recall_candidate_queries(
+            self._request(query="   "), query_embedding=None, embedding_model=None
+        )
+        assert len(stmts) == 1
+        assert self._sql(stmts[0]).split("ORDER BY", 1)[1].strip().startswith(
+            "memory_records.updated_at DESC"
+        )
 
     def test_eligibility_is_filtered_in_sql(self):
         from app.memory.postgres_repository import recall_candidate_queries

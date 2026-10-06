@@ -263,42 +263,6 @@ def test_regression_gate_no_case_for_high_score(tenant_ctx: TenantContext) -> No
     assert candidate is None
 
 
-# ── A/B TESTING ────────────────────────────────────────────────────────────────
-
-async def test_ab_testing_engine_records_and_stats() -> None:
-    from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-
-    engine = ABTestingEngine()
-
-    for _ in range(5):
-        engine.record_result("g1", ExperimentType.MODEL_ROUTING, "variant_a", 0.85)
-    for _ in range(3):
-        engine.record_result("g2", ExperimentType.MODEL_ROUTING, "control", 0.70)
-
-    variant_stats = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "variant_a")
-    control_stats = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control")
-
-    assert variant_stats["call_count"] == 5
-    assert abs(variant_stats["avg_score"] - 0.85) < 0.01
-    assert control_stats["call_count"] == 3
-
-
-def test_ab_testing_promotion_threshold() -> None:
-    from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-
-    engine = ABTestingEngine()
-    for _ in range(5):
-        engine.record_result("g1", ExperimentType.RAG_STRATEGY, "variant_b", 0.90)
-
-    can_promote = engine.can_promote_variant(
-        ExperimentType.RAG_STRATEGY,
-        "variant_b",
-        min_score_threshold=0.8,
-        current_score=0.90,
-    )
-    assert can_promote is True
-
-
 # ── AGENT SCORER ──────────────────────────────────────────────────────────────
 
 def test_agent_scorer_tool_success_rate(tenant_ctx: TenantContext) -> None:

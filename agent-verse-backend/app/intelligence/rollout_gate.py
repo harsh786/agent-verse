@@ -59,6 +59,23 @@ def agent_config_hash(agent: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def behaviour_config_changed(current: dict[str, Any], proposed: dict[str, Any]) -> bool:
+    """Would writing *proposed* over *current* change the config the gate pins?"""
+    return agent_config_hash(current) != agent_config_hash(proposed)
+
+
+def eval_gate_enabled() -> bool:
+    """Owner decision: is the fully-autonomous eval rollout gate enforced?"""
+    from app.core.config import get_settings
+
+    enabled = bool(getattr(get_settings(), "fully_autonomous_eval_gate_enabled", True))
+    if not enabled:
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).warning("fully_autonomous_eval_gate_disabled_by_setting")
+    return enabled
+
+
 def gate_settings() -> tuple[float, int]:
     """``(min_pass_rate, min_suite_size)`` from Settings."""
     from app.core.config import get_settings

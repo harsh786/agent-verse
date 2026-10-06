@@ -231,3 +231,62 @@ def test_applicable_keys_match_the_runtime() -> None:
 
     assert InitializeMixin._EXPERIMENT_APPLICABLE_KEYS == EXPERIMENT_APPLICABLE_KEYS
 
+
+
+# ── a05-F095-04: the rollout gate pins a fully-autonomous agent's config ─────
+
+
+async def _set_autonomy(agents_db: Any, mode: str) -> None:
+    async with agents_db() as s:
+        await s.execute(text("UPDATE agents SET autonomy_mode = :m WHERE id = 'a1'"), {"m": mode})
+        await s.commit()
+
+
+async def _agent_row(agents_db: Any) -> tuple[Any, ...]:
+    async with agents_db() as s:
+        res = await s.execute(
+            text("SELECT system_prompt, autonomy_mode FROM agents WHERE id = 'a1'")
+        )
+        return tuple(res.fetchone())
+
+
+async def test_apply_never_rewrites_a_fully_autonomous_agents_gated_config(
+    agents_db: Any,
+) -> None:
+    await _set_autonomy(agents_db, "fully-autonomous")
+    opt = SelfOptimizerV2(_Redis(), agents_db, lambda: None)
+    ok = await opt.apply_suggestion(
+        "t1", "a1", "exp-1", {"system_prompt": "new prompt", "autonomy_mode": "fully-autonomous"}
+    )
+    assert ok is False
+    assert await _agent_row(agents_db) == ("old prompt", "fully-autonomous")
+
+
+async def test_apply_pending_reports_the_rollout_gate(agents_db: Any) -> None:
+    await _set_autonomy(agents_db, "fully-autonomous")
+    opt = SelfOptimizerV2(_Redis(), agents_db, lambda: None)
+    reason = await opt._apply_suggestion("t1", "a1", "exp-1", {"system_prompt": "new prompt"})
+    assert reason == "rollout_gate"
+
+
+async def test_apply_proceeds_when_the_gate_is_disabled_by_the_owner(
+    agents_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    await _set_autonomy(agents_db, "fully-autonomous")
+    monkeypatch.setattr(get_settings(), "fully_autonomous_eval_gate_enabled", False)
+    opt = SelfOptimizerV2(_Redis(), agents_db, lambda: None)
+    assert await opt.apply_suggestion("t1", "a1", "exp-1", {"system_prompt": "new prompt"})
+    assert await _agent_row(agents_db) == ("new prompt", "fully-autonomous")
+
+
+async def test_apply_never_writes_the_candidates_stale_autonomy_mode(agents_db: Any) -> None:
+    # The experiment snapshot said fully-autonomous; the agent has since been
+    # demoted. Applying the winner must not silently re-promote it.
+    opt = SelfOptimizerV2(_Redis(), agents_db, lambda: None)
+    ok = await opt.apply_suggestion(
+        "t1", "a1", "exp-1", {"system_prompt": "new prompt", "autonomy_mode": "fully-autonomous"}
+    )
+    assert ok is True
+    assert await _agent_row(agents_db) == ("new prompt", "bounded-autonomous")

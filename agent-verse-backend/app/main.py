@@ -1600,7 +1600,6 @@ def create_app(
             from app.memory.reflexion import ReflexionService
 
             app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-            from app.intelligence.learning_experiments import LearningExperimentService
 
             # Durable prospective memory so deferred intentions survive restarts,
             # are recalled into the planner, and can be leased/fired by the scheduler.
@@ -1616,7 +1615,6 @@ def create_app(
             from app.memory.prospective_runtime import set_prospective_service
 
             set_prospective_service(app.state.prospective_memory_service)
-            app.state.learning_experiment_service = LearningExperimentService()
 
             # Grantex tool-grant store (governance enforcement at the executor gate).
             # Postgres-backed so grants persist across restarts; falls back to
@@ -2167,18 +2165,6 @@ def create_app(
                 logger.info("verifier_calibration_store_wired")
             except Exception as _cal_exc:
                 logger.warning("verifier_calibration_wire_failed", error=str(_cal_exc))
-
-            # Wire DB into ABTestingEngine. No startup hydration: that was a
-            # cross-tenant scan of ab_test_results (zero rows under the
-            # NOBYPASSRLS role, and a mixed-tenant pool otherwise). Each
-            # tenant's history now loads lazily, tenant-scoped, on first use.
-            try:
-                from app.optimization.ab_testing import ab_testing_engine as _ab_engine
-
-                _ab_engine._db_factory = db_factory
-                logger.info("ab_testing_engine_wired")
-            except Exception as _ab_exc:
-                logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))
 
             # Wire Episodic and Procedural memory stores (same helper as the
             # Celery worker, so both run paths get the same service set).
@@ -3043,14 +3029,12 @@ def create_app(
     from app.memory.reflexion import ReflexionService
 
     app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-    from app.intelligence.learning_experiments import LearningExperimentService
     from app.memory.prospective import ProspectiveMemoryService
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
     from app.memory.prospective_runtime import set_prospective_service
 
     set_prospective_service(app.state.prospective_memory_service)
-    app.state.learning_experiment_service = LearningExperimentService()
     from app.governance.grants import InMemoryGrantStore
 
     app.state.grant_store = InMemoryGrantStore()
