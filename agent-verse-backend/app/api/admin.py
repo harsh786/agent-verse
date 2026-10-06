@@ -1,7 +1,8 @@
 """Platform administration API.
 
-Requires platform_admin role (checked via X-Admin-Key header or admin JWT).
-NOT protected by the standard tenant middleware — operates cross-tenant.
+Requires a platform admin (app.tenancy.platform_admin): a tenant admin of an
+operator tenant (PLATFORM_ADMIN_TENANT_IDS), or a caller presenting the
+platform admin key as X-Admin-Key. Operates cross-tenant.
 
 Endpoints:
   GET  /admin/tenants                 — list all tenants
@@ -16,12 +17,10 @@ Endpoints:
 
 from __future__ import annotations
 
-import hmac
-import os
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import Select, extract, func, select
 
@@ -32,13 +31,19 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def _require_admin(x_admin_key: str = Header(default="")) -> None:
-    """Validate platform admin key.  Raises 401 if invalid, 503 if unconfigured."""
-    admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
-    if not admin_key:
-        raise HTTPException(status_code=503, detail="Platform admin not configured")
-    if not hmac.compare_digest(x_admin_key.encode(), admin_key.encode()):
-        raise HTTPException(status_code=401, detail="Invalid admin key")
+def _require_admin(request: Request) -> None:
+    """Allow a platform admin: a tenant admin of an operator tenant, or a caller
+    presenting the matching ``X-Admin-Key`` (see :mod:`app.tenancy.platform_admin`).
+
+    It used to accept only the admin key and answer 401 otherwise; the web
+    client sends no admin header and logs out on a 401, so merely opening /admin
+    signed the admin out. Refusals are now 403 (a wrong or missing key), and 503
+    only when a key is presented but ``PLATFORM_ADMIN_KEY`` is unset. The key is
+    compared with ``hmac.compare_digest`` (constant time) in the shared helper.
+    """
+    from app.tenancy.platform_admin import require_platform_admin
+
+    require_platform_admin(request)
 
 
 class PlanChangeRequest(BaseModel):

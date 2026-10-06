@@ -34,15 +34,16 @@ class TestRequireAdmin:
         resp = client.get("/admin/tenants", headers=_ADMIN_HEADERS)
         assert resp.status_code == 503
 
-    def test_wrong_key_returns_401(self):
+    # QA-6: refusals are 403, never 401 — the web client logs out on a 401.
+    def test_wrong_key_returns_403(self):
         client = TestClient(_make_app())
         resp = client.get("/admin/tenants", headers={"X-Admin-Key": "wrong"})
-        assert resp.status_code == 401
+        assert resp.status_code == 403
 
-    def test_missing_header_returns_401(self):
+    def test_missing_header_returns_403(self):
         client = TestClient(_make_app())
         resp = client.get("/admin/tenants")
-        assert resp.status_code == 401
+        assert resp.status_code == 403
 
 
 class TestListTenants:
@@ -327,7 +328,7 @@ class TestIncidents:
 
     def test_still_requires_the_admin_key(self):
         resp = TestClient(_make_app()).get("/admin/incidents")
-        assert resp.status_code == 401
+        assert resp.status_code == 403
 
 
 def test_tenant_context_replace_smoke():

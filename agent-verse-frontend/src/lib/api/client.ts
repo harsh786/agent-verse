@@ -3710,8 +3710,25 @@ export const ocrApi = {
 };
 
 // ── Admin (platform-level) ────────────────────────────────────────────────────
-// Admin auth is enforced server-side: the backend checks the calling tenant's
-// role for "admin" or "system" — no admin secret is needed in the frontend.
+// /admin/* requires a PLATFORM admin (app/tenancy/platform_admin.py): either the
+// signed-in tenant is an admin of an operator tenant (PLATFORM_ADMIN_TENANT_IDS;
+// any tenant admin outside production while that is unset), or the request
+// carries the platform admin key as X-Admin-Key. A refusal is a 403 (not a 401),
+// so it never trips the logout-on-401 logic in request().
+//
+// The admin key, when the operator types one on the Admin page, is held in this
+// module's memory only — never in a store, localStorage or sessionStorage — and
+// is sent only on /admin requests.
+let platformAdminKey: string | null = null;
+
+/** Set (or clear with null/"") the in-memory platform admin key for /admin calls. */
+export function setPlatformAdminKey(key: string | null): void {
+  platformAdminKey = key && key.trim() ? key.trim() : null;
+}
+
+function adminHeaders(): Record<string, string> {
+  return platformAdminKey ? { 'X-Admin-Key': platformAdminKey } : {};
+}
 
 export interface AdminTenant {
   tenant_id: string;
@@ -3739,14 +3756,17 @@ export const adminApi = {
   listTenants: (params?: { limit?: number; offset?: number }) => {
     const qs = new URLSearchParams({ limit: String(params?.limit ?? 25) });
     if (params?.offset) qs.set('offset', String(params.offset));
-    return request<{ tenants: AdminTenant[]; total: number }>(`/admin/tenants?${qs}`);
+    return request<{ tenants: AdminTenant[]; total: number }>(`/admin/tenants?${qs}`, {
+      headers: adminHeaders(),
+    });
   },
   updatePlan: (tenantId: string, plan: string) =>
     request<unknown>(`/admin/tenants/${tenantId}/plan`, {
       method: 'PUT',
       body: JSON.stringify({ plan }),
+      headers: adminHeaders(),
     }),
-  getPlatformUsage: () => request<PlatformUsage>('/admin/usage'),
+  getPlatformUsage: () => request<PlatformUsage>('/admin/usage', { headers: adminHeaders() }),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

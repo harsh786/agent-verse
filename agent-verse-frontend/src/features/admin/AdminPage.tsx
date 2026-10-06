@@ -9,14 +9,14 @@
  *   5. Quick action links
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, AlertCircle, CheckCircle2,
-  Clock, Database, Loader2, RefreshCw,
+  Clock, Database, KeyRound, Loader2, RefreshCw,
   Search, Settings2, Shield, TrendingUp, Users, Zap,
 } from 'lucide-react';
-import { adminApi, API_BASE } from '@/lib/api/client';
+import { adminApi, API_BASE, ApiError, setPlatformAdminKey } from '@/lib/api/client';
 import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { Pagination } from '@/components/ui/Pagination';
 
@@ -108,15 +108,25 @@ export default function AdminPage() {
   const [planFilter, setPlanFilter] = useState<Plan | 'all'>('all');
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [page, setPage]           = useState(1);
+  // Optional platform admin key (X-Admin-Key). Held in component state and the
+  // API client's module memory only — never persisted — and dropped on unmount.
+  const [adminKeyInput, setAdminKeyInput] = useState('');
   const qc = useQueryClient();
 
-  const { data: usage, isLoading: usageLoading, refetch: refetchUsage } = useQuery({
+  useEffect(() => () => setPlatformAdminKey(null), []);
+
+  const applyAdminKey = () => {
+    setPlatformAdminKey(adminKeyInput);
+    void qc.invalidateQueries({ queryKey: ['admin'] });
+  };
+
+  const { data: usage, isLoading: usageLoading, refetch: refetchUsage, error: usageError } = useQuery({
     queryKey: ['admin', 'usage'],
     queryFn: () => adminApi.getPlatformUsage() as Promise<PlatformUsage>,
     refetchInterval: 15_000,
   });
 
-  const { data: tenantsData, isLoading: tenantsLoading, dataUpdatedAt } = useQuery({
+  const { data: tenantsData, isLoading: tenantsLoading, dataUpdatedAt, error: tenantsError } = useQuery({
     queryKey: ['admin', 'tenants', page],
     // Server-side pagination: fetch one page at a time via limit + offset
     // (was a hardcoded limit:200 that silently dropped tenants beyond 200).
@@ -154,6 +164,11 @@ export default function AdminPage() {
   const sorted = [...filtered].sort((a, b) => (PLAN_RANK[b.plan] ?? 0) - (PLAN_RANK[a.plan] ?? 0));
   const planCounts = PLANS.reduce<Record<string, number>>((acc, p) => { acc[p] = allTenants.filter((t) => t.plan === p).length; return acc; }, {});
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—';
+  // 403 = not a platform admin (the backend never answers 401 here, so the
+  // session is kept); 503 = an admin key was entered but none is configured.
+  const accessError = [usageError, tenantsError].find(
+    (e): e is ApiError => e instanceof ApiError && (e.status === 403 || e.status === 503),
+  );
 
   return (
     <JARVISPageShell>
@@ -184,6 +199,44 @@ export default function AdminPage() {
           </button>
         </div>
       </div>
+
+      {/* Platform admin access */}
+      {accessError && (
+        <div
+          role="alert"
+          data-testid="admin-forbidden"
+          className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300"
+        >
+          <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+          <span>
+            {accessError.status === 403
+              ? 'Platform admin access required: sign in as an admin of the operator tenant, or enter the platform admin key below.'
+              : 'The platform admin key is not configured on this deployment (PLATFORM_ADMIN_KEY).'}
+            {accessError.message ? ` (${accessError.message})` : ''}
+          </span>
+        </div>
+      )}
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => { e.preventDefault(); applyAdminKey(); }}
+      >
+        <KeyRound className="h-4 w-4 text-[#5A7494]" />
+        <input
+          type="password"
+          autoComplete="off"
+          aria-label="Platform admin key"
+          placeholder="Platform admin key (optional)"
+          value={adminKeyInput}
+          onChange={(e) => setAdminKeyInput(e.target.value)}
+          className="rounded-lg border border-[#1E2535] bg-[#0F1117] px-3 py-1.5 text-xs text-[#E2E8F0] placeholder:text-[#374151] focus:border-indigo-500 focus:outline-none w-64"
+        />
+        <button
+          type="submit"
+          className="rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#3D4D6A] transition-colors"
+        >
+          Use admin key
+        </button>
+      </form>
 
       {/* Metrics */}
       {/* Unavailable usage (501/503) renders "—": a 0 here would read as "no

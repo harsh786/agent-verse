@@ -324,8 +324,8 @@ def test_operator_review_routes_require_the_admin_key(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str
 ) -> None:
     client = _admin_client(monkeypatch, "k" * 32)
-    assert getattr(client, method)(path).status_code == 401
-    assert getattr(client, method)(path, headers={"X-Admin-Key": "wrong"}).status_code == 401
+    assert getattr(client, method)(path).status_code == 403  # QA-6: 403, never 401
+    assert getattr(client, method)(path, headers={"X-Admin-Key": "wrong"}).status_code == 403
     unconfigured = _admin_client(monkeypatch, None)
     assert getattr(unconfigured, method)(path, headers={"X-Admin-Key": "x"}).status_code == 503
 

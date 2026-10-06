@@ -172,7 +172,8 @@ def test_admin_key_comparison_is_constant_time():
     susceptible to timing-based key oracle attacks.  Constant-time
     comparison eliminates the timing side-channel.
     """
-    from app.api.admin import _require_admin
+    # QA-6: _require_admin delegates to the shared platform-admin helper.
+    from app.tenancy.platform_admin import platform_admin_access as _require_admin
 
     src = inspect.getsource(_require_admin)
     assert "hmac.compare_digest" in src, (

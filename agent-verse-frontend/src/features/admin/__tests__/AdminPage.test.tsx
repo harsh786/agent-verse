@@ -367,6 +367,56 @@ describe('AdminPage', () => {
     expect(screen.getByTestId('metric-active-goals').textContent).not.toMatch(/\b0\b/);
   });
 
+  // ── QA-6: /admin must not log the user out; optional in-memory admin key ──
+
+  it('sends no X-Admin-Key header until one is entered', async () => {
+    const fetchMock = mockFetch({ tenants: [] });
+    renderAdminPage();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    for (const [u, init] of fetchMock.mock.calls) {
+      if (String(u).includes('/admin/')) {
+        expect((init?.headers as Record<string, string>)['X-Admin-Key']).toBeUndefined();
+      }
+    }
+  });
+
+  it('sends the typed admin key on /admin requests and never persists it', async () => {
+    const user = userEvent.setup();
+    const fetchMock = mockFetch({ tenants: [] });
+    renderAdminPage();
+    await user.type(screen.getByLabelText(/platform admin key/i), 'typed-admin-value');
+    await user.click(screen.getByRole('button', { name: /use admin key/i }));
+    await waitFor(() => {
+      const withKey = fetchMock.mock.calls.filter(
+        ([u, init]) =>
+          String(u).includes('/admin/') &&
+          (init?.headers as Record<string, string>)['X-Admin-Key'] === 'typed-admin-value',
+      );
+      expect(withKey.length).toBeGreaterThan(0);
+    });
+    const stored = JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage });
+    expect(stored).not.toContain('typed-admin-value');
+  });
+
+  it('a 403 from /admin explains the refusal and does not log the user out', async () => {
+    const { useAuthStore } = await import('@/stores/auth');
+    useAuthStore.setState({ apiKey: 'tenant-key', isAuthenticated: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/admin/')) {
+        return new Response(
+          JSON.stringify({ detail: 'Platform admin privileges required' }),
+          { status: 403, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+    });
+    renderAdminPage();
+    await waitFor(() => expect(screen.getByTestId('admin-forbidden')).toBeTruthy());
+    expect(screen.getByTestId('admin-forbidden').textContent).toMatch(/platform admin/i);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
   it('renders the real counts the backend computed', async () => {
     mockFetch({ tenants: [], usage: { active_goals: 3, total_tenants: 5, goals_today: 7, avg_latency_ms: null } });
     renderAdminPage();
