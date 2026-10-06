@@ -68,23 +68,28 @@ class CatalogProvider:
 _M = CatalogModel
 
 _STATIC: tuple[CatalogProvider, ...] = (
+    # NVIDIA entries verified live against integrate.api.nvidia.com on
+    # 2026-10-06 (chat with native tool calls, vision, embedding dimensions).
+    # Retired there and removed: llama-3.3-70b-instruct, nemotron-super-49b,
+    # qwen3-235b, gpt-oss-120b, llama-4-maverick (410/404); rerank models need
+    # the account to be entitled (404 "not found for account" otherwise).
     CatalogProvider(
         "nvidia",
         "NVIDIA (build.nvidia.com)",
         "NVIDIA_API_KEY",
         (
             _M("nvidia/nemotron-3-super-120b-a12b", _REASON, 0.0002, 0.0006, 0.86),
-            _M("nvidia/llama-3.3-nemotron-super-49b-v1.5", _REASON, 0.0001, 0.0004, 0.82),
-            _M("qwen/qwen3-235b-a22b", _REASON, 0.0002, 0.0006, 0.85),
-            _M("openai/gpt-oss-120b", _REASON, 0.00015, 0.0006, 0.83),
-            _M("meta/llama-3.3-70b-instruct", _REASON, 0.0001, 0.0003, 0.80),
+            _M("nvidia/nemotron-3-ultra-550b-a55b", _REASON, 0.0006, 0.0018, 0.91),
+            _M("openai/gpt-oss-20b", _REASON, 0.00007, 0.0003, 0.74),
             _M("meta/llama-3.2-11b-vision-instruct", _VISION, 0.00005, 0.00015, 0.72),
-            _M("meta/llama-3.2-90b-vision-instruct", _VISION, 0.0002, 0.0006, 0.80),
-            _M("meta/llama-4-maverick-17b-128e-instruct", _VISION, 0.0002, 0.0006, 0.82),
+            _M("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", _VISION, 0.0001, 0.0004, 0.80),
+            # Answers correctly but took ~200s on the hosted API: vision only, not
+            # in the OCR order by default (raise AGENTVERSE_VISION_CALL_TIMEOUT_SECONDS
+            # and add OCR to it in the registry to use it for OCR).
+            _M("meta/llama-3.2-90b-vision-instruct", ("text_generation", "vision"), 0.0002,
+               0.0006, 0.80),
             _M("nvidia/nemotron-3-embed-1b", _EMBED, 0.00002, 0.0, 0.80),
-            _M("nvidia/llama-3.2-nv-embedqa-1b-v2", _EMBED, 0.00002, 0.0, 0.78),
-            _M("nvidia/nv-embedqa-e5-v5", _EMBED, 0.00002, 0.0, 0.74),
-            _M("nvidia/llama-3.2-nv-rerankqa-1b-v2", _RERANK, 0.00002, 0.0, 0.80),
+            _M("nvidia/llama-nemotron-embed-vl-1b-v2", _EMBED, 0.00002, 0.0, 0.79),
             _M("nvidia/nv-rerankqa-mistral-4b-v3", _RERANK, 0.00003, 0.0, 0.78),
         ),
     ),
