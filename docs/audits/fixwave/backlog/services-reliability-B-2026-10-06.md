@@ -1,0 +1,54 @@
+# Backlog: `services-reliability` part B (2026-10-06)
+
+Source: `docs/audits/fixwave/pending-all-2026-10-05.json`. These are the 18 items with `area == "services-reliability"` and one of these features: Tenant service (5), Tenant LLM config store (5), Notification service (4), Usage metering / outbound webhooks / legacy persistence adapters (4).
+Branch `backlog/bl-services-b`, based on `d45dcd727`. Not pushed. No migration was added. The goal-runtime services (GoalService, locks, SSE, event store, dedup, breakers, bulkhead, rollback) were not touched; they belong to the other agent.
+
+I re-checked each item against today's QA fixes:
+- QA-19 key expiry cache `dc6616b3f`
+- QA-20 rotate `9ae714cf9`
+- QA-3/QA-16 roles and scopes
+- QA-4 LLM model change without key `762389bd7`
+- QA-5 / QA-13 notifications `578103313` / `e048c3c3d`
+
+**Counts:**
+
+| Status | Items |
+|---|---:|
+| Fixed (were OPEN) | 13 |
+| ALREADY-FIXED | 2 |
+| OBSOLETE | 1 |
+| NEEDS-OWNER | 1 |
+| PARTIAL | 1 |
+
+Of the 13 fixed items, two went in as one commit each with a partner item: F195-01 with F195-03, and F197-01 with F197-02. a08-F197-03 is OBSOLETE in one half and by design in the other.
+
+| Item | Status | Reason | Commit / test |
+|---|---|---|---|
+| a08-F194-01 | FIXED | `get_tenant_cached` / `_get_tenant_from_db` had no caller. The DB read inside answered `None` on any error, so a caller would read an outage as "no tenant". Both were removed. Tenant reads go through the DB-authoritative `get_tenant`. | `10925ee04` · `tests/services/test_tenant_service_durable.py::test_unused_fail_open_tenant_read_through_is_gone` |
+| a08-F194-03 | FIXED | A failed read of the `api_key:{hash}` cache sat in `except: pass`. It is now logged, at most once per 60 s per process, with a count of suppressed repeats. A malformed entry (bad JSON, unknown plan, missing fields) is deleted and the key is resolved again from the DB. | `be307fdc5` · `tests/services/test_tenant_key_cache_read_errors.py` (3 fail before) |
+| a08-F194-04 | FIXED | `sync_from_db` copied every active tenant and API key into each replica's memory, with no bound. Signup, key creation and `GET /me` kept adding to that copy, and nothing read it while a DB was wired. Changes: the lifespan no longer hydrates tenants; `sync_from_db`, `_load_active_keys_batched` and `system_db_session_factory` are removed; the in-memory dicts are written only in the no-DB build. Duplicate e-mails are caught by the DB unique constraint. | `74d700037` · `tests/services/test_tenant_service_multipod.py::test_db_wired_service_mirrors_nothing_into_memory`, `tests/services/test_tenant_sso_integration.py::test_api_keys_work_across_pods_with_nothing_mirrored` (real PG app role + Redis), `tests/core/test_lifespan_startup_timing.py` |
+| a08-F194-05 | FIXED | `_db_resolve_by_hash` returned `None` on a DB error, so a Postgres outage answered 401 for every key not in the cache. It now raises `KeyStoreUnavailableError`. `TenantMiddleware` maps any 503-class `PlatformError` from the resolver to 503 `KEY_STORE_UNAVAILABLE` with `Retry-After: 5`. An unknown key is still 401. WebSocket auth already failed closed and logged. | `322653c40` · `tests/services/test_tenant_key_store_outage.py` (3 fail before) |
+| a08-F194-06 | FIXED | A resolve that read the key row just before a revoke committed re-cached the key for 300 s. Revoke now sets `api_key_revoked:{hash}` and tenant deactivation sets `tenant_deactivated:{tid}`, each with a TTL of twice the cache TTL, *before* the cache entry is deleted. A resolve re-checks both markers *after* its cache write and drops its own entry if one is present. If the check itself fails, it drops the entry too. If the marker cannot be written, the revoke answers 503. | `b0599c8d3` · `tests/services/test_tenant_key_revocation_race.py` (3 fail before; one case on a real Redis testcontainer) |
+| a08-F195-01 | FIXED | Every save wrote `app.state._llm_configs`, and that copy was read whenever the store answered nothing. With a store wired, the copy is now neither written nor read; it remains only for builds with no store. `goal_service.py` no longer reads `_llm_configs` (that part was already obsolete). The retrieval resolver is covered by F195-02. | `8fd28d1f5` · `tests/api/test_tenants_llm_store_authoritative.py::test_no_process_local_copy_beside_a_store` |
+| a08-F195-02 | FIXED | `_resolve_retrieval_llm` now reads with `strict=True`. On `LLMConfigReadError` the gateway refuses a strategy that needs an LLM, and an optional strategy runs without one. It never falls back to platform spend. Two related changes: the per-replica copy is read only when there is no store, and a key sealed with the tenant's own vault key (PROV-15) is now unwrapped with `prepare_tenant_llm_config`. Before this, that key failed the provider build here. | `8eb383178` · `tests/rag/test_retrieval_llm_byok_strict.py` (4 fail before) |
+| a08-F195-03 | FIXED | `GET /me/llm` and `/me/llm-config` read strictly and answer 503 on a read error, instead of `configured:false`. The QA-4 keep-key update answers 503 too, instead of "no key stored". | `8fd28d1f5` · `tests/api/test_tenants_llm_store_authoritative.py` |
+| a08-F195-04 | FIXED | A failed overwrite of `llm_config:{tenant}` now deletes the cache entry. If the delete also fails, `LLMConfigCacheStaleError` is raised and the API answers 503 "saved, retry"; the upsert is idempotent, so a retry is safe. `delete_config` behaves the same way. In Redis-only mode a failed write raises `LLMConfigPersistError`. | `e1a52447f` · `tests/services/test_llm_config_cache_overwrite.py`, `tests/scaling/test_llm_config_store.py` (2 old swallow tests now assert the errors) |
+| a08-F195-05 | FIXED | New `DELETE /tenants/me/llm`: admin only, `tenancy:write` scope, audited as "deleted" without the key, idempotent 204, 503 on a store or cache error. Settings → LLM Provider now has a confirmed "Remove stored key" action for admins. | `2b5eade97` · `tests/api/test_tenants_llm_delete.py` (4 fail before), `SettingsPage.test.tsx` (2 new) |
+| a08-F196-02 | ALREADY-FIXED | QA-13: the per-tenant channel cache is re-read at most every 30 s, and `sync_from_db` *replaces* the cached set. Channels added, changed or deleted on another replica take effect here within that window. | `e048c3c3d` · `tests/services/test_notification_channel_cache_refresh.py` |
+| a08-F196-03 | FIXED | A failed insert or delete raises `NotificationStoreUnavailableError` (503, retryable). After a failed insert nothing is cached; after a failed delete the cached channel is restored. `POST`/`DELETE /governance/notifications` answer 503 instead of "created" or 404. The old fire-and-forget methods still only log, because they have no caller to report to. | `9e48d548d` · `tests/services/test_notification_channel_write_failures.py` (5 fail before) |
+| a08-F196-04 | ALREADY-FIXED | QA-5: `normalize_channel_config` (in the request model's validator) returns 422 for a `channel_type` other than slack/teams/webhook, or for a missing or non-http(s) URL. | `578103313` · `tests/api/test_governance_notification_channel_validation.py`, `tests/services/test_notification_channel_config.py` |
+| a08-F196-05 | NEEDS-OWNER | Still true: `notify_goal_complete` has no caller. Settings shows `goalComplete` / `goalFailed` preferences, and both default to **on**. Wiring them is a product choice, because default-on would start posting every goal completion of every tenant to its Slack/Teams/webhook channels. **(a)** Remove the method and the two preference keys. **(b)** Wire a consumer group on `trigger:stream:goal` (`goal.completed` / `goal.failed`, already published by API and worker) that honours `notif_prefs:{tenant}` and flips the defaults to opt-in. Either way, GoalService does not change. | — |
+| a08-F197-01 | FIXED | Removed `webhook_service.py` and `persistence.py`, which had no importer. `OutboundWebhookService` also posted with raw httpx and no SSRF guard. Their tests were removed too. | `9f3a594a4` · `tests/services/test_dead_service_modules_removed.py` |
+| a08-F197-02 | FIXED | Removed the unused singleton `usage_service._usage_service`. The app binds its own `UsageService`. | `9f3a594a4` · same file, `tests/services/test_usage_service.py::test_app_binds_its_own_usage_service` |
+| a08-F197-03 | OBSOLETE (one half) / by design (other half) | **OBSOLETE half:** since OI-1 (`79dc747ab`) and a06-F101-01/-04 (`9427d9f46`), a redelivered goal resumes from its last checkpoint. A side-effecting call already in the action ledger is replayed as `tool_call_already_executed`, which is not metered. Only calls that are really dispatched again emit `tool_call_complete` and are metered: read calls of the unfinished step, and the call in flight at the crash, which goes out again under its idempotency key. Those are real second dispatches. A per-event `record_id` would need the executor to stamp a call id, and that is agent-core code. **By-design half:** the worker builds a `UsageService` per use because it flushes on every call and the session factory changes per task. | tests: `tests/agent/nodes/test_executor_approved_action_idempotency.py`, `tests/scaling/test_worker_approved_action_once.py`, `tests/agent/test_checkpoint_resume.py` |
+| a08-F197-04 | FIXED | When the rollup fails, `get_usage_summary` now raises `UsageSummaryUnavailableError` instead of returning only the buffer, and `GET /billing/usage` answers a retryable 503. BillingPage already shows the usage error state. | `2f45d1225` · `tests/services/test_usage_summary_db_outage.py` (fails before) |
+
+## Notes for the owner
+
+- **a08-F196-05** needs the decision described in the table.
+- **Residual, not in the audit:** `LLMConfigStore.get_config` re-fills the cache after a DB read. If a read that saw the old row races a concurrent save, it can re-cache the old config for up to 300 s. This is the same race class as F194-06; fixing it would need a version check or a tombstone. `update_plan` has the same window for a plan change, which is lower risk.
+- **Behaviour changes made on purpose** (old test assertions updated):
+  - API-key resolve does extra Redis GETs (tombstone checks) on a cache miss.
+  - LLM config cache failures now raise.
+  - The lifespan no longer hydrates tenants.
+- **Verification:** I ran each item's tests on the fixed code and on the code before the fix. I also ran the touched suites: tests/tenancy, tests/services (tenant, notification, usage, LLM), tests/api tenants/governance/billing, tests/rag retrieval, tests/core lifespan, plus integration on testcontainers (`test_tenant_key_revocation_race`, `test_tenant_sso_integration`, `test_billing_dsr_rls_integration`). ruff and mypy are clean on the changed files. I did not run the full suite or a live-stack check.
