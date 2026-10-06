@@ -260,17 +260,27 @@ def _restore_guardrail_rule_repository():
 
 @pytest.fixture(autouse=True)
 def _restore_model_registry_store():
-    """Undo a shared model-registry store bound during a test.
+    """Undo a shared model-registry store and registry state bound during a test.
 
     ``run_goal`` and the API lifespan bind the process-global store to Redis
     (the test env's Redis is unreachable); left bound, every later routing-policy
     or configured-model call in the run answers 503 "store unavailable".
     """
-    from app.ai_router import registry_store
+    from app.ai_router import registry_store, selection
+    from app.ai_router.registry import model_registry
 
     saved = registry_store._store
+    # The configured set and the per-capability preference order are process
+    # state too: a test that saved an order (or registered models) used to leave
+    # it behind, and every later role-routing test then picked that model.
+    saved_configured = dict(model_registry._configured)
+    saved_preferences = {k: list(v) for k, v in model_registry._preferences.items()}
+    saved_seed = (selection._lazy_seeded, selection._seeded_version)
     yield
     registry_store._store = saved
+    model_registry._configured = saved_configured
+    model_registry._preferences = saved_preferences
+    selection._lazy_seeded, selection._seeded_version = saved_seed
 
 
 @pytest.fixture(autouse=True)
@@ -769,3 +779,42 @@ def _isolate_model_registry_store(monkeypatch):
     monkeypatch.setattr(_tasks_mod, "_goal_model_override", _no_goal_override)
     yield
     _rs._store = saved
+
+
+# Import-time environment leaks (found 2026-10-06): pytest imports EVERY test
+# module during collection, including deselected opt-in suites. tests/real_e2e/*
+# call load_dotenv(BACKEND_ROOT / ".env") at module level, which put the
+# developer's real .env (provider keys, VISION_MODEL, egress allowlists) into the
+# whole unit session — ~100 order-dependent failures (SSRF, routing, embedder,
+# BYOK) and unit tests running with a real provider key. Restore the environment
+# conftest set up, after collection, and drop settings cached from it. Only the
+# changed key NAMES are reported, never values.
+_ENV_AFTER_CONFTEST = dict(os.environ)
+# Defaults the APPLICATION itself sets when its modules are imported (kept: the
+# process really runs with them). Keep in sync with
+# `grep -rn "^os.environ.setdefault" app`.
+_APP_IMPORT_ENV_DEFAULTS = frozenset({"OMP_THREAD_LIMIT"})  # app/ocr/concurrency.py
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    changed = sorted(
+        k
+        for k in set(os.environ) | set(_ENV_AFTER_CONFTEST)
+        if os.environ.get(k) != _ENV_AFTER_CONFTEST.get(k) and k not in _APP_IMPORT_ENV_DEFAULTS
+    )
+    if not changed:
+        return
+    kept = {k: os.environ[k] for k in _APP_IMPORT_ENV_DEFAULTS if k in os.environ}
+    os.environ.clear()
+    os.environ.update(_ENV_AFTER_CONFTEST)
+    os.environ.update(kept)
+    with contextlib.suppress(Exception):
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(
+            f"[env-guard] restored {len(changed)} env var(s) changed while importing "
+            f"test modules: {', '.join(changed[:20])}"
+        )

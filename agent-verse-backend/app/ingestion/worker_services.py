@@ -46,7 +46,9 @@ def build_worker_knowledge_services(db_factory: Any) -> tuple[Any, Any]:
 
     # The SAME embedder the API's retrieval embeds queries with (not the chat
     # provider); resolve_embedder applies the NVIDIA / on-prem endpoint itself.
-    resolution = resolve_embedder()
+    # wire_registry_store: a saved embedding preference order picks the same
+    # model here as in the API.
+    resolution = resolve_embedder(wire_registry_store=True)
     store = KnowledgeStore(
         db_factory,
         embedding_dim=resolution.dimension,

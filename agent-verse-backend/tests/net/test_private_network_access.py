@@ -26,6 +26,13 @@ def on(monkeypatch):
 @pytest.fixture
 def off(monkeypatch):
     monkeypatch.setenv("ALLOW_PRIVATE_NETWORK_ACCESS", "false")
+    # Independent of settings other tests may have cached: the operator
+    # allowlist escape hatch is off too, so only the flag decides.
+    from app.core.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "ingestion_allow_internal_sources", False, raising=False)
+    monkeypatch.setattr(s, "ingestion_internal_source_allowlist", "", raising=False)
 
 
 def test_the_shipped_default_is_on():

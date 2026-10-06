@@ -462,7 +462,7 @@ class TriggerDispatcher:
             _template = (trigger_spec.goal_template or "").strip()
             _ref_agent = _run_agent_id(trigger_spec)
             if not _template and _ref_agent:
-                _template = self._agent_goal_template(_ref_agent, tenant_ctx)
+                _template = await self._agent_goal_template(_ref_agent, tenant_ctx)
             goal_text = self._render_template(
                 _template or "Trigger fired: {{trigger_type}}",
                 payload,
@@ -723,25 +723,43 @@ class TriggerDispatcher:
             result = result.replace(f"{{{{{k}}}}}", v)
         return result[:2048]  # max rendered length
 
-    def _agent_goal_template(self, agent_id: str, tenant_ctx: object) -> str:
+    async def _agent_goal_template(self, agent_id: str, tenant_ctx: object) -> str:
         """Return a referenced agent's own goal_template, or "" if unavailable.
 
         Lets a trigger that only references an agent run that agent's configured
         goal without the operator re-authoring a goal template on the trigger.
+
+        The wired agent store (an API replica's cache) is tried first. The beat
+        fires schedules in a Celery worker whose GoalService has no agent store,
+        so there the agent row is read from Postgres: without it every
+        agent-only time trigger ran the literal "Trigger fired: interval" (a
+        knowledge agent then failed with "Required retrieval failed" on every
+        fire — 311 goals of one tenant, GAP-WORKER).
         """
+        record: Any = None
         gs = self._goal_service
-        if gs is None or not hasattr(gs, "_get_agent_store"):
-            return ""
+        get_store = getattr(gs, "_get_agent_store", None) if gs is not None else None
+        if get_store is not None:
+            try:
+                store = get_store()
+                if store is not None:
+                    record = store.get(agent_id, tenant_ctx=tenant_ctx)
+            except Exception as exc:  # never block a fire on agent lookup
+                _log.warning("trigger_agent_goal_lookup_failed agent=%s: %s", agent_id, exc)
+        template = (record.get("goal_template") or "").strip() if isinstance(record, dict) else ""
+        if template or self._db_factory is None or not getattr(tenant_ctx, "tenant_id", ""):
+            return template
         try:
-            store = gs._get_agent_store()  # type: ignore[attr-defined]
-            if store is None:
-                return ""
-            rec = store.get(agent_id, tenant_ctx=tenant_ctx)
-            if isinstance(rec, dict):
-                return (rec.get("goal_template") or "").strip()
+            from app.api.agents import AgentStore
+
+            record = await AgentStore(db_session_factory=self._db_factory).get_async(
+                agent_id,
+                tenant_ctx=tenant_ctx,  # type: ignore[arg-type]
+            )
         except Exception as exc:  # never block a fire on agent lookup
-            _log.warning("trigger_agent_goal_lookup_failed agent=%s: %s", agent_id, exc)
-        return ""
+            _log.warning("trigger_agent_goal_db_lookup_failed agent=%s: %s", agent_id, exc)
+            return ""
+        return (record.get("goal_template") or "").strip() if isinstance(record, dict) else ""
 
     async def _create_goal(
         self,

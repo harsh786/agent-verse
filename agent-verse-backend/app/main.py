@@ -1104,6 +1104,29 @@ def create_app(
         knowledge_store=_knowledge_store,
     )
 
+    def _rebind_registry_embedder() -> None:
+        """Swap in the embedder of the operator's saved embedding preference order.
+
+        Only replaces the embedder create_app resolved (never a test-injected
+        one) and only when the registry actually chose a model.
+        """
+        if getattr(app.state, "embedder", None) is not _embedder:
+            return
+        try:
+            _reg_res = resolve_embedder(settings)
+        except Exception as _re_exc:  # pragma: no cover - resolve_embedder never raises
+            logger.warning("embedder_registry_rebind_failed", error=str(_re_exc))
+            return
+        if _reg_res.source != "registry" or _reg_res.embedder is None:
+            _current = getattr(app.state, "embedder_resolution", None)
+            if _reg_res.registry_refusal and _current is not None:
+                _current.registry_refusal = _reg_res.registry_refusal
+            return
+        app.state.embedder = _reg_res.embedder
+        app.state.embedder_resolution = _reg_res
+        if _ingestion_pipeline is not None:
+            _ingestion_pipeline._embedder = _reg_res.embedder
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Serve fast, report readiness honestly: non-essential warm-ups run as
@@ -1230,8 +1253,11 @@ def create_app(
 
                 _redis_cost_ctrl = RedisCostController(redis=real_redis)
                 app.state.redis_cost_controller = _redis_cost_ctrl
-                # Upgrade CostTracker to use real Redis
+                # Upgrade CostTracker to use real Redis. The Redis controller's
+                # check_and_record now owns the tenant daily counter (same key):
+                # the tracker must not add every charged call to it a second time.
                 _cost_tracker._redis = real_redis
+                _cost_tracker._count_daily_spend = False
                 # Also patch _redis on the in-memory controller so it can fall back
                 if hasattr(app.state, "cost_controller"):
                     app.state.cost_controller._redis = real_redis
@@ -1263,6 +1289,11 @@ def create_app(
                     seed_registry_from_config()
                 except Exception as _mr_exc:
                     logger.warning("model_registry_store_wire_failed", error=str(_mr_exc))
+                # create_app resolved the embedder before the registry store was
+                # wired, so a saved embedding preference order was not visible
+                # yet: re-resolve now (the Celery worker resolves with the store
+                # wired too, so both embed with the SAME model).
+                _rebind_registry_embedder()
                 # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7 + Fix 2)
                 # langgraph-checkpoint-redis >= 0.0.6 returns an async context manager from
                 # from_conn_string(); we must enter it via __aenter__ to get the real saver.

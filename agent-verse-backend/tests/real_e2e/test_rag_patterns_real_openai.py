@@ -16,32 +16,37 @@ Each test:
 Run:
     uv run pytest tests/real_e2e/test_rag_patterns_real_openai.py -v --no-cov -s
 """
+
 from __future__ import annotations
 
-import os
 
 import pytest
-from dotenv import load_dotenv
 
-from tests._paths import BACKEND_ROOT
+from tests._paths import BACKEND_ROOT  # noqa: F401
+from tests._real_env import applied_dotenv, real_env
 
 # ---------------------------------------------------------------------------
 # Environment bootstrap — must happen before any app imports
 # ---------------------------------------------------------------------------
-load_dotenv(BACKEND_ROOT / ".env")
 
 # Force HuggingFace offline mode so ColBERT's sentence-transformers encoder
 # does NOT try to download all-MiniLM-L6-v2.  If the model isn't already
 # cached, _get_encoder() returns None and ColBERT falls back to TF-IDF — the
 # correct production fallback path that we want to exercise in tests.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_KEY = real_env("OPENAI_API_KEY", "")
 if not OPENAI_KEY:
     pytest.skip("OPENAI_API_KEY not set", allow_module_level=True)
 
 pytestmark = [pytest.mark.slow, pytest.mark.real_openai]
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _real_dotenv():
+    """The real .env applies only while this module's tests run (never at import)."""
+    with applied_dotenv(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1"):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # Payment domain corpus — 10 documents covering distinct payment topics
@@ -97,15 +102,18 @@ PAYMENT_CHUNKS: list[dict] = [
 # Shared factory helpers
 # ---------------------------------------------------------------------------
 
+
 def make_provider():
     """Return a real OpenAI provider using gpt-4o-mini."""
     from app.providers.openai_compatible import OpenAICompatibleProvider
+
     return OpenAICompatibleProvider(api_key=OPENAI_KEY, default_model="gpt-4o-mini")
 
 
 def make_tenant():
     """Return a test TenantContext with enterprise plan."""
     from app.tenancy.context import PlanTier, TenantContext
+
     return TenantContext(
         tenant_id="real-e2e-rag",
         plan=PlanTier.ENTERPRISE,
@@ -136,7 +144,7 @@ def make_store_with_docs(collection_id: str) -> tuple:
         chunk = Chunk(
             document_id=f"doc-{i}",
             content=doc,
-            embedding=[],          # trigram-only; cosine score = 0.0
+            embedding=[],  # trigram-only; cosine score = 0.0
             chunk_index=i,
             chunk_id=f"chunk-{i}",
             metadata={"source": f"doc_{i}", "domain": "payments"},
@@ -177,6 +185,7 @@ def make_retrieve_fn(collection_id: str):
 #   4. FTS (ts_rank_cd)      → return all PAYMENT_CHUNKS rows
 #   5. trgm (similarity)     → return all PAYMENT_CHUNKS rows
 # ---------------------------------------------------------------------------
+
 
 class _StubRow:
     """Mimics an asyncpg/SQLAlchemy Row — supports integer indexing."""
@@ -227,10 +236,16 @@ class _StubSession:
             return _StubResult([])
 
         # FTS and trgm retrieval legs → return all seeded chunks
-        if any(kw in sql for kw in (
-            "ts_rank_cd", "tsvector", "plainto_tsquery",
-            "similarity", "knowledge_chunks",
-        )):
+        if any(
+            kw in sql
+            for kw in (
+                "ts_rank_cd",
+                "tsvector",
+                "plainto_tsquery",
+                "similarity",
+                "knowledge_chunks",
+            )
+        ):
             rows = [
                 _StubRow(
                     c["chunk_id"],
@@ -255,6 +270,7 @@ class _StubSession:
 # 1. FusionRAG — multi-query parallel retrieval with RRF fusion
 # ===========================================================================
 
+
 async def test_fusion_rag_pci_dss_card_security():
     """
     FusionRAG: expands query into N variants, retrieves per-variant, RRF-fuses.
@@ -276,15 +292,12 @@ async def test_fusion_rag_pci_dss_card_security():
         max_variants=3,
     )
 
-    assert isinstance(results, list), (
-        f"FusionRAG must return list, got {type(results)}"
-    )
+    assert isinstance(results, list), f"FusionRAG must return list, got {type(results)}"
     assert len(results) > 0, "FusionRAG returned no results from stub session"
 
     # Unify content across result objects (engine.RetrievalResult has .content attribute)
     all_content = " ".join(
-        r.content if hasattr(r, "content") else r.get("content", "")
-        for r in results
+        r.content if hasattr(r, "content") else r.get("content", "") for r in results
     ).lower()
 
     assert any(kw in all_content for kw in ("pci", "cvv", "aes", "card", "encrypt")), (
@@ -294,13 +307,16 @@ async def test_fusion_rag_pci_dss_card_security():
 
     # Verify RRF metadata is present (retrieval_legs populated)
     first = results[0]
-    legs = getattr(first, "retrieval_legs", first.get("retrieval_legs", []) if isinstance(first, dict) else [])
+    legs = getattr(
+        first, "retrieval_legs", first.get("retrieval_legs", []) if isinstance(first, dict) else []
+    )
     assert isinstance(legs, list), "RetrievalResult should carry retrieval_legs metadata"
 
 
 # ===========================================================================
 # 2. CorrectiveRAG — confidence-scored retrieval with gap-detection fallback
 # ===========================================================================
+
 
 async def test_corrective_rag_upi_refund_timeline():
     """
@@ -325,7 +341,7 @@ async def test_corrective_rag_upi_refund_timeline():
         tenant_ctx=tenant,
         collection_ids=[collection_id],
         top_k=5,
-        confidence_threshold=0.5,   # triggers correction on low trigram-only scores
+        confidence_threshold=0.5,  # triggers correction on low trigram-only scores
     )
 
     assert result is not None, "CorrectiveRAG must return a RetrievalResult"
@@ -352,6 +368,7 @@ async def test_corrective_rag_upi_refund_timeline():
 # 3. AdaptiveRAG — RetrievalPlanner auto-selects strategy
 # ===========================================================================
 
+
 async def test_adaptive_rag_3ds2_frictionless():
     """
     AdaptiveRAG: auto-selects retrieval strategy via RetrievalPlanner heuristics.
@@ -375,24 +392,22 @@ async def test_adaptive_rag_3ds2_frictionless():
         force_strategy="lexical",
     )
 
-    assert isinstance(results, list), (
-        f"AdaptiveRAG must return list, got {type(results)}"
-    )
+    assert isinstance(results, list), f"AdaptiveRAG must return list, got {type(results)}"
     assert len(results) > 0, "AdaptiveRAG returned no results"
 
     all_content = " ".join(
-        r.content if hasattr(r, "content") else r.get("content", "")
-        for r in results
+        r.content if hasattr(r, "content") else r.get("content", "") for r in results
     ).lower()
 
-    assert any(kw in all_content for kw in ("3d", "secure", "3ds", "frictionless", "otp", "authentication")), (
-        f"AdaptiveRAG should retrieve 3DS2 content.\nGot: {all_content[:400]}"
-    )
+    assert any(
+        kw in all_content for kw in ("3d", "secure", "3ds", "frictionless", "otp", "authentication")
+    ), f"AdaptiveRAG should retrieve 3DS2 content.\nGot: {all_content[:400]}"
 
 
 # ===========================================================================
 # 4. FLARE — Forward-Looking Active Retrieval
 # ===========================================================================
+
 
 async def test_flare_chargeback_dispute_process():
     """
@@ -418,20 +433,18 @@ async def test_flare_chargeback_dispute_process():
     )
 
     assert isinstance(answer, str), f"FLARE must return str, got {type(answer)}"
-    assert len(answer) > 50, (
-        f"FLARE answer too short (got {len(answer)} chars): {answer!r}"
-    )
+    assert len(answer) > 50, f"FLARE answer too short (got {len(answer)} chars): {answer!r}"
     # Should mention chargebacks or merchant response
-    assert any(kw in answer.lower() for kw in (
-        "chargeback", "merchant", "dispute", "reason code", "30 days", "respond"
-    )), (
-        f"FLARE answer should discuss chargeback process.\nGot: {answer[:400]}"
-    )
+    assert any(
+        kw in answer.lower()
+        for kw in ("chargeback", "merchant", "dispute", "reason code", "30 days", "respond")
+    ), f"FLARE answer should discuss chargeback process.\nGot: {answer[:400]}"
 
 
 # ===========================================================================
 # 5. SelfRAG — Self-reflective retrieval with critique tokens
 # ===========================================================================
+
 
 async def test_self_rag_upi_vs_imps_transfer():
     """
@@ -457,12 +470,10 @@ async def test_self_rag_upi_vs_imps_transfer():
     )
 
     assert isinstance(answer, str), f"SelfRAG must return str, got {type(answer)}"
-    assert len(answer) > 50, (
-        f"SelfRAG answer too short ({len(answer)} chars): {answer!r}"
-    )
-    assert any(kw in answer.lower() for kw in ("upi", "imps", "transfer", "npci", "real-time", "lakh")), (
-        f"SelfRAG answer should compare UPI/IMPS.\nGot: {answer[:500]}"
-    )
+    assert len(answer) > 50, f"SelfRAG answer too short ({len(answer)} chars): {answer!r}"
+    assert any(
+        kw in answer.lower() for kw in ("upi", "imps", "transfer", "npci", "real-time", "lakh")
+    ), f"SelfRAG answer should compare UPI/IMPS.\nGot: {answer[:500]}"
 
 
 async def test_self_rag_execute_with_critique_returns_metadata():
@@ -492,20 +503,18 @@ async def test_self_rag_execute_with_critique_returns_metadata():
         f"SelfRAGResult.answer must be non-trivial string. Got: {result.answer!r}"
     )
     # Confidence is a float in [0, 1]
-    assert 0.0 <= result.confidence <= 1.0, (
-        f"Confidence must be in [0,1], got {result.confidence}"
-    )
+    assert 0.0 <= result.confidence <= 1.0, f"Confidence must be in [0,1], got {result.confidence}"
     # The answer should mention webhook retry details
-    assert any(kw in result.answer.lower() for kw in (
-        "webhook", "retry", "minute", "hour", "backoff", "notification", "5 minutes"
-    )), (
-        f"SelfRAG answer should discuss webhook retry.\nGot: {result.answer[:400]}"
-    )
+    assert any(
+        kw in result.answer.lower()
+        for kw in ("webhook", "retry", "minute", "hour", "backoff", "notification", "5 minutes")
+    ), f"SelfRAG answer should discuss webhook retry.\nGot: {result.answer[:400]}"
 
 
 # ===========================================================================
 # 6. SpeculativeRAG — parallel candidate generation + retrieval verification
 # ===========================================================================
+
 
 async def test_speculative_rag_credit_card_success_rate():
     """
@@ -531,20 +540,17 @@ async def test_speculative_rag_credit_card_success_rate():
     )
 
     assert isinstance(answer, str), f"SpeculativeRAG must return str, got {type(answer)}"
-    assert len(answer) > 20, (
-        f"SpeculativeRAG answer too short ({len(answer)} chars): {answer!r}"
-    )
+    assert len(answer) > 20, f"SpeculativeRAG answer too short ({len(answer)} chars): {answer!r}"
     # Answer should reference success rate or credit cards
-    assert any(kw in answer.lower() for kw in (
-        "87", "credit card", "success rate", "payment gateway", "%"
-    )), (
-        f"SpeculativeRAG answer should mention credit card success rate.\nGot: {answer[:400]}"
-    )
+    assert any(
+        kw in answer.lower() for kw in ("87", "credit card", "success rate", "payment gateway", "%")
+    ), f"SpeculativeRAG answer should mention credit card success rate.\nGot: {answer[:400]}"
 
 
 # ===========================================================================
 # 7. RAPTOR — Recursive Abstractive Processing for Tree-Organized Retrieval
 # ===========================================================================
+
 
 async def test_raptor_summarizes_all_payment_methods():
     """
@@ -569,13 +575,12 @@ async def test_raptor_summarizes_all_payment_methods():
     )
 
     assert isinstance(answer, str), f"RAPTOR must return str, got {type(answer)}"
-    assert len(answer) > 100, (
-        f"RAPTOR answer too short ({len(answer)} chars): {answer!r}"
-    )
+    assert len(answer) > 100, f"RAPTOR answer too short ({len(answer)} chars): {answer!r}"
     # Hierarchical summary should cover multiple payment domains
     answer_lower = answer.lower()
     covered = [
-        kw for kw in ("upi", "pci", "emi", "chargeback", "3d", "tokeniz", "fraud", "imps", "webhook")
+        kw
+        for kw in ("upi", "pci", "emi", "chargeback", "3d", "tokeniz", "fraud", "imps", "webhook")
         if kw in answer_lower
     ]
     assert len(covered) >= 3, (
@@ -609,14 +614,15 @@ async def test_raptor_builds_tree_from_small_corpus():
     assert isinstance(answer, str) and len(answer) > 30, (
         f"RAPTOR tree answer must be non-trivial. Got: {answer!r}"
     )
-    assert any(kw in answer.lower() for kw in ("pci", "cvv", "aes", "card", "3d", "secure", "otp")), (
-        f"RAPTOR small-corpus answer should mention security/authentication.\nGot: {answer[:300]}"
-    )
+    assert any(
+        kw in answer.lower() for kw in ("pci", "cvv", "aes", "card", "3d", "secure", "otp")
+    ), f"RAPTOR small-corpus answer should mention security/authentication.\nGot: {answer[:300]}"
 
 
 # ===========================================================================
 # 8. ColBERT — Late interaction reranking via MaxSim token scoring
 # ===========================================================================
+
 
 async def test_colbert_reranks_emi_interest_chunks():
     """
@@ -642,9 +648,9 @@ async def test_colbert_reranks_emi_interest_chunks():
     assert len(result_str) > 20, f"ColBERT result too short: {result_str!r}"
 
     # EMI doc must appear in top-3 (it scores high for EMI-specific tokens)
-    assert any(kw in result_str.lower() for kw in ("emi", "interest", "no-cost", "subvention", "12-24")), (
-        f"ColBERT top-3 result should surface EMI content.\nGot: {result_str[:400]}"
-    )
+    assert any(
+        kw in result_str.lower() for kw in ("emi", "interest", "no-cost", "subvention", "12-24")
+    ), f"ColBERT top-3 result should surface EMI content.\nGot: {result_str[:400]}"
 
 
 async def test_colbert_rerank_method_returns_sorted_chunks():
@@ -666,23 +672,27 @@ async def test_colbert_rerank_method_returns_sorted_chunks():
     for chunk in reranked:
         assert "colbert_score" in chunk, f"Missing colbert_score in chunk {chunk.get('chunk_id')}"
         assert "original_score" in chunk, f"Missing original_score in chunk {chunk.get('chunk_id')}"
-        assert 0.0 <= chunk["score"] <= 1.5, f"Blended score out of expected range: {chunk['score']}"
+        assert 0.0 <= chunk["score"] <= 1.5, (
+            f"Blended score out of expected range: {chunk['score']}"
+        )
 
     # Chunks are sorted descending by blended score
     scores = [c["score"] for c in reranked]
-    assert scores == sorted(scores, reverse=True), "rerank() must return chunks sorted by score desc"
+    assert scores == sorted(scores, reverse=True), (
+        "rerank() must return chunks sorted by score desc"
+    )
 
     # Fraud detection doc (chunk-9) should rank highly for this query
     top3_ids = [c["chunk_id"] for c in reranked[:3]]
     assert "chunk-9" in top3_ids, (
-        f"Fraud doc (chunk-9) should be in top-3 for fraud query.\n"
-        f"Top-3 ids: {top3_ids}"
+        f"Fraud doc (chunk-9) should be in top-3 for fraud query.\nTop-3 ids: {top3_ids}"
     )
 
 
 # ===========================================================================
 # 9. AgenticChunking — LLM-driven proposition extraction (Dense X Retrieval)
 # ===========================================================================
+
 
 async def test_agentic_chunking_extracts_propositions_from_payment_docs():
     """
@@ -717,16 +727,14 @@ async def test_agentic_chunking_extracts_propositions_from_payment_docs():
 
     # Each result chunk must have content and chunk_id
     for rc in result_chunks:
-        assert rc.get("content"), (
-            f"Each proposition chunk must have non-empty content. Got: {rc}"
-        )
+        assert rc.get("content"), f"Each proposition chunk must have non-empty content. Got: {rc}"
         assert "chunk_id" in rc, f"Each proposition chunk must have chunk_id. Got: {rc}"
 
     # All propositions should be payment-domain sentences
     all_prop_text = " ".join(rc["content"] for rc in result_chunks).lower()
-    assert any(kw in all_prop_text for kw in ("pci", "cvv", "card", "upi", "3d", "secure", "token")), (
-        f"Proposition content should reference payment domain.\nAll text: {all_prop_text[:500]}"
-    )
+    assert any(
+        kw in all_prop_text for kw in ("pci", "cvv", "card", "upi", "3d", "secure", "token")
+    ), f"Proposition content should reference payment domain.\nAll text: {all_prop_text[:500]}"
 
 
 async def test_agentic_chunking_single_doc_multi_propositions():
@@ -738,7 +746,7 @@ async def test_agentic_chunking_single_doc_multi_propositions():
 
     provider = make_provider()
     # Use the 3DS2 doc which has multiple distinct facts
-    single_chunk = [PAYMENT_CHUNKS[3]]   # "3D Secure 2.0 (3DS2) uses risk-based authentication..."
+    single_chunk = [PAYMENT_CHUNKS[3]]  # "3D Secure 2.0 (3DS2) uses risk-based authentication..."
     pattern = AgenticChunkingPattern(max_propositions=8)
 
     result_chunks = await pattern.execute(
@@ -758,14 +766,16 @@ async def test_agentic_chunking_single_doc_multi_propositions():
 
     # Propositions must reference 3DS2 concepts
     all_text = " ".join(rc.get("content", "") for rc in result_chunks).lower()
-    assert any(kw in all_text for kw in ("3d", "secure", "otp", "risk", "frictionless", "challenge", "authentication")), (
-        f"3DS2 propositions should mention auth concepts.\nGot: {all_text[:400]}"
-    )
+    assert any(
+        kw in all_text
+        for kw in ("3d", "secure", "otp", "risk", "frictionless", "challenge", "authentication")
+    ), f"3DS2 propositions should mention auth concepts.\nGot: {all_text[:400]}"
 
 
 # ===========================================================================
 # Pattern metadata and compatibility checks (synchronous, no API calls)
 # ===========================================================================
+
 
 def test_all_patterns_have_required_metadata():
     """
@@ -808,9 +818,7 @@ def test_all_patterns_have_required_metadata():
         assert p.state == RAGPatternState.IMPLEMENTED, (
             f"{type(p).__name__}.state must be IMPLEMENTED, got {p.state}"
         )
-        assert callable(p.is_compatible), (
-            f"{type(p).__name__}.is_compatible must be callable"
-        )
+        assert callable(p.is_compatible), f"{type(p).__name__}.is_compatible must be callable"
 
 
 def test_colbert_rerank_is_query_dependent():
@@ -832,7 +840,9 @@ def test_colbert_rerank_is_query_dependent():
     top1_emi = reranked_emi[0]["chunk_id"]
 
     # Different queries should produce different top-ranked chunks
-    assert top1_pci != top1_emi or reranked_pci[0]["colbert_score"] != reranked_emi[0]["colbert_score"], (
+    assert (
+        top1_pci != top1_emi or reranked_pci[0]["colbert_score"] != reranked_emi[0]["colbert_score"]
+    ), (
         f"ColBERT scores should differ per query.\n"
         f"PCI top: {top1_pci} ({reranked_pci[0]['colbert_score']:.4f})\n"
         f"EMI top: {top1_emi} ({reranked_emi[0]['colbert_score']:.4f})"
@@ -851,6 +861,7 @@ def test_colbert_rerank_is_query_dependent():
 # Integration smoke: FusionRAG + ColBERT pipeline
 # (retrieve via fusion, rerank via ColBERT — no extra DB calls)
 # ===========================================================================
+
 
 async def test_fusion_then_colbert_pipeline():
     """
@@ -898,8 +909,6 @@ async def test_fusion_then_colbert_pipeline():
     assert isinstance(reranked_str, str) and len(reranked_str) > 20, (
         f"Pipeline ColBERT result too short: {reranked_str!r}"
     )
-    assert any(kw in reranked_str.lower() for kw in (
-        "fraud", "velocity", "fingerprint", "bin", "geo"
-    )), (
-        f"Pipeline result should surface fraud detection content.\nGot: {reranked_str[:400]}"
-    )
+    assert any(
+        kw in reranked_str.lower() for kw in ("fraud", "velocity", "fingerprint", "bin", "geo")
+    ), f"Pipeline result should surface fraud detection content.\nGot: {reranked_str[:400]}"

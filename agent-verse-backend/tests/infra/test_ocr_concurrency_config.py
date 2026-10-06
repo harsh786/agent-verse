@@ -42,7 +42,9 @@ _HELM_EXPR = {
     "OMP_THREAD_LIMIT": "{{ .Values.ocr.ompThreadLimit | quote }}",
 }
 _HELM_OCR_VALUES = {"maxConcurrency": 0, "pageConcurrency": 0, "visionConcurrency": 4,
-                    "renderDpi": 300, "ompThreadLimit": 1}
+                    "renderDpi": 300, "ompThreadLimit": 1,
+                    # OCR_TESSERACT_ENABLED ships OFF (owner decision 2026-10-06)
+                    "tesseractEnabled": False}
 
 
 def test_settings_defaults_match_the_deployments() -> None:

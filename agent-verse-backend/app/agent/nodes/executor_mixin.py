@@ -2573,6 +2573,11 @@ class ExecutorMixin:
                 except Exception:
                     pass
 
+        # A goal-tree sub-agent runs under its own child id but spends (and is
+        # ledgered against) its parent goal — the same attribution charge_llm_call
+        # applies to the planner / verifier / reasoning calls.
+        _charge_goal_id = str(state.context.get("_budget_goal_id") or state.goal_id or "")
+
         # 1. Calculate actual LLM cost from token usage and check budget
         if self._cost_controller is not None:
             from app.agent.nodes.llm_cost import llm_call_tokens as _gate_tokens
@@ -2591,7 +2596,7 @@ class ExecutorMixin:
 
             ok = await llm_spend(
                 self._cost_controller.check_and_record(
-                    goal_id=state.goal_id,
+                    goal_id=_charge_goal_id,
                     cost_usd=_actual_cost,
                     tenant_ctx=tenant_ctx,
                 )
@@ -2633,7 +2638,7 @@ class ExecutorMixin:
                     prompt_tokens=_ledger_prompt_tok,
                     completion_tokens=_ledger_completion_tok,
                     tenant_ctx=tenant_ctx,
-                    goal_id=state.goal_id or "",
+                    goal_id=_charge_goal_id,
                     agent_id=state.context.get("agent_id"),
                     role="executor",
                 )
@@ -2661,7 +2666,7 @@ class ExecutorMixin:
             from app.observability.cost_breakdown import arecord_role_cost as _rrc
 
             await _rrc(
-                goal_id=state.goal_id,
+                goal_id=_charge_goal_id,
                 tenant_id=tenant_ctx.tenant_id,
                 role="executor",
                 model=_exec_model,

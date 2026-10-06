@@ -12,33 +12,39 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
-from dotenv import load_dotenv
 
-from tests._paths import BACKEND_ROOT
+from tests._paths import BACKEND_ROOT  # noqa: F401
+from tests._real_env import applied_dotenv, real_env
 
 # ---------------------------------------------------------------------------
 # Environment bootstrap — must happen before any app import
 # ---------------------------------------------------------------------------
 
-load_dotenv(BACKEND_ROOT / ".env")
 
-OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_KEY = real_env("OPENAI_API_KEY", "")
 if not OPENAI_KEY:
     pytest.skip("OPENAI_API_KEY not set", allow_module_level=True)
 
 # All tests in this module carry both marks automatically.
 pytestmark = [pytest.mark.slow, pytest.mark.real_openai]
 
+
+@pytest.fixture(autouse=True, scope="module")
+def _real_dotenv():
+    """The real .env applies only while this module's tests run (never at import)."""
+    with applied_dotenv():
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _MODEL = "gpt-4o-mini"
-_TIMEOUT_SEC = 240          # hard cap per test (complex multi-step goals need more time)
-_DEFAULT_MAX_ITER = 5       # keeps tests from running too long
+_TIMEOUT_SEC = 240  # hard cap per test (complex multi-step goals need more time)
+_DEFAULT_MAX_ITER = 5  # keeps tests from running too long
 _TENANT_ID = "real-e2e-test"
 
 # Both "complete" and "failed" are valid terminal statuses; the graph sets
@@ -96,12 +102,7 @@ def _result_text(state) -> str:
     outputs = [s.output for s in state.steps if s.output and s.output.strip()]
     text = "\n\n".join(outputs)
     if not text:
-        text = (
-            state.verification_feedback
-            or state.cited_answer
-            or state.error_message
-            or ""
-        )
+        text = state.verification_feedback or state.cited_answer or state.error_message or ""
     return text
 
 
@@ -132,9 +133,7 @@ async def test_chain_of_thought_real_world():
         ),
     )
 
-    assert str(state.status) in _TERMINAL_STATUSES, (
-        f"Unexpected terminal status: {state.status!r}"
-    )
+    assert str(state.status) in _TERMINAL_STATUSES, f"Unexpected terminal status: {state.status!r}"
 
     text = _result_text(state)
     assert len(text) > 100, (
@@ -171,9 +170,7 @@ async def test_self_refine_real_world():
     assert str(state.status) in _TERMINAL_STATUSES
 
     text = _result_text(state)
-    assert len(text) > 150, (
-        f"Expected >150 chars, got {len(text)} chars:\n{text[:400]}"
-    )
+    assert len(text) > 150, f"Expected >150 chars, got {len(text)} chars:\n{text[:400]}"
 
     text_lower = text.lower()
     assert "def " in text or "function" in text_lower, (
@@ -234,9 +231,7 @@ async def test_tree_of_thoughts_real_world():
     assert str(state.status) in _TERMINAL_STATUSES
 
     text = _result_text(state)
-    assert len(text) > 200, (
-        f"Expected >200 chars, got {len(text)} chars:\n{text[:400]}"
-    )
+    assert len(text) > 200, f"Expected >200 chars, got {len(text)} chars:\n{text[:400]}"
 
     text_lower = text.lower()
     keywords = ["approach", "architecture", "recommend", "option", "trade"]
@@ -328,9 +323,7 @@ async def test_react_pattern_real_world():
     assert str(state.status) in _TERMINAL_STATUSES
 
     text = _result_text(state)
-    assert len(text) > 150, (
-        f"Expected >150 chars, got {len(text)} chars:\n{text[:400]}"
-    )
+    assert len(text) > 150, f"Expected >150 chars, got {len(text)} chars:\n{text[:400]}"
 
     text_lower = text.lower()
     keywords = ["reason", "cause", "possible", "check", "balance", "timing"]
@@ -363,9 +356,7 @@ async def test_plan_and_execute_real_world():
     assert str(state.status) in _TERMINAL_STATUSES
 
     text = _result_text(state)
-    assert len(text) > 300, (
-        f"Expected >300 chars, got {len(text)} chars:\n{text[:400]}"
-    )
+    assert len(text) > 300, f"Expected >300 chars, got {len(text)} chars:\n{text[:400]}"
 
     text_lower = text.lower()
     keywords = ["step", "plan", "google", "pay", "integration", "test"]
@@ -512,8 +503,16 @@ async def test_goal_with_high_iterations_real_world():
     )
 
     text_lower = text.lower()
-    security_keywords = ["owasp", "injection", "authentication", "xss", "mitigation",
-                         "vulnerability", "risk", "payment"]
+    security_keywords = [
+        "owasp",
+        "injection",
+        "authentication",
+        "xss",
+        "mitigation",
+        "vulnerability",
+        "risk",
+        "payment",
+    ]
     assert any(w in text_lower for w in security_keywords), (
         f"Expected one of {security_keywords} in OWASP analysis.\nGot:\n{text_lower[:400]}"
     )

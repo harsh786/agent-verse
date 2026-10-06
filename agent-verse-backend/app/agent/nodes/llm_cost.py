@@ -9,8 +9,11 @@ mirrors the executor's cost path (steps 1 / 1b / 1c / 2.3 in ``_execute_step``).
 
 from __future__ import annotations
 
-import contextlib
 from typing import Any
+
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def llm_call_tokens(resp: Any) -> tuple[int, int]:
@@ -84,10 +87,12 @@ async def charge_llm_call(
         if not ok and isinstance(context, dict):
             context["_budget_exhausted"] = True
 
-    # 2. Token ledger.
+    # 2. Token ledger (cost_ledger row + CostTracker's per-goal / per-tenant Redis
+    # counters). A failure must not stop the goal, but it must be visible: it was
+    # swallowed silently, which hid that worker goals wrote no ledger rows at all.
     cost_tracker = getattr(graph, "_cost_tracker", None)
     if cost_tracker is not None and tenant_ctx is not None:
-        with contextlib.suppress(Exception):
+        try:
             await cost_tracker.record_llm_usage(
                 model=served_model,
                 prompt_tokens=prompt_tokens,
@@ -97,11 +102,20 @@ async def charge_llm_call(
                 agent_id=context.get("agent_id") if isinstance(context, dict) else None,
                 role=role,
             )
+        except Exception as exc:
+            logger.warning(
+                "llm_cost_ledger_record_failed",
+                role=role,
+                model=served_model,
+                goal_id=goal_id,
+                tenant_id=getattr(tenant_ctx, "tenant_id", None),
+                error=f"{type(exc).__name__}: {exc}"[:300],
+            )
 
     # 3. Grant spend (Grant.max_cost_usd binds on real spend).
     grant_store = getattr(graph, "_grant_store", None)
     if getattr(graph, "_enforce_grants", False) and grant_store is not None and cost > 0.0:
-        with contextlib.suppress(Exception):
+        try:
             from datetime import UTC, datetime
 
             from app.governance.grants.enforcer import active_grants
@@ -114,9 +128,16 @@ async def charge_llm_call(
                 if grant.max_cost_usd is not None:
                     await grant_store.record_spend(tenant_ctx.tenant_id, grant.grant_id, cost)
                     break
+        except Exception as exc:
+            logger.warning(
+                "llm_cost_grant_spend_failed",
+                role=role,
+                goal_id=goal_id,
+                error=f"{type(exc).__name__}: {exc}"[:300],
+            )
 
     # 4. Per-goal, per-role breakdown — with the REAL cost (was hard-coded 0.0).
-    with contextlib.suppress(Exception):
+    try:
         from app.observability.cost_breakdown import arecord_role_cost
 
         await arecord_role_cost(
@@ -127,6 +148,13 @@ async def charge_llm_call(
             input_tok=prompt_tokens,
             output_tok=completion_tokens,
             cost=cost,
+        )
+    except Exception as exc:
+        logger.warning(
+            "llm_cost_role_breakdown_failed",
+            role=role,
+            goal_id=goal_id,
+            error=f"{type(exc).__name__}: {exc}"[:300],
         )
     return cost
 

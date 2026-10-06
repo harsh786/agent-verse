@@ -335,7 +335,7 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=100", "--max-memory-per-child=700000", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,triggers.poll,maintenance,governance,ingestion,goals_dlq"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=100", "--max-memory-per-child=700000", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,triggers.poll,ingestion,goals_dlq"]
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
@@ -491,6 +491,55 @@ services:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d schedules@$(hostname) || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Dedicated pool for the beat's housekeeping (GAP-WORKER): ``maintenance`` and
+  # ``governance`` (outbox drains, audit WAL flush, MCP health, HITL expiry,
+  # retention, exports ...). They used to share the goal worker's two slots, so
+  # while goals ran ~4,700 beat ticks queued behind them (and goals waited behind
+  # the ticks). `worker` no longer consumes these queues; beat ticks also carry
+  # an ``expires`` shorter than their period, so a busy pool drops stale ticks.
+  maintenance-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    restart: unless-stopped
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=200", "--max-memory-per-child=700000", "-Q", "maintenance,governance", "-n", "maintenance@%h"]
+    environment:
+      # Least-privilege application role; agentverse only for cross-tenant system jobs.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: "false"
+      SEARXNG_URL: http://searxng:8080
+    volumes:
+      - ../app/db/migrations:/app/app/db/migrations:ro
+    deploy:
+      resources:
+        limits:
+          # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB growth).
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d maintenance@$(hostname) || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

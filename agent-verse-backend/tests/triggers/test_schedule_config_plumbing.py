@@ -54,6 +54,19 @@ def test_redis_payload_surfaces_family_fields() -> None:
     assert payload["trigger_type"] == "rss_feed"
 
 
+def test_redis_payload_carries_last_fired_at() -> None:
+    """GAP-WORKER: a beat reading the mirror (Postgres discovery failing) needs the
+    real slot floor; without it every cron replayed its slots since armed_at."""
+    from datetime import UTC, datetime
+
+    spec = TriggerSpec(trigger_type=TriggerType.CRON, cron_expression="0 9 * * *")
+    fired = datetime(2026, 10, 6, 9, 0, tzinfo=UTC)
+    rec = {"schedule_id": "s1", "spec": spec, "goal_id": "g1", "last_fired_at": fired}
+    assert ScheduleStore._redis_payload(rec, "t")["last_fired_at"] == fired.isoformat()
+    rec.pop("last_fired_at")
+    assert ScheduleStore._redis_payload(rec, "t")["last_fired_at"] is None
+
+
 def test_db_payload_merges_config_column() -> None:
     from app.scaling.tasks import _db_schedule_payload
 

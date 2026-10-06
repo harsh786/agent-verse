@@ -149,3 +149,88 @@ async def test_explicit_goal_template_still_wins_over_agent_goal():
     await dispatcher.dispatch(spec, {}, _tenant())
     assert goal_service.created["goal_text"] == "explicit trigger goal"
     assert goal_service.created["agent_id"] == "agent-99"
+
+
+# ── GAP-WORKER: the beat path (Celery worker) has no agent store ──────────────
+# The worker builds its GoalService without an agent store, so an agent-only
+# interval trigger fired by the beat ran the literal "Trigger fired: interval";
+# the referenced knowledge agent then failed "Required retrieval failed" on every
+# fire (311 goals of one tenant). The dispatcher now reads the agent row.
+
+
+class _StorelessGoalService(_GoalService):
+    def __init__(self) -> None:
+        super().__init__(_AgentStore(""))
+
+    def _get_agent_store(self):
+        return None
+
+
+async def test_agent_only_trigger_reads_the_agent_goal_from_the_db_in_a_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import agents as agents_mod
+
+    reads: list[tuple[str, str]] = []
+
+    async def _get_async(self, agent_id, *, tenant_ctx):
+        reads.append((agent_id, tenant_ctx.tenant_id))
+        assert self._db == "db-factory"
+        return {"agent_id": agent_id, "goal_template": "  Research and brief on NovaCache.  "}
+
+    monkeypatch.setattr(agents_mod.AgentStore, "get_async", _get_async)
+    goal_service = _StorelessGoalService()
+    dispatcher = TriggerDispatcher(goal_service=goal_service, db_session_factory="db-factory")
+    monkeypatch.setattr(dispatcher, "_goal_outcomes_open", _closed)
+    monkeypatch.setattr(dispatcher, "_already_fired", _never_fired)
+    monkeypatch.setattr(dispatcher, "_persist_event", _noop)
+
+    spec = TriggerSpec(trigger_type=TriggerType.INTERVAL, interval_seconds=300)
+    bind_refs_to_spec(spec, agent_id="agent-nova", goal_template="")
+
+    event = await dispatcher.dispatch(spec, {}, _tenant())
+
+    assert event.goal_created is True
+    assert reads == [("agent-nova", "t1")]
+    assert goal_service.created == {
+        "goal_text": "Research and brief on NovaCache.",
+        "agent_id": "agent-nova",
+    }
+
+
+async def test_a_cached_agent_goal_needs_no_db_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.api import agents as agents_mod
+
+    async def _get_async(self, agent_id, *, tenant_ctx):
+        raise AssertionError("the wired store already had the agent's goal")
+
+    monkeypatch.setattr(agents_mod.AgentStore, "get_async", _get_async)
+    dispatcher = TriggerDispatcher(
+        goal_service=_GoalService(_AgentStore("cached goal")), db_session_factory="db"
+    )
+    assert await dispatcher._agent_goal_template("agent-1", _tenant()) == "cached goal"
+
+
+async def test_agent_lookup_failure_falls_back_to_the_generic_goal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import agents as agents_mod
+
+    async def _get_async(self, agent_id, *, tenant_ctx):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(agents_mod.AgentStore, "get_async", _get_async)
+    dispatcher = TriggerDispatcher(goal_service=_StorelessGoalService(), db_session_factory="db")
+    assert await dispatcher._agent_goal_template("agent-1", _tenant()) == ""
+
+
+async def _closed(*_a, **_k) -> bool:
+    return False
+
+
+async def _never_fired(*_a, **_k) -> bool:
+    return False
+
+
+async def _noop(*_a, **_k) -> None:
+    return None

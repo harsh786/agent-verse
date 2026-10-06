@@ -660,12 +660,21 @@ def _assert_helm_egress_config_map(config_map_text: str) -> None:
 
 def test_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() -> None:
     values = _helm_values(HELM_DIR)
+    # The allowlist escape hatch ships OFF; private network access ships ON
+    # (owner decision 2026-10-06, ALLOW_PRIVATE_NETWORK_ACCESS).
     assert values["ingestion"] == {
         "allowInternalSources": False,
         "internalSourceAllowlist": "",
-        "allowPrivateNetworkAccess": True,  # ALLOW_PRIVATE_NETWORK_ACCESS, default on
+        "allowPrivateNetworkAccess": True,
     }
-    _assert_helm_egress_config_map((HELM_DIR / "configmaps.yaml").read_text())
+    cm = (HELM_DIR / "configmaps.yaml").read_text()
+    _assert_helm_egress_config_map(cm)
+    assert re.search(
+        r"^\s+ALLOW_PRIVATE_NETWORK_ACCESS: "
+        + re.escape("{{ .Values.ingestion.allowPrivateNetworkAccess | quote }}"),
+        cm,
+        re.M,
+    )
     blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
     assert {"backend", "worker", "subgoal-worker", "schedule-worker", "beat"} <= set(blocks)
     shared = '{{ include "agentverse.fullname" . }}-config'
@@ -682,7 +691,11 @@ def test_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() 
 
 def test_legacy_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() -> None:
     values = _helm_values(LEGACY_HELM_DIR)
-    assert values["ingestion"] == {"allowInternalSources": False, "internalSourceAllowlist": ""}
+    assert values["ingestion"] == {
+        "allowInternalSources": False,
+        "internalSourceAllowlist": "",
+        "allowPrivateNetworkAccess": True,
+    }
     _assert_helm_egress_config_map((LEGACY_HELM_DIR / "configmap.yaml").read_text())
     for fname in (
         "deployment.yaml",

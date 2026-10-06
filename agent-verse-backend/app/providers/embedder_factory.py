@@ -17,6 +17,12 @@ on NVIDIA-only config), tries every configured provider in priority order (a
 provider that fails no longer silently skips the rest) and logs each failure at
 error level. :func:`embedder_model_name` names the model so each chunk can record
 the ``embedding_model`` that produced its vector (LAW-08).
+
+When the operator has saved an embedding preference order in the Model Registry,
+its first eligible model wins over the env order (see
+:mod:`app.providers.registry_embedder`): built on its provider, with failover only
+between endpoints of that SAME model id, and refused (env order applies) when its
+width differs from ``EMBEDDING_DIM``. Without a saved order nothing changes.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ __all__ = [
     "embedder_dimension",
     "embedder_model_name",
     "resolve_embedder",
+    "target_embedding_dim",
 ]
 
 
@@ -45,11 +52,19 @@ class EmbedderResolution:
     """Outcome of embedder selection: the embedder, or why there is none."""
 
     embedder: Any = None
-    provider: str = ""  # dedicated | voyage | openai | gemini | sentence_transformers
+    # dedicated | voyage | openai | gemini | sentence_transformers, or — when the
+    # registry preference order chose the model — the primary endpoint's provider.
+    provider: str = ""
     model: str = ""
     dimension: int | None = None
     # (provider, reason) for every CONFIGURED provider that failed to build.
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # "registry" (the saved embedding preference order) or "env".
+    source: str = "env"
+    # Endpoints serving the registry-chosen model, in failover order.
+    endpoints: list[str] = field(default_factory=list)
+    # Why the preferred registry model was not used (the env order applied).
+    registry_refusal: str = ""
 
     @property
     def status(self) -> str:
@@ -151,13 +166,22 @@ def _endpoint_embed_model(base_url: str, fallback: str = "text-embedding-3-small
     return resolve_embed_model(fallback, provider=provider)
 
 
-def resolve_embedder(settings: Any = None) -> EmbedderResolution:
+def resolve_embedder(
+    settings: Any = None, *, wire_registry_store: bool = False
+) -> EmbedderResolution:
     """Select the embedding provider; record (and log loudly) every failure.
 
-    Priority: a dedicated OpenAI-compatible ``EMBEDDING_BASE_URL`` endpoint
-    (including NVIDIA / on-prem, see :func:`apply_embedding_endpoint_settings`),
-    then Voyage, OpenAI, Gemini, and finally a local sentence-transformers model.
-    Every configured provider is tried in turn until one builds.
+    The Model Registry's saved embedding preference order wins when its first
+    eligible model is servable (see :mod:`app.providers.registry_embedder`).
+    Otherwise — and always without a saved order — the env priority applies: a
+    dedicated OpenAI-compatible ``EMBEDDING_BASE_URL`` endpoint (including NVIDIA
+    / on-prem, see :func:`apply_embedding_endpoint_settings`), then Voyage,
+    OpenAI, Gemini, and finally a local sentence-transformers model. Every
+    configured provider is tried in turn until one builds.
+
+    ``wire_registry_store``: a Celery worker passes True so the shared (Redis)
+    registry store — where the preference order lives — is bound before
+    selection, and the worker embeds with the SAME model as the API.
     """
     from app.ai_router.selection import resolve_embed_model
     from app.core.config import get_provider_env
@@ -168,6 +192,14 @@ def resolve_embedder(settings: Any = None) -> EmbedderResolution:
         settings = get_settings()
 
     apply_embedding_endpoint_settings(settings)
+
+    if wire_registry_store:
+        _wire_worker_registry_store()
+    registry_resolution = _resolve_from_registry(settings)
+    if registry_resolution is not None and registry_resolution.embedder is not None:
+        return registry_resolution
+    registry_refusal = registry_resolution.registry_refusal if registry_resolution else ""
+    registry_errors = list(registry_resolution.errors) if registry_resolution else []
 
     def _key(attr: str, env: str) -> str:
         return str(getattr(settings, attr, "") or "") or get_provider_env(env)
@@ -236,7 +268,7 @@ def resolve_embedder(settings: Any = None) -> EmbedderResolution:
 
         candidates.append(("sentence_transformers", _local, None))
 
-    resolution = EmbedderResolution()
+    resolution = EmbedderResolution(errors=registry_errors, registry_refusal=registry_refusal)
     for name, build, declared_dim in candidates:
         try:
             embedder = build()
@@ -269,9 +301,67 @@ def resolve_embedder(settings: Any = None) -> EmbedderResolution:
     return resolution
 
 
-def build_query_embedder(settings: Any = None) -> Any:
+def target_embedding_dim(settings: Any) -> int | None:
+    """The vector index width (``EMBEDDING_DIM``) after the NVIDIA / on-prem
+    endpoint settings are applied, or ``None`` when it is not set."""
+    apply_embedding_endpoint_settings(settings)
+    try:
+        dim = int(getattr(settings, "embedding_dim", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return dim if dim > 0 else None
+
+
+def _resolve_from_registry(settings: Any) -> EmbedderResolution | None:
+    """The registry-preferred embedder, a refusal, or ``None`` (no saved order).
+
+    Never raises: a registry failure leaves the env order in charge.
+    """
+    from app.providers.registry_embedder import select_registry_embedder
+
+    try:
+        choice = select_registry_embedder(settings, target_dim=target_embedding_dim(settings))
+    except Exception as exc:
+        logger.error("embedder_registry_selection_failed", error=f"{type(exc).__name__}: {exc}")
+        return None
+    if choice is None:
+        return None
+    resolution = EmbedderResolution(
+        errors=list(choice.errors),
+        source="registry" if choice.embedder is not None else "env",
+        registry_refusal=choice.refusal,
+    )
+    if choice.embedder is None:
+        return resolution
+    resolution.embedder = choice.embedder
+    resolution.provider = choice.provider
+    resolution.model = choice.model_id
+    resolution.endpoints = list(choice.endpoints)
+    resolution.dimension = embedder_dimension(choice.embedder) or choice.dimension
+    logger.info(
+        "embedder_resolved",
+        provider=resolution.provider,
+        model=resolution.model,
+        dimension=resolution.dimension,
+        source="registry",
+        endpoints=resolution.endpoints,
+    )
+    return resolution
+
+
+def _wire_worker_registry_store() -> None:
+    """Bind the shared model-registry store in a worker process (best effort)."""
+    try:
+        import app.scaling.tasks as _tasks
+
+        _tasks._wire_worker_model_registry_store()
+    except Exception as exc:  # never block embedding on the registry
+        logger.warning("embedder_registry_store_wire_failed", error=str(exc)[:200])
+
+
+def build_query_embedder(settings: Any = None, *, wire_registry_store: bool = False) -> Any:
     """Return the configured embedding provider, or ``None`` when none is usable."""
-    return resolve_embedder(settings).embedder
+    return resolve_embedder(settings, wire_registry_store=wire_registry_store).embedder
 
 
 def embedder_model_name(embedder: Any) -> str:

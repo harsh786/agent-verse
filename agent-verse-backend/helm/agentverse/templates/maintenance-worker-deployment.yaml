@@ -1,0 +1,50 @@
+# Dedicated pool for the beat's housekeeping (GAP-WORKER): maintenance +
+# governance never take a goal slot, and goals never wait behind beat ticks.
+# agentverse-worker does not consume these queues.
+{{- if .Values.maintenanceWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-maintenance-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-maintenance-worker
+    component: maintenance-worker
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.maintenanceWorker.replicas }}
+  selector:
+    matchLabels:
+      app: agentverse-maintenance-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-maintenance-worker
+        component: maintenance-worker
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: maintenance-worker
+          image: {{ include "agentverse.maintenanceWorkerImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.scaling.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency={{ .Values.maintenanceWorker.concurrency }}
+            - --max-tasks-per-child={{ .Values.maintenanceWorker.maxTasksPerChild }}
+            - --max-memory-per-child={{ .Values.maintenanceWorker.maxMemoryPerChildKb }}
+            - -n
+            - maintenance@%h
+            - -Q
+            - {{ .Values.maintenanceWorker.queues }}
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+          env:
+            {{- include "agentverse.appSecretEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.maintenanceWorker.resources | nindent 12 }}
+{{- end }}
