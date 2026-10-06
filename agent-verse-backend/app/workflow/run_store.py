@@ -1343,6 +1343,8 @@ class PostgresWorkflowRunStore:
         import yaml as _yaml  # type: ignore[import-untyped]
         from sqlalchemy import text as sa_text
 
+        from app.workflow.webhook_secrets import redact_definition
+
         by = _uuid_or_none(published_by)
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
@@ -1361,7 +1363,10 @@ class PostgresWorkflowRunStore:
                         "wid": workflow_id,
                         "tid": tenant_id,
                         "ver": version,
-                        "yaml": _yaml.safe_dump(definition or {}, sort_keys=False),
+                        # The display copy never carries a webhook secret (B2-OPEN-1).
+                        "yaml": _yaml.safe_dump(
+                            redact_definition(definition or {}), sort_keys=False
+                        ),
                         "def": json.dumps(definition or {}),
                         "summary": change_summary,
                         "by": by,

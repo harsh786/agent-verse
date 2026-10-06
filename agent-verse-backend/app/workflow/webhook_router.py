@@ -107,7 +107,14 @@ async def _enforce_rate_limit(
         )
 
 
-def _verify_declared_auth(request: Request, triggers: list[dict[str, Any]], raw: bytes) -> None:
+async def _verify_declared_auth(
+    request: Request,
+    triggers: list[dict[str, Any]],
+    raw: bytes,
+    *,
+    svc: Any,
+    tenant_id: str,
+) -> None:
     """Enforce ``trigger.webhook.auth: hmac`` (B2-9).
 
     The DSL accepted ``auth: hmac`` + ``hmac_secret`` but nothing read them, so
@@ -116,8 +123,13 @@ def _verify_declared_auth(request: Request, triggers: list[dict[str, Any]], raw:
     (``X-AgentVerse-Signature`` / ``X-Signature``; with ``X-Webhook-Timestamp``
     over ``"{ts}.{body}"``, replay-windowed). Declared without a secret it fails
     closed. ``bearer`` / ``none`` keep the path token as the credential.
+
+    The stored secret is vault-encrypted (B2-OPEN-1) and opened only here; one
+    that cannot be opened (vault key missing / rotated away) refuses the
+    delivery with a retryable 503 — never a check against a blank secret.
     """
     from app.triggers.webhooks.ingress import check_signature
+    from app.workflow.webhook_secrets import open_secret
 
     for trig in triggers:
         if trig.get("type") not in ("webhook", "api"):
@@ -125,7 +137,18 @@ def _verify_declared_auth(request: Request, triggers: list[dict[str, Any]], raw:
         cfg = trig.get("webhook") if isinstance(trig.get("webhook"), dict) else trig
         if str((cfg or {}).get("auth") or "").lower() != "hmac":
             continue
-        secret = str((cfg or {}).get("hmac_secret") or "")
+        stored = (cfg or {}).get("hmac_secret") or ""
+        opener = getattr(svc, "open_webhook_secret", None)
+        try:
+            secret = (
+                await opener(tenant_id, stored) if opener is not None else open_secret(stored)
+            )
+        except Exception as exc:
+            _log.error("workflow_webhook_secret_unreadable", error=type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Webhook secret could not be read; retry later",
+            ) from exc
         if not secret:
             _log.warning("workflow_webhook_hmac_without_secret")
             raise HTTPException(
@@ -188,7 +211,7 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
     if not any(t.get("type") in ("webhook", "api") for t in triggers):
         raise HTTPException(status_code=400, detail="Workflow has no webhook/api trigger")
 
-    _verify_declared_auth(request, triggers, raw)
+    await _verify_declared_auth(request, triggers, raw, svc=svc, tenant_id=tenant_id)
 
     await _enforce_rate_limit(request, runner, tenant_id=tenant_id, workflow_id=workflow_id)
 

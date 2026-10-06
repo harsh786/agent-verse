@@ -9,7 +9,7 @@ still has previous keys:
 1. re-seals, under the tenant's RLS context and in batches, every ``tv1:`` value
    that does not open with the current key — tenant LLM key, OAuth tokens,
    trigger webhook secrets, ingestion source credentials, durable connector
-   secrets (Postgres) and connector
+   secrets, workflow webhook HMAC secrets (Postgres) and connector
    secrets, OAuth copies in connector configs and the LLM-config cache (Redis) —
    each write a compare-and-swap on the value it read;
 2. only when that pass leaves nothing under a previous key and nothing
@@ -43,20 +43,21 @@ from app.providers.vault import CredentialVault
 
 _SOURCE_PREFIX = "enc:v1:"
 
-# (store name, table, primary key, columns, connection_config JSON?)
-_PG_STORES: tuple[tuple[str, str, str, tuple[str, ...], bool], ...] = (
-    ("tenant_llm_configs", "tenant_llm_configs", "tenant_id", ("encrypted_key",), False),
-    ("oauth_tokens", "oauth_tokens", "id", ("access_token", "refresh_token"), False),
+# (store name, table, primary key, columns, connection_config JSON?, UUID tenant_id?)
+_PG_STORES: tuple[tuple[str, str, str, tuple[str, ...], bool, bool], ...] = (
+    ("tenant_llm_configs", "tenant_llm_configs", "tenant_id", ("encrypted_key",), False, False),
+    ("oauth_tokens", "oauth_tokens", "id", ("access_token", "refresh_token"), False, False),
     (
         "trigger_secrets",
         "schedules",
         "id",
         ("webhook_signature_secret_enc", "webhook_signature_secret_prev_enc"),
         False,
+        False,
     ),
-    ("source_credentials", "source_configs", "id", ("connection_config",), True),
+    ("source_credentials", "source_configs", "id", ("connection_config",), True, False),
     # Messaging-gateway binding secrets (DEF-3): channel_config.*_enc.
-    ("channel_binding_secrets", "channel_tenant_mappings", "id", ("channel_config",), True),
+    ("channel_binding_secrets", "channel_tenant_mappings", "id", ("channel_config",), True, False),
     # Durable connector secrets (SECRET-01); composite key -> keyset on the
     # "<server_id>\x1f<secret_key>" expression (a handful of rows per tenant).
     (
@@ -65,6 +66,26 @@ _PG_STORES: tuple[tuple[str, str, str, tuple[str, ...], bool], ...] = (
         "(server_id || chr(31) || secret_key)",
         ("encrypted_value",),
         False,
+        False,
+    ),
+    # Workflow webhook HMAC secrets (B2-OPEN-1): enc:v1:tv1: values in the
+    # definition JSON — builder row, run-engine mirror, version snapshots.
+    ("workflow_webhook_secrets", "workflows", "id", ("definition",), True, False),
+    (
+        "workflow_definition_secrets",
+        "workflow_definitions",
+        "id::text",
+        ("definition_json",),
+        True,
+        True,
+    ),
+    (
+        "workflow_version_secrets",
+        "workflow_definition_versions",
+        "id::text",
+        ("definition_json",),
+        True,
+        True,
     ),
 )
 
@@ -117,8 +138,14 @@ class _Sealer:
         return TENANT_CIPHER_PREFIX + self.primary.encrypt(plain)
 
     def reseal_source(self, config: Any) -> Any:
-        """A JSON config with its ``enc:v1:tv1:`` secrets (source credentials) and
-        ``*_enc`` ``tv1:`` values (gateway binding secrets) re-sealed (None = unchanged)."""
+        """A JSON config with its ``enc:v1:tv1:`` secrets (source credentials,
+        workflow webhook secrets) and ``*_enc`` ``tv1:`` values (gateway binding
+        secrets) re-sealed (None = unchanged)."""
+        if isinstance(config, list):  # e.g. a workflow definition's ``triggers``
+            items = [self.reseal_source(item) for item in config]
+            if all(item is None for item in items):
+                return None
+            return [o if n is None else n for o, n in zip(config, items, strict=True)]
         if not isinstance(config, dict):
             return None
         changed, out = False, {}
@@ -129,7 +156,7 @@ class _Sealer:
                 new = None if inner is None else _SOURCE_PREFIX + inner
             elif isinstance(value, str) and str(key).endswith("_enc"):
                 new = self.reseal(value)
-            elif isinstance(value, dict):
+            elif isinstance(value, dict | list):
                 new = self.reseal_source(value)
             out[key] = value if new is None else new
             changed = changed or new is not None
@@ -162,7 +189,16 @@ async def _pg_pass(
 
     from app.db.rls import sqlalchemy_rls_context
 
-    for _name, table, pk, columns, source_json in _PG_STORES:
+    for _name, table, pk, columns, source_json, uuid_tenant in _PG_STORES:
+        tenant_param = tenant_id
+        if uuid_tenant:
+            import uuid as _uuid
+
+            try:
+                tenant_param = str(_uuid.UUID(str(tenant_id)))
+            except (ValueError, TypeError, AttributeError):
+                continue  # a non-UUID tenant has no rows in a UUID-keyed table
+        tenant_match = "tenant_id = CAST(:t AS uuid)" if uuid_tenant else "tenant_id = :t"
         after = ""
         while True:
             async with tenant_db() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
@@ -170,9 +206,9 @@ async def _pg_pass(
                     await s.execute(
                         text(
                             f"SELECT {pk}, {', '.join(columns)} FROM {table} "
-                            f"WHERE tenant_id = :t AND {pk} > :after ORDER BY {pk} LIMIT :n"
+                            f"WHERE {tenant_match} AND {pk} > :after ORDER BY {pk} LIMIT :n"
                         ),
-                        {"t": tenant_id, "after": after, "n": batch_size},
+                        {"t": tenant_param, "after": after, "n": batch_size},
                     )
                 ).fetchall()
                 for row in rows:
@@ -203,9 +239,9 @@ async def _pg_pass(
                     result = await s.execute(
                         text(
                             f"UPDATE {table} SET {sets} "
-                            f"WHERE tenant_id = :t AND {pk} = :pk AND {guards}"
+                            f"WHERE {tenant_match} AND {pk} = :pk AND {guards}"
                         ),
-                        {**params, "t": tenant_id, "pk": row[0]},
+                        {**params, "t": tenant_param, "pk": row[0]},
                     )
                     if not getattr(result, "rowcount", 0):
                         sealer.report.lost_races += 1
