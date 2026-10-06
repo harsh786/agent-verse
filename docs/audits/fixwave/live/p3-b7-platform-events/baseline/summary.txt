@@ -1,0 +1,11 @@
+passed test_goal_completed_chain_fires_once_and_never_loops 337.8
+failed test_allow_self_trigger_chain_stops_at_depth_cap 1502.0
+     E               AssertionError: timed out after 1500s waiting for a chain_depth_exceeded audit row on trigger 63f85b3c28d34584a48f61a24f2dd313; last=[]
+passed test_goal_failed_fires_once_on_every_failure_path 316.5
+failed test_goal_score_below_threshold_and_dimension 56.5
+     E       AssertionError: a completed goal scored {'task_completion': 0.0, 'efficiency': 0.99794935, 'accuracy': 1.0, 'safety': 1.0, 'coherence': 1.0, 'sla': 1.0, 'tool_relevance': 0.7}
+passed test_goal_approval_decisions_fire_hitl_triggers_once 918.8
+passed test_workflow_approval_decisions_fire_hitl_triggers_once 76.7
+passed test_memory_created_fires_once_and_does_not_loop 134.8
+passed test_platform_trigger_quota_and_rate_cap 47.5
+skipped test_goal_events_fire_once_with_two_api_replicas 0.0

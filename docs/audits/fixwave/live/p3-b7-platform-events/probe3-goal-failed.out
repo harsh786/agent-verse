@@ -1,0 +1,6 @@
+== goal fails via worker (contrary agent, 1 iteration)
+create trigger goal_failed 201 
+submit 202 
+goal 85729c4ac9d34f43bf232b2cf4fbfdc9 failed None
+events [(None, '998b44f7f7f14cf89b492e28a36a237e', '85729c4ac9d34f43bf232b2cf4fbfdc9', 1)]
+rc=0

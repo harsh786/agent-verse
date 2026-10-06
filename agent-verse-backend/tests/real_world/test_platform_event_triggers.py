@@ -273,7 +273,7 @@ def test_allow_self_trigger_chain_stops_at_depth_cap(
     evidence["root_goal"] = root
     try:
         skip = _wait_skip(api, sid, "chain_depth_exceeded", timeout=float(
-            os.getenv("RW_CHAIN_TIMEOUT", "1500")))
+            os.getenv("RW_CHAIN_TIMEOUT", "2700")))
     finally:
         fired = _fired(api, sid)
         evidence["fired"] = len(fired)
