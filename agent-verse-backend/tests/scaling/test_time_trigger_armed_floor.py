@@ -105,8 +105,9 @@ def test_interval_fires_its_current_slot_once_then_waits() -> None:
         "interval_seconds": 60,
         "armed_at": "2026-10-06T15:00:10",
     }
-    assert _slots(sched) == [_d(2026, 10, 6, 15, 0)]
-    sched["last_fired_at"] = "2026-10-06T15:00:00"
+    # B1-17: slots are anchored at arming time, not the epoch minute.
+    assert _slots(sched) == [_d(2026, 10, 6, 15, 0, 10)]
+    sched["last_fired_at"] = "2026-10-06T15:00:10"
     assert _slots(sched) == []
 
 

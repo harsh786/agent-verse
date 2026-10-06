@@ -5060,6 +5060,7 @@ def _interval_due_slot_utc(
     interval_seconds: int,
     last_fired_utc: datetime.datetime | None,
     now_utc: datetime.datetime,
+    anchor_utc: datetime.datetime | None = None,
 ) -> datetime.datetime | None:
     """INTERVAL: return the deterministic fire slot if the schedule is due, else None.
 
@@ -5074,14 +5075,24 @@ def _interval_due_slot_utc(
     interval firing dispatch twice. Bucketing to a fixed epoch-aligned slot
     ("this interval's slot"), like the cron slot helper already does, keeps
     the key identical across concurrent, near-simultaneous evaluations.
+
+    B1-17: slots are counted from ``anchor_utc`` (the schedule's arming time,
+    stored in Postgres, so every evaluation agrees) instead of the epoch: an
+    epoch-aligned slot fired once late in its window and again at the next
+    boundary (29.9 s apart live for a 60 s interval). Without an anchor (an old
+    Redis mirror payload) the epoch is used.
     """
     if interval_seconds <= 0:
         return None
     if last_fired_utc is not None and (now_utc - last_fired_utc).total_seconds() < interval_seconds:
         return None
-    elapsed = (now_utc - _INTERVAL_EPOCH).total_seconds()
+    origin = anchor_utc if anchor_utc is not None and anchor_utc <= now_utc else _INTERVAL_EPOCH
+    elapsed = (now_utc - origin).total_seconds()
     slot_index = int(elapsed // interval_seconds)
-    return _INTERVAL_EPOCH + datetime.timedelta(seconds=slot_index * interval_seconds)
+    slot = origin + datetime.timedelta(seconds=slot_index * interval_seconds)
+    if last_fired_utc is not None and slot <= last_fired_utc:
+        return None
+    return slot
 
 
 def _business_calendar_slots(
@@ -5144,7 +5155,12 @@ def _time_trigger_slots(sched: dict[str, Any], now: datetime.datetime) -> list[d
             return _business_calendar_slots(cron_expr, floor, now, tz_name, sched)
         return _cron_missed_runs_utc(cron_expr, floor, now, tz_name)
     if trigger_type == "interval":
-        slot = _interval_due_slot_utc(int(sched.get("interval_seconds") or 0), last, now)
+        slot = _interval_due_slot_utc(
+            int(sched.get("interval_seconds") or 0),
+            last,
+            now,
+            _schedule_datetime(sched.get("armed_at")),
+        )
         return [slot] if slot is not None else []
     if trigger_type in ("once", "relative_delay", "deadline"):
         target = _one_shot_target_utc(sched)
