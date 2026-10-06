@@ -17,6 +17,10 @@ Policy (same envelope as ingestion source credentials, ``app.ingestion.source_se
 * **On update** a secret equal to :data:`MASK` means "unchanged": the stored
   value at the same trigger position is kept, so a client can round-trip the
   masked definition it was given.
+* **A mask with nothing behind it is refused** (B2-GAP-3): a create (e.g. a
+  re-import of an exported YAML) or update whose :data:`MASK` cannot be resolved
+  to a stored secret raises :class:`MaskedSecretError` (422) instead of storing
+  an empty secret, which would silently refuse every delivery.
 * **Legacy plaintext** definitions keep working: verification uses a plaintext
   value as-is, and the store re-seals such a definition the first time it reads
   it (read-through migration, no offline step; the vault key never has to be
@@ -39,6 +43,7 @@ __all__ = [
     "ENC_PREFIX",
     "MASK",
     "SECRET_FIELD",
+    "MaskedSecretError",
     "WebhookSecretError",
     "has_masked_secret",
     "has_plaintext_secret",
@@ -54,6 +59,21 @@ __all__ = [
 
 class WebhookSecretError(RuntimeError):
     """A stored webhook secret could not be opened (wrong / missing vault key)."""
+
+
+MASKED_SECRET_DETAIL = (
+    "trigger.webhook.hmac_secret is the masked placeholder '********' (exports and "
+    "API responses never contain the secret) and there is no stored secret to keep. "
+    "Set hmac_secret to a new secret (and configure the sender to sign with it), or "
+    "remove 'auth: hmac', then try again."
+)
+
+
+class MaskedSecretError(ValueError):
+    """A :data:`MASK` secret has no stored secret behind it (B2-GAP-3)."""
+
+    def __init__(self, detail: str = MASKED_SECRET_DETAIL) -> None:
+        super().__init__(detail)
 
 
 Slot = tuple[Any, ...]
@@ -103,11 +123,13 @@ def has_masked_secret(definition: Any) -> bool:
     return any(cfg.get(SECRET_FIELD) == MASK for _slot, cfg in _slots(definition))
 
 
-def merge_masked_secrets(definition: dict[str, Any], existing: Any) -> dict[str, Any]:
+def merge_masked_secrets(
+    definition: dict[str, Any], existing: Any, *, strict: bool = False
+) -> dict[str, Any]:
     """A copy of ``definition`` with every :data:`MASK` secret replaced by the stored
     value at the same trigger position (or the only stored secret, when there is
     exactly one). Nothing to keep → ``""`` (an ``auth: hmac`` webhook without a
-    secret then fails closed)."""
+    secret then fails closed), or :class:`MaskedSecretError` when ``strict``."""
     out = copy.deepcopy(definition)
     stored = {slot: cfg.get(SECRET_FIELD) for slot, cfg in _slots(existing)}
     stored = {k: v for k, v in stored.items() if isinstance(v, str) and v and v != MASK}
@@ -115,6 +137,8 @@ def merge_masked_secrets(definition: dict[str, Any], existing: Any) -> dict[str,
     for slot, cfg in _slots(out):
         if cfg.get(SECRET_FIELD) == MASK:
             cfg[SECRET_FIELD] = stored.get(slot, only)
+            if strict and not cfg[SECRET_FIELD]:
+                raise MaskedSecretError
     return out
 
 

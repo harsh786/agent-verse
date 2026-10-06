@@ -311,7 +311,17 @@ async def export_yaml(workflow_id: str, request: Request) -> str:
 
 @router.post("/import-yaml", status_code=status.HTTP_201_CREATED)
 async def import_yaml(request: Request) -> dict[str, Any]:
-    """Import a workflow definition from a YAML body."""
+    """Import a workflow definition from a YAML body (always a NEW draft workflow).
+
+    Webhook HMAC secrets (B2-GAP-3): an exported YAML carries ``auth: hmac``
+    webhooks with the secret masked (``hmac_secret: '********'``) — exports never
+    contain it. Importing such a file is refused with **422** naming the fix: put
+    a new secret in ``hmac_secret`` (and configure the sender with it), or remove
+    ``auth: hmac``. The import is never created with an empty secret (it would
+    refuse every delivery), never copies a secret from another workflow, and no
+    secret is generated or echoed back. A plaintext ``hmac_secret`` in the YAML
+    is stored vault-encrypted and masked in the response.
+    """
     import yaml as _yaml  # type: ignore[import]
 
     body_bytes = await request.body()
@@ -321,11 +331,16 @@ async def import_yaml(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from exc
 
     from app.workflow.dsl import WorkflowDefinition
+    from app.workflow.webhook_secrets import MASKED_SECRET_DETAIL, has_masked_secret
 
     try:
         wf = WorkflowDefinition(**data)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Invalid workflow DSL: {exc}") from exc
+    if has_masked_secret(data):
+        raise HTTPException(
+            status_code=422, detail=f"Cannot import a masked webhook secret: {MASKED_SECRET_DETAIL}"
+        )
 
     svc = _svc(request)
     tenant_id = _tenant_id(request)

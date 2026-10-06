@@ -16,6 +16,13 @@ the API-key ``POST /webhooks/{token}`` endpoints:
   ``X-Webhook-Timestamp`` header the signature covers ``"{timestamp}.{body}"``
   and a timestamp outside the replay window is refused, so a captured delivery
   cannot be replayed later. Without it the legacy body-only signature applies.
+* :func:`signed_replay_key` — the replay identity of a VERIFIED signed delivery,
+  derived only from what was signed (delivery-id headers are not signed, so an
+  attacker can change them). A legacy body-only delivery keys on its body,
+  unwindowed: the same signed body is the same delivery for as long as the
+  secret that signed it is accepted (B2-GAP-1, the GitHub rule of DEF-NEW-3).
+  A sender whose events can legitimately repeat a byte-identical body must sign
+  with ``X-Webhook-Timestamp``.
 """
 
 from __future__ import annotations
@@ -119,6 +126,26 @@ def firing_message_id(
     return f"body:{hashlib.sha256(body).hexdigest()[:32]}:{window}"
 
 
+def signed_timestamp(headers: Mapping[str, str]) -> str:
+    """The signed-timestamp header value ("" = legacy body-only signature)."""
+    return _first(headers, TIMESTAMP_HEADERS)
+
+
+def signed_replay_key(headers: Mapping[str, str], body: bytes) -> str:
+    """Replay identity of a delivery whose signature :func:`check_signature` accepted.
+
+    ``signed-ts:<sha256("{ts}.{body}")>`` for the timestamped scheme (the exact
+    signed bytes: a replay inside the 300 s window under a fresh delivery id is
+    still the same delivery), ``signed-body:<sha256(body)>`` for the legacy
+    body-only scheme (unwindowed: nothing signed says how old it is).
+    """
+    timestamp = signed_timestamp(headers)
+    if timestamp:
+        digest = hashlib.sha256(f"{timestamp}.".encode() + body).hexdigest()[:40]
+        return f"signed-ts:{digest}"
+    return f"signed-body:{hashlib.sha256(body).hexdigest()[:40]}"
+
+
 def _sig_value(header: str) -> str:
     """Hex digest from ``sha256=<hex>`` / ``v1=<hex>`` / ``<hex>`` (first entry)."""
     first = header.split(",")[0].strip()
@@ -136,7 +163,7 @@ def check_signature(
     signature = _first(headers, SIGNATURE_HEADERS)
     if not signature:
         raise HTTPException(status_code=401, detail="Missing webhook signature")
-    timestamp = _first(headers, TIMESTAMP_HEADERS)
+    timestamp = signed_timestamp(headers)
     signed = body
     if timestamp:
         try:
