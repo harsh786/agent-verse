@@ -1650,10 +1650,7 @@ def create_app(
                 _usage_svc._db = db_factory
                 logger.info("usage_service_db_wired")
 
-            _tenant_svc_with_db = TenantService(
-                db_session_factory=db_factory,
-                system_db_session_factory=app.state.system_db_session_factory,
-            )
+            _tenant_svc_with_db = TenantService(db_session_factory=db_factory)
             _goal_svc_with_db = GoalService(
                 audit_log=_audit_log,
                 hitl=_hitl,
@@ -1664,11 +1661,12 @@ def create_app(
             _agent_store_with_db = AgentStore(db_session_factory=db_factory)
 
             # Hydrate in-memory state from DB (idempotent — skips keys already present).
-            # Tenants/API keys and agents are essential (auth + sync agent lookups).
+            # Agents are essential (sync agent lookups). Tenants / API keys are not
+            # hydrated at all: auth and every tenant read are DB-authoritative, so a
+            # per-replica copy of every tenant and key had no reader (a08-F194-04).
             # The goal mirror is only a warm cache (get/list goals read the DB), so it
             # loads in the background together with restart recovery, which needs it
             # (see "goal_warm_cache" below).
-            await _tenant_svc_with_db.sync_from_db()
             await _agent_store_with_db.sync_from_db()
 
             async def _warm_goal_cache(recover: bool) -> None:

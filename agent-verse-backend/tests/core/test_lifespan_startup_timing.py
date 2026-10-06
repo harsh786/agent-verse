@@ -24,11 +24,8 @@ from app.core.startup import StartupTracker
 from app.main import create_app
 from app.mcp.registry import MCPRegistry
 from app.mcp.servers import registry_wiring
-from app.services.tenant_service import TenantService
 
 pytestmark = pytest.mark.asyncio
-
-N_TENANTS = 400
 
 
 class _FakePools:
@@ -45,25 +42,8 @@ class _FakePools:
         return []
 
 
-@pytest.fixture
-def many_tenants(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _sync(self: TenantService) -> int:
-        for i in range(N_TENANTS):
-            tid = f"tenant-{i:04d}"
-            self._tenants[tid] = {
-                "tenant_id": tid,
-                "name": tid,
-                "email": f"{tid}@example.com",
-                "plan": "free",
-                "created_at": "",
-            }
-        return N_TENANTS
-
-    monkeypatch.setattr(TenantService, "sync_from_db", _sync)
-
-
-async def test_lifespan_with_400_tenants_serves_fast_without_per_tenant_mcp_work(
-    many_tenants: None, monkeypatch: pytest.MonkeyPatch
+async def test_lifespan_serves_fast_without_per_tenant_work(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     per_tenant_calls: list[str] = []
     real = registry_wiring.register_builtin_servers
@@ -82,6 +62,12 @@ async def test_lifespan_with_400_tenants_serves_fast_without_per_tenant_mcp_work
         assert tracker.essential_done
         # No per-tenant built-in provisioning at boot ...
         assert per_tenant_calls == []
+        # ... and no tenant / API-key hydration either (a08-F194-04): auth is
+        # DB-authoritative, so the old copy of every tenant and key into each
+        # replica's memory (unbounded, one RLS query per tenant) is gone.
+        tenant_svc = app.state.tenant_service
+        assert not hasattr(tenant_svc, "sync_from_db")
+        assert tenant_svc._tenants == {} and tenant_svc._keys == {}
         # ... but every built-in handler is registered process-wide (no I/O).
         assert MCPRegistry.get_builtin_handler("builtin-utility") is not None
         # Non-essential warm-ups were started in the background, tracked.
@@ -94,7 +80,7 @@ async def test_lifespan_with_400_tenants_serves_fast_without_per_tenant_mcp_work
         await tracker.wait_ready(timeout=60)
 
     # Generous for slow CI: with fakes this is ~1 s now vs ~11 s with the old loop.
-    assert startup_seconds < 25, f"lifespan took {startup_seconds:.1f}s for {N_TENANTS} tenants"
+    assert startup_seconds < 25, f"lifespan took {startup_seconds:.1f}s"
 
 
 async def test_ready_endpoint_is_503_until_gating_tasks_finish() -> None:

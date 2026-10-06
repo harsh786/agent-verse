@@ -1369,10 +1369,6 @@ async def test_lifespan_replaces_gateway_with_db_and_graph_dependencies(
     monkeypatch.setattr(kg_store, "_db", None)
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: db_factory)
     monkeypatch.setattr(
-        "app.services.tenant_service.TenantService.sync_from_db",
-        AsyncMock(return_value=0),
-    )
-    monkeypatch.setattr(
         "app.services.goal_service.GoalService.sync_from_db",
         AsyncMock(return_value=0),
     )

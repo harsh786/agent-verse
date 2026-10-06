@@ -341,18 +341,3 @@ class TestSSOProvisioning:
             assert result["plan"] == expected.value
 
 
-# ── sync_from_db ──────────────────────────────────────────────────────────────
-
-class TestSyncFromDb:
-    async def test_sync_returns_0_when_no_db(self) -> None:
-        svc = TenantService()
-        count = await svc.sync_from_db()
-        assert count == 0
-
-    async def test_sync_returns_0_on_error(self) -> None:
-        async def bad_factory():
-            raise Exception("DB error")
-
-        svc = TenantService(db_session_factory=bad_factory)
-        count = await svc.sync_from_db()
-        assert count == 0

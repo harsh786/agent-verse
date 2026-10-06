@@ -439,39 +439,6 @@ async def test_create_tenant_from_sso_refuses_an_existing_email():
 
 
 # ---------------------------------------------------------------------------
-# sync_from_db
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_sync_from_db_no_db():
-    svc = TenantService()
-    count = await svc.sync_from_db()
-    assert count == 0
-
-
-@pytest.mark.asyncio
-async def test_sync_from_db_exception_returns_zero():
-    from contextlib import asynccontextmanager
-
-    mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
-
-    @asynccontextmanager
-    async def _begin():
-        yield None
-
-    mock_session.begin = MagicMock(side_effect=lambda: _begin())
-
-    @asynccontextmanager
-    async def _db():
-        yield mock_session
-
-    svc = TenantService(db_session_factory=_db)
-    count = await svc.sync_from_db()
-    assert count == 0
-
-
-# ---------------------------------------------------------------------------
 # DB helper methods (no-op path when db is None)
 # ---------------------------------------------------------------------------
 

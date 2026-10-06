@@ -119,16 +119,12 @@ class TenantService:
     and for unit tests.  Wire as ``app.state.tenant_service`` in the factory.
     """
 
-    def __init__(
-        self,
-        db_session_factory: Any = None,
-        *,
-        system_db_session_factory: Any = None,
-    ) -> None:
-        # Cross-tenant maintenance factory (BYPASSRLS role when configured): lets
-        # the startup sync load every active API key in ONE query instead of one
-        # RLS-scoped query per tenant. Optional; falls back to the per-tenant loop.
-        self._system_db: Any = system_db_session_factory
+    def __init__(self, db_session_factory: Any = None) -> None:
+        # The dicts below are the store ONLY in the no-DB (tests / dev) build.
+        # With a DB wired every read is DB-authoritative (get_tenant,
+        # list_api_keys, resolve_api_key, SSO lookup) and nothing is mirrored
+        # into them (a08-F194-04): each replica used to copy every active tenant
+        # and API key into memory at startup, unbounded, for no reader.
         # tenant_id → {tenant_id, name, email, plan, created_at}
         self._tenants: dict[str, dict[str, Any]] = {}
         # normalised email → tenant_id (fast duplicate-email detection)
@@ -159,10 +155,11 @@ class TenantService:
         The raw API key appears **once** in this response and is never stored.
         Raises :class:`~app.core.errors.ConflictError` if the e-mail is taken.
 
-        Writes to DB first, then updates in-memory cache, then invalidates Redis.
+        Writes to DB first (no-DB build: the in-memory store), then invalidates Redis.
         """
         normalised = email.lower()
-        if normalised in self._email_index:
+        # No-DB build only; with a DB the unique constraint decides (below).
+        if self._db is None and normalised in self._email_index:
             raise ConflictError(f"Email already registered: {email}")
 
         tenant_id = uuid.uuid4().hex
@@ -182,28 +179,27 @@ class TenantService:
             key_hash=key_hash,
         )
 
-        # ── 2. Update in-memory cache after successful DB write ───────────────
-        self._tenants[tenant_id] = {
-            "tenant_id": tenant_id,
-            "name": name,
-            "email": email,
-            "plan": plan.value,
-            "created_at": created_at,
-        }
-        self._email_index[normalised] = tenant_id
-        self._keys[key_id] = {
-            "key_id": key_id,
-            "tenant_id": tenant_id,
-            "name": "Default",
-            "scopes": [],
-            "expires_at": None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": created_at,
-            "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
-        }
-        self._hash_to_key_id[key_hash] = key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(key_id)
+        # ── 2. In-memory store (no-DB build only; a08-F194-04) ────────────────
+        self._remember(
+            {
+                "tenant_id": tenant_id,
+                "name": name,
+                "email": email,
+                "plan": plan.value,
+                "created_at": created_at,
+            },
+            {
+                "key_id": key_id,
+                "tenant_id": tenant_id,
+                "name": "Default",
+                "scopes": [],
+                "expires_at": None,
+                "key_hash": key_hash,
+                "is_active": True,
+                "created_at": created_at,
+                "roles": ["admin"],  # Tenant-owner's initial key gets full admin access
+            },
+        )
 
         # ── 3. Invalidate Redis cache so stale entries are evicted immediately ─
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
@@ -369,19 +365,20 @@ class TenantService:
             key_id, tenant_id, name, key_hash, scopes, expires_at, roles=key_roles
         )
 
-        self._keys[key_id] = {
-            "key_id": key_id,
-            "tenant_id": tenant_id,
-            "name": name,
-            "scopes": scopes,
-            "expires_at": expires_at.isoformat() if expires_at else None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": created_at,
-            "roles": key_roles,
-        }
-        self._hash_to_key_id[key_hash] = key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(key_id)
+        self._remember(
+            None,
+            {
+                "key_id": key_id,
+                "tenant_id": tenant_id,
+                "name": name,
+                "scopes": scopes,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "key_hash": key_hash,
+                "is_active": True,
+                "created_at": created_at,
+                "roles": key_roles,
+            },
+        )
         # Invalidate tenant cache since the key roster changed
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
@@ -750,9 +747,8 @@ class TenantService:
             "plan": t.plan_tier,
             "created_at": t.created_at.isoformat() if t.created_at else "",
         }
-        # Warm this pod's cache for the helpers that still read memory (SSO lookups).
-        self._tenants.setdefault(t.id, dict(profile))
-        self._email_index.setdefault(t.email.lower(), t.id)
+        # Not mirrored into this pod's memory (a08-F194-04): no reader needs it
+        # (SSO lookups are DB-authoritative too) and it grew with every tenant.
         return profile
 
     async def _db_list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
@@ -1112,7 +1108,8 @@ class TenantService:
         """
         del plan
         normalised = email.lower()
-        if normalised in self._email_index:
+        # No-DB build only; with a DB the unique constraints decide (below).
+        if self._db is None and normalised in self._email_index:
             raise ConflictError(f"Email already registered: {email}")
         plan_tier = PlanTier.FREE
         tenant_id = uuid.uuid4().hex
@@ -1165,124 +1162,36 @@ class TenantService:
             "sso_sub": sso_sub,
             "created_at": created_at,
         }
-        self._tenants[tenant_id] = tenant
-        self._email_index[normalised] = tenant_id
-        self._keys[api_key_id] = {
-            "key_id": api_key_id,
-            "tenant_id": tenant_id,
-            "name": "SSO auto-provisioned",
-            "scopes": [],
-            "expires_at": None,
-            "key_hash": key_hash,
-            "is_active": True,
-            "created_at": created_at,
-            "roles": ["admin"],
-        }
-        self._hash_to_key_id[key_hash] = api_key_id
-        self._tenant_keys.setdefault(tenant_id, []).append(api_key_id)
+        self._remember(
+            tenant,
+            {
+                "key_id": api_key_id,
+                "tenant_id": tenant_id,
+                "name": "SSO auto-provisioned",
+                "scopes": [],
+                "expires_at": None,
+                "key_hash": key_hash,
+                "is_active": True,
+                "created_at": created_at,
+                "roles": ["admin"],
+            },
+        )
         return tenant
 
-    async def sync_from_db(self) -> int:
-        """Load tenants and API keys from PostgreSQL into memory on startup.
+    def _remember(self, tenant: dict[str, Any] | None, key: dict[str, Any]) -> None:
+        """Record a tenant and/or key in the in-memory store — no-DB build only.
 
-        Returns number of tenants loaded.
+        With a DB wired nothing is mirrored (a08-F194-04): every read is
+        DB-authoritative, so a per-replica copy had no reader and only grew.
         """
-        if self._db is None:
-            return 0
-        try:
-            from sqlalchemy import select
-
-            from app.db.models.tenant import ApiKey, Tenant
-            from app.db.rls import sqlalchemy_rls_context
-
-            loaded = 0
-            # Before opening the request-role session: never hold two connections.
-            batched_keys = await self._load_active_keys_batched()
-            async with self._db() as session:
-                # Load all active tenants
-                result = await session.execute(
-                    select(Tenant).where(Tenant.is_active == True)  # noqa: E712
-                )
-                tenants = result.scalars().all()
-                for t in tenants:
-                    if t.id not in self._tenants:
-                        self._tenants[t.id] = {
-                            "tenant_id": t.id,
-                            "name": t.name,
-                            "email": t.email,
-                            "plan": t.plan_tier,
-                            "created_at": t.created_at.isoformat() if t.created_at else "",
-                        }
-                        self._email_index[t.email.lower()] = t.id
-                        loaded += 1
-                # api_keys has tenant RLS enabled. One cross-tenant query when the
-                # role may bypass RLS; otherwise one RLS-scoped query per tenant.
-                keys = batched_keys
-                if keys is None:
-                    keys = []
-                    for tenant_id in list(self._tenants):
-                        async with sqlalchemy_rls_context(session, tenant_id):
-                            key_result = await session.execute(
-                                select(ApiKey).where(
-                                    ApiKey.tenant_id == tenant_id,
-                                    ApiKey.is_active == True,  # noqa: E712
-                                )
-                            )
-                        keys.extend(key_result.scalars().all())
-                for k in keys:
-                    if k.tenant_id not in self._tenants:
-                        continue
-                    key_data = {
-                        "key_id": k.id,
-                        "tenant_id": k.tenant_id,
-                        "name": k.name,
-                        "scopes": list(k.scopes or []),
-                        "roles": list(k.roles or ["admin"]),
-                        "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                        "key_hash": k.key_hash,
-                        "is_active": True,
-                        "created_at": k.created_at.isoformat() if k.created_at else "",
-                    }
-                    # Always update from DB (not just on first load) so role/scope
-                    # changes made via DB or API are picked up on next sync.
-                    self._keys[k.id] = key_data
-                    self._hash_to_key_id[k.key_hash] = k.id
-                    self._tenant_keys.setdefault(k.tenant_id, [])
-                    if k.id not in self._tenant_keys[k.tenant_id]:
-                        self._tenant_keys[k.tenant_id].append(k.id)
-            logging.getLogger(__name__).info("Synced %d tenants from DB", loaded)
-            return loaded
-        except Exception as exc:
-            logging.getLogger(__name__).warning("DB sync failed: %s", exc)
-            return 0
-
-    async def _load_active_keys_batched(self) -> list[Any] | None:
-        """All active API keys in one cross-tenant query, or None when not allowed.
-
-        Uses ``system_session`` (``SET LOCAL row_security = off``) on the system
-        factory. Under a NOBYPASSRLS role the SELECT raises instead of silently
-        returning nothing, so a failure means "fall back to the per-tenant loop".
-        """
-        factory = self._system_db
-        if factory is None:
-            return None
-        try:
-            from sqlalchemy import select
-
-            from app.db.models.tenant import ApiKey
-            from app.db.rls import system_session
-
-            async with factory() as session, session.begin(), system_session(session):
-                result = await session.execute(
-                    select(ApiKey).where(ApiKey.is_active == True)  # noqa: E712
-                )
-                return list(result.scalars().all())
-        except Exception as exc:
-            logging.getLogger(__name__).info(
-                "api_key_batched_sync_unavailable (per-tenant fallback): %s",
-                type(exc).__name__,
-            )
-            return None
+        if self._db is not None:
+            return
+        if tenant is not None:
+            self._tenants[tenant["tenant_id"]] = tenant
+            self._email_index[str(tenant["email"]).lower()] = tenant["tenant_id"]
+        self._keys[key["key_id"]] = key
+        self._hash_to_key_id[key["key_hash"]] = key["key_id"]
+        self._tenant_keys.setdefault(key["tenant_id"], []).append(key["key_id"])
 
     # ── Redis cache invalidation ──────────────────────────────────────────────
     # (a08-F194-01: the ``get_tenant_cached`` / ``_get_tenant_from_db`` read-through

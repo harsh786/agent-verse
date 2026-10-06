@@ -1117,15 +1117,6 @@ async def test_tenant_service_list_api_keys():
     assert "k2" in names
 
 
-async def test_tenant_service_sync_from_db_noop():
-    """sync_from_db returns 0 when no DB factory is configured."""
-    from app.services.tenant_service import TenantService
-
-    svc = TenantService()
-    count = await svc.sync_from_db()
-    assert count == 0
-
-
 async def test_tenant_service_revoke_wrong_tenant_raises():
     """Revoking another tenant's key raises NotFoundError."""
     from app.core.errors import NotFoundError
