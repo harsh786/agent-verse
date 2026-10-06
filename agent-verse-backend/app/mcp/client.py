@@ -13,6 +13,7 @@ import contextvars
 import inspect
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -254,6 +255,80 @@ def _is_jira_rest_endpoint(cfg: MCPServerConfig) -> bool:
     url = raw_url.lower()
     name = cfg.name.lower()
     return "jira" in name or "atlassian.net" in url
+
+
+# The tools a user-registered Jira REST connector exposes (a02-F030-05). One
+# table drives discovery AND dispatch, so a discovered tool is always callable
+# and anything else is refused with the list of supported tools. Read-only: a
+# connector that must write uses the built-in Jira connector.
+_JIRA_ISSUE_KEY = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_]*-\d+|\d+)$")
+_JIRA_DEFAULT_FIELDS = [
+    "summary",
+    "status",
+    "assignee",
+    "priority",
+    "created",
+    "updated",
+    "issuetype",
+]
+_JIRA_REST_TOOLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "jira_search_issues": (
+        "Search Jira issues using JQL (Jira Query Language)",
+        {
+            "type": "object",
+            "properties": {
+                "jql": {"type": "string"},
+                "max_results": {"type": "integer", "default": 50},
+                "start_at": {"type": "integer", "default": 0},
+                "fields": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["jql"],
+        },
+    ),
+    "jira_get_issue": (
+        "Get one Jira issue by key (e.g. PROJ-123) or id",
+        {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string"},
+                "fields": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["issue_key"],
+        },
+    ),
+    "jira_list_projects": (
+        "List the Jira projects visible to the connector's account",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+}
+
+
+def _jira_issue_summary(issue: dict[str, Any]) -> dict[str, Any]:
+    fields = issue.get("fields") or {}
+    return {
+        "id": issue.get("id", ""),
+        "key": issue.get("key", ""),
+        "summary": fields.get("summary", ""),
+        "status": (fields.get("status") or {}).get("name", ""),
+        "priority": (fields.get("priority") or {}).get("name", ""),
+        "assignee": (fields.get("assignee") or {}).get("displayName", ""),
+        "issue_type": (fields.get("issuetype") or {}).get("name", ""),
+        "created": fields.get("created", ""),
+        "updated": fields.get("updated", ""),
+    }
+
+
+def _jira_max_results(arguments: dict[str, Any]) -> int:
+    try:
+        return max(1, min(int(arguments.get("max_results", 50)), 100))
+    except (TypeError, ValueError):
+        return 50
 
 
 def _jsonrpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -651,25 +726,17 @@ class MCPClient:
 
         # ── Non-builtin Jira REST connector ───────────────────────────────────
         # A user-registered Jira connector (e.g. the "PineLabs JIRA" record)
-        # exposes a synthetic jira_search_issues tool via the Jira REST API.
+        # exposes synthetic read tools over the Jira REST API (_JIRA_REST_TOOLS).
         if _is_jira_rest_endpoint(cfg):
             return [
                 ToolDefinition(
-                    name="jira_search_issues",
-                    description="Search Jira issues using JQL (Jira Query Language)",
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "jql": {"type": "string"},
-                            "max_results": {"type": "integer", "default": 50},
-                            "start_at": {"type": "integer", "default": 0},
-                            "fields": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["jql"],
-                    },
+                    name=name,
+                    description=description,
+                    input_schema=json.loads(json.dumps(schema)),
                     server_id=server_id,
                     server_name=cfg.name,
                 )
+                for name, (description, schema) in _JIRA_REST_TOOLS.items()
             ]
 
         headers = await self._build_auth_headers(cfg, tenant_ctx=tenant_ctx, server_id=server_id)
@@ -1086,82 +1153,98 @@ class MCPClient:
         arguments: dict[str, Any],
         tenant_ctx: TenantContext,
     ) -> ToolCallResult:
-        if tool_name != "jira_search_issues":
+        def _fail(error: str) -> ToolCallResult:
             return ToolCallResult(
-                tool_name=tool_name,
-                success=False,
-                error="Unsupported Jira REST tool",
-                server_id=server_id,
+                tool_name=tool_name, success=False, error=error, server_id=server_id
             )
+
+        if tool_name not in _JIRA_REST_TOOLS:
+            return _fail(
+                f"Unsupported Jira REST tool {tool_name!r}; this connector supports "
+                f"{', '.join(sorted(_JIRA_REST_TOOLS))} (use the built-in Jira "
+                "connector for write operations)"
+            )
+        base_url = _absolute_http_url(server.url or server.base_url).rstrip("/")
+        request: tuple[str, str, dict[str, Any]]
+        if tool_name == "jira_search_issues":
+            jql = arguments.get("jql")
+            if not isinstance(jql, str) or not jql.strip():
+                return _fail("jira_search_issues requires a non-empty 'jql' string")
+            payload: dict[str, Any] = {
+                "jql": jql,
+                "maxResults": _jira_max_results(arguments),
+                "fields": arguments.get("fields") or _JIRA_DEFAULT_FIELDS,
+            }
+            if arguments.get("next_page_token"):
+                payload["nextPageToken"] = arguments["next_page_token"]
+            request = ("POST", f"{base_url}/rest/api/3/search/jql", {"json": payload})
+        elif tool_name == "jira_get_issue":
+            key = str(arguments.get("issue_key") or arguments.get("key") or "").strip()
+            if not _JIRA_ISSUE_KEY.match(key):
+                return _fail("jira_get_issue requires 'issue_key' like PROJ-123 (or an id)")
+            fields = arguments.get("fields") or _JIRA_DEFAULT_FIELDS
+            request = (
+                "GET",
+                f"{base_url}/rest/api/3/issue/{key}",
+                {"params": {"fields": ",".join(str(f) for f in fields)}},
+            )
+        else:  # jira_list_projects
+            params: dict[str, Any] = {"maxResults": _jira_max_results(arguments)}
+            if arguments.get("query"):
+                params["query"] = str(arguments["query"])
+            request = ("GET", f"{base_url}/rest/api/3/project/search", {"params": params})
 
         headers = await self._build_auth_headers(server, tenant_ctx=tenant_ctx, server_id=server_id)
-        default_fields = [
-            "summary",
-            "status",
-            "assignee",
-            "priority",
-            "created",
-            "updated",
-            "issuetype",
-        ]
-        payload: dict[str, Any] = {
-            "jql": arguments["jql"],
-            "maxResults": arguments.get("max_results", 50),
-            "fields": arguments.get("fields", default_fields),
-        }
-        if arguments.get("next_page_token"):
-            payload["nextPageToken"] = arguments["next_page_token"]
-
+        method, url, kwargs = request
         try:
-            base_url = _absolute_http_url(server.url or server.base_url).rstrip("/")
             async with self._http_client() as client:
-                resp = await client.post(
-                    f"{base_url}/rest/api/3/search/jql",
-                    json=payload,
-                    headers=headers,
-                )
+                if method == "POST":
+                    resp = await client.post(url, headers=headers, **kwargs)
+                else:
+                    resp = await client.get(url, headers=headers, **kwargs)
                 resp.raise_for_status()
                 data = resp.json()
-            issues = data.get("issues", [])
-            return ToolCallResult(
-                tool_name=tool_name,
-                success=True,
-                output={
-                    "total": data.get("total", len(issues)),
-                    "start_at": data.get("startAt", 0),
-                    "max_results": data.get("maxResults", 50),
-                    "issues": [
-                        {
-                            "id": issue.get("id", ""),
-                            "key": issue.get("key", ""),
-                            "summary": (issue.get("fields") or {}).get("summary", ""),
-                            "status": ((issue.get("fields") or {}).get("status") or {}).get(
-                                "name", ""
-                            ),
-                            "priority": ((issue.get("fields") or {}).get("priority") or {}).get(
-                                "name", ""
-                            ),
-                            "assignee": ((issue.get("fields") or {}).get("assignee") or {}).get(
-                                "displayName", ""
-                            ),
-                            "issue_type": ((issue.get("fields") or {}).get("issuetype") or {}).get(
-                                "name", ""
-                            ),
-                            "created": (issue.get("fields") or {}).get("created", ""),
-                            "updated": (issue.get("fields") or {}).get("updated", ""),
-                        }
-                        for issue in issues
-                    ],
-                },
-                server_id=server_id,
-            )
         except Exception as exc:
-            return ToolCallResult(
-                tool_name=tool_name,
-                success=False,
-                error=str(exc),
-                server_id=server_id,
-            )
+            return _fail(str(exc))
+
+        output: dict[str, Any]
+        if tool_name == "jira_search_issues":
+            issues = data.get("issues", [])
+            output = {
+                "total": data.get("total", len(issues)),
+                "start_at": data.get("startAt", 0),
+                "max_results": data.get("maxResults", 50),
+                "issues": [_jira_issue_summary(issue) for issue in issues],
+            }
+            if data.get("nextPageToken"):
+                output["next_page_token"] = data["nextPageToken"]
+        elif tool_name == "jira_get_issue":
+            fields = data.get("fields") or {}
+            description = fields.get("description")
+            output = {
+                **_jira_issue_summary(data),
+                "reporter": (fields.get("reporter") or {}).get("displayName", ""),
+                "labels": list(fields.get("labels") or []),
+                "description": description if isinstance(description, str | dict) else "",
+            }
+        else:
+            projects = data.get("values", []) if isinstance(data, dict) else list(data or [])
+            output = {
+                "total": data.get("total", len(projects)) if isinstance(data, dict) else len(
+                    projects
+                ),
+                "projects": [
+                    {
+                        "id": p.get("id", ""),
+                        "key": p.get("key", ""),
+                        "name": p.get("name", ""),
+                        "type": p.get("projectTypeKey", ""),
+                    }
+                    for p in projects
+                    if isinstance(p, dict)
+                ],
+            }
+        return ToolCallResult(tool_name=tool_name, success=True, output=output, server_id=server_id)
 
     async def _call_tool_impl(
         self,
