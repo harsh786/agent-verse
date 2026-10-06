@@ -114,3 +114,66 @@ def test_a_tenant_routing_policy_pin_outranks_the_deployment_wide_order():
         router.set_policy_roles({"planning": "tenant-pinned"})
         assert router.model_for("planning") == "tenant-pinned"
         assert router.model_for("execution") == "ranked"  # not pinned by the tenant
+
+
+# ── single reasoning calls outside the graph roles (synthesis, eval judges) ──
+
+
+def test_single_calls_keep_the_provider_default_without_a_saved_order():
+    from app.ai_router.role_preference import preferred_model_and_fallbacks
+
+    class _P:
+        _default_model = "provider-default"
+
+    assert preferred_model_and_fallbacks("planning", _P()) == ("", [])
+    assert preferred_model_and_fallbacks("judge", _P()) == ("", [])
+
+
+def test_single_calls_follow_the_saved_order_with_the_default_last():
+    from app.ai_router.role_preference import preferred_model_and_fallbacks
+
+    class _P:
+        _default_model = "provider-default"
+
+    _add("custom", "ranked-1")
+    _add("custom", "ranked-2")
+    model_registry.set_preferences({"text_generation": ["custom/ranked-1", "custom/ranked-2"]})
+    model, fallbacks = preferred_model_and_fallbacks("planning", _P())
+    assert model == "ranked-1"
+    assert fallbacks[0] == "ranked-2"
+    assert fallbacks[-1] == "provider-default"
+
+
+@pytest.mark.asyncio
+async def test_answer_synthesis_and_eval_judges_use_the_saved_order(monkeypatch):
+    from app.agent.synthesis import AnswerSynthesizer
+    from app.intelligence.eval_runner import EvalRunner
+
+    _add("custom", "ranked-1")
+    model_registry.set_preferences({"text_generation": ["custom/ranked-1"]})
+    seen: list[tuple[str, str, list[str]]] = []
+
+    class _Resp:
+        content = "0.9 [Step 1]"
+
+    async def _fake_complete_decision(provider, req, *, role, fallback_models=(), **_k):
+        seen.append((role, req.model, list(fallback_models)))
+        return _Resp()
+
+    monkeypatch.setattr(
+        "app.providers.guarded_completion.complete_decision", _fake_complete_decision
+    )
+
+    class _P:
+        _default_model = "provider-default"
+
+    await AnswerSynthesizer(llm_provider=_P())._synthesize_with_llm(
+        "goal", [{"step_index": 0, "tool_name": "", "output_excerpt": "391"}], []
+    )
+    await EvalRunner()._llm_rate("rate it", _P(), role="eval_accuracy", tenant_ctx=None,
+                                 goal_id=None)
+    by_role = {role: (model, fb) for role, model, fb in seen}
+    for role in ("answer_synthesis", "eval_accuracy"):
+        model, fallbacks = by_role[role]
+        assert model == "ranked-1"
+        assert fallbacks[-1] == "provider-default"  # the provider's own model is last resort

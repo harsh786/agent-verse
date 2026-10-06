@@ -237,19 +237,24 @@ class EvalRunner:
     ) -> float | None:
         """One charged, circuit-broken 0..1 rating from the model; None on any failure."""
         try:
+            from app.ai_router.role_preference import preferred_model_and_fallbacks
             from app.providers.base import CompletionRequest, Message
             from app.providers.guarded_completion import complete_decision
 
+            # The saved reasoning order picks the judge model (with failover);
+            # without one the provider default answers, as before.
+            model, fallbacks = preferred_model_and_fallbacks("judge", provider)
             resp = await complete_decision(
                 provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
-                    model="",
+                    model=model,
                     max_tokens=10,
                 ),
                 role=role,
                 tenant_ctx=tenant_ctx,
                 goal_id=goal_id,
+                fallback_models=fallbacks,
             )
             return min(1.0, max(0.0, float(resp.content.strip())))
         except Exception:

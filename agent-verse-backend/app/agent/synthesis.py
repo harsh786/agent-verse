@@ -166,16 +166,25 @@ class AnswerSynthesizer:
         )
         llm = self._llm
         assert llm is not None
+        from dataclasses import replace
+
+        from app.ai_router.role_preference import preferred_model_and_fallbacks
         from app.providers.guarded_completion import (
             complete_decision,
             generation_timeout_seconds,
         )
 
+        # The saved reasoning order (Model Registry) picks the synthesis model and
+        # its failover chain; without one the provider default answers, as before.
+        model, fallbacks = preferred_model_and_fallbacks("planning", llm)
+        if model:
+            req = replace(req, model=model)
         resp = await complete_decision(
             llm,
             req,
             role="answer_synthesis",
             timeout_seconds=generation_timeout_seconds(),
+            fallback_models=fallbacks,
         )
 
         # Extract citations from [Step N] patterns

@@ -15,6 +15,8 @@ configured model.
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -56,3 +58,29 @@ def preferred_role_model(task_type: str) -> str:
     except Exception as exc:  # pragma: no cover - never block routing
         logger.warning("role_preference_lookup_failed role=%s error=%s", task_type, exc)
     return ""
+
+
+def preferred_model_and_fallbacks(task_type: str, provider: Any = None) -> tuple[str, list[str]]:
+    """``(model, fallback_models)`` for a single reasoning call that is not a graph
+    role (answer synthesis, eval judges, …).
+
+    With a saved reasoning order: its first eligible model for *task_type* and
+    the rest of the order, then the provider's own default model as the last
+    resort. Without one: ``("", [])`` — the call keeps the provider default
+    exactly as before (cheapest-first is NOT applied here: on an NVIDIA
+    deployment the cheapest text-capable model is the 11B vision model).
+    """
+    primary = preferred_role_model(task_type)
+    if not primary:
+        return "", []
+    fallbacks: list[str] = []
+    try:
+        from app.ai_router.selection import resolve_fallback_models
+
+        fallbacks = resolve_fallback_models(task_type, primary, limit=3)
+    except Exception:  # pragma: no cover - never block the call
+        fallbacks = []
+    default = str(getattr(provider, "_default_model", "") or "")
+    if default and default != primary and default not in fallbacks:
+        fallbacks.append(default)
+    return primary, fallbacks
