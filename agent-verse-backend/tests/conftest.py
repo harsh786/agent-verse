@@ -139,15 +139,38 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_openai, append=False)
 
 
+def _shutdown_ocr_pools() -> None:
+    """Stop the process-wide OCR thread pool before the interpreter tears down.
+
+    An OCR thread still inside tesseract / poppler during interpreter shutdown
+    is the likely cause of the one-off ``libc++abi: ... recursive_mutex lock
+    failed: Invalid argument`` abort (EXIT 134) at suite exit. Only when a test
+    imported the module: the teardown must not import the app itself.
+    """
+    import sys
+
+    module = sys.modules.get("app.ocr.concurrency")
+    if module is None:
+        return
+    try:
+        module.shutdown_ocr_concurrency(wait=True, cancel_futures=True)
+    except Exception as exc:  # teardown must still reap the workers below
+        print(f"\n[OCR] could not shut down the OCR pool cleanly: {exc!r}")
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus):
     """USR-7: no out-of-process Celery worker outlives the test session.
+
+    First the process-wide OCR pool is stopped in order (``_shutdown_ocr_pools``).
 
     The e2e worker helpers (``tests/_worker_procs.py``) stop their workers on
     every exit path; this is the backstop. Any worker group of this session that
     is still running is killed here and fails the run, so a leak is reported
     instead of holding Postgres, Redis and files open after pytest exits.
     """
+    _shutdown_ocr_pools()
+
     from tests import _worker_procs
 
     try:

@@ -21,6 +21,12 @@ upload, several ingestion jobs in one worker — shares the primitives here:
   (``OCR_VISION_CONCURRENCY``); the provider's rate limits / cost guard still
   apply to each call.
 
+:func:`shutdown_ocr_concurrency` stops the pool in order (pending work cancelled,
+running work awaited). It runs at interpreter exit (``atexit``) and from the test
+session's teardown, so no OCR thread is mid-call in tesseract / poppler while the
+interpreter tears down (a ``libc++abi ... recursive_mutex lock failed`` abort,
+EXIT 134, was seen once at test-suite exit).
+
 Tesseract's own OpenMP threading is pinned to one thread (``OMP_THREAD_LIMIT=1``,
 unless the operator set it): parallelism comes from running pages side by side,
 and N Tesseracts each spawning one thread per core oversubscribe the CPU.
@@ -29,12 +35,14 @@ and N Tesseracts each spawning one thread per core oversubscribe the CPU.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import contextvars
 import functools
 import math
 import os
 import threading
+import weakref
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -206,12 +214,16 @@ class _OcrRuntime:
         self.executor = ThreadPoolExecutor(
             max_workers=limits.max_concurrency, thread_name_prefix="ocr"
         )
+        _executors.add(self.executor)
         self.page_slots = ProcessSemaphore(limits.max_concurrency)
         self.vision_slots = ProcessSemaphore(limits.vision_concurrency)
 
 
 _runtime: _OcrRuntime | None = None
 _runtime_lock = threading.Lock()
+# Every pool this process built, including ones reset_ocr_concurrency retired
+# without waiting: the shutdown stops them all. Weak, so a finished pool is freed.
+_executors: weakref.WeakSet[ThreadPoolExecutor] = weakref.WeakSet()
 _holds_page_slot: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "ocr_holds_page_slot", default=False
 )
@@ -243,12 +255,35 @@ def reset_ocr_concurrency(limits: OcrLimits | None = None) -> None:
         old.executor.shutdown(wait=False)
 
 
+def shutdown_ocr_concurrency(*, wait: bool = True, cancel_futures: bool = True) -> None:
+    """Stop every OCR pool of this process in order: queued work is cancelled
+    (``cancel_futures``) and running work finishes (``wait``).
+
+    Idempotent, and a no-op when no pool was ever created. Registered with
+    ``atexit`` and called from the test session's teardown. A later OCR call
+    builds a fresh pool, as after :func:`reset_ocr_concurrency`.
+    """
+    global _runtime
+    with _runtime_lock:
+        _runtime = None
+        executors = list(_executors)
+        _executors.clear()
+    for executor in executors:
+        executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+
+atexit.register(shutdown_ocr_concurrency)
+
+
 def _after_fork_in_child() -> None:
     # A forked child (Celery prefork) inherits the parent's pool object but not
-    # its threads: build a fresh pool on first use instead of hanging on it.
-    global _runtime, _runtime_lock
+    # its threads: build a fresh pool on first use instead of hanging on it. The
+    # parent's pools are not this child's to shut down (their locks may have been
+    # held at fork time).
+    global _runtime, _runtime_lock, _executors
     _runtime = None
     _runtime_lock = threading.Lock()
+    _executors = weakref.WeakSet()
 
 
 if hasattr(os, "register_at_fork"):
