@@ -245,8 +245,9 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         app.state.chat_artifact_store = ChatArtifactStore()
 
     # Dual-mode identity (Phase 3): unifies channel identities to principals so a
-    # conversation continues across channels. In-memory now; a Postgres-backed
-    # store swaps in with the identity_links migration.
+    # conversation continues across channels. This in-memory default is the no-DB
+    # path; with a database the lifespan replaces it with an IdentityService over
+    # PostgresIdentityStore (principals / identity_links, migration 0131).
     if getattr(app.state, "identity_service", None) is None:
         app.state.identity_service = IdentityService()
 
