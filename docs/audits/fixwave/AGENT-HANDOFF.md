@@ -127,9 +127,12 @@ Parallel code tracks (code + tests only, live-verified later in their queue slot
   (no self-trigger unless `allow_self_trigger`, chain depth cap 10, audit row per suppressed fire), every goal-failing
   path publishes `goal.failed`, goal_score_below requires a 0..1 threshold and honours the dimension, workflow HITL
   decisions publish hitl_approved/rejected, feedback lessons publish memory.created. Live verification = queue item 9.
-- `fix/deferred-channels-kafka` · `.claude/worktrees/deferredcode` — DEF-1 Teams JWT/tenant binding, DEF-2 Slack
-  team_id binding, DEF-3 self-service channel binding (Telegram/WhatsApp/Slack/Teams/webhook, vault secrets), DEF-4
-  Kafka commit-after-index, DEF-5 GitHub/Stripe/Jira/Teams signature schemes. Progress: `progress/deferredcode.progress.json`.
+- `fix/deferred-channels-kafka` — MERGED into main (`874712eb2`): DEF-1 Teams Bot Framework JWT verify + tenant
+  binding (unbound org 403), DEF-2 Slack per-workspace signing secrets, DEF-3 self-service channel bindings with
+  envelope-sealed secrets + Telegram setWebhook + WhatsApp verify handshake (`CHANNEL_TENANT_MAP` deprecated),
+  DEF-4 Kafka commit only after index/skip/DLQ (real Kafka container test), DEF-5 exact GitHub/Stripe/Jira/Teams
+  signature schemes + replay windows; vendor-signed deliveries dedup on signed content. Live verification = deferred
+  items 11/13/14 at the end.
 
 ## 5. Queue (strict order)
 
@@ -154,6 +157,14 @@ Parallel code tracks (code + tests only, live-verified later in their queue slot
 Remaining backlog after the queue: `pending-all-2026-10-05.json` (re-verify each item first).
 
 ## 6. Open findings not yet assigned
+
+- DEF-NEW-1: `GATEWAY_PUBLIC_BASE_URL` (needed for Telegram setWebhook) is only in `.env.example` — wire it into both
+  Helm charts, raw k8s and prod compose (as done for the egress allowlist in `10c22195d`) during item 13.
+- DEF-NEW-2 (owner decision): per-org `/v1/gateway/{org}/config` and `/channels/status` still return 501 (they sit
+  on an unauthenticated prefix; replacement is `/channels/bindings`) — remove from OpenAPI/UI?
+- DEF-NEW-3 [low]: GitHub/Jira Cloud signatures carry no timestamp, so replay protection relies on the trigger_events
+  dedup row; a replay after retention purges that row fires again.
+- DEF-NEW-4 [low]: webhook dedup family ignores SNS MessageId / Salesforce notification id (harmless: inside signed body).
 
 - B2-OPEN-1: workflow webhook `hmac_secret` stored in plain text in the workflow definition (move to vault; P4).
 - B2-OPEN-2: replaying a throttled delivery from the DLQ can run twice if the sender also redelivered it (P4).
