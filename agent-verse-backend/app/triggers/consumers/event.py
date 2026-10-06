@@ -137,3 +137,66 @@ class EventTriggerConsumer:
                 )
             except Exception as exc:
                 _log.warning("event_dispatch_error: %s", exc)
+        await self._arm_relative_delays(event_channel, data, tenant_id)
+
+    async def _arm_relative_delays(self, event_channel: str, data: dict, tenant_id: str) -> None:
+        """B1-8: an event arms each matching event-relative ``relative_delay``
+        trigger: one pending fire, due ``relative_offset_seconds`` after the
+        event (or after its payload's ``relative_to_field``), fired by the beat.
+
+        A store error propagates (the stream entry stays pending and is
+        redelivered); arming is idempotent per (trigger, event)."""
+        arm = getattr(self._store, "arm_delayed_fire_async", None)
+        if arm is None:
+            return
+        from datetime import UTC, datetime
+
+        from app.triggers.delayed import delayed_due_at, is_event_armed
+
+        triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
+            "relative_delay", tenant_id=tenant_id, strict=True
+        )
+        received_at = datetime.now(UTC)
+        event_id = str(data.get("event_id", "") or "")
+        for trigger in triggers:
+            spec = trigger.get("spec") if isinstance(trigger, dict) else None
+            if spec is None or getattr(spec, "event_channel", "") != event_channel:
+                continue
+            if not is_event_armed("relative_delay", spec.event_channel, spec.fire_at_iso):
+                continue
+            if trigger.get("paused"):
+                continue
+            schedule_id = str(trigger.get("schedule_id") or "")
+            due = delayed_due_at(
+                offset_seconds=int(spec.relative_offset_seconds or 0),
+                relative_to_field=str(spec.relative_to_field or ""),
+                data=data,
+                received_at=received_at,
+            )
+            if due is None:
+                _log.warning(
+                    "relative_delay_not_armed: trigger %s: payload field %r is missing or "
+                    "not a timestamp (event %s)",
+                    schedule_id,
+                    spec.relative_to_field,
+                    event_id,
+                )
+                continue
+            try:
+                armed = await arm(
+                    schedule_id=schedule_id,
+                    tenant_id=tenant_id,
+                    event_id=event_id,
+                    due_at=due,
+                    payload=data,
+                )
+            except ValueError as exc:  # an oversized payload: never redeliverable
+                _log.warning("relative_delay_not_armed: trigger %s: %s", schedule_id, exc)
+                continue
+            _log.info(
+                "relative_delay_armed trigger=%s event=%s due_at=%s new=%s",
+                schedule_id,
+                event_id,
+                due.isoformat(),
+                armed,
+            )

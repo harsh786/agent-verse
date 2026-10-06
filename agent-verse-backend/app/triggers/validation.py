@@ -118,6 +118,43 @@ def timezone_error(tz_name: str) -> str | None:
     return None
 
 
+_EVENT_CHANNEL = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
+
+
+def _validate_relative_delay(spec: TriggerSpec) -> None:
+    """A fixed base (``fire_at_iso``) or, B1-8, an event base: each event on
+    ``event_channel`` arms a fire ``relative_offset_seconds`` after the event
+    (or after the timestamp at ``relative_to_field`` in its payload)."""
+    from app.triggers.delayed import MAX_EVENT_DELAY_SECONDS
+
+    if spec.fire_at_iso.strip():
+        if spec.event_channel.strip():
+            raise ValueError(
+                "relative_delay takes either fire_at_iso (a fixed base time) or "
+                "event_channel (the offset counts from each event), not both"
+            )
+        _require_iso(spec.fire_at_iso, "")
+        return
+    channel = spec.event_channel.strip()
+    if not channel:
+        raise ValueError(
+            "relative_delay trigger requires fire_at_iso (a fixed base time) or "
+            "event_channel (fire relative_offset_seconds after each event on it)"
+        )
+    if not _EVENT_CHANNEL.match(channel):
+        raise ValueError(
+            "event_channel may only contain letters, digits and . _ : - (at most 200)"
+        )
+    if not 0 <= int(spec.relative_offset_seconds or 0) <= MAX_EVENT_DELAY_SECONDS:
+        raise ValueError(
+            "relative_offset_seconds must be between 0 and "
+            f"{MAX_EVENT_DELAY_SECONDS} for an event-relative delay"
+        )
+    field = spec.relative_to_field.strip()
+    if field and not re.fullmatch(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*", field):
+        raise ValueError("relative_to_field must be a dotted payload path, e.g. order.shipped_at")
+
+
 MAX_HOLIDAYS = 500
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
@@ -246,11 +283,7 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     # deadline_field / business_calendar_id alone passed validation but the
     # beat fires only from fire_at_iso / cron_expression, so they never fired.
     elif v == "relative_delay":
-        _require_iso(
-            spec.fire_at_iso,
-            "relative_delay trigger requires fire_at_iso (the base time the offset is "
-            "added to); payload-relative delays (relative_to_field) are not supported yet",
-        )
+        _validate_relative_delay(spec)
     elif v == "deadline":
         _require_iso(
             spec.fire_at_iso,

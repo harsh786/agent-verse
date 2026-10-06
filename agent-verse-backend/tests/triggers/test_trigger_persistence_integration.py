@@ -567,3 +567,102 @@ async def test_fire_state_sees_pause_delete_and_other_tenants(dbs: SimpleNamespa
     assert await tasks._schedule_fire_state(dbs.app, dbs.t1, key) == "paused"
     assert await store.delete_async(sid, tenant_ctx=ctx)
     assert await tasks._schedule_fire_state(dbs.app, dbs.t1, key) == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_event_relative_delays_arm_claim_and_fire_once(
+    dbs: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1-8: an event arms one pending fire (app role, RLS; idempotent per
+    event); the beat claims due fires once (SKIP LOCKED lease), skips paused
+    triggers, and deleting the trigger deletes its pending fires."""
+    from app.scaling import tasks
+
+    ctx = _ctx(dbs.t1)
+    store = _replica(dbs)
+    spec = TriggerSpec(
+        trigger_type=TriggerType.RELATIVE_DELAY,
+        event_channel="support.escalated",
+        relative_offset_seconds=1800,
+    )
+    sid = await store.create_async(goal_id="", spec=spec, tenant_ctx=ctx, goal_template="follow up")
+    now = datetime.datetime.now(datetime.UTC)
+    payload = {"tenant_id": dbs.t1, "event_id": "ev-1", "ticket": {"id": "T-9"}}
+    assert await store.arm_delayed_fire_async(
+        schedule_id=sid, tenant_id=dbs.t1, event_id="ev-1", due_at=now, payload=payload
+    )
+    # The same event again (a redelivery) arms nothing new.
+    assert not await store.arm_delayed_fire_async(
+        schedule_id=sid, tenant_id=dbs.t1, event_id="ev-1", due_at=now, payload=payload
+    )
+    later = now + datetime.timedelta(hours=1)
+    assert await store.arm_delayed_fire_async(
+        schedule_id=sid, tenant_id=dbs.t1, event_id="ev-2", due_at=later, payload=payload
+    )
+    # Tenant 2 cannot arm a fire on tenant 1's trigger.
+    assert not await store.arm_delayed_fire_async(
+        schedule_id=sid, tenant_id=dbs.t2, event_id="ev-x", due_at=now, payload={}
+    )
+
+    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: dbs.admin)
+    monkeypatch.setattr("app.db.session.get_session_factory", lambda: dbs.app)
+    enqueued: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        tasks, "_enqueue_governed_fire", lambda key, sched, **kw: enqueued.append(
+            {"key": key, **kw})
+    )
+    assert await tasks._fire_due_delayed_fires_async(now + datetime.timedelta(seconds=1)) == 1
+    assert len(enqueued) == 1
+    fire = enqueued[0]
+    assert fire["key"] == f"schedule:{dbs.t1}:{sid}"
+    assert fire["tenant_id"] == dbs.t1 and fire["goal_template"] == "follow up"
+    assert fire["event_payload"]["ticket"] == {"id": "T-9"}
+    assert fire["fire_instance_id"].startswith("delayed:")
+    # Claimed once: the next tick fires nothing until ev-2 is due.
+    assert await tasks._fire_due_delayed_fires_async(now + datetime.timedelta(seconds=2)) == 0
+    assert (await _row(dbs, sid))["last_fired_at"] is not None
+
+    # Paused: ev-2 waits; resumed: it fires (it was armed after the last re-arm? no ->
+    # armed before the resume and due after it, so it fires).
+    await store.set_paused_async(sid, paused=True, tenant_ctx=ctx)
+    assert await tasks._fire_due_delayed_fires_async(later + datetime.timedelta(seconds=1)) == 0
+    await store.set_paused_async(sid, paused=False, tenant_ctx=ctx)
+    assert await tasks._fire_due_delayed_fires_async(later + datetime.timedelta(seconds=1)) == 1
+
+    # Deleting the trigger deletes its pending fires.
+    assert await store.arm_delayed_fire_async(
+        schedule_id=sid, tenant_id=dbs.t1, event_id="ev-3", due_at=later, payload={}
+    )
+    # The API lists them (pending first) for the owner only.
+    from fastapi import FastAPI, Request
+
+    from app.api.triggers import router as triggers_router
+
+    def _app(tenant: str) -> Any:
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def _tenant(request: Request, call_next: Any) -> Any:
+            request.state.tenant = _ctx(tenant)
+            return await call_next(request)
+
+        app.include_router(triggers_router)
+        app.state.db_session_factory = dbs.app
+        app.state.schedule_store = _replica(dbs)
+        return app
+
+    async with _client(_app(dbs.t1)) as client:
+        listed = (await client.get(f"/triggers/{sid}/delayed-fires")).json()
+    assert [f["status"] for f in listed] == ["pending", "fired", "fired"]
+    assert listed[0]["event_id"] == "ev-3"
+    async with _client(_app(dbs.t2)) as client:
+        assert (await client.get(f"/triggers/{sid}/delayed-fires")).status_code == 404
+    assert await store.delete_async(sid, tenant_ctx=ctx)
+    async with dbs.admin() as s:
+        left = (
+            await s.execute(
+                text("SELECT count(*) FROM trigger_delayed_fires WHERE schedule_id = :s"),
+                {"s": sid},
+            )
+        ).scalar_one()
+    assert left == 0

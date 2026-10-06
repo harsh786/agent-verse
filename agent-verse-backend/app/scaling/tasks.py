@@ -5350,7 +5350,13 @@ def _next_evaluation_at(
         # TRG-54: polled every interval, not loaded on every tick.
         return now_aware + datetime.timedelta(seconds=_poll_interval_seconds(sched))
     if trigger_type in ("once", "relative_delay", "deadline"):
-        if last is not None:
+        from app.triggers.delayed import is_event_armed
+
+        if last is not None or is_event_armed(
+            trigger_type, str(sched.get("event_channel") or ""), str(sched.get("fire_at_iso") or "")
+        ):
+            # Fired one-shot, or an event-armed delay (its fires are
+            # trigger_delayed_fires rows, B1-8): never due by itself again.
             return _NEVER
         base = _one_shot_target_utc(sched)
         if base is None:
@@ -5547,6 +5553,85 @@ async def _pause_db_schedule(tenant_id: str, schedule_id: str) -> None:
             schedule_id=schedule_id,
             error=str(exc)[:200],
         )
+
+
+def _fire_due_delayed_fires(now: datetime.datetime) -> int:
+    """Sync entry for the beat: :func:`_fire_due_delayed_fires_async` (B1-8)."""
+    try:
+        return cast(int, _run_async(_fire_due_delayed_fires_async(now)))
+    except Exception as exc:
+        logger.warning("delayed_fires_failed: %s", exc)
+        return 0
+
+
+async def _fire_due_delayed_fires_async(now: datetime.datetime) -> int:
+    """Fire the due event-relative relative_delay fires (B1-8); returns the count.
+
+    Claimed in one statement (SKIP LOCKED, so two beats never claim the same
+    fire), each enqueued through the governed dispatch with the event as its
+    payload and ``delayed:<id>`` as its idempotency input. A fire whose enqueue
+    fails is released for the next tick. A fire armed before the trigger was
+    paused / edited and due before it was re-armed is dropped (as B1-1 drops
+    such slots).
+    """
+    from app.db.session import get_system_session_factory
+    from app.triggers.delayed import (
+        claim_due_delayed_fires,
+        prune_fired_delayed_fires,
+        release_delayed_fires,
+    )
+
+    factory = get_system_session_factory()
+    try:
+        claimed = await claim_due_delayed_fires(factory, now, limit=_due_batch_size())
+    except Exception as exc:
+        logger.warning("delayed_fire_claim_failed: %s", exc)
+        return 0
+    fired = 0
+    failed: list[str] = []
+    for row in claimed:
+        sched = _db_schedule_payload(_RowAttrs(row["schedule"]))
+        tenant_id = str(sched.get("tenant_id") or "")
+        schedule_id = str(sched.get("schedule_id") or "")
+        key = _schedule_key(tenant_id, schedule_id)
+        due = _schedule_datetime(row.get("due_at"))
+        armed = _schedule_datetime(sched.get("armed_at"))
+        created = _schedule_datetime(row.get("created_at"))
+        if armed and due and created and created < armed and due < armed:
+            logger.info("delayed_fire_dropped_rearmed schedule=%s fire=%s", key, row.get("id"))
+            continue
+        fire_instance_id = f"delayed:{row.get('id')}"
+        goal_kwargs = _scheduled_goal_kwargs(key, sched, fire_instance_id=fire_instance_id)
+        if goal_kwargs is None:
+            continue
+        payload = row.get("payload")
+        try:
+            _enqueue_governed_fire(
+                key,
+                sched,
+                goal_template=str(goal_kwargs["goal_template"]),
+                tenant_id=tenant_id,
+                agent_id=str(goal_kwargs.get("agent_id") or ""),
+                fire_instance_id=fire_instance_id,
+                event_payload=payload if isinstance(payload, dict) else {},
+            )
+        except Exception as exc:
+            logger.warning("delayed_fire_enqueue_failed schedule=%s: %s", key, exc)
+            failed.append(str(row.get("id")))
+            _record_schedule_fire_metric("error")
+            continue
+        if due is not None:
+            with contextlib.suppress(Exception):
+                await _update_db_schedule_last_fired_at(tenant_id, schedule_id, due)
+        _record_schedule_fire_metric("success")
+        fired += 1
+        logger.info("Fired relative_delay schedule %s (event fire %s)", key, row.get("id"))
+    if failed:
+        with contextlib.suppress(Exception):
+            await release_delayed_fires(factory, failed)
+    with contextlib.suppress(Exception):
+        await prune_fired_delayed_fires(factory, now)
+    return fired
 
 
 def _db_schedule_discovery_enabled() -> bool:
@@ -6546,6 +6631,10 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             except Exception as exc:
                 logger.warning("Error processing schedule key %s: %s", key, exc)
                 continue
+
+        # B1-8: fires armed by events for event-relative relative_delay triggers.
+        if _db_schedule_discovery_enabled():
+            fired += _fire_due_delayed_fires(now)
 
         # TRG-15: record when each DB schedule next needs evaluating, so the
         # next tick's indexed query skips it until then.

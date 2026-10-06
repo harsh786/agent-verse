@@ -103,3 +103,34 @@ class Schedule(Base):
     # ``armed_at or created_at``, so a new, resumed or re-timed schedule does not
     # replay slots from before it existed / while it was paused.
     armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TriggerDelayedFire(Base):
+    """One pending fire of an event-relative ``relative_delay`` trigger (B1-8,
+    migration e5a7c9b1d3f4): armed by an event, fired by the beat at ``due_at``."""
+
+    __tablename__ = "trigger_delayed_fires"
+    __table_args__ = (
+        Index("ix_trigger_delayed_fires_due", "due_at", postgresql_where=text("fired_at IS NULL")),
+        Index(
+            "ix_trigger_delayed_fires_fired",
+            "fired_at",
+            postgresql_where=text("fired_at IS NOT NULL"),
+        ),
+        Index("ix_trigger_delayed_fires_schedule", "tenant_id", "schedule_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    schedule_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

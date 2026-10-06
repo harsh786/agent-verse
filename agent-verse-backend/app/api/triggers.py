@@ -731,6 +731,53 @@ async def list_trigger_events(
         return [dict(r._mapping) for r in rows]
 
 
+@router.get("/{schedule_id}/delayed-fires", response_model=list[dict[str, Any]])
+async def list_delayed_fires(
+    schedule_id: str, request: Request, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Fires an event-relative relative_delay trigger has armed (B1-8): pending
+    ones first (soonest due first), then the most recently fired. Tenant-scoped
+    by RLS and an explicit ``tenant_id`` predicate."""
+    tenant_ctx = _require_tenant(request)
+    store = _get_store(request)
+    if await _store_get(store, schedule_id, tenant_ctx) is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    db = _get_db(request)
+    if db is None:
+        return []
+    limit = max(1, min(limit, 200))
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
+        rows = await session.execute(
+            text(
+                "SELECT id, event_id, due_at, fired_at, created_at "
+                "FROM trigger_delayed_fires "
+                "WHERE schedule_id = :sid AND tenant_id = :tenant "
+                "ORDER BY (fired_at IS NOT NULL), "
+                "CASE WHEN fired_at IS NULL THEN due_at END ASC, fired_at DESC "
+                "LIMIT :lim"
+            ),
+            {"sid": schedule_id, "tenant": tenant_ctx.tenant_id, "lim": limit},
+        )
+        out: list[dict[str, Any]] = []
+        for r in rows.mappings():
+            item = dict(r)
+            for key in ("due_at", "fired_at", "created_at"):
+                if item.get(key) is not None:
+                    item[key] = item[key].isoformat()
+            item["status"] = "fired" if item.get("fired_at") else "pending"
+            out.append(item)
+        return out
+
+
 # ── PATCH (partial update) ────────────────────────────────────────────────────
 
 

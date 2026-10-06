@@ -534,6 +534,36 @@ class ScheduleStore:
             if strict:
                 raise ScheduleStoreUnavailableError(f"schedule create failed: {exc}") from exc
 
+    async def arm_delayed_fire_async(
+        self,
+        *,
+        schedule_id: str,
+        tenant_id: str,
+        event_id: str,
+        due_at: datetime,
+        payload: dict[str, Any],
+    ) -> bool:
+        """Arm one event-relative relative_delay fire (B1-8); False when this
+        (trigger, event) was already armed. Needs the database (the beat fires
+        from it); raises ScheduleStoreUnavailableError without one."""
+        if self._db is None:
+            raise ScheduleStoreUnavailableError("event-relative delays need the database")
+        from app.triggers.delayed import arm_delayed_fire
+
+        try:
+            return await arm_delayed_fire(
+                self._db,
+                tenant_id=tenant_id,
+                schedule_id=schedule_id,
+                event_id=event_id,
+                due_at=due_at,
+                payload=payload,
+            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ScheduleStoreUnavailableError(f"delayed fire not armed: {exc}") from exc
+
     async def update_secret_async(
         self,
         schedule_id: str,
