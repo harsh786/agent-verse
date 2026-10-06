@@ -27,8 +27,8 @@ and the result visible on the goal.
   one-off time (B1-10).
 * TIME-SCALE-DUE-INDEX: hundreds of far-future schedules are not re-read on
   every tick (the beat claims only due rows, TRG-15).
-* TIME-CATCH-UP (disruptive: stops the beat; ``RW_ALLOW_BEAT_RESTART=1``):
-  slots missed while the beat is down replay per catch_up: all / latest / none.
+* TIME-CATCH-UP (disruptive: suppresses the trigger loop ~4 min and restarts the
+  beat; ``RW_ALLOW_BEAT_RESTART=1``): missed slots replay per catch_up: all / latest / none.
 * TIME-EXACTLY-ONCE (``RW_SECOND_BEAT_CONTAINER`` and
   ``RW_SECOND_SCHEDULE_WORKER_CONTAINER`` running): two beats and two schedule
   workers still create exactly one goal per slot.
@@ -63,6 +63,7 @@ ACK = "Reply with exactly the word ACK. Do not use any tools."
 WORKER = os.getenv("RW_WORKER_CONTAINER", "agentverse-backend-worker-1")
 BEAT = os.getenv("RW_BEAT_CONTAINER", "agentverse-backend-beat-1")
 SCHEDULE_WORKER = os.getenv("RW_SCHEDULE_WORKER_CONTAINER", "agentverse-backend-schedule-worker-1")
+REDIS = os.getenv("RW_REDIS_CONTAINER", "agentverse-backend-redis-1")
 # How late a fire may start after its due instant: the tick runs on the minute
 # (B1-7) for minute-aligned slots; a one-shot due mid-minute waits for the next.
 ALIGNED_LATENESS_S = float(os.getenv("RW_ALIGNED_LATENESS_S", "45"))
@@ -632,39 +633,52 @@ def _first_tick_after(when: datetime) -> datetime | None:
 @pytest.mark.scenario("TIME-CATCH-UP")
 def test_missed_runs_after_a_beat_outage_follow_catch_up(ent: LiveAPI,
                                                          evidence: dict[str, Any]) -> None:
+    """The trigger loop is taken down for ~4 minutes, then the beat restarts.
+
+    The outage holds the beat's own overlap guard (``beat_guard:fire_due_schedules``
+    in Redis), so every tick in the window is skipped exactly as if no beat ran.
+    Stopping the beat container is not enough on this machine: the launchd
+    runtime (scripts/run_forever.py) starts its own beat when compose's is gone.
+    """
     if os.getenv("RW_ALLOW_BEAT_RESTART") != "1":
-        pytest.skip("stops the live beat for ~4 minutes: set RW_ALLOW_BEAT_RESTART=1")
+        pytest.skip("suppresses the live trigger loop for ~4 minutes: set RW_ALLOW_BEAT_RESTART=1")
     if not _running(BEAT):
         pytest.skip(f"beat container {BEAT!r} is not running")
     todo: list[str] = []
+    guard = "beat_guard:fire_due_schedules"
     try:
         ids = {p: str(_trigger(ent, todo, {"trigger_type": "cron", "cron_expression": "* * * * *",
                                            "catch_up": p}, f"{ACK} (catch-up {p})")["schedule_id"])
                for p in ("all", "latest", "none")}
         for sid in ids.values():
             _wait_runs(ent, sid, 1, 150, "a fire before the outage")
-        assert _docker("stop", BEAT).returncode == 0
+        held = _docker("exec", REDIS, "redis-cli", "SET", guard, "rw-catch-up-outage", "EX", "400")
+        assert held.returncode == 0 and "OK" in held.stdout, held.stdout + held.stderr
         stopped = _now()
-        time.sleep(200)  # >= 3 minute slots pass with no beat
-        assert _docker("start", BEAT).returncode == 0
-        started = _now()
-        missed = int((started - stopped).total_seconds() // 60)
-        # The first tick after the restart (RedBeat may wait for its lock)
-        # replays per policy; read when it ran from the schedule worker's log.
-        first_tick = wait_until(lambda: _first_tick_after(started), timeout=420, interval=10,
-                                desc="the first beat tick after the restart")
-        _sleep_until(first_tick + timedelta(seconds=50))
+        time.sleep(200)  # >= 3 minute slots pass with no trigger tick
+        assert _docker("restart", BEAT).returncode == 0
+        _docker("exec", REDIS, "redis-cli", "DEL", guard)
+        released = _now()
+        missed = int((released - stopped).total_seconds() // 60)
+        first_tick = wait_until(lambda: _first_tick_after(released), timeout=180, interval=5,
+                                desc="the first trigger tick after the outage")
+        _sleep_until(first_tick + timedelta(seconds=40))
         burst = {p: len([r for r in _goal_runs(ent, sid, after=stopped)
-                         if _ts(r["started_at"]) <= first_tick + timedelta(seconds=40)])  # type: ignore[operator]
+                         if _ts(r["started_at"]) <= first_tick + timedelta(seconds=30)])  # type: ignore[operator]
                  for p, sid in ids.items()}
-        evidence.update(missed_minutes=missed, first_tick=first_tick.isoformat(), burst=burst)
+        during = {p: len([r for r in _goal_runs(ent, sid, after=stopped + timedelta(seconds=5))
+                          if _ts(r["started_at"]) < released])  # type: ignore[operator]
+                  for p, sid in ids.items()}
+        evidence.update(missed_minutes=missed, first_tick=first_tick.isoformat(), burst=burst,
+                        fires_during_outage=during)
+        assert during == {"all": 0, "latest": 0, "none": 0}, f"fired during the outage: {during}"
         assert burst["all"] >= 3, f"catch_up=all replayed {burst['all']} of ~{missed + 1} slots"
         assert burst["latest"] == 1, f"catch_up=latest fired {burst['latest']}"
         assert burst["none"] <= 1, f"catch_up=none fired {burst['none']} (only an on-time slot)"
-        # Every replayed slot is its own goal.
         runs = _goal_runs(ent, ids["all"], after=stopped)
         assert len({r["goal_id"] for r in runs}) == len(runs)
     finally:
+        _docker("exec", REDIS, "redis-cli", "DEL", guard)
         if not _running(BEAT):
             _docker("start", BEAT)
         _cleanup(ent, todo)
