@@ -84,11 +84,13 @@ async def probe_connector(cfg: Any) -> dict[str, Any]:
     base = (cfg.base_url or cfg.url or "").rstrip("/")
     t0 = time.monotonic()
     nets = private_access_networks()
+    # Private networks only when ALLOW_PRIVATE_NETWORK_ACCESS is on; otherwise the
+    # call is exactly the public-only probe it always was.
+    net_kw: dict[str, Any] = {"allowed_networks": nets} if nets is not None else {}
     try:
-        async with public_async_client(timeout=PROBE_TIMEOUT_S, allowed_networks=nets) as client:
+        async with public_async_client(timeout=PROBE_TIMEOUT_S, **net_kw) as client:
             resp = await request_public(
-                client, "GET", f"{base}/health", context="mcp health check",
-                allowed_networks=nets,
+                client, "GET", f"{base}/health", context="mcp health check", **net_kw
             )
     except Exception as exc:
         return {"status": "unreachable", "latency_ms": None, "error": str(exc)[:200]}

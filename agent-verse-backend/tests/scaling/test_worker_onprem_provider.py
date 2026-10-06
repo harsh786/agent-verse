@@ -101,8 +101,10 @@ def _capture_graph(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def _raw(provider: object) -> object:
-    """The provider inside a TracedProvider (PROV-23 wraps worker role providers)."""
-    return getattr(provider, "_inner", provider)
+    """The provider inside a TracedProvider (PROV-23 wraps worker role providers)
+    and the per-model dispatch wrapper (MR-4) around the deployment provider."""
+    inner = getattr(provider, "_inner", provider)
+    return getattr(inner, "inner", inner)
 
 
 def test_worker_agent_runner_gets_multi_endpoint_provider_and_role_map(

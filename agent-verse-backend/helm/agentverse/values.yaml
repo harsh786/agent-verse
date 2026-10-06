@@ -223,6 +223,9 @@ externalSecrets:
 ingestion:
   allowInternalSources: false
   internalSourceAllowlist: ""
+  # Private / internal hosts and IPs for ingestion, connectors and model
+  # endpoints (cloud metadata / link-local still blocked). false = public only.
+  allowPrivateNetworkAccess: true
 
 # OCR-PAR: OCR parallelism, one bounded pool per process shared by every document
 # (uploads, /ocr, ZIP members, ingestion jobs). maxConcurrency = OCR threads and
@@ -233,6 +236,8 @@ ingestion:
 # tesseract's OpenMP threads (pages already run in parallel). Rendered into the
 # shared config map, so the API and every worker use the same limits.
 ocr:
+  # false (default) = skip Tesseract; the LLM-vision OCR model reads every page.
+  tesseractEnabled: false
   maxConcurrency: 0
   pageConcurrency: 0
   visionConcurrency: 4
