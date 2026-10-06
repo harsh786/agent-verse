@@ -260,17 +260,27 @@ def _restore_guardrail_rule_repository():
 
 @pytest.fixture(autouse=True)
 def _restore_model_registry_store():
-    """Undo a shared model-registry store bound during a test.
+    """Undo a shared model-registry store and registry state bound during a test.
 
     ``run_goal`` and the API lifespan bind the process-global store to Redis
     (the test env's Redis is unreachable); left bound, every later routing-policy
     or configured-model call in the run answers 503 "store unavailable".
     """
-    from app.ai_router import registry_store
+    from app.ai_router import registry_store, selection
+    from app.ai_router.registry import model_registry
 
     saved = registry_store._store
+    # The configured set and the per-capability preference order are process
+    # state too: a test that saved an order (or registered models) used to leave
+    # it behind, and every later role-routing test then picked that model.
+    saved_configured = dict(model_registry._configured)
+    saved_preferences = {k: list(v) for k, v in model_registry._preferences.items()}
+    saved_seed = (selection._lazy_seeded, selection._seeded_version)
     yield
     registry_store._store = saved
+    model_registry._configured = saved_configured
+    model_registry._preferences = saved_preferences
+    selection._lazy_seeded, selection._seeded_version = saved_seed
 
 
 @pytest.fixture(autouse=True)
