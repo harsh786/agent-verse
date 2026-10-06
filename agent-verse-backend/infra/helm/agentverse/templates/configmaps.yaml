@@ -9,6 +9,8 @@ data:
   SMTP_HOST: {{ include "agentverse.fullname" . }}-mailpit
   SMTP_PORT: "1025"
   SMTP_TLS: "false"
+  # DEF-NEW-1: messaging gateway public HTTPS base URL (values: gateway.publicBaseUrl).
+  GATEWAY_PUBLIC_BASE_URL: {{ .Values.gateway.publicBaseUrl | quote }}
   # EGRESS-CFG: operator-only connector egress escape hatch (values: ingestion.*).
   # Every app workload (API, workers, beat) reads this one ConfigMap.
   INGESTION_ALLOW_INTERNAL_SOURCES: {{ .Values.ingestion.allowInternalSources | quote }}

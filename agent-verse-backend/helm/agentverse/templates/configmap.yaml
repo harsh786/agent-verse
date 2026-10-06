@@ -12,6 +12,8 @@ data:
   CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otlpEndpoint | quote }}
   METRICS_ENABLED: {{ .Values.config.metricsEnabled | quote }}
+  # DEF-NEW-1: messaging gateway public HTTPS base URL (values: gateway.publicBaseUrl).
+  GATEWAY_PUBLIC_BASE_URL: {{ .Values.gateway.publicBaseUrl | quote }}
   # EGRESS-CFG: operator-only connector egress escape hatch (values: ingestion.*).
   # Every app workload (API, workers, beat) reads this one ConfigMap.
   INGESTION_ALLOW_INTERNAL_SOURCES: {{ .Values.ingestion.allowInternalSources | quote }}
