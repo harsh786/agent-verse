@@ -1597,7 +1597,8 @@
             "type": "string"
           },
           "timeout_seconds": {
-            "default": 300,
+            "default": 0,
+            "minimum": 0.0,
             "title": "Timeout Seconds",
             "type": "integer"
           },
@@ -2406,6 +2407,11 @@
             "default": 0,
             "title": "Priority",
             "type": "integer"
+          },
+          "timezone": {
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
           },
           "tools_pattern": {
             "title": "Tools Pattern",
@@ -3292,6 +3298,63 @@
           "to_user_id"
         ],
         "title": "DelegateAllRequest",
+        "type": "object"
+      },
+      "DelegateGrantRequest": {
+        "description": "A narrowed child of an existing grant (a03-F055-02).\n\nEvery field may only NARROW the parent: omitted scopes / window / cap\ninherit the parent's (the cap defaults to the parent's REMAINING budget, as\nthe automatic sub-agent delegation does); anything wider is a 400.",
+        "properties": {
+          "grantee_agent_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Grantee Agent Id",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 31536000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          }
+        },
+        "required": [
+          "grantee_agent_id"
+        ],
+        "title": "DelegateGrantRequest",
         "type": "object"
       },
       "DelegateRequest": {
@@ -19080,7 +19143,7 @@
     },
     "/api/v1/workflows/import-yaml": {
       "post": {
-        "description": "Import a workflow definition from a YAML body.",
+        "description": "Import a workflow definition from a YAML body (always a NEW draft workflow).\n\nWebhook HMAC secrets (B2-GAP-3): an exported YAML carries ``auth: hmac``\nwebhooks with the secret masked (``hmac_secret: '********'``) \u2014 exports never\ncontain it. Importing such a file is refused with **422** naming the fix: put\na new secret in ``hmac_secret`` (and configure the sender with it), or remove\n``auth: hmac``. The import is never created with an empty secret (it would\nrefuse every delivery), never copies a secret from another workflow, and no\nsecret is generated or echoed back. A plaintext ``hmac_secret`` in the YAML\nis stored vault-encrypted and masked in the response.",
         "operationId": "import_yaml_api_v1_workflows_import_yaml_post",
         "responses": {
           "201": {
@@ -32151,6 +32214,106 @@
           }
         },
         "summary": "Get Grant",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
+    "/grants/{grant_id}/chain": {
+      "get": {
+        "description": "The grant, its ancestors (parent first, up to the root) and its direct delegations.",
+        "operationId": "get_grant_chain_grants__grant_id__chain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Grant Chain Grants  Grant Id  Chain Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Grant Chain",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
+    "/grants/{grant_id}/delegate": {
+      "post": {
+        "description": "Delegate a narrowed copy of *grant_id* to another agent of the tenant.\n\nDelegation used to happen only inside the sub-agent spawn path\n(``delegate_active_grants``); an administrator could not create one or see\nthe result. The child records ``parent_grant_id``: revoking the parent\nrevokes it, and its spend counts against the parent's budget.",
+        "operationId": "delegate_grant_grants__grant_id__delegate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DelegateGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delegate Grant Grants  Grant Id  Delegate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delegate Grant",
         "tags": [
           "grants"
         ]
@@ -46946,7 +47109,7 @@
     },
     "/triggers/dlq/{dlq_id}/retry": {
       "post": {
-        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.",
+        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.\n\nThe retry is dispatched under the dedup key the original firing had\n(``trigger_dlq.idempotency_key``, B2-OPEN-2), so it is idempotent with a\nsender redelivery of the same firing: after a successful redelivery the\nretry is a ``dedup`` no-op, and a redelivery after the retry is deduped.\nEither way the entry is resolved. A throttled retry is not dead-lettered\nagain \u2014 this entry stays open for the next retry.",
         "operationId": "retry_dlq_entry_triggers_dlq__dlq_id__retry_post",
         "parameters": [
           {
@@ -47091,7 +47254,7 @@
     },
     "/triggers/webhooks/{webhook_type}/{token}": {
       "post": {
-        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).",
+        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).\n\nReplay protection of a signed generic delivery (B2-GAP-1): the delivery-id\nheaders are not signed, so identity comes from the signed bytes. A legacy\nbody-only signature dedupes on the signed body, unwindowed, and the body of\nevery delivery that ran is remembered (``vendor_webhook_replay_guard``) for as\nlong as the secret that signed it is accepted: the same signed body never\nfires twice. Senders whose events can repeat a byte-identical body must use\nthe timestamped scheme, whose exact signed bytes are guarded for the window.",
         "operationId": "receive_typed_webhook_triggers_webhooks__webhook_type___token__post",
         "parameters": [
           {
@@ -47887,7 +48050,7 @@
     },
     "/trust/compliance-bundles": {
       "get": {
-        "description": "List available compliance bundles.",
+        "description": "List the compliance bundles this tenant can enable here.\n\na03-F057-03: this listed the guardrails-v2 rule catalogue (ids ``pci``,\n``dpdp``, ``sox``) while enable/disable below use\n``app.governance.compliance_bundles`` (``pci_dss``, ``india_dpdp``, no SOX),\nso two listed ids answered 400 on enable and the listed facts were not the\nones enabling applies. Each entry is now the governance bundle itself, with\nthe guardrails-v2 rule bundle that carries its content rules, if any.",
         "operationId": "list_compliance_bundles_trust_compliance_bundles_get",
         "responses": {
           "200": {
