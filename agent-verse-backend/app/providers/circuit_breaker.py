@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
 from app.providers.rate_limit import is_rate_limit_error, with_rate_limit_retry
+from app.providers.shared_circuit import (
+    shared_admit,
+    shared_is_open,
+    shared_record_failure,
+    shared_record_success,
+    shared_release_probe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +99,73 @@ class ProviderCircuitBreaker:
             self._half_open_calls[provider_name] -= 1
 
 
-# Module-level singleton shared across all graph instances.
+# Module-level singleton shared across all graph instances of this process. The
+# fleet-wide view (every replica and worker) lives in Redis: see
+# app.providers.shared_circuit (a01-F023-02).
 _provider_cb = ProviderCircuitBreaker()
+
+
+@dataclass(slots=True)
+class CircuitAdmission:
+    """One admitted call: report exactly one outcome for it."""
+
+    key: str
+    # Held when this call is the fleet-wide half-open probe.
+    probe_token: str | None = None
+
+
+async def circuit_open_anywhere(provider_name: str) -> bool:
+    """True when this process's circuit or the fleet's is open for ``provider_name``.
+
+    A cheap pre-check (it takes no probe slot): callers that skip to the next
+    model use it; the call itself is admitted with :func:`admit_call`.
+    """
+    if _provider_cb.is_open(provider_name):
+        return True
+    return await shared_is_open(provider_name, recovery_timeout=_provider_cb._recovery_timeout)
+
+
+async def admit_call(provider_name: str) -> CircuitAdmission:
+    """Admit one provider call or raise :class:`ProviderCircuitOpenError`.
+
+    Refused when this process's circuit is open, or when the fleet's is (failures
+    reported by any replica/worker), or while another process holds the
+    fleet-wide half-open probe.
+    """
+    if _provider_cb.is_open(provider_name):
+        raise ProviderCircuitOpenError(
+            f"LLM provider circuit open for {provider_name}. Too many recent failures."
+        )
+    verdict = await shared_admit(provider_name, recovery_timeout=_provider_cb._recovery_timeout)
+    if verdict.open:
+        raise ProviderCircuitOpenError(
+            f"LLM provider circuit open for {provider_name} (fleet-wide). "
+            "Too many recent failures."
+        )
+    _provider_cb.before_call(provider_name)
+    return CircuitAdmission(provider_name, verdict.probe_token)
+
+
+async def report_success(admission: CircuitAdmission) -> None:
+    _provider_cb.record_success(admission.key)
+    await shared_record_success(admission.key, probe_token=admission.probe_token)
+
+
+async def report_failure(admission: CircuitAdmission) -> None:
+    _provider_cb.record_failure(admission.key)
+    await shared_record_failure(
+        admission.key,
+        failure_threshold=_provider_cb._failure_threshold,
+        recovery_timeout=_provider_cb._recovery_timeout,
+        probe_token=admission.probe_token,
+    )
+
+
+async def report_no_verdict(admission: CircuitAdmission) -> None:
+    """Cancelled, or a caller-side refusal: free the probe slot (local and fleet)."""
+    _provider_cb.release_probe(admission.key)
+    with contextlib.suppress(BaseException):
+        await shared_release_probe(admission.key, probe_token=admission.probe_token)
 
 
 async def call_with_circuit_breaker(
@@ -104,15 +178,11 @@ async def call_with_circuit_breaker(
 ) -> Any:
     """Wrap a provider call with circuit breaker protection.
 
-    Raises ``RuntimeError`` when the circuit is open so callers can fail fast
+    Raises ``ProviderCircuitOpenError`` (a ``RuntimeError``) when the circuit is
+    open — in this process or anywhere in the fleet — so callers fail fast
     without hitting a broken downstream provider.
     """
-    if _provider_cb.is_open(provider_name):
-        raise ProviderCircuitOpenError(
-            f"LLM provider circuit open for {provider_name}. Too many recent failures."
-        )
-
-    _provider_cb.before_call(provider_name)
+    admission = await admit_call(provider_name)
     recorded = False
     try:
         timeout = timeout_seconds
@@ -122,12 +192,13 @@ async def call_with_circuit_breaker(
             getattr(provider, method_name)(*args, **kwargs),
             timeout=timeout,
         )
-        _provider_cb.record_success(provider_name)
         recorded = True
+        await report_success(admission)
         return result
     except TimeoutError as exc:
-        _provider_cb.record_failure(provider_name)
-        recorded = True
+        if not recorded:
+            recorded = True
+            await report_failure(admission)
         raise TimeoutError(
             f"LLM provider call timed out for {provider_name} after {timeout}s"
         ) from exc
@@ -136,16 +207,21 @@ async def call_with_circuit_breaker(
         # not a provider failure and must not open the circuit for everyone. Nor is
         # throttling (HTTP 429): the provider is healthy and asked us to slow down;
         # counting it opened the circuit for every caller for 60 s (P5-1).
-        if getattr(exc, "provider_failure", True) and not is_rate_limit_error(exc):
-            _provider_cb.record_failure(provider_name)
+        if (
+            not recorded
+            and getattr(exc, "provider_failure", True)
+            and not is_rate_limit_error(exc)
+        ):
             recorded = True
+            await report_failure(admission)
         raise
     finally:
         # CancelledError (a BaseException) or a non-provider refusal: no verdict.
         # Without this the single half-open slot stayed used and the circuit
-        # reported open until the process restarted.
+        # reported open until the process restarted (and, fleet-wide, until the
+        # probe key expired).
         if not recorded:
-            _provider_cb.release_probe(provider_name)
+            await report_no_verdict(admission)
 
 
 def _provider_identity(provider: Any) -> str:

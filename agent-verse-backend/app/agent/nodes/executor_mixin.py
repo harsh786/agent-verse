@@ -147,6 +147,22 @@ def _is_step_refusal(output: str | None) -> bool:
     return any(marker in lowered for marker in _REFUSAL_MARKERS)
 
 
+ACTION_SCOPE_KEY = "_action_scope_id"
+
+
+def _action_scope_id(state: Any) -> str:
+    """Identity of the goal's side-effecting actions (ledger + idempotency keys).
+
+    The goal id, except for a goal-tree child: it runs under a new id per
+    execution (its own checkpoint thread) but keeps ``<parent>:<sub_goal_id>``
+    here, so a child re-run after a crash replays the calls its interrupted run
+    made and re-issues an in-flight one under the same key (a01-F007-01).
+    """
+    ctx = getattr(state, "context", None)
+    scope = ctx.get(ACTION_SCOPE_KEY) if isinstance(ctx, dict) else None
+    return str(scope or getattr(state, "goal_id", "") or "")
+
+
 # ── Governed semantic step cache ────────────────────────────────────────────
 # A step's cached answer is reused only from INSIDE the governed pipeline, after
 # every step-level gate (guardrails, action safety, permission matrix, policy,
@@ -1544,7 +1560,7 @@ class ExecutorMixin:
             "read"
         ):
             key = call_idempotency_key(
-                str(getattr(state, "goal_id", "") or ""), call_fingerprint(server_id, name, args)
+                _action_scope_id(state), call_fingerprint(server_id, name, args)
             )
         return idempotency_scope(key)
 
@@ -1559,7 +1575,7 @@ class ExecutorMixin:
         return GoalActionLedger(
             state.context,
             tenant_id=getattr(tenant_ctx, "tenant_id", "") or "",
-            goal_id=state.goal_id or "",
+            goal_id=_action_scope_id(state),
             redis=redis,
         )
 

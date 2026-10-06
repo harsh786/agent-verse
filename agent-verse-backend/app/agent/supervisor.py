@@ -111,6 +111,19 @@ class SupervisorAgent:
         self._max_parallel = max_parallel
         self._timeout = timeout_per_subtask
 
+    async def _cancel_abandoned(self, task: SubAgentTask, tenant_ctx: Any) -> None:
+        cancel = getattr(self._goal_service, "cancel_goal", None)
+        if not task.goal_id or cancel is None:
+            return
+        try:
+            await cancel(goal_id=task.goal_id, tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            logger.warning(
+                "supervisor_abandoned_subgoal_cancel_failed",
+                goal_id=task.goal_id,
+                error=type(exc).__name__,
+            )
+
     async def run(
         self,
         goal: str,
@@ -280,6 +293,9 @@ class SupervisorAgent:
                 except TimeoutError:
                     task.status = "failed"
                     task.error = f"Timeout after {self._timeout}s"
+                    # The parent gives up on it: stop the sub-goal too, or it keeps
+                    # running (and spending) with a result nobody will read.
+                    await self._cancel_abandoned(task, tenant_ctx)
                 except Exception as exc:
                     task.status = "failed"
                     task.error = str(exc)

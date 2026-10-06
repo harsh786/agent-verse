@@ -123,6 +123,10 @@ async def execute_sub_goal(
             if parent_goal_id:
                 initial_context["parent_goal_id"] = parent_goal_id
                 initial_context["_budget_goal_id"] = parent_goal_id
+                # Stable across re-runs of this child (the goal id above is not):
+                # the action ledger and idempotency keys use it, so a child re-run
+                # after a crash does not repeat its side effects (a01-F007-01).
+                initial_context["_action_scope_id"] = f"{parent_goal_id}:{sub_goal.sub_goal_id}"
             state: AgentState = await graph.run(
                 goal=sub_goal.description,
                 tenant_ctx=tenant_ctx,

@@ -457,6 +457,23 @@ export interface PatternSelectionResponse {
   };
   rationale: PatternRationale[];
   available_patterns: AgentPatternCatalogEntry[];
+  /** The selection above is the selector's recommendation from the goal text. */
+  selection_kind?: 'recommendation' | string;
+  /** What the goal's runtime actually ran (its strategy_execution record). */
+  execution?:
+    | { state: 'pending' }
+    | {
+        state: 'recorded';
+        driver: string;
+        patterns: string[];
+        requested_primary?: string | null;
+        downgrades: Array<Record<string, string>>;
+      };
+  executed_patterns?: string[];
+  /** null while the runtime has not been built yet. */
+  matches_execution?: boolean | null;
+  strategy_downgraded?: boolean;
+  strategy_downgrade?: { reason?: string } | null;
 }
 
 export const goalsApi = {

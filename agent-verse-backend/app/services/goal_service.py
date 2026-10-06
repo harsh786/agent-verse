@@ -744,6 +744,22 @@ def _routing_outcome(decision: Any) -> dict[str, Any]:
     }
 
 
+
+def _router_vendor_of(provider: Any) -> str:
+    """The goal provider's vendor for model routing ("anthropic", "nvidia", ...).
+
+    The worker's ModelRouter is built per provider type; the API path's
+    ModelOrchestratorAdapter gets the same signal (a01-F022-02).
+    """
+    if provider is None:
+        return ""
+    from app.observability.traced_provider import provider_system_of, unwrap_provider
+
+    inner = unwrap_provider(provider)
+    inner = getattr(inner, "inner", inner)  # the per-model dispatch wrapper
+    vendor = provider_system_of(inner)
+    return "" if vendor == "unknown" else vendor
+
 class GoalService:
     """In-memory goal service.
 
@@ -1757,6 +1773,8 @@ class GoalService:
                 orchestrator=ModelOrchestrator(),
                 default_tier=_agent_config.get("model_tier", "medium"),
             )
+            # Last-resort role models follow THIS goal's provider (a01-F022-02).
+            _model_router.set_provider_vendor(_router_vendor_of(provider))
         except Exception:
             # Fallback to simple ModelRouter if orchestrator fails
             try:
@@ -5019,12 +5037,14 @@ class GoalService:
     async def get_pattern_selection(
         self, goal_id: str, tenant_ctx: TenantContext
     ) -> dict[str, Any]:
-        """Return the agent pattern this goal was routed to (+ why).
+        """Return the agent pattern selected for this goal (+ why) and what ran.
 
         Reads the ``pattern_selection`` record persisted at goal creation (which
         reflects any explicit strategy override); recomputes the summary on demand
         for goals persisted before the record existed. ``get_goal`` intentionally
         does not surface ``execution_context``, so this reads the record directly.
+        The selection is a recommendation; ``execution`` / ``matches_execution``
+        report the runtime's own ``strategy_execution`` record.
         """
         record = self._goals.get(goal_id)
         if record is None or record.tenant_id != tenant_ctx.tenant_id:
@@ -5045,6 +5065,11 @@ class GoalService:
                 tenant_id=tenant_ctx.tenant_id,
                 agent_config=strategy_runtime if isinstance(strategy_runtime, dict) else None,
             )
+        # The selection is the selector's recommendation from the goal text; the
+        # runtime's own record says what actually ran (a01-F013-02).
+        from app.orchestration.pattern_selection_summary import with_execution
+
+        selection = with_execution(selection, ctx)
         return {"goal_id": goal_id, "status": record.status.value, **selection}
 
     async def list_goals(

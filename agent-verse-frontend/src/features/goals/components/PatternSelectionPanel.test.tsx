@@ -70,6 +70,31 @@ describe('PatternSelectionPanel', () => {
     navigateSpy.mockReset();
   });
 
+  it('says what the runtime actually ran when it differs from the selection', async () => {
+    getPatternSelection.mockResolvedValue({
+      ...SELECTION,
+      selection_kind: 'recommendation',
+      execution: { state: 'recorded', driver: 'agent_graph', patterns: ['plan_execute', 'supervisor'], downgrades: [] },
+      executed_patterns: ['plan_execute', 'supervisor'],
+      matches_execution: false,
+    });
+    render(<PatternSelectionPanel goalId="g1" goalText="do a thing" />, { wrapper: wrapper() });
+    expect(await screen.findByTestId('pattern-executed')).toHaveTextContent('Plan Execute + Supervisor');
+    expect(screen.getByTestId('pattern-execution-mismatch')).toBeInTheDocument();
+  });
+
+  it('shows no execution line before the runtime is built', async () => {
+    getPatternSelection.mockResolvedValue({
+      ...SELECTION,
+      execution: { state: 'pending' },
+      executed_patterns: [],
+      matches_execution: null,
+    });
+    render(<PatternSelectionPanel goalId="g1" goalText="do a thing" />, { wrapper: wrapper() });
+    await screen.findByTestId('pattern-primary-name');
+    expect(screen.queryByTestId('pattern-execution')).toBeNull();
+  });
+
   it('renders the real auto-selected pattern and its rationale', async () => {
     render(<PatternSelectionPanel goalId="g1" goalText="do a thing" />, { wrapper: wrapper() });
     expect(await screen.findByTestId('pattern-primary-name')).toHaveTextContent('ReAct');

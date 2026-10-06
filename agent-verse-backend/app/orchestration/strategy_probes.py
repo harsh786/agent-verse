@@ -103,7 +103,9 @@ def _embedder_probe(state: Any) -> Probe:
         embedder = getattr(state, "embedder", None)
         if embedder is None:
             return DependencyProbeResult.not_ready("not_configured")
-        if "fake" in type(embedder).__name__.lower():
+        from app.observability.traced_provider import unwrap_provider
+
+        if "fake" in type(unwrap_provider(embedder)).__name__.lower():
             return DependencyProbeResult.degraded("simulated_embedder")
         return DependencyProbeResult.ready()
 
