@@ -251,6 +251,23 @@ function EmergencyStopBanner() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const hh = (h: number) => `${String(h).padStart(2, '0')}:00`;
+
+/** Active hours as ranges, e.g. [9, 10, 11, 14] → "09:00–12:00, 14:00–15:00". */
+function formatActiveHours(hours: number[]): string {
+  const sorted = [...new Set(hours)].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  let start = sorted[0];
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i + 1] !== sorted[i] + 1) {
+      ranges.push(`${hh(start)}–${hh(sorted[i] + 1)}`);
+      start = sorted[i + 1];
+    }
+  }
+  return ranges.join(', ');
+}
+
 const PATTERN_EXAMPLES = [
   'shell:*', 'github:delete*', 'jira:create*', 'slack:*', '*:delete*', 'deploy:*',
 ];
@@ -484,8 +501,11 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
     }
     createMutation.mutate({
       ...form,
-      allowed_hours_utc: useTimeWindow && selectedHours.length ? selectedHours : undefined,
-      allowed_weekdays: useTimeWindow && selectedDays.length ? selectedDays : undefined,
+      // One entry per hour/day the policy is ACTIVE in (a set, not a range).
+      allowed_hours_utc:
+        useTimeWindow && selectedHours.length ? [...selectedHours].sort((a, b) => a - b) : undefined,
+      allowed_weekdays:
+        useTimeWindow && selectedDays.length ? [...selectedDays].sort((a, b) => a - b) : undefined,
     });
   };
 
@@ -629,12 +649,16 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
                 className="rounded"
               />
               <Clock className="h-4 w-4" />
-              <span>Restrict to time window</span>
+              <span>Active only during a time window</span>
             </label>
             {useTimeWindow && (
               <div className="pl-6 space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  The policy applies only during the selected hours and days; it is not enforced
+                  outside them.
+                </p>
                 <div>
-                  <p className="text-xs text-muted-foreground mb-1.5">Allowed hours (UTC)</p>
+                  <p className="text-xs text-muted-foreground mb-1.5">Active hours (UTC)</p>
                   <div className="flex flex-wrap gap-1">
                     {Array.from({ length: 24 }, (_, h) => (
                       <button
@@ -653,7 +677,7 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
                   </div>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground mb-1.5">Allowed days</p>
+                  <p className="text-xs text-muted-foreground mb-1.5">Active days</p>
                   <div className="flex flex-wrap gap-1">
                     {WEEKDAYS.map((d, i) => (
                       <button
@@ -760,10 +784,23 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
                       {p.action}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5">
+                  <td className="px-3 py-2.5" data-testid={`policy-window-${p.policy_id}`}>
                     {p.allowed_hours_utc?.length || p.allowed_weekdays?.length ? (
-                      <div className="flex items-center gap-1 text-xs text-amber-600">
-                        <Clock className="h-3 w-3" /> Restricted
+                      <div className="flex items-start gap-1 text-xs text-amber-600">
+                        <Clock className="h-3 w-3 mt-0.5 shrink-0" />
+                        <div>
+                          <p>
+                            Active{' '}
+                            {p.allowed_hours_utc?.length
+                              ? `${formatActiveHours(p.allowed_hours_utc)} UTC`
+                              : 'all day'}
+                          </p>
+                          <p className="text-muted-foreground">
+                            {p.allowed_weekdays?.length
+                              ? p.allowed_weekdays.map((d) => WEEKDAYS[d] ?? d).join(', ')
+                              : 'every day'}
+                          </p>
+                        </div>
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">Always</span>

@@ -525,12 +525,22 @@ describe('GovernancePage — Policies tab advanced', () => {
     expect(screen.queryByText(/Delete 1/)).not.toBeInTheDocument();
   });
 
-  test('shows time-restricted badge when policy has hour/day windows', async () => {
+  test('shows the hours and days a time-windowed policy is active in', async () => {
     mockFetch({
-      policies: [{ ...POLICY, allowed_hours_utc: [9, 10], allowed_weekdays: [1, 2] }],
+      policies: [{ ...POLICY, allowed_hours_utc: [9, 10, 11, 14], allowed_weekdays: [1, 2] }],
     });
     renderGovernancePage();
-    await waitFor(() => expect(screen.getByText('Restricted')).toBeInTheDocument());
+    const cell = await screen.findByTestId('policy-window-pol-1');
+    expect(cell).toHaveTextContent('Active 09:00–12:00, 14:00–15:00 UTC');
+    expect(cell).toHaveTextContent('Tue, Wed');
+  });
+
+  test('shows an hours-only window as active every day', async () => {
+    mockFetch({ policies: [{ ...POLICY, allowed_hours_utc: [23] }] });
+    renderGovernancePage();
+    const cell = await screen.findByTestId('policy-window-pol-1');
+    expect(cell).toHaveTextContent('Active 23:00–24:00 UTC');
+    expect(cell).toHaveTextContent('every day');
   });
 
   test('shows "Always" window label when no time restriction is set', async () => {
@@ -563,8 +573,10 @@ describe('GovernancePage — Policies tab advanced', () => {
     renderGovernancePage();
     await waitFor(() => expect(screen.getByTestId('policies-empty')).toBeInTheDocument());
     await userEvent.click(screen.getByText(/New Policy/));
-    await userEvent.click(screen.getByText('Restrict to time window'));
-    expect(screen.getByText('Allowed hours (UTC)')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Active only during a time window'));
+    expect(screen.getByText('Active hours (UTC)')).toBeInTheDocument();
+    expect(screen.getByText('Active days')).toBeInTheDocument();
+    expect(screen.getByText(/not enforced outside/)).toBeInTheDocument();
     const hourBtn = screen.getByText('9');
     await userEvent.click(hourBtn);
     await userEvent.click(hourBtn); // toggle off, covers the deselect branch
@@ -589,13 +601,17 @@ describe('GovernancePage — Policies tab advanced', () => {
     await userEvent.click(screen.getByText(/New Policy/));
     await userEvent.type(screen.getByTestId('policy-name-input'), 'time-limited');
     await userEvent.type(screen.getByTestId('policy-pattern-input'), 'shell:*');
-    await userEvent.click(screen.getByText('Restrict to time window'));
+    await userEvent.click(screen.getByText('Active only during a time window'));
+    await userEvent.click(screen.getByText('14'));
     await userEvent.click(screen.getByText('9'));
+    await userEvent.click(screen.getByText('10'));
     await userEvent.click(screen.getByText('Wed'));
+    await userEvent.click(screen.getByText('Mon'));
     await userEvent.click(screen.getByTestId('save-policy-btn'));
     await waitFor(() => expect(sentBody).toBeDefined());
-    expect(sentBody?.allowed_hours_utc).toEqual([9]);
-    expect(sentBody?.allowed_weekdays).toEqual([2]);
+    // One entry per active hour (a set, not a [start, end] pair), sorted.
+    expect(sentBody?.allowed_hours_utc).toEqual([9, 10, 14]);
+    expect(sentBody?.allowed_weekdays).toEqual([0, 2]);
   });
 
   test('shows a validation toast when required fields are missing on create', async () => {

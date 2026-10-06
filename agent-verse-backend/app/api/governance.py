@@ -10,17 +10,20 @@ from datetime import UTC
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway, HITLResolutionUnavailableError
 from app.governance.policies import (
+    HOURS_FORMAT,
     POLICY_ACTION_ALIASES,
     Policy,
     PolicyEngine,
+    hours_list,
     normalize_policy_action,
+    time_window_from_rules,
 )
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
@@ -41,8 +44,21 @@ class CreatePolicyRequest(BaseModel):
     # Only enforceable actions are accepted; "block" is an alias of "deny".
     action: Literal["deny", "require_approval"] = "deny"
     priority: int = 0
-    allowed_hours_utc: list[int] | None = None  # [start_hour, end_hour]
-    allowed_weekdays: list[int] | None = None
+    # QA-8: the hours (0-23, UTC) the policy is ACTIVE in — one entry per hour,
+    # not a [start, end] pair (the UI always sent the hours; a list that was not
+    # a pair was dropped and the policy applied around the clock).
+    allowed_hours_utc: list[int] | None = None
+    allowed_weekdays: list[int] | None = None  # 0=Monday … 6=Sunday
+
+    @field_validator("allowed_hours_utc", "allowed_weekdays")
+    @classmethod
+    def _window(cls, value: list[int] | None, info: ValidationInfo) -> list[int] | None:
+        if not value:
+            return None  # an empty window is no window
+        top = 23 if info.field_name == "allowed_hours_utc" else 6
+        if any(not 0 <= v <= top for v in value):
+            raise ValueError(f"{info.field_name} entries must be between 0 and {top}")
+        return sorted(set(value))
 
     @field_validator("action", mode="before")
     @classmethod
@@ -154,25 +170,40 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
         from app.db.rls import sqlalchemy_rls_context
 
         async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+            # QA-8: the time window lives in the latest live version snapshot
+            # (governance_policies has no columns for it); without it the list
+            # showed every windowed policy as always-on.
             result = await session.execute(
                 text(
-                    "SELECT id, name, tools_pattern, action, priority, description "
-                    "FROM governance_policies WHERE tenant_id = :tid ORDER BY priority DESC"
+                    "SELECT gp.id, gp.name, gp.tools_pattern, gp.action, gp.priority, "
+                    "gp.description, ("
+                    "SELECT pv.rules FROM policy_versions pv "
+                    "WHERE pv.tenant_id = gp.tenant_id AND pv.policy_id = gp.id "
+                    "AND pv.deleted_at IS NULL "
+                    "ORDER BY pv.version_number DESC LIMIT 1"
+                    ") AS rules "
+                    "FROM governance_policies gp WHERE gp.tenant_id = :tid "
+                    "ORDER BY gp.priority DESC"
                 ),
                 {"tid": tenant_id},
             )
             rows = result.fetchall()
-        return [
-            {
-                "policy_id": r[0],
-                "name": r[1],
-                "tools_pattern": r[2],
-                "action": r[3],
-                "priority": r[4],
-                "description": r[5] or "",
-            }
-            for r in rows
-        ]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            hours, weekdays = time_window_from_rules(r[6] if len(r) > 6 else None)
+            out.append(
+                {
+                    "policy_id": r[0],
+                    "name": r[1],
+                    "tools_pattern": r[2],
+                    "action": r[3],
+                    "priority": r[4],
+                    "description": r[5] or "",
+                    "allowed_hours_utc": hours_list(hours),
+                    "allowed_weekdays": weekdays,
+                }
+            )
+        return out
     except Exception:
         return []
 
@@ -189,6 +220,8 @@ def _policy_rules(record: dict[str, Any]) -> list[dict[str, Any]]:
             "action": record.get("action", "deny"),
             "priority": record.get("priority", 0),
             "allowed_hours_utc": record.get("allowed_hours_utc"),
+            # QA-8: the hours are a set of active hours, never a [start, end] pair.
+            "allowed_hours_format": HOURS_FORMAT,
             "allowed_weekdays": record.get("allowed_weekdays"),
         }
     ]
@@ -383,9 +416,7 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         description=body.description,
         denied_tools=denied_tools,
         approval_tools=approval_tools,
-        allowed_hours_utc=tuple(body.allowed_hours_utc)
-        if body.allowed_hours_utc and len(body.allowed_hours_utc) == 2
-        else None,  # type: ignore[arg-type]
+        allowed_hours_utc=frozenset(body.allowed_hours_utc) if body.allowed_hours_utc else None,
         allowed_weekdays=body.allowed_weekdays,
         tenant_id=tenant_ctx.tenant_id,
         action=body.action,
@@ -2100,6 +2131,7 @@ async def rollback_policy(
     if restored_deleted:
         registry.pop(policy_id, None)
     else:
+        restored_hours, restored_days = time_window_from_rules(rules)
         registry[policy_id] = {
             "policy_id": policy_id,
             "name": target[1],
@@ -2107,8 +2139,8 @@ async def rollback_policy(
             "tools_pattern": rule.get("tools_pattern") or "*",
             "action": restored_action,
             "priority": int(rule.get("priority") or 0),
-            "allowed_hours_utc": rule.get("allowed_hours_utc"),
-            "allowed_weekdays": rule.get("allowed_weekdays"),
+            "allowed_hours_utc": hours_list(restored_hours),
+            "allowed_weekdays": restored_days,
         }
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tid, action="rolled_back")

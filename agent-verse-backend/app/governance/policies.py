@@ -44,6 +44,14 @@ class PolicyResult(enum.StrEnum):
     REQUIRE_APPROVAL = "require_approval"
 
 
+# A policy's active hours: a set of hours, or a legacy (start, end) range.
+HoursWindow = frozenset[int] | tuple[int, int]
+# Marks a version snapshot whose ``allowed_hours_utc`` is a set of hours (QA-8).
+# An unmarked (legacy) snapshot was written when a list meant a [start, end] pair
+# through the API but one entry per selected hour from the UI.
+HOURS_FORMAT = "hours"
+
+
 @dataclass
 class Policy:
     name: str
@@ -51,7 +59,10 @@ class Policy:
     denied_tools: list[str] = field(default_factory=list)
     approval_tools: list[str] = field(default_factory=list)
     scope: str = "global"
-    allowed_hours_utc: tuple[int, int] | None = None  # (start_hour, end_hour)
+    # The hours (0-23) the policy is ACTIVE in — outside them it does not apply.
+    # A frozenset of hours (QA-8); a (start_hour, end_hour) tuple is the legacy
+    # half-open range form, still honoured.
+    allowed_hours_utc: HoursWindow | None = None
     allowed_weekdays: list[int] | None = None  # 0=Monday … 6=Sunday
     tenant_id: str = ""
     timezone: str = "UTC"  # IANA timezone name (e.g. "America/New_York")
@@ -114,30 +125,75 @@ def _row_priority(row: Any) -> int:
         return 0
 
 
-def _time_windows_by_name(
-    version_rows: Any,
-) -> dict[str, tuple[tuple[int, int] | None, list[int] | None]]:
-    """``{policy name: (allowed_hours_utc, allowed_weekdays)}`` from version rules."""
+def parse_hours_window(raw: Any, *, fmt: Any = None) -> HoursWindow | None:
+    """A stored ``allowed_hours_utc`` as the engine's window (``None``: no window).
+
+    A snapshot marked ``fmt == HOURS_FORMAT`` holds a set of hours. An unmarked
+    (legacy) ascending pair keeps the ``[start, end)`` meaning the API documented
+    and the creating replica enforced; any other legacy list was the UI's one
+    entry per selected hour, so it is read as a set. Hours outside 0-23 are
+    dropped; a window with no valid hour is no window (the policy applies at all
+    times — fail closed rather than never).
+    """
+    if not isinstance(raw, list | tuple) or not raw:
+        return None
+    try:
+        values = [int(h) for h in raw]
+    except (TypeError, ValueError):
+        return None
+    if fmt != HOURS_FORMAT and len(values) == 2 and 0 <= values[0] < values[1] <= 24:
+        return (values[0], values[1])
+    hours = frozenset(h for h in values if 0 <= h <= 23)
+    return hours or None
+
+
+def parse_weekdays(raw: Any) -> list[int] | None:
+    """A stored ``allowed_weekdays`` (0=Monday … 6=Sunday) as a sorted list."""
+    if not isinstance(raw, list | tuple):
+        return None
+    try:
+        return sorted({int(d) for d in raw if 0 <= int(d) <= 6})
+    except (TypeError, ValueError):
+        return None
+
+
+def hours_list(window: HoursWindow | None) -> list[int] | None:
+    """The window as the explicit, sorted list of active hours (API shape)."""
+    if window is None:
+        return None
+    if isinstance(window, tuple):
+        start, end = window
+        return list(range(max(0, start), min(24, end)))
+    return sorted(window)
+
+
+def time_window_from_rules(rules: Any) -> tuple[HoursWindow | None, list[int] | None]:
+    """``(allowed_hours_utc, allowed_weekdays)`` from a version snapshot's rules."""
     import json
 
-    out: dict[str, tuple[tuple[int, int] | None, list[int] | None]] = {}
+    try:
+        if isinstance(rules, str):
+            rules = json.loads(rules)
+        rule = rules[0] if isinstance(rules, list) and rules else {}
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(rule, dict):
+        return None, None
+    hours = parse_hours_window(rule.get("allowed_hours_utc"), fmt=rule.get("allowed_hours_format"))
+    return hours, parse_weekdays(rule.get("allowed_weekdays"))
+
+
+def _time_windows_by_name(
+    version_rows: Any,
+) -> dict[str, tuple[HoursWindow | None, list[int] | None]]:
+    """``{policy name: (allowed_hours_utc, allowed_weekdays)}`` from version rules."""
+    out: dict[str, tuple[HoursWindow | None, list[int] | None]] = {}
     for row in version_rows or ():
         try:
             name, rules = row[0], row[1]
-            if isinstance(rules, str):
-                rules = json.loads(rules)
-            rule = rules[0] if isinstance(rules, list) and rules else {}
-            hours_raw = rule.get("allowed_hours_utc") if isinstance(rule, dict) else None
-            days_raw = rule.get("allowed_weekdays") if isinstance(rule, dict) else None
-        except (TypeError, ValueError, IndexError, KeyError):
+        except (TypeError, IndexError, KeyError):
             continue
-        hours = (
-            (int(hours_raw[0]), int(hours_raw[1]))
-            if isinstance(hours_raw, list | tuple) and len(hours_raw) == 2
-            else None
-        )
-        days = [int(d) for d in days_raw] if isinstance(days_raw, list) else None
-        out[str(name)] = (hours, days)
+        out[str(name)] = time_window_from_rules(rules)
     return out
 
 
@@ -241,9 +297,13 @@ class PolicyEngine:
         now = datetime.now(tz)
         if policy.allowed_weekdays is not None and now.weekday() not in policy.allowed_weekdays:
             return False
-        if policy.allowed_hours_utc is not None:
-            start_h, end_h = policy.allowed_hours_utc
-            if not (start_h <= now.hour < end_h):
+        hours = policy.allowed_hours_utc
+        if hours is not None:
+            if isinstance(hours, tuple):  # legacy (start_hour, end_hour) range
+                start_h, end_h = hours
+                if not (start_h <= now.hour < end_h):
+                    return False
+            elif now.hour not in hours:  # QA-8: the set of active hours
                 return False
         return True
 

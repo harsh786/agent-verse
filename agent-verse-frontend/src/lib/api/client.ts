@@ -1143,6 +1143,7 @@ export interface GovernancePolicy {
   tools_pattern: string;
   action: "deny" | "require_approval";
   priority: number;
+  /** Hours (0-23, UTC) the policy is active in — one entry per hour, not a range. */
   allowed_hours_utc?: number[];
   allowed_weekdays?: number[];
 }
@@ -1153,6 +1154,7 @@ export interface CreateGovernancePolicyRequest {
   tools_pattern: string;
   action: "deny" | "require_approval";
   priority?: number;
+  /** Hours (0-23, UTC) the policy is active in — one entry per hour, not a range. */
   allowed_hours_utc?: number[];
   allowed_weekdays?: number[];
 }
