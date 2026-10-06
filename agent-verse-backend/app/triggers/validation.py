@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from app.triggers.models import TriggerSpec, check_plan_interval, validate_cron
 
 _PRIORITIES = {"high", "normal", "low"}
+# Missed-run policies of the time triggers (B1-5), see app.scaling.tasks._apply_catch_up.
+CATCH_UP_POLICIES = ("all", "latest", "none")
 
 
 def _is_iso(value: str) -> bool:
@@ -183,6 +185,10 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     from app.triggers.consumers.conversational import validate_conversational_patterns
 
     validate_conversational_patterns(spec)
+    if spec.catch_up not in CATCH_UP_POLICIES:
+        raise ValueError(
+            f"catch_up must be one of: {', '.join(CATCH_UP_POLICIES)} (got {spec.catch_up!r})"
+        )
     # B1-2: an unknown zone used to be stored and then silently evaluated as UTC.
     if (reason := timezone_error(spec.timezone)) is not None:
         raise ValueError(reason)

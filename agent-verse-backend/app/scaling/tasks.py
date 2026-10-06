@@ -5151,6 +5151,40 @@ def _time_trigger_slots(sched: dict[str, Any], now: datetime.datetime) -> list[d
     return []
 
 
+# A slot at most this late still counts as on time under catch_up="none" (B1-5):
+# the beat ticks every 60 s, so a healthy tick sees a slot up to ~60 s late.
+_ON_TIME_GRACE_SECONDS = 90
+
+
+def _catch_up_policy(sched: dict[str, Any]) -> str:
+    policy = str(sched.get("catch_up") or "").strip().lower()
+    if policy in ("all", "latest", "none"):
+        return policy
+    # The pre-B1-5 flag (never settable through the API) meant "latest".
+    return "latest" if sched.get("coalesce_missed_runs") else "all"
+
+
+def _apply_catch_up(
+    sched: dict[str, Any], slots: list[datetime.datetime], now: datetime.datetime
+) -> tuple[list[datetime.datetime], list[datetime.datetime]]:
+    """Split due slots into ``(to_fire, skipped)`` by the trigger's ``catch_up``.
+
+    ``all``: every slot (``_time_trigger_slots`` already bounds a cron backlog to
+    the 60 most recent). ``latest``: the most recent slot only. ``none``: slots
+    more than ``_ON_TIME_GRACE_SECONDS`` late are skipped. Interval triggers
+    never replay (they fire their current slot), so they are not filtered.
+    """
+    if not slots or str(sched.get("trigger_type") or "") == "interval":
+        return slots, []
+    policy = _catch_up_policy(sched)
+    if policy == "latest":
+        return slots[-1:], slots[:-1]
+    if policy == "none":
+        cutoff = _naive(now) - datetime.timedelta(seconds=_ON_TIME_GRACE_SECONDS)
+        return [s for s in slots if s >= cutoff], [s for s in slots if s < cutoff]
+    return slots, []
+
+
 _SAFE_TABLE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
@@ -5295,13 +5329,13 @@ def _next_evaluation_at(
     if trigger_type in ("once", "relative_delay", "deadline"):
         if last is not None:
             return _NEVER
-        base = _schedule_datetime(sched.get("fire_at_iso"))
+        base = _one_shot_target_utc(sched)
         if base is None:
             return None
-        if trigger_type == "relative_delay":
-            base += datetime.timedelta(seconds=int(sched.get("relative_offset_seconds") or 0))
-        elif trigger_type == "deadline":
-            base -= datetime.timedelta(seconds=int(sched.get("deadline_warning_seconds") or 0))
+        if _catch_up_policy(sched) == "none" and base < _naive(now) - datetime.timedelta(
+            seconds=_ON_TIME_GRACE_SECONDS
+        ):
+            return _NEVER  # B1-5: missed with catch_up="none": never fires
         return _utc(base)
     return None
 
@@ -6187,12 +6221,21 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             *,
             kind: str,
         ) -> int:
-            """Fire each missed slot (oldest first), or just the last one when the
-            schedule opts into ``coalesce_missed_runs``. Returns the number fired."""
+            """Fire the due slots (oldest first) the schedule's ``catch_up`` policy
+            keeps (B1-5). Returns the number fired."""
             if not slots:
                 return 0
-            if sched.get("coalesce_missed_runs"):
-                slots = [slots[-1]]
+            slots, skipped = _apply_catch_up(sched, slots, now)
+            if skipped:
+                logger.info(
+                    "schedule_missed_slots_skipped schedule=%s policy=%s skipped=%d "
+                    "oldest=%s newest=%s",
+                    key,
+                    _catch_up_policy(sched),
+                    len(skipped),
+                    skipped[0].isoformat(),
+                    skipped[-1].isoformat(),
+                )
             count = 0
             for slot in slots:
                 goal_kwargs = advance_and_dispatch_schedule(
