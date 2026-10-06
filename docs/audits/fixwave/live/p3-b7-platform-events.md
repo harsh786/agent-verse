@@ -17,7 +17,7 @@ and the `av_` / `nvapi-` / `sk-` / `AKIA` patterns: 0 hits.
 | `final/` | PLATFORM-* on the fixed images: 7 pass, 1 fail (MEMORY: the source goal itself failed the grounding check, scenario text fixed), 1 skip | B7-L1 … L4 + main |
 | `final-mem/` | PLATFORM-MEMORY with a plain acknowledgement goal: **1/1** | B7-L1 … L4 + main |
 | `final-x/` | PLATFORM-MULTI-REPLICA + INGRESS-EVENT-MULTI-REPLICA with a 2nd API + 2nd worker replica: **2/2** | B7-L1 … L4 + main |
-| `regress/` | INGRESS-* (all), TRIGGER-CHAIN, TRIGGER-SIGNED-WEBHOOK, TIME-*: see §4 | B7-L1 … L4 + main |
+| `regress/` | INGRESS-* (all), TRIGGER-CHAIN, TRIGGER-SIGNED-WEBHOOK, TIME-*: **20 passed**, 3 skipped (§4) | B7-L1 … L4 + main |
 
 ## 1. Verdicts
 
@@ -82,7 +82,10 @@ Tests: triggers + services + governance + agent + workflow + scaling + evals + m
 ## 4. Regression
 `regress/` on the final images (incl. DEF-5 from main): INGRESS-WEBHOOK-SIGNED, -FILTER-RATE, -ROTATION, -LOOKUP,
 INGRESS-REST, INGRESS-EVENT, -EVENT-RECONNECT, INGRESS-QUOTA, TRIGGER-CHAIN, TRIGGER-SIGNED-WEBHOOK: **10/10**;
-INGRESS-EVENT-MULTI-REPLICA **1/1** in `final-x/`. TIME-*: REGRESSION_TIME_RESULT.
+INGRESS-EVENT-MULTI-REPLICA **1/1** in `final-x/`. TIME-CRON-TZ, -INTERVAL, -ONE-SHOTS, -RELATIVE-EVENT, -BUSINESS-CALENDAR, -LIFECYCLE, -PLAN-FLOOR, -NL,
+-SCALE-DUE-INDEX, -CONDITION: **10/10** (20 passed in one run). Skipped as in B2's regression: TIME-CATCH-UP
+(stops the live beat ~4 min, `RW_ALLOW_BEAT_RESTART`) and TIME-EXACTLY-ONCE (needs a 2nd beat + schedule worker). No
+regression from B7-L1..L4 or from DEF-5 (signed-webhook dedup / TRIGGER-SIGNED-WEBHOOK / TRIGGER-CHAIN all pass).
 
 ## 5. Open items (routed)
 1. **Final-answer grounding on plain statements (P5).** A goal "Note for the record: supplier SUP-x prefers invoices by
