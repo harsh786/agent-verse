@@ -368,6 +368,9 @@ def embedder_model_name(embedder: Any) -> str:
     """Best-effort name of the model an embedding provider produces vectors with."""
     if embedder is None:
         return ""
+    from app.observability.traced_provider import unwrap_provider
+
+    embedder = unwrap_provider(embedder)
     for attr in ("_embed_model_name", "embed_model_name", "_embed_model", "embed_model",
                  "_model_name", "model_name", "_model"):
         value = getattr(embedder, attr, None)

@@ -14,7 +14,7 @@ capability methods (``supports_vision`` …) delegate straight to the inner obje
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from app.observability.genai import record_generation
 from app.providers.base import CompletionRequest, CompletionResponse, EmbedRequest, EmbedResponse
@@ -122,15 +122,66 @@ class TracedProvider:
         # A light span (no content): embeddings were invisible in traces.
         from app.observability.genai import record_embedding
 
-        with record_embedding(request, provider_system=self._system):
+        with record_embedding(
+            request, provider_system=self._system, default_model=self._embed_model_name()
+        ):
             return await self._inner.embed(request)
+
+    def _embed_model_name(self) -> str:
+        from app.providers.embedder_factory import embedder_model_name
+
+        try:
+            name = embedder_model_name(self._inner)
+        except Exception:
+            return ""
+        return "" if name == type(self._inner).__name__ else name
+
+    def _traced_embed_batch(self, inner_batch: Callable[..., Any]) -> Callable[..., Any]:
+        async def embed_batch(texts: list[str]) -> list[list[float]]:
+            from app.observability.genai import record_embedding
+
+            with record_embedding(
+                EmbedRequest(texts=list(texts)),
+                provider_system=self._system,
+                default_model=self._embed_model_name(),
+            ):
+                return cast("list[list[float]]", await inner_batch(texts))
+
+        return embed_batch
 
     # -- transparent delegation for everything else ----------------------------
 
     def __getattr__(self, name: str) -> Any:
         # Only reached for attributes TracedProvider does not define itself
-        # (supports_vision, supports_tool_use, embed_batch, stream_complete, …).
-        return getattr(self._inner, name)
+        # (supports_vision, supports_tool_use, stream_complete, …). embed_batch is
+        # traced but stays absent when the inner provider has none, so
+        # ``hasattr(provider, "embed_batch")`` feature checks keep working.
+        attr = getattr(self._inner, name)
+        if name == "embed_batch" and callable(attr):
+            return self._traced_embed_batch(attr)
+        return attr
+
+
+def unwrap_provider(provider: Any) -> Any:
+    """The provider inside any TracedProvider wrapping (``provider`` itself otherwise)."""
+    seen = 0
+    while isinstance(provider, TracedProvider) and seen < 8:
+        provider = provider._inner
+        seen += 1
+    return provider
+
+
+def traced_embedder(embedder: Any, *, provider_system: str = "") -> Any:
+    """Wrap the deployment embedder so every embed emits a ``gen_ai.embeddings`` span.
+
+    a01-F024-01: only the agent role providers and decision calls were traced, so
+    ingestion, retrieval and re-embedding vectors never appeared in traces.
+    ``None`` stays ``None`` and an already-traced embedder is returned as is.
+    """
+    if embedder is None or isinstance(embedder, TracedProvider):
+        return embedder
+    system = provider_system or provider_system_of(embedder)
+    return TracedProvider(embedder, provider_system=system)
 
 
 def traced_role_providers(provider: Any) -> dict[str, TracedProvider]:

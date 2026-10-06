@@ -105,13 +105,22 @@ class GenerationRecorder:
 
 
 @contextlib.contextmanager
-def record_embedding(request: Any, *, provider_system: str) -> Iterator[None]:
-    """A ``gen_ai.embeddings`` span (model + input count, never the texts)."""
+def record_embedding(
+    request: Any, *, provider_system: str, default_model: str = ""
+) -> Iterator[None]:
+    """A ``gen_ai.embeddings`` span (model + input count, never the texts).
+
+    ``default_model`` names the embedder's own model when the request carries
+    none (most embed calls rely on the provider's configured embedding model).
+    """
     with _tracer.start_as_current_span("gen_ai.embeddings", kind=SpanKind.CLIENT) as span:
         with contextlib.suppress(Exception):
             span.set_attribute("gen_ai.operation.name", "embeddings")
             span.set_attribute("gen_ai.system", provider_system)
-            span.set_attribute("gen_ai.request.model", str(getattr(request, "model", "") or ""))
+            span.set_attribute(
+                "gen_ai.request.model",
+                str(getattr(request, "model", "") or "") or default_model,
+            )
             span.set_attribute("gen_ai.request.input_count", len(getattr(request, "texts", ())))
         yield
 

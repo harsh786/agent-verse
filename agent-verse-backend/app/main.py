@@ -914,7 +914,11 @@ def create_app(
     # Resolution keeps WHY there is no embedder (surfaced on /health and in the
     # ingest 503s) instead of a bare None.
     _embedder_resolution = resolve_embedder(settings)
-    _embedder = _embedder_resolution.embedder
+    # Traced: every query / ingestion / memory embed emits a gen_ai.embeddings
+    # span (a01-F024-01). The resolution keeps the real embedder for reporting.
+    from app.observability.traced_provider import traced_embedder, unwrap_provider
+
+    _embedder = traced_embedder(_embedder_resolution.embedder)
     # app.state.embedder is set after app = FastAPI(...)
 
     # Multi-model embedding routing (D-10): map EVERY configured embedding
@@ -930,8 +934,8 @@ def create_app(
 
             _embed_providers_by_name["voyage"] = (
                 _embedder
-                if isinstance(_embedder, VoyageProvider)
-                else VoyageProvider(api_key=_voyage_key)
+                if isinstance(unwrap_provider(_embedder), VoyageProvider)
+                else traced_embedder(VoyageProvider(api_key=_voyage_key))
             )
         except Exception:
             pass
@@ -939,11 +943,13 @@ def create_app(
         try:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
-            _embed_providers_by_name["openai"] = OpenAICompatibleProvider(
-                api_key=_openai_key,
-                base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
-                embed_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
+            _embed_providers_by_name["openai"] = traced_embedder(
+                OpenAICompatibleProvider(
+                    api_key=_openai_key,
+                    base_url=os.getenv("OPENAI_BASE_URL", ""),
+                    default_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
+                    embed_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
+                )
             )
         except Exception:
             pass
@@ -951,8 +957,8 @@ def create_app(
         try:
             from app.providers.gemini_provider import GeminiProvider
 
-            _embed_providers_by_name["gemini"] = GeminiProvider(
-                api_key=get_provider_env("GOOGLE_API_KEY")
+            _embed_providers_by_name["gemini"] = traced_embedder(
+                GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
             )
         except Exception:
             pass
@@ -1122,10 +1128,11 @@ def create_app(
             if _reg_res.registry_refusal and _current is not None:
                 _current.registry_refusal = _reg_res.registry_refusal
             return
-        app.state.embedder = _reg_res.embedder
+        _traced_reg = traced_embedder(_reg_res.embedder)
+        app.state.embedder = _traced_reg
         app.state.embedder_resolution = _reg_res
         if _ingestion_pipeline is not None:
-            _ingestion_pipeline._embedder = _reg_res.embedder
+            _ingestion_pipeline._embedder = _traced_reg
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

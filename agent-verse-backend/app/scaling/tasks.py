@@ -9241,7 +9241,10 @@ async def re_embed_collection_async(
     embedder: Any = None
     try:
         resolution = resolve_embedder(wire_registry_store=True)
-        embedder = resolution.embedder
+        from app.observability.traced_provider import traced_embedder
+
+        # Traced: re-embedding vectors emit gen_ai.embeddings spans (a01-F024-01).
+        embedder = traced_embedder(resolution.embedder)
         if embedder is None:
             raise reembed.ReembedError(f"no embedding provider: {resolution.reason()}")
         resolved_key = f"{resolution.provider}/{resolution.model}"

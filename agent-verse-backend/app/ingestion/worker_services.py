@@ -60,7 +60,10 @@ def build_worker_knowledge_services(db_factory: Any) -> tuple[Any, Any]:
     store.add_change_listener(bump_knowledge_generation)
     configure_usage_redis_from_env()
     bind_worker_guardrail_rules(db_factory)
-    return store, resolution.embedder
+    # Traced: every ingestion embed emits a gen_ai.embeddings span (a01-F024-01).
+    from app.observability.traced_provider import traced_embedder
+
+    return store, traced_embedder(resolution.embedder)
 
 
 __all__ = ["bind_worker_guardrail_rules", "build_worker_knowledge_services"]
