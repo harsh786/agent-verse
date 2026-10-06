@@ -235,8 +235,9 @@ def test_preview_routing_with_agent_store() -> None:
 
 
 def test_get_goal_traces_no_db_returns_empty_list() -> None:
-    """Line 478: when get_session_factory() returns None, traces endpoint returns []."""
+    """No database wired (in-memory build): traces endpoint returns []."""
     svc = AsyncMock()
+    svc._db = None
     svc.get_goal = AsyncMock(return_value={"id": "g1", "goal": "test", "status": "done"})
 
     app = _make_app(svc)
@@ -253,8 +254,9 @@ def test_get_goal_traces_no_db_returns_empty_list() -> None:
 
 
 def test_get_goal_lineage_no_db_returns_root_node() -> None:
-    """Line 520: get_session_factory()=None → returns root-only lineage."""
+    """No database wired (in-memory build): root-only lineage."""
     svc = AsyncMock()
+    svc._db = None
     svc.get_goal = AsyncMock(return_value={"id": "g99", "goal": "x", "status": "done"})
 
     app = _make_app(svc)
@@ -273,8 +275,9 @@ def test_get_goal_lineage_no_db_returns_root_node() -> None:
 
 
 def test_get_goal_attempts_no_db_returns_empty_list() -> None:
-    """Line 587: get_session_factory()=None → attempts endpoint returns []."""
+    """No database wired (in-memory build): attempts endpoint returns []."""
     svc = AsyncMock()
+    svc._db = None
     svc.get_goal = AsyncMock(return_value={"id": "g3", "goal": "x", "status": "done"})
 
     app = _make_app(svc)
@@ -362,8 +365,8 @@ def test_submit_goal_debate_mode_runs_no_orchestrator_in_the_request() -> None:
 # ── Mock DB: traces, lineage, attempts with in-memory response ────────────────
 
 
-def test_get_goal_traces_db_exception_returns_empty() -> None:
-    """Exception from DB in get_goal_traces → returns []."""
+def test_get_goal_traces_db_exception_is_503() -> None:
+    """a10-F231-02: a DB error is a retryable 503 (it used to be an empty 200)."""
     svc = AsyncMock()
     svc.get_goal = AsyncMock(return_value={"id": "g5", "goal": "x", "status": "done"})
 
@@ -375,30 +378,24 @@ def test_get_goal_traces_db_exception_returns_empty() -> None:
         raise RuntimeError("DB down")
         yield  # make it look like an async context manager
 
-    mock_factory = MagicMock(side_effect=RuntimeError("factory broken"))
+    svc._db = MagicMock(side_effect=RuntimeError("factory broken"))
+    resp = client.get("/goals/g5/traces", headers={"X-API-Key": _KEY})
 
-    with patch("app.db.session.get_session_factory", return_value=mock_factory):
-        resp = client.get("/goals/g5/traces", headers={"X-API-Key": _KEY})
-
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503
 
 
-def test_get_goal_attempts_db_exception_returns_empty() -> None:
-    """Exception from DB in get_goal_attempts → returns []."""
+def test_get_goal_attempts_db_exception_is_503() -> None:
+    """a10-F231-02: a DB error is a retryable 503 (it used to be an empty 200)."""
     svc = AsyncMock()
     svc.get_goal = AsyncMock(return_value={"id": "g6", "goal": "x", "status": "done"})
 
     app = _make_app(svc)
     client = TestClient(app, raise_server_exceptions=False)
 
-    mock_factory = MagicMock(side_effect=RuntimeError("db error"))
+    svc._db = MagicMock(side_effect=RuntimeError("db error"))
+    resp = client.get("/goals/g6/attempts", headers={"X-API-Key": _KEY})
 
-    with patch("app.db.session.get_session_factory", return_value=mock_factory):
-        resp = client.get("/goals/g6/attempts", headers={"X-API-Key": _KEY})
-
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503
 
 
 def test_supervisor_mode_is_one_parent_goal_submission() -> None:

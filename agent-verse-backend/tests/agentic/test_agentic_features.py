@@ -282,19 +282,13 @@ def test_rpa_current_view_does_not_create_action_record() -> None:
 def test_goal_lineage_endpoint_returns_tree() -> None:
     """GET /goals/{id}/lineage should return a tree with nodes and edges."""
     svc = AsyncMock()
-
-    # Mock the DB session factory used inside goals.py via its import path
-    with patch("app.db.session.get_session_factory") as mock_db_factory:
-        # No DB available — should return minimal root response
-        mock_db_factory.return_value = None
-        # Also patch the local import inside get_goal_lineage
-        with patch("app.api.goals.get_session_factory", mock_db_factory, create=True):
-            app = _make_goals_app(svc)
-            client = TestClient(app, raise_server_exceptions=False)
-            resp = client.get(
-                "/goals/goal-root-123/lineage",
-                headers={"X-API-Key": _VALID_KEY},
-            )
+    svc._db = None  # no database wired → minimal root response
+    app = _make_goals_app(svc)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get(
+        "/goals/goal-root-123/lineage",
+        headers={"X-API-Key": _VALID_KEY},
+    )
 
     assert resp.status_code == 200
     data = resp.json()

@@ -139,6 +139,9 @@ _TERMINAL_STATUSES = {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELL
 # Recovery never re-runs these: terminal, or parked waiting for a human
 # (a suspended goal is relaunched by resume_goal, not by restart recovery).
 _NOT_RECOVERABLE_STATUSES = {*_TERMINAL_STATUSES, GoalStatus.WAITING_HUMAN}
+# execution_context keys GoalService.find_goals_by_context can resolve; each has a
+# partial expression index on goals (migration c4e8a2f6b1d3).
+CONTEXT_LOOKUP_KEYS = frozenset({"batch_id", "builder_project_id"})
 
 
 def _agent_grants_enforced() -> bool:
@@ -2455,6 +2458,7 @@ class GoalService:
         tenant_ctx: TenantContext,
         priority: str,
         dry_run: bool,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Submit a goal for a specific agent, bypassing routing (used by multi-agent mode)."""
         return await self.submit_goal(
@@ -2463,6 +2467,7 @@ class GoalService:
             dry_run=dry_run,
             tenant_ctx=tenant_ctx,
             agent_id=agent_id,
+            execution_context=execution_context,
         )
 
     def _routing_agent_store(self) -> Any:
@@ -2577,8 +2582,14 @@ class GoalService:
         *,
         priority: str,
         dry_run: bool,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Fan a ``multi_agent`` routing decision out to up to 3 agents, else None."""
+        """Fan a ``multi_agent`` routing decision out to up to 3 agents, else None.
+
+        Each child keeps the caller's execution context (its own copy: submit_goal
+        keeps and mutates the dict) — a batch id, builder project id or chat
+        origin used to be dropped on fan-out.
+        """
         if routing.get("mode") != "multi_agent":
             return None
         tasks = [
@@ -2588,6 +2599,7 @@ class GoalService:
                 tenant_ctx=tenant_ctx,
                 priority=priority,
                 dry_run=dry_run,
+                execution_context=dict(execution_context or {}),
             )
             for cand in (routing.get("candidate_agents") or [])[:3]
             if isinstance(cand, dict) and cand.get("agent_id")
@@ -4519,7 +4531,12 @@ class GoalService:
                 if _routing is not None:
                     execution_context = {**(execution_context or {}), "routing_decision": _routing}
                     _fanout = await self._submit_multi_agent_routing(
-                        goal, _routing, tenant_ctx, priority=priority, dry_run=dry_run
+                        goal,
+                        _routing,
+                        tenant_ctx,
+                        priority=priority,
+                        dry_run=dry_run,
+                        execution_context=execution_context,
                     )
                     if _fanout is not None:
                         return _fanout
@@ -5133,6 +5150,74 @@ class GoalService:
                 }
             )
         return {"goals": responses}
+
+    async def find_goals_by_context(
+        self, tenant_ctx: TenantContext, key: str, value: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """The tenant's goals whose ``execution_context[key] == value``, oldest first.
+
+        Resolves ids that only live in the goal's execution context (a batch id,
+        a builder project id) on any replica: Postgres when wired (explicit tenant
+        predicate + RLS, served by the partial expression indexes of migration
+        ``c4e8a2f6b1d3``), else this process's records. *key* must be one of
+        :data:`CONTEXT_LOOKUP_KEYS` (it is spliced into SQL as a literal so the
+        planner can use the index). Returns ``goal_id`` / ``status`` / ``created_at``;
+        a DB error propagates.
+        """
+        if key not in CONTEXT_LOOKUP_KEYS:
+            raise ValueError(f"unsupported execution_context lookup key: {key!r}")
+        limit = max(1, min(int(limit), 1000))
+        found: list[dict[str, Any]] = []
+        if self._db is not None:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT id, status, created_at FROM goals "
+                            f"WHERE tenant_id = :tid AND (execution_context ->> '{key}') = :v "
+                            "ORDER BY created_at ASC, id ASC LIMIT :lim"
+                        ),
+                        {"tid": tenant_ctx.tenant_id, "v": value, "lim": limit},
+                    )
+                ).fetchall()
+            for gid, status, created_at in rows:
+                mem = self._goals.get(gid)
+                # This pod's record can be ahead of the background status write.
+                if (
+                    mem is not None
+                    and mem.tenant_id == tenant_ctx.tenant_id
+                    and mem.status in _TERMINAL_STATUSES
+                ):
+                    status = mem.status.value
+                found.append(
+                    {
+                        "goal_id": gid,
+                        "status": status,
+                        "created_at": created_at.isoformat() if created_at else "",
+                    }
+                )
+            return found
+        records = sorted(
+            (
+                rec
+                for rec in self._goals.values()
+                if rec.tenant_id == tenant_ctx.tenant_id
+                and str((rec.execution_context or {}).get(key, "")) == value
+            ),
+            key=lambda rec: (rec.created_at, rec.goal_id),
+        )
+        return [
+            {"goal_id": r.goal_id, "status": r.status.value, "created_at": r.created_at}
+            for r in records[:limit]
+        ]
 
     async def get_metrics(self, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Return aggregated metrics for the tenant's goals — reads from DB when available."""

@@ -474,7 +474,7 @@ class TestSubmitGoalAutoRouting:
         app_state.agent_router.route = AsyncMock(return_value=decision)
         svc._app_state = app_state
 
-        async def _fake_submit_single(*, goal, agent_id, tenant_ctx, priority, dry_run):
+        async def _fake_submit_single(*, goal, agent_id, tenant_ctx, priority, dry_run, **_kw):
             return {"goal_id": f"gid-{agent_id}", "agent_id": agent_id}
 
         with patch.object(
