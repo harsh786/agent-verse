@@ -1,17 +1,10 @@
 /**
  * Tests for ChatHITLCard — the human-in-the-loop approval card.
  */
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatHITLCard } from './ChatHITLCard';
 
-beforeEach(() => {
-  // jsdom has no clipboard by default.
-  Object.defineProperty(navigator, 'clipboard', {
-    value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    configurable: true,
-  });
-});
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -58,19 +51,12 @@ describe('ChatHITLCard', () => {
     expect(label.className).toMatch(/text-red-500/);
   });
 
-  test('copies the magic approve link built from the request id + token', async () => {
-    render(<ChatHITLCard stepName="s" requestId="req-1" approvalToken="tok-abc" />);
-    const copyBtn = screen.getByRole('button', { name: 'Copy magic approve link' });
-    fireEvent.click(copyBtn);
-    await waitFor(() =>
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        `${window.location.origin}/hitl/req-1/approve?token=tok-abc`,
-      ),
-    );
-  });
-
-  test('hides the copy button when there is no approval token', () => {
-    render(<ChatHITLCard stepName="s" requestId="req-1" />);
-    expect(screen.queryByRole('button', { name: 'Copy magic approve link' })).not.toBeInTheDocument();
+  test('offers no unsigned magic link, even for an event carrying a token (a03-F056-06)', () => {
+    // The old card built /hitl/:id/approve?token=<uuid>, which the signed
+    // (sig + exp) decision page rejects.
+    const legacyEvent = { approvalToken: 'tok-abc' } as Record<string, unknown>;
+    render(<ChatHITLCard stepName="s" requestId="req-1" {...legacyEvent} />);
+    expect(screen.queryByRole('button', { name: /magic approve link/i })).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain('/hitl/req-1/approve?token=');
   });
 });

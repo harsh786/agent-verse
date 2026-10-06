@@ -10,7 +10,6 @@ from app.chat.stream import (
     stream_artifact_created,
     stream_clarify,
     stream_goal_progress,
-    stream_hitl,
     stream_qa_response,
     stream_schedule_created,
 )
@@ -143,17 +142,6 @@ async def test_clarify_stream_emits_clarify_needed() -> None:
     clarify = next(e for e in events if e["type"] == "clarify_needed")
     assert clarify["question"] == "Which env?"
     assert "Dev" in clarify["options"]
-
-
-# ── HITL streaming ─────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_hitl_stream_emits_hitl_required() -> None:
-    chunks = await _collect(stream_hitl("s1", "m1", "g1", "delete_prod"))
-    events = _parse_events(chunks)
-    hitl = next(e for e in events if e["type"] == "hitl_required")
-    assert hitl["step"] == "delete_prod"
-    assert "approval_token" in hitl
 
 
 # ── Schedule streaming ─────────────────────────────────────────────────────────

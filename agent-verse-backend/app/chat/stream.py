@@ -6,14 +6,13 @@ Multiplexes two sources:
 
 Events emitted (all prefixed ``data: <json>\n\n``):
   typing_started, routing, token, step_started, step_complete, tool_call,
-  clarify_needed, hitl_required, failure_analysis, proactive_suggestions,
+  clarify_needed, hitl_required (relayed from goal events), failure_analysis, proactive_suggestions,
   reasoning, artifact_created, schedule_created, done, error
 """
 
 from __future__ import annotations
 
 import json
-import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -139,30 +138,6 @@ async def stream_clarify(
             "question": question,
             "options": options,
             "round": round,
-        },
-    )
-    yield _sse("done", {"session_id": session_id, "message_id": message_id})
-
-
-async def stream_hitl(
-    session_id: str,
-    message_id: str,
-    goal_id: str,
-    step_name: str,
-    risk_level: str = "high",
-    timeout_seconds: int = 300,
-) -> AsyncGenerator[str, None]:
-    """Emit a hitl_required event — pauses goal execution until approved."""
-    yield _sse(
-        "hitl_required",
-        {
-            "session_id": session_id,
-            "message_id": message_id,
-            "goal_id": goal_id,
-            "step": step_name,
-            "risk_level": risk_level,
-            "timeout_seconds": timeout_seconds,
-            "approval_token": uuid.uuid4().hex,
         },
     )
     yield _sse("done", {"session_id": session_id, "message_id": message_id})
