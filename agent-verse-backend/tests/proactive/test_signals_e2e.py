@@ -25,6 +25,9 @@ TENANT = "tenant-proactive"
 class _FakeTenant:
     def __init__(self, tid: str) -> None:
         self.tenant_id = tid
+        self.roles = ("operator",)
+        self.api_key_id = "key-1"
+        self.user_id = None
 
 
 def _build(prefs: ProactivePreferences | None = None):
@@ -52,7 +55,7 @@ def _build(prefs: ProactivePreferences | None = None):
     app.state.chat_service = chat
     app.state.proactive_engine = ProactiveEngine(
         deliver=_deliver, audit=_audit,
-        preferences_provider=(lambda _pid: prefs) if prefs else None,
+        preferences_provider=lambda *_a: prefs or ProactivePreferences(),
     )
     return app, chat, audits
 
