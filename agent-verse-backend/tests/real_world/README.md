@@ -31,6 +31,21 @@ Offline validation (no stack): `uv run pytest tests/real_world_harness --no-cov`
 fixtures against the platform's own extractors, chunker, workflow DSL/compiler and the
 scoring/report code; `uv run pytest tests/real_world --collect-only` checks collection.
 
+## Real components only (no mocks)
+
+Every live scenario drives real components: the stack's own API, workers, Postgres,
+Redis, MinIO, the throwaway MongoDB / Elasticsearch / Redis servers, the real OCR
+engines (Tesseract + the configured vision model) and real models (the stack's
+configured provider or the on-prem vLLM cluster registered through the Model Registry).
+Nothing is mocked or stubbed: an outage is a real one (a stopped / paused / killed
+container, a closed port, an unroutable address), a side effect is counted in a real
+external system (documents in MongoDB, requests recorded by the real fixture HTTP
+server) and data is realistic and generated deterministically. A scenario that cannot
+run without a fake SKIPS with the reason; it never substitutes one. The offline harness
+(`tests/real_world_harness`) unit-tests pure helpers and checks fixtures against the
+platform's own code (connector flattener, PII analyzer, workflow DSL / compiler) — it
+does not fake the platform or a vendor either.
+
 ## Scenarios
 
 | Scenario | File | Needs (else SKIPPED with reason) |
@@ -74,7 +89,52 @@ scoring/report code; `uv run pytest tests/real_world --collect-only` checks coll
 | GOV-PII-GUARDRAIL, GOV-POLICY-APPROVAL | `test_gov_guardrails.py` | – |
 | GOV-GRANT-DENY | `test_gov_guardrails.py` | `RW_GRANTS_ENFORCED=1` (stack runs with `ENFORCE_AGENT_GRANTS`) |
 | GOV-BUDGET-CAP | `test_gov_guardrails.py` | an admin key (skipped on 403) |
+| MONGO-PIPELINE-SYNC (3,000-document commerce dataset in 5 collections: exact document set, no duplicate ids / URLs / chunks, provenance, content checksums, Decimal128 / Int64 > 2^53 / 7-level nesting / 100-item array window, PII redaction of exactly the planted ticket), MONGO-PIPELINE-RETRIEVAL (27 known-answer questions incl. cross-collection hops, Hindi / Japanese / Spanish / German, negation: hit@1/5/10, MRR, answer + citation accuracy, abstention), MONGO-PIPELINE-WORKFLOW (rag over the KB → read-only `mongodb_aggregate` → branch → HITL → platform-gated `mongodb_insert_one`: approved once / rejected once / other branch; run + step states, approvals, audit, cost, SSE; side effects counted in MongoDB), MONGO-PIPELINE-INCREMENTAL (inserts / change-stream updates / reconciled deletes exact; unchanged re-sync indexes 0, hashes kept), MONGO-PIPELINE-ISOLATION | `test_mongo_pipeline_e2e.py` | `RW_MONGO_ROOT_PASSWORD`, `RW_MONGO_READER_PASSWORD`, `RW_MONGO_TOOL_PASSWORD`; `RW_SECOND_TENANT_*` for ISOLATION |
+| MONGO-FAIL-CONNECT (bad password, unknown user, closed port, stalled server: honest, bounded, nothing indexed), MONGO-FAIL-TLS (wrong CA, weakened TLS refused), MONGO-FAIL-PERMISSION-RECOVERY (a per-run user's `read` revoked mid-sync → honest partial; re-granted → re-sync exact), MONGO-FAIL-POISON (11 MiB doc, 95-level nesting, 20,000-item array, odd BSON, invalid UTF-8 → indexed with truncation / skipped / DLQ with reason, operator fix + DLQ retry → exact), MONGO-FAIL-SCHEMA-DRIFT, MONGO-FAIL-DUPLICATE-SOURCE, MONGO-FAIL-MCP-TOOLS (refused `$out`, unauthorized db, unknown collection, hung server with retry/backoff → failure path with compensation), MONGO-FAIL-APPROVAL-TIMEOUT (escalated, never auto-approved, no write), MONGO-FAIL-CANCEL (no side effect after cancel) | `test_mongo_pipeline_failures.py` | as above; `RW_TLS_DIR` for TLS |
+| CHAOS-INGEST-WORKER-KILL, CHAOS-MONGO-RESTART, CHAOS-WORKFLOW-WORKER-KILL, CHAOS-REDIS-PAUSE, CHAOS-PG-OUTAGE (Postgres and PgBouncer), CHAOS-API-KILL-SSE, CHAOS-TRIGGER-DEDUP, CHAOS-MODEL-OUTAGE — real `docker kill / stop / pause / restart`, always undone in a `finally`, health awaited before asserting: recovery, exactly-once side effects (counted in MongoDB), no data loss, final state, audit trail | `test_chaos_reliability.py` | `RW_CHAOS=1` + the scenario's container variable (`RW_WORKER_CONTAINER`, `RW_WORKFLOW_WORKER_CONTAINER`, `RW_SCHEDULE_WORKER_CONTAINER`, `RW_BACKEND_CONTAINER`, `RW_REDIS_CONTAINER`, `RW_PG_CONTAINER`, `RW_PGBOUNCER_CONTAINER`, `RW_MONGO_CONTAINER`); MongoDB passwords; a platform admin for MODEL-OUTAGE |
+| SCALE-MONGO-PIPELINE (100,000 MongoDB documents → sync with the REAL embedder: docs/s, chunks/s, end-to-end, DLQ rate, exact inventory; 50 concurrent clients × 3,000 searches: p50 / p95 / p99, error rate, needles, tenant isolation under load; report labels the embedder used) | `test_scale_pipeline.py` | `RW_SCALE=1`; `RW_SCALE_EMBEDDER=onprem` (default: the stack must embed with Qwen3-Embedding-0.6B) or `stack`; best with `RW_ENTERPRISE_API_KEY` |
+| ONPREM-REGISTER, ONPREM-REASONING-GOAL (role_calls prove planner / executor / verifier ran on Qwen3.5-4B, no cloud model), ONPREM-EMBEDDER, ONPREM-TEST-CONNECTION-FAILURES, ONPREM-ROUTING-FAILOVER (closed port / unroutable preferred model), ONPREM-PREFERENCE-CHANGE, ONPREM-CONTEXT-OVERFLOW (gemma-4-E2B, 1,024 tokens), ONPREM-EMBED-DIMENSION, ONPREM-ISOLATION | `test_onprem_model_registry_e2e.py` | the on-prem vLLM cluster (`RW_ONPREM_*_URL`); a platform admin (platform-admin tenant key or `RW_PLATFORM_ADMIN_KEY`); ONPREM-EMBEDDER needs the stack started with the on-prem embedder |
+| OCR-EXTRACT-PROVENANCE (two-column, table, JPG screenshot, handwritten-like, 3-page, rotated, low-quality, Hindi: facts + per-page engine provenance), OCR-PARTIAL-AND-REFUSALS (readable + noise page → degraded 200; truncated / unrasterisable → honest refusal, never a silent empty 200; over `OCR_MAX_UPLOAD_BYTES` → 413), OCR-BATCH (per-item reasons, persist_to_kb, 11 items → 422), OCR-KB-UPLOAD (known answers over OCR'd uploads), OCR-VISION-FAILOVER (dead vision model in the registry's OCR order → Tesseract text kept), OCR-PARALLEL (concurrent vs serial, no cross-talk) | `test_ocr_e2e.py` | the stack's OCR engines; a platform admin for VISION-FAILOVER; a Devanagari font on this host for the Hindi scan (`RW_DEVANAGARI_FONT`) |
 | KB-REAL-DOCS, KB-REEMBED, KB-RSS*, SRC-REDIS, SRC-MONGO-SYNC, WF-HITL-*, SCHEDULED-WF-HITL, WF-SCHEDULE-PLAN-FLOOR, WF-PUBLISH-APPROVAL, GOAL-HIGH-RISK-* | earlier files | see each module docstring |
+
+### World-class pipeline / chaos / scale / on-prem / OCR runs
+
+```bash
+cd agent-verse-backend
+export AGENTVERSE_REAL_WORLD=1 AGENTVERSE_TENANT_FILE=/path/tenant.json RW_RESULTS_FILE=/tmp/rw.jsonl
+export RW_MONGO_ROOT_PASSWORD=... RW_MONGO_READER_PASSWORD=... RW_MONGO_TOOL_PASSWORD=...
+export RW_SECOND_TENANT_FILE=/path/tenant-b.json
+# pipeline + failures + OCR
+uv run pytest tests/real_world/test_mongo_pipeline_e2e.py tests/real_world/test_mongo_pipeline_failures.py \
+  tests/real_world/test_ocr_e2e.py --no-cov -W default -rs
+# on-prem models through the Model Registry (platform admin)
+RW_PLATFORM_ADMIN_KEY=... uv run pytest tests/real_world/test_onprem_model_registry_e2e.py --no-cov -rs
+# chaos: real faults on named containers (each undone in a finally)
+RW_CHAOS=1 RW_WORKER_CONTAINER=agentverse-backend-worker-1 \
+  RW_WORKFLOW_WORKER_CONTAINER=agentverse-backend-workflow-worker-1 \
+  RW_SCHEDULE_WORKER_CONTAINER=agentverse-backend-schedule-worker-1 \
+  RW_BACKEND_CONTAINER=agentverse-backend-backend-1 RW_REDIS_CONTAINER=agentverse-backend-redis-1 \
+  RW_PG_CONTAINER=agentverse-backend-postgres-1 RW_PGBOUNCER_CONTAINER=agentverse-backend-pgbouncer-1 \
+  RW_MONGO_CONTAINER=rw-mongo uv run pytest tests/real_world/test_chaos_reliability.py --no-cov -rs
+# scale with the real on-prem embedder (the stack must embed with Qwen3-Embedding-0.6B)
+RW_SCALE=1 RW_SCALE_DOCS=100000 RW_SCALE_CONCURRENCY=50 RW_ENTERPRISE_TENANT_FILE=/path/ent.json \
+  uv run pytest tests/real_world/test_scale_pipeline.py --no-cov -rs
+uv run python -m tests.real_world.report /tmp/rw.jsonl "" /tmp/rw-report
+```
+
+The on-prem models are registered BY HAND through the Model Registry, as an operator does
+in Settings -> Models (the scenarios do exactly this, and restore the global registry
+afterwards): `POST /models/configured` with `{"provider": "onprem", "model_id":
+"Qwen/Qwen3.5-4B", "base_url": "http://192.168.63.104:30080/v1", "capabilities":
+["text_generation", "tool_use", "structured_output"], "supports_tools": true}` (likewise
+`Qwen/Qwen3-Embedding-0.6B` / `["embedding"]` at `:30082`, `Qwen/Qwen3-Reranker-0.6B` /
+`["rerank"]` at `:30083`, `google/gemma-4-E2B` / `["text_generation"]` at `:30081`), then
+`POST /models/configured/test-endpoint` ("Test connection") and
+`PUT /models/preferences/text_generation` with `{"order": ["onprem/Qwen/Qwen3.5-4B", ...]}`.
+Embeddings always use the stack's deployment embedder (a per-model `base_url` is not used
+for embeddings): for the on-prem embedder start the stack with `ONPREM_EMBEDDING_BASE_URL`
+pointing at `RW_ONPREM_EMBED_URL`. The scale report labels the embedder provider / model /
+dimension of every run; there is no fake embedder.
 
 ## Fixtures
 
@@ -156,4 +216,19 @@ concurrently running session.
 | `RW_HITL_PERSIST`, `RW_PERSIST_DELAY` | `1`, `45` | WF-HITL-RESTART toggle / pause length |
 | `RW_EVAL_TIMEOUT`, `RW_EVAL_PASS_MIN` | `1500`, `0.7` | eval run wait; min share of golden tasks passing |
 | `RW_GRANTS_ENFORCED` | – | `1` when the stack enforces agent grants |
+| `RW_MONGO_PIPELINE_DOCS`, `RW_PIPELINE_SYNC_TIMEOUT`, `RW_PIPELINE_K` | `3000`, `3600`, `10` | MONGO-PIPELINE-*: dataset size, full-sync wait, search depth |
+| `RW_PIPELINE_HIT5_MIN`, `RW_PIPELINE_ANSWER_MIN`, `RW_PIPELINE_CITATION_MIN` | `0.7`, `0.6`, `0.6` | MONGO-PIPELINE-RETRIEVAL thresholds |
+| `RW_APPROVAL_SWEEP_WAIT` | `600` | MONGO-FAIL-APPROVAL-TIMEOUT: seconds to wait for the timed-out gate's escalation |
+| `RW_CHAOS` | – | `1` enables CHAOS-* (real container faults) |
+| `RW_WORKFLOW_WORKER_CONTAINER`, `RW_BACKEND_CONTAINER`, `RW_PGBOUNCER_CONTAINER`, `RW_MONGO_CONTAINER` | – | CHAOS-*: exact containers to kill / stop / restart (never guessed; also `RW_WORKER_CONTAINER`, `RW_SCHEDULE_WORKER_CONTAINER`, `RW_REDIS_CONTAINER`, `RW_PG_CONTAINER` — for chaos these must be set explicitly) |
+| `RW_CHAOS_RECOVERY_TIMEOUT`, `RW_CHAOS_DOWN_S`, `RW_REDIS_PAUSE_S`, `RW_PG_OUTAGE_S` | `1800`, `20`, `12`, `15` | CHAOS-*: recovery wait, how long a killed container stays down, Redis pause, database outage |
+| `RW_CHAOS_SYNC_DOCS`, `RW_CHAOS_UNROUTABLE_URL`, `RW_CHAOS_ALLOW_MANUAL_RESYNC` | `4000`, `http://10.255.255.1:8000/v1`, – | CHAOS-*: sync size, the dead model endpoint, `1` accepts an operator re-sync after a dead job |
+| `RW_SCALE_EMBEDDER`, `RW_SCALE_QUERIES`, `RW_SCALE_SYNC_TIMEOUT` | `onprem`, `3000`, `14400` | SCALE-MONGO-PIPELINE: `onprem` (stack must embed with Qwen3-Embedding-0.6B) or `stack` (any real provider); searches; sync wait. `RW_SCALE_DOCS` / `RW_SCALE_CONCURRENCY` default to `100000` / `50` here (`5000` / `8` for KB-SCALE-SMOKE) |
+| `RW_SCALE_MAX_DLQ_RATE`, `RW_SCALE_MAX_ERROR_RATE` | `0.001`, `0.01` | SCALE-MONGO-PIPELINE bounds (with `RW_SCALE_MIN_DOCS_PER_S`, `RW_SCALE_MAX_P95_MS`) |
+| `RW_ONPREM_CHAT_URL`, `RW_ONPREM_EMBED_URL`, `RW_ONPREM_RERANK_URL`, `RW_ONPREM_SMALL_URL` | `http://192.168.63.104:30080/v1`, `:30082/v1`, `:30083/v1`, `:30081/v1` | on-prem vLLM: Qwen3.5-4B, Qwen3-Embedding-0.6B, Qwen3-Reranker-0.6B, gemma-4-E2B |
+| `RW_ONPREM_PROVIDER` | `onprem` | registry provider the on-prem models are registered under |
+| `RW_PLATFORM_ADMIN_KEY` | – | sent as `X-Admin-Key` for Model Registry writes (ONPREM-*, CHAOS-MODEL-OUTAGE, OCR-VISION-FAILOVER) |
+| `RW_OCR_MAX_UPLOAD_BYTES`, `RW_OCR_FACT_MIN`, `RW_OCR_HIT5_MIN`, `RW_OCR_ANSWER_MIN` | `26214400`, `0.8`, `0.7`, `0.6` | OCR-*: the stack's `OCR_MAX_UPLOAD_BYTES`, fact / retrieval / answer thresholds |
+| `RW_OCR_PARALLEL`, `RW_OCR_MIN_SPEEDUP`, `RW_DEVANAGARI_FONT` | `6`, `1.3`, – | OCR-PARALLEL jobs and speedup floor; a Devanagari font for the Hindi scan |
+| `RW_PG_SUPERUSER`, `RW_CHAIN_TIMEOUT`, `RW_BEAT_TIMEOUT`, `RW_REPLICA_GOALS` | `agentverse`, `2700`, `540`, `4` | platform-event trigger scenarios (`test_platform_event_triggers.py`) |
 | `RW_RSS_URL`, `RW_FEED_HOST`, `RW_KB_URL_DOC` | public feed, `host.docker.internal`, PEP 20 | earlier KB scenarios |
