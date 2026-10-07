@@ -4,8 +4,82 @@
 > "Read `docs/audits/fixwave/AGENT-HANDOFF.md` and continue from **§4 In flight** then **§5 Queue**,
 > following **§3 Procedure** exactly. Do not redo anything in **§2 Done**."
 
-Last updated: **2026-10-07** — see **§0** (supersedes §4/§5 below; older sections kept as history).
-`origin/main` = `66f27dab1` at time of writing.
+Last updated: **2026-10-08** — see **§00** first, then §0 (both supersede §4/§5 below; older sections kept
+as history). `origin/main` = `d2b89e360` at time of writing.
+
+---
+
+## 00. 2026-10-08 update (READ FIRST)
+
+### 00.1 Merged and pushed to main (do not redo)
+| Commit | What |
+|---|---|
+| `d4ae1f61d` | Model Registry UI complete: thinking control, real per-capability Test connection, `GET /models/resolution` + Resolved models panel, accessible ordering, polish |
+| `41b717e57` | Every reasoning call resolves from the Model Registry (`resolve_reasoning` + central hook for `""`/`"default"`; router/orchestrator literal profiles removed; Strategy C never picks an unconfigured model; guard test) |
+| `06d83f25a` | Speech-to-text / text-to-speech from the registry (`resolve_stt`/`resolve_tts`, seeding, real probes, `/voice/status` truthful; no silent whisper-1/tts-1) |
+| `15f3a2a66` | Every embedding side path uses the registry embedder (workflow RAG step, content-type routing, on-prem/env/BYOK providers, memory, seeder; dead embedder roles removed; literal guard) |
+| `d2b89e360` | Final branch sweep: API never wires the Redis-only connector secret store (SECRET-01); restored tool-gate integration test; test fixture resets a cached Settings whose ENVIRONMENT a test changed (order-dependent failures) |
+
+Branch sweep (2026-10-08): all 68 branches not ancestors of main were checked. 64 have ≥97% of their added lines
+on main (the rest was rewritten later); 3 are superseded by newer designs (prospective-intention auth, golden-task
+dataset versions); 1 is an obsolete merge-heads migration. Nothing else is missing. Their deletion needs the owner's OK.
+
+Tests at `d2b89e360`: frontend typecheck clean, lint 0 errors, vitest 5,374/5,374. Backend full unit suite on the
+previous build: 2 failures of 36,068 (code-step sandbox, order-dependent), both fixed in `d2b89e360`; a
+confirmation run on `d2b89e360` was in progress at time of writing.
+
+### 00.2 World-class E2E program — consolidated status (single source of truth)
+Owner decisions in effect: redeploy (#6) and live re-runs (#7) are PARKED by the owner; nothing may be mocked in
+the live suites.
+
+**A. Done and live-verified**
+- A1 file upload (9/10, table ranking fixed later), A2 S3/MinIO, A3 PostgreSQL/MySQL, A5 MongoDB/Redis/Elasticsearch
+  (33/33), A10 web crawl (11/11), A12 agent-generated knowledge (5/5).
+- B1 time triggers (12/12), B2 webhook/REST/event triggers (10/10 + multi-replica 12/12), B7 platform events (9/9).
+- New no-mock live suites (`tests/real_world`): MongoDB pipeline + failures **14/14**, OCR **6/6**, on-prem Model
+  Registry **6 pass / 3 env-skips / 1 fail** (supervisor routing — fixed in `26e01b9b5`, not yet re-run).
+
+**B. Blocked on the redeploy (owner-parked #6/#7)**
+1. Baseline live suite re-run (last: 59 pass / 17 fail / 6 skipped on the PRE-fix build).
+2. On-prem Model Registry suite re-run (includes the supervisor fix).
+3. MongoDB + OCR suite regression on the new build.
+4. Live OCR parallelism check (multi-page + concurrent documents).
+5. Live re-checks P2 retrieval, P4 workflows/HITL, P5 agent core, P7 evals, P8 guardrails/grants (code pushed).
+6. **Chaos** (`RW_CHAOS=1`): kill worker / Redis / Postgres / Mongo mid-run; assert retries and recovery.
+7. **Scale, P9** (`RW_SCALE=1`): million-document ingestion + retrieval, multi-worker, on-prem embedder.
+8. **Frontend E2E, P10**: Playwright against the live backend.
+9. **Full rerun, P11** + final report.
+
+Redeploy recipe: build ALL images **including db-migrate and code-sandbox** BEFORE running db-migrate; start only
+core services (`up -d --no-deps …`); restart launchd
+(`launchctl kickstart -k gui/$(id -u)/com.local.agentverse.runforever`). Run suites ONE at a time.
+
+**C. Not started and NOT blocked by the redeploy**
+10. P6 memories & self-improvement — live E2E.
+11. A7 Google Drive / SharePoint / Confluence / Notion connectors — code not done.
+12. B8 conversational triggers — code not done.
+13. A6 Kafka — code done (DEF-4), live check needs a Kafka container.
+14. B3 GitHub / Stripe / Jira / Teams webhooks — code done (DEF-5), live check pending.
+
+**D. Parked by the owner**
+C1–C5 channels (Telegram/WhatsApp/Slack/Teams/generic webhook), org-collab, B9–B11, architecture docs 1–32/39
+(brief: `docs/world-class/_BRIEF.md`), the five capstone scenarios, the 149 out-of-scope backlog items.
+
+### 00.3 Code-level work still open (no redeploy needed)
+- Integration tests (testcontainers) and `tests/e2e_full` normal + `E2E_LEAST_PRIVILEGE=1` at zero failures.
+
+### 00.4 Owner actions (cluster; real keys — an agent must not do these)
+- ONE `VAULT_MASTER_KEY` on every pod (`--set-string secrets.vaultMasterKey=…`, keep
+  `secrets.vaultPreviousMasterKeys=dev-insecure-master-key`), verify with a sha256 prefix per pod, then re-save the
+  S3 / Gmail / model API credentials saved while pods disagreed.
+- Register models in the Model Registry: embedder (NVIDIA `nvidia/nemotron-3-embed-1b` 2048-d, or on-prem
+  Qwen3-Embedding-0.6B 1024-d per collection), reasoning (Qwen3.5-4B with `thinking: off`), OCR, vision, reranker,
+  optionally speech. Use Test connection and the Resolved models panel to confirm.
+
+### 00.5 Needs the owner's OK
+Delete the old branches/agent worktrees (content verified on main), the `wc-probe` tenant and the
+`agentverse-rw-mongo-broken` container; whether to commit the generated test-report files and the local-only
+`playwright.local-novideo.config.ts` (left uncommitted on purpose).
 
 ---
 
