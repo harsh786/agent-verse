@@ -96,11 +96,45 @@ def check_model_endpoint(url: str) -> str:
     return base
 
 
-def endpoint_api_key(provider: str) -> str:
-    """The credential sent to a model's own endpoint: the provider's env key,
-    else a placeholder (vLLM / Ollama ignore auth; the client needs a value)."""
+def encrypt_endpoint_api_key(api_key: str) -> str:
+    """Vault ciphertext of a model endpoint's credential (what the store keeps).
+
+    Raises :class:`ModelEndpointError` when the credential vault is unusable
+    (no master key outside development): the key is never stored in plaintext.
+    """
+    try:
+        from app.providers.vault import get_vault
+
+        return get_vault().encrypt(api_key)
+    except Exception as exc:
+        raise ModelEndpointError(
+            f"cannot store the endpoint credential: the credential vault is unavailable "
+            f"({type(exc).__name__}); set AGENTVERSE_VAULT_KEY / VAULT_MASTER_KEY"
+        ) from exc
+
+
+def endpoint_api_key(provider: str, endpoint: Any = None) -> str:
+    """The credential sent to a model's own endpoint.
+
+    Precedence: the model's own credential (saved with the registry entry,
+    vault-encrypted, decrypted here at call time) > the provider's env key >
+    a placeholder (vLLM / Ollama ignore auth; the client needs a value).
+    Raises :class:`ModelEndpointError` when a saved credential cannot be
+    decrypted (e.g. the vault master key changed) instead of sending nothing.
+    """
     from app.core.config import get_provider_env
 
+    secret = str(((getattr(endpoint, "extra", None) or {}).get("api_key_encrypted")) or "")
+    if secret:
+        try:
+            from app.providers.vault import get_vault
+
+            return get_vault().decrypt(secret)
+        except Exception as exc:
+            raise ModelEndpointError(
+                f"the saved credential of {getattr(endpoint, 'model_id', 'this model')} cannot "
+                f"be decrypted ({type(exc).__name__}); re-enter it in the Model Registry"
+            ) from exc
     env = {
         "nvidia": "NVIDIA_API_KEY",
         "groq": "GROQ_API_KEY",
@@ -113,6 +147,24 @@ def endpoint_api_key(provider: str) -> str:
         "onprem": "ONPREM_API_KEY",
     }.get((provider or "").strip().lower())
     return (get_provider_env(env) if env else "") or "EMPTY"
+
+
+def endpoint_http_client(**kwargs: Any) -> Any:
+    """An ``httpx.AsyncClient`` for model-endpoint calls, pinned by the SSRF guard.
+
+    Every connection re-resolves and re-checks the host at CONNECT time
+    (``ssrf_guard.public_async_client``) under the same policy as
+    :func:`check_model_endpoint` — so a DNS answer that flips to a metadata /
+    link-local address after the URL was saved is refused (anti-rebinding).
+    Redirects are never followed.
+    """
+    from app.net.ssrf_guard import public_async_client
+
+    return public_async_client(
+        allowed_domains=endpoint_allowed_hosts() or None,
+        allowed_networks=private_access_networks(),
+        **kwargs,
+    )
 
 
 def onprem_extra_body(provider: str) -> dict[str, Any] | None:

@@ -918,7 +918,20 @@ def create_app(
     # span (a01-F024-01). The resolution keeps the real embedder for reporting.
     from app.observability.traced_provider import traced_embedder, unwrap_provider
 
-    _embedder = traced_embedder(_embedder_resolution.embedder)
+    # Wrapped so a Model Registry change (saved embedding model / preference
+    # order, on any replica) re-resolves it: queries keep being embedded with
+    # the model the workers ingest with (see RegistryReloadingEmbedder).
+    from app.providers.embedder_factory import RegistryReloadingEmbedder
+
+    def _reloading(resolution: Any) -> Any:
+        if resolution.embedder is None:
+            return None
+        return RegistryReloadingEmbedder(
+            resolution, resolve=lambda: resolve_embedder(settings)
+        )
+
+    _embedder_proxy = _reloading(_embedder_resolution)
+    _embedder = traced_embedder(_embedder_proxy)
     # app.state.embedder is set after app = FastAPI(...)
 
     # Multi-model embedding routing (D-10): map EVERY configured embedding
@@ -1127,25 +1140,43 @@ def create_app(
         knowledge_store=_knowledge_store,
     )
 
-    def _rebind_registry_embedder() -> None:
-        """Swap in the embedder of the operator's saved embedding preference order.
+    def _on_embedder_reloaded(fresh: Any) -> None:
+        """A registry change swapped the embedder: update what reports / sizes by it."""
+        app.state.embedder_resolution = fresh
+        _ks = getattr(app.state, "knowledge_store", None)
+        if _ks is not None and hasattr(_ks, "set_embedding_dim"):
+            _ks.set_embedding_dim(fresh.dimension)
+            if hasattr(_ks, "set_embedder_name"):
+                _ks.set_embedder_name(fresh.model or None)
 
-        Only replaces the embedder create_app resolved (never a test-injected
-        one) and only when the registry actually chose a model.
+    if _embedder_proxy is not None:
+        _embedder_proxy.add_change_listener(_on_embedder_reloaded)
+
+    def _rebind_registry_embedder() -> None:
+        """Re-resolve the embedder now that the registry store is wired.
+
+        create_app resolved before the store (and so a saved embedding model)
+        was visible. Only touches the embedder create_app resolved (never a
+        test-injected one).
         """
         if getattr(app.state, "embedder", None) is not _embedder:
+            return
+        if _embedder_proxy is not None:
+            _embedder_proxy.refresh(force=True)
             return
         try:
             _reg_res = resolve_embedder(settings)
         except Exception as _re_exc:  # pragma: no cover - resolve_embedder never raises
             logger.warning("embedder_registry_rebind_failed", error=str(_re_exc))
             return
-        if _reg_res.source != "registry" or _reg_res.embedder is None:
+        if _reg_res.embedder is None:
             _current = getattr(app.state, "embedder_resolution", None)
             if _reg_res.registry_refusal and _current is not None:
                 _current.registry_refusal = _reg_res.registry_refusal
             return
-        _traced_reg = traced_embedder(_reg_res.embedder)
+        _proxy = _reloading(_reg_res)
+        _proxy.add_change_listener(_on_embedder_reloaded)
+        _traced_reg = traced_embedder(_proxy)
         app.state.embedder = _traced_reg
         app.state.embedder_resolution = _reg_res
         if _ingestion_pipeline is not None:

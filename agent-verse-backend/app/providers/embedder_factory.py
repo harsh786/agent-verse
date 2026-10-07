@@ -18,11 +18,22 @@ provider that fails no longer silently skips the rest) and logs each failure at
 error level. :func:`embedder_model_name` names the model so each chunk can record
 the ``embedding_model`` that produced its vector (LAW-08).
 
-When the operator has saved an embedding preference order in the Model Registry,
-its first eligible model wins over the env order (see
-:mod:`app.providers.registry_embedder`): built on its provider, with failover only
-between endpoints of that SAME model id, and refused (env order applies) when its
-width differs from ``EMBEDDING_DIM``. Without a saved order nothing changes.
+Precedence (the same shape as the reasoning roles': explicit operator order >
+env > configured registry model; see :mod:`app.providers.registry_embedder`):
+
+1. the Model Registry's saved embedding preference order: its first eligible
+   model, on its own ``base_url`` when it names one (OpenAI-compatible
+   ``/v1/embeddings``), else on its provider, with failover only between
+   endpoints of that SAME model id, refused (env order applies) when its width
+   differs from ``EMBEDDING_DIM``;
+2. the env order below (``EMBEDDING_BASE_URL`` / NVIDIA / on-prem, Voyage,
+   OpenAI, Gemini, sentence-transformers);
+3. when the env configures no embedder: the first operator-added registry
+   embedding model with its own ``base_url``.
+
+:class:`RegistryReloadingEmbedder` keeps a long-lived process (the API) on the
+current choice: when the shared registry changes it re-resolves, so queries are
+embedded with the same model the workers ingest with.
 """
 
 from __future__ import annotations
@@ -38,6 +49,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "EmbedderResolution",
+    "RegistryReloadingEmbedder",
     "apply_embedding_endpoint_settings",
     "build_query_embedder",
     "embedder_dimension",
@@ -292,6 +304,16 @@ def resolve_embedder(
         )
         return resolution
 
+    # Step 3: nothing in env, but the operator registered an embedding model
+    # with its own endpoint.
+    fallback = _resolve_registry_endpoint_fallback(settings)
+    if fallback is not None:
+        fallback.errors = [*resolution.errors, *fallback.errors]
+        if fallback.embedder is not None:
+            return fallback
+        resolution.errors = fallback.errors
+        resolution.registry_refusal = resolution.registry_refusal or fallback.registry_refusal
+
     if resolution.errors:
         logger.error(
             "embedder_unavailable",
@@ -319,8 +341,19 @@ def _resolve_from_registry(settings: Any) -> EmbedderResolution | None:
     """
     from app.providers.registry_embedder import select_registry_embedder
 
+    return _registry_resolution(select_registry_embedder, settings)
+
+
+def _resolve_registry_endpoint_fallback(settings: Any) -> EmbedderResolution | None:
+    """Precedence step 3 (no env embedder): a registry model with its own endpoint."""
+    from app.providers.registry_embedder import select_registry_endpoint_embedder
+
+    return _registry_resolution(select_registry_endpoint_embedder, settings)
+
+
+def _registry_resolution(select: Callable[..., Any], settings: Any) -> EmbedderResolution | None:
     try:
-        choice = select_registry_embedder(settings, target_dim=target_embedding_dim(settings))
+        choice = select(settings, target_dim=target_embedding_dim(settings))
     except Exception as exc:
         logger.error("embedder_registry_selection_failed", error=f"{type(exc).__name__}: {exc}")
         return None
@@ -347,6 +380,145 @@ def _resolve_from_registry(settings: Any) -> EmbedderResolution | None:
         endpoints=resolution.endpoints,
     )
     return resolution
+
+
+_RELOAD_CHECK_INTERVAL_S = 5.0
+
+
+def _registry_version() -> int | None:
+    from app.ai_router.registry_store import get_model_registry_store
+
+    store = get_model_registry_store()
+    return store.version() if store is not None else None
+
+
+class RegistryReloadingEmbedder:
+    """The process embedder, re-resolved when the shared Model Registry changes.
+
+    The API resolves its embedder once at startup, but an operator can save an
+    embedding model / preference order at any time, on any replica; Celery
+    workers resolve per task and pick it up at once. Without this the API kept
+    embedding QUERIES with the old model while workers embedded DOCUMENTS with
+    the new one: vectors of two models in one index, silently. Every embed
+    checks the registry store's override version (at most every
+    ``check_interval_s``) and, when it changed, re-runs ``resolve`` and swaps to
+    the new embedder (``on_change`` callbacks then update the dependants, e.g.
+    ``app.state.embedder_resolution``). A re-resolution that yields no embedder
+    keeps the current one (logged). Everything else is delegated.
+    """
+
+    _agentverse_embedder_proxy = True
+
+    def __init__(
+        self,
+        resolution: EmbedderResolution,
+        *,
+        resolve: Callable[[], EmbedderResolution],
+        check_interval_s: float = _RELOAD_CHECK_INTERVAL_S,
+        version: Callable[[], int | None] = _registry_version,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        import time
+
+        if resolution.embedder is None:
+            raise ValueError("RegistryReloadingEmbedder needs a resolved embedder")
+        self._resolution = resolution
+        self._resolve = resolve
+        self._interval = check_interval_s
+        self._version_fn = version
+        self._clock = clock or time.monotonic
+        self._version = self._read_version()
+        self._checked_at = self._clock()
+        self._on_change: list[Callable[[EmbedderResolution], None]] = []
+
+    @property
+    def resolution(self) -> EmbedderResolution:
+        return self._resolution
+
+    @property
+    def current(self) -> Any:
+        """The embedder in use right now (no version check)."""
+        return self._resolution.embedder
+
+    def add_change_listener(self, listener: Callable[[EmbedderResolution], None]) -> None:
+        self._on_change.append(listener)
+
+    def _read_version(self) -> int | None:
+        try:
+            return self._version_fn()
+        except Exception as exc:  # never fail an embed on the version check
+            logger.warning("embedder_registry_version_unreadable", error=str(exc)[:200])
+            return None
+
+    def refresh(self, *, force: bool = False) -> bool:
+        """Re-resolve when the registry changed; True when the embedder changed."""
+        now = self._clock()
+        if not force and now - self._checked_at < self._interval:
+            return False
+        self._checked_at = now
+        version = self._read_version()
+        if not force and (version is None or version == self._version):
+            return False
+        self._version = version
+        try:
+            fresh = self._resolve()
+        except Exception as exc:  # pragma: no cover - resolve_embedder never raises
+            logger.error("embedder_registry_reload_failed", error=str(exc)[:200])
+            return False
+        if fresh.embedder is None:
+            logger.error(
+                "embedder_registry_reload_kept_current",
+                model=self._resolution.model,
+                reason=fresh.reason() or fresh.registry_refusal,
+            )
+            # Keep serving, but surface why the registry choice was not taken.
+            self._resolution.registry_refusal = fresh.registry_refusal
+            return False
+        same = (
+            fresh.source == self._resolution.source
+            and fresh.provider == self._resolution.provider
+            and fresh.model == self._resolution.model
+            and fresh.endpoints == self._resolution.endpoints
+            and fresh.dimension == self._resolution.dimension
+        )
+        if same:
+            self._resolution.registry_refusal = fresh.registry_refusal
+            return False
+        logger.info(
+            "embedder_registry_reloaded",
+            previous_model=self._resolution.model,
+            model=fresh.model,
+            source=fresh.source,
+            dimension=fresh.dimension,
+        )
+        self._resolution = fresh
+        for listener in list(self._on_change):
+            try:
+                listener(fresh)
+            except Exception as exc:
+                logger.warning("embedder_reload_listener_failed", error=str(exc)[:200])
+        return True
+
+    async def embed(self, request: Any) -> Any:
+        self.refresh()
+        return await self._resolution.embedder.embed(request)
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self.refresh()
+        inner = self._resolution.embedder
+        batch = getattr(inner, "embed_batch", None)
+        if callable(batch):
+            vectors: list[list[float]] = await batch(texts)
+            return vectors
+        from app.providers.base import EmbedRequest
+
+        resp = await inner.embed(EmbedRequest(texts=texts))
+        return list(resp.embeddings)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "_resolution":  # pragma: no cover - only while unpickling
+            raise AttributeError(name)
+        return getattr(self._resolution.embedder, name)
 
 
 def _wire_worker_registry_store() -> None:
