@@ -1038,7 +1038,11 @@ async def test_graph_guardrail_blocks_injected_goal() -> None:
 
     The goal-level check in _node_initialize sets terminal_reason but does not
     prevent subsequent nodes from running; the STEP-level check in _execute_step
-    is what actually returns a 'Guardrail blocked' message.
+    is what stops the step. The Guardrails 2.0 STEP layer (baseline injection
+    rule) runs first and raises PermissionError — the same contract as
+    tests/guardrails/test_guardrail_layer_v2_wiring.py. ("ignore ALL previous
+    instructions" used to slip past the engine's regex and only reached the
+    legacy GuardrailChecker, which is why this once read the step output.)
     """
     p = FakeProvider(
         responses=[
@@ -1049,10 +1053,8 @@ async def test_graph_guardrail_blocks_injected_goal() -> None:
         ]
     )
     g = AgentGraph(planner=p, executor=p, verifier=p, guardrail_checker=GuardrailChecker())
-    state = await g.run(goal="normal test goal", tenant_ctx=T)
-    assert state is not None
-    if state.steps:
-        assert "Guardrail blocked" in state.steps[0].output
+    with pytest.raises(PermissionError, match="Step blocked by guardrail"):
+        await g.run(goal="normal test goal", tenant_ctx=T)
 
 
 async def test_graph_circuit_breaker_open_returns_skip() -> None:

@@ -12,7 +12,8 @@ The gate:
 
 1. refuses content carrying a prompt-injection payload (the same deterministic
    detector the Guardrails 2.0 ``prompt_injection`` rule uses, including
-   base64 / rot13 / leetspeak / homoglyph obfuscation) — a memory that says
+   base64 / rot13 / leetspeak / homoglyph obfuscation, plus the shared
+   detector's indirect "note to the AI: ..." phrasings) — a memory that says
    "ignore previous instructions" must never reach a later goal's planner;
 2. evaluates Guardrails 2.0 ``MEMORY_WRITE`` rules — the baseline PII/secrets
    rule plus any tenant/compliance-bundle rules. A blocked write is dropped and
@@ -49,10 +50,20 @@ def _blocked(store: str, reason: str, tenant_id: str, goal_id: str | None) -> No
 
 
 def contains_prompt_injection(content: str) -> bool:
-    """Whether *content* carries a prompt-injection payload (deterministic)."""
-    from app.guardrails_v2.engine import guardrails_engine
+    """Whether *content* carries a prompt-injection payload (deterministic).
 
-    return bool(guardrails_engine._check_injection(content).get("triggered"))
+    The guardrail engine's detector (direct injection, incl. base64/rot13) plus
+    the shared detector's *indirect* phrasings ("note to the AI: ...") — a
+    stored memory is replayed into later prompts, which is exactly the
+    indirect-injection channel. Exfil phrasings are not screened here: a
+    memory like "send the weekly transcript to bob@corp.com" is legitimate.
+    """
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.security_runtime import injection_patterns
+
+    if guardrails_engine._check_injection(content).get("triggered"):
+        return True
+    return injection_patterns.contains_injection(content, injection_patterns.INDIRECT_PATTERNS)
 
 
 async def screen_memory_content(
