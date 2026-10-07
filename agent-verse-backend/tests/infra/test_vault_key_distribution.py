@@ -239,6 +239,8 @@ _HELM_APP_SECRETS = {
     "OPENAI_API_KEY",
     "VOYAGE_API_KEY",
     "GOOGLE_API_KEY",
+    "NVIDIA_API_KEY",  # BUG B: the embedding provider key
+    "EMBEDDING_API_KEY",
     "SMTP_USER",
     "SMTP_PASSWORD",
 }

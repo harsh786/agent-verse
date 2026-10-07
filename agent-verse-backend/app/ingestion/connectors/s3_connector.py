@@ -20,8 +20,10 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorFetchError,
+    ConnectorSecretsUndecryptableError,
     ConnectorUnavailableError,
     fetch_failure_document,
+    refuse_undecryptable_secrets,
     stable_doc_id,
 )
 from app.ingestion.connector_egress import (
@@ -33,6 +35,13 @@ from app.ingestion.connector_egress import (
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 from app.ingestion.source_config import CONNECTOR_LEGACY_DOC_ID_KEY
+from app.net.aws_clients import (
+    AwsCredentialError,
+    AwsKeys,
+    keys_from_config,
+    resolve_region,
+    tenant_client,
+)
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -42,6 +51,8 @@ _log = logging.getLogger(__name__)
 
 def _describe(exc: BaseException) -> str:
     """An honest one-line reason (S3 error code + message, or the exception)."""
+    if isinstance(exc, ConnectorSecretsUndecryptableError | AwsCredentialError):
+        return str(exc)
     try:
         from botocore import exceptions as boto_exc  # type: ignore[import-not-found]
     except ImportError:  # pragma: no cover
@@ -116,6 +127,8 @@ def _classify_fetch_error(exc: BaseException) -> tuple[str, bool]:
         return str(exc), False
     if isinstance(exc, ConnectorEgressBlockedError):
         return f"egress refused: {exc}", False
+    if isinstance(exc, AwsCredentialError):
+        return f"s3 credentials invalid: {exc}", False
     try:
         from botocore import exceptions as boto_exc  # type: ignore[import-not-found]
     except ImportError:  # pragma: no cover - boto3 is a core dependency
@@ -309,38 +322,40 @@ class S3Connector(BaseConnector):
             kwargs["endpoint_url"] = endpoint_url
         return kwargs
 
-    def _credential_kwargs(self, config: SourceConfig) -> dict[str, Any]:
-        """The source's credentials (incl. an STS session token) and region."""
-        cc = config.connection_config
-        credentials = cc.get("credentials", {}) or {}
-        if not isinstance(credentials, dict):
-            credentials = {}
-        if not credentials.get("access_key_id") and cc.get("access_key_id"):
-            # The UI's object-storage form sent the keys at the top level, where
-            # nothing read them: every UI-created S3/MinIO source ran anonymous.
-            credentials = {
-                k: cc[k] for k in ("access_key_id", "secret_access_key", "session_token")
-                if cc.get(k)
-            }
-        kwargs: dict[str, Any] = {
-            "aws_access_key_id": credentials.get("access_key_id"),
-            "aws_secret_access_key": credentials.get("secret_access_key"),
-            "region_name": cc.get("region", "us-east-1"),
-        }
-        if credentials.get("session_token"):
-            kwargs["aws_session_token"] = credentials["session_token"]
-        return kwargs
+    def _keys(self, config: SourceConfig) -> AwsKeys | None:
+        """The source's own keys (incl. an STS session token), or None (anonymous).
+
+        A secret this process could not decrypt raises
+        :class:`ConnectorSecretsUndecryptableError`, half a key pair / the response
+        mask raises :class:`AwsCredentialError`. Either used to come out as
+        ``aws_access_key_id=None``, which botocore answers with its DEFAULT
+        credential chain — env vars, ~/.aws, then the EC2 metadata service
+        (169.254.169.254): the platform pod's identity, never the tenant's.
+        """
+        refuse_undecryptable_secrets(config)
+        return keys_from_config(config.connection_config)
 
     def _make_client(self, boto3: Any, config: SourceConfig, endpoint_url: str | None) -> Any:
-        """A listing client: a boto3 Session with the source's credentials."""
-        session = boto3.Session(**self._credential_kwargs(config))
-        return session.client("s3", **self._client_kwargs(endpoint_url, config))
+        """An S3 client for the source (listing, single-object fetch, count estimate).
+
+        Signed with the source's own keys, or explicitly UNSIGNED when it has
+        none; built on an isolated botocore session that never consults the
+        ambient credential chain or instance metadata (:mod:`app.net.aws_clients`).
+        The region is always explicit; custom endpoints stay path-style by default.
+        """
+        client_kwargs = self._client_kwargs(endpoint_url, config)
+        return tenant_client(
+            boto3,
+            "s3",
+            region=config.connection_config.get("region"),
+            keys=self._keys(config),
+            endpoint_url=client_kwargs.get("endpoint_url"),
+            config=client_kwargs.get("config"),
+        )
 
     def _object_client(self, boto3: Any, config: SourceConfig, endpoint_url: str | None) -> Any:
-        """A one-off client (single-object fetch, count estimate)."""
-        return boto3.client(
-            "s3", **self._credential_kwargs(config), **self._client_kwargs(endpoint_url, config)
-        )
+        """A one-off client (single-object fetch, count estimate): same rules."""
+        return self._make_client(boto3, config, endpoint_url)
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
@@ -348,7 +363,7 @@ class S3Connector(BaseConnector):
         t0 = time.perf_counter()
         try:
             bucket = config.connection_config.get("bucket", "")
-            region = config.connection_config.get("region", "us-east-1")
+            region = resolve_region(config.connection_config.get("region"))
 
             async with self._pinned_endpoint(config) as endpoint_url:
                 import boto3  # type: ignore[import-not-found]

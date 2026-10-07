@@ -120,7 +120,7 @@ def _row_to_config_checked(row: Any, tenant_vault: Any = None) -> tuple[SourceCo
     also when it is sealed with the platform vault although the tenant now has
     its own key (``tenant_vault``; lazy re-wrap).
     """
-    from app.ingestion.source_secrets import decrypt_connection_config
+    from app.ingestion.source_secrets import decrypt_connection_config_checked
 
     d = dict(row)
     family_raw = d.get("family") or SourceFamily.WEB.value
@@ -146,9 +146,13 @@ def _row_to_config_checked(row: Any, tenant_vault: Any = None) -> tuple[SourceCo
             kwargs[f] = val
     legacy_plaintext = False
     if isinstance(kwargs.get("connection_config"), dict):
-        kwargs["connection_config"], legacy_plaintext = decrypt_connection_config(
-            kwargs["connection_config"], tenant_vault
-        )
+        # A secret this process cannot decrypt is blanked AND named, so the
+        # connector refuses to run (never anonymous / the pod's own identity).
+        (
+            kwargs["connection_config"],
+            legacy_plaintext,
+            kwargs["undecryptable_secrets"],
+        ) = decrypt_connection_config_checked(kwargs["connection_config"], tenant_vault)
     kwargs["last_synced_at"] = _iso(d.get("last_synced_at")) or None
     kwargs["created_at"] = _iso(d.get("created_at"))
     kwargs["updated_at"] = _iso(d.get("updated_at"))

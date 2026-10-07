@@ -63,7 +63,7 @@ def _ok_object(body: bytes = b"hello") -> dict[str, Any]:
 
 
 async def _webhook(s3: MagicMock, *keys: str) -> list[RawDocument]:
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         return [d async for d in S3Connector().on_webhook(_config(), _event(*keys), {})]
 
 
@@ -118,7 +118,7 @@ async def test_one_failed_record_does_not_hide_the_others() -> None:
 
 
 async def test_a_client_construction_failure_is_reported_too() -> None:
-    with patch("boto3.client", side_effect=RuntimeError("no creds")):
+    with patch("boto3.Session", side_effect=RuntimeError("no creds")):
         docs = [d async for d in S3Connector().on_webhook(_config(), _event("a.txt"), {})]
     assert len(docs) == 1
     assert "no creds" in docs[0].metadata[CONNECTOR_FAILURE_KEY]

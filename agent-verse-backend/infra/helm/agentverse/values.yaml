@@ -46,6 +46,11 @@ secrets:
   openaiApiKey: ""
   voyageApiKey: ""
   googleApiKey: ""
+  # BUG B: NVIDIA NIM key. With embedding.nvidiaEmbedModel set it is the embedder
+  # (no embedder = every ingestion path answers 503 "embedding provider not configured").
+  nvidiaApiKey: ""
+  # Key of a dedicated OpenAI-compatible embedding endpoint (embedding.baseUrl).
+  embeddingApiKey: ""
   smtpUser: ""
   smtpPassword: ""
 
@@ -73,6 +78,21 @@ ingestion:
   # Documents one connector sync ingests at once (fetch, parse / OCR, embed,
   # index); the cursor still advances in source order. 1 = one at a time.
   syncDocConcurrency: 4
+
+# BUG B: the embedding provider (non-secret part; the keys are secrets.nvidiaApiKey /
+# secrets.embeddingApiKey). Rendered into the shared config map, so the API and every
+# worker / beat embed with the SAME model (query and document vectors must match).
+# NVIDIA hosted:  nvidiaEmbedModel: nvidia/nemotron-3-embed-1b (+ secrets.nvidiaApiKey),
+#                 nvidiaEmbedDim / dim: 2048 (must equal the pgvector column width).
+# Any OpenAI-compatible /v1/embeddings server: baseUrl + model (+ secrets.embeddingApiKey).
+# Empty values are not rendered (the backend defaults apply). Alternative without a
+# redeploy: register an embedding model with its own base URL + key in the Model Registry.
+embedding:
+  nvidiaEmbedModel: ""
+  nvidiaEmbedDim: ""
+  baseUrl: ""
+  model: ""
+  dim: ""
 
 # a06-F099-03: dead-worker message restore. Workers heart-beat (every
 # graceSeconds / 4) and record the messages they hold; a beat job puts the

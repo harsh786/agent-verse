@@ -62,6 +62,7 @@ __all__ = [
     "MASK",
     "SourceSecretError",
     "decrypt_connection_config",
+    "decrypt_connection_config_checked",
     "encrypt_connection_config",
     "is_secret_key",
     "mask_connection_config",
@@ -173,14 +174,32 @@ def decrypt_connection_config(
     return out, reencrypt and not failed
 
 
+def decrypt_connection_config_checked(
+    config: dict[str, Any] | None, tenant_vault: Any = None
+) -> tuple[dict[str, Any], bool, list[str]]:
+    """Like :func:`decrypt_connection_config`, also naming every undecryptable secret.
+
+    Returns ``(plaintext_config, needs_reencrypt, undecryptable)`` where
+    ``undecryptable`` lists the dotted key paths (``credentials``,
+    ``auth.api_token``) whose stored value is encrypted but could not be opened
+    here — a vault key that differs from the one that sealed it (one pod on
+    another ``VAULT_MASTER_KEY``), a missing tenant key, tampering. Those values
+    are blanked in the config; a connector must refuse to run on them rather than
+    fall back to anonymous access or an ambient identity (see
+    :attr:`SourceConfig.undecryptable_secrets`).
+    """
+    out, reencrypt, failed = _decrypt(config, tenant_vault)
+    return out, reencrypt and not failed, failed
+
+
 def _decrypt(
-    config: dict[str, Any] | None, tenant_vault: Any
-) -> tuple[dict[str, Any], bool, bool]:
+    config: dict[str, Any] | None, tenant_vault: Any, prefix: str = ""
+) -> tuple[dict[str, Any], bool, list[str]]:
     from app.providers.tenant_vault import needs_rewrap
 
     out: dict[str, Any] = {}
     reencrypt = False
-    failed = False
+    failed: list[str] = []
     for key, value in (config or {}).items():
         if is_secret_key(key) and _is_encrypted(value):
             body = value[len(ENC_PREFIX):]
@@ -191,16 +210,16 @@ def _decrypt(
                     "source_secret_decrypt_failed", key=key, error=type(exc).__name__
                 )
                 out[key] = ""
-                failed = True
+                failed.append(f"{prefix}{key}")
                 continue
             reencrypt = reencrypt or needs_rewrap(tenant_vault, body)
         elif is_secret_key(key):
             out[key] = value
             reencrypt = reencrypt or _has_value(value)
         elif isinstance(value, dict):
-            out[key], nested_re, nested_failed = _decrypt(value, tenant_vault)
+            out[key], nested_re, nested_failed = _decrypt(value, tenant_vault, f"{prefix}{key}.")
             reencrypt = reencrypt or nested_re
-            failed = failed or nested_failed
+            failed.extend(nested_failed)
         else:
             out[key] = value
     return out, reencrypt, failed
