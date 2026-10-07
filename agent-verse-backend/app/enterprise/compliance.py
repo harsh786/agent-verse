@@ -72,6 +72,17 @@ class DataExportRequest:
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+def deployment_data_regions() -> tuple[str | None, str | None]:
+    """``(primary, backup)`` data regions the operator declared for this
+    deployment (``DATA_REGION`` / ``DATA_BACKUP_REGION``); None when unset."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    primary = str(getattr(settings, "data_region", "") or "").strip() or None
+    backup = str(getattr(settings, "data_backup_region", "") or "").strip() or None
+    return primary, (backup if backup != primary else None)
+
+
 class ComplianceController:
     """GDPR/SOC2/PCI-DSS compliance controller.
 
@@ -620,10 +631,31 @@ class ComplianceController:
         # FIX: No longer returns hardcoded gdpr_compliant=True / soc2_type2=True.
         # These are compliance assertions that must be earned, not assumed.
         # Use ComplianceChecker (compliance_v2.py) for authoritative compliance status.
+        #
+        # a10-F253-01: the regions are the operator-declared DATA_REGION /
+        # DATA_BACKUP_REGION of this deployment — they were hardcoded us-east-1 /
+        # eu-west-1 for every tenant. Nothing selects a region per tenant.
+        primary, backup = deployment_data_regions()
+        if primary:
+            description = (
+                f"All tenants of this deployment store data in {primary}"
+                + (f" (backups in {backup})" if backup else "")
+                + "; per-tenant region selection is not available."
+            )
+        else:
+            description = (
+                "This deployment has not declared its data region (DATA_REGION); "
+                "per-tenant region selection is not available."
+            )
         return {
             "tenant_id": tenant_ctx.tenant_id,
-            "primary_region": "us-east-1",
-            "backup_region": "eu-west-1",
+            # ``region`` is what the frontend's DataResidencyInfo reads.
+            "region": primary or "unconfigured",
+            "primary_region": primary,
+            "backup_region": backup,
+            "residency_configured": primary is not None,
+            "per_tenant_residency": False,
+            "description": description,
             "gdpr_compliant": False,  # FIX: was hardcoded True — dynamically checked via /compliance/gdpr  # noqa: E501
             "pci_dss_scope": False,
             "soc2_type2": False,  # FIX: was hardcoded True — dynamically checked via /compliance/soc2  # noqa: E501

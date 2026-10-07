@@ -219,13 +219,25 @@ async def get_data_residency(request: Request) -> dict[str, Any]:
 
 @router.get("/compliance/regions")
 async def list_data_regions(request: Request) -> list[dict[str, Any]]:
-    """Return all available data residency regions."""
-    ctx = _require_tenant(request)
-    residency = _compliance(request).get_data_residency(tenant_ctx=ctx)
-    regions = [residency]
-    for r in ["us-east-1", "eu-west-1", "ap-southeast-1"]:
-        if residency.get("region") != r:
-            regions.append({"region": r, "description": f"Region {r}"})
+    """The data regions this deployment actually uses (primary, then backup).
+
+    a10-F253-02: this used to return the residency dict followed by a
+    fabricated catalog (us-east-1 / eu-west-1 / ap-southeast-1) compared on a
+    ``region`` key the dict did not have, so us-east-1 was listed twice and
+    regions no tenant can select were offered. Empty when the deployment has
+    not declared ``DATA_REGION``; there is no per-tenant region selection.
+    """
+    _require_tenant(request)
+    from app.enterprise.compliance import deployment_data_regions
+
+    primary, backup = deployment_data_regions()
+    regions: list[dict[str, Any]] = []
+    if primary:
+        regions.append(
+            {"region": primary, "role": "primary", "description": "Primary data region"}
+        )
+    if backup:
+        regions.append({"region": backup, "role": "backup", "description": "Backup region"})
     return regions
 
 

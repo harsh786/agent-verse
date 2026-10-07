@@ -110,8 +110,8 @@ class TestComplianceExportExtra:
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/enterprise/compliance/regions", headers=_H)
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
-        assert len(resp.json()) >= 1
+        # a10-F253-02: only the deployment's declared regions (none declared here).
+        assert resp.json() == []
 
 
 # ── Simulation endpoints ──────────────────────────────────────────────────────

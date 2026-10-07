@@ -223,8 +223,8 @@ def test_list_data_regions() -> None:
     resp = client.get("/enterprise/compliance/regions", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     body = resp.json()
-    assert isinstance(body, list)
-    assert len(body) > 0
+    # a10-F253-02: only the deployment's declared regions (DATA_REGION unset here).
+    assert body == []
 
 
 # ---------------------------------------------------------------------------

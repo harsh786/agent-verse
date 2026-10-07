@@ -416,6 +416,14 @@ class Settings(BaseSettings):
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024
+    # Where THIS deployment stores tenant data (e.g. "eu-west-1"), as declared by
+    # the operator; empty = not declared. Reported by /enterprise/compliance/
+    # residency and /regions and used by the GDPR EU-residency control. There is
+    # no per-tenant region selection: every tenant shares the deployment's
+    # region. a10-F253-01 (these endpoints used to claim us-east-1 / eu-west-1
+    # for every tenant of every deployment).
+    data_region: str = ""
+    data_backup_region: str = ""
     # Hard cap on one OCR document (/ocr/extract upload or decoded base64, and
     # each /ocr/batch document). The request body is also bounded before any
     # route reads it (app/integrations/body_limit.py). a10-F243-05.
