@@ -13,6 +13,8 @@ is short-circuited with ``skip_reason == "dedup"`` and no new goal_id.
 
 from __future__ import annotations
 
+import uuid
+
 from typing import Any
 
 import pytest
@@ -43,14 +45,18 @@ async def _create_webhook_trigger(tenant_client: Any) -> str:
 async def test_fire_creates_real_goal_and_dedups_second_fire(tenant_client: Any) -> None:
     schedule_id = await _create_webhook_trigger(tenant_client)
 
-    # A fixed payload so both fires derive the SAME idempotency key
-    # (webhook family: key = trigger_id : payload_hash).
+    # A client RETRY of one delivery: the same payload and the same
+    # Idempotency-Key header, which is a webhook/REST firing's identity (B2-7).
+    # Two calls without a key are distinct deliveries and both run, by design.
     payload = {"repo": "octo/hello-world", "action": "opened", "number": 42}
+    fire = {"payload": payload}
+    retry_key = {"Idempotency-Key": f"e2e-{uuid.uuid4().hex}"}
 
     # ── First fire: a real goal must be created ───────────────────────────────
     first = await tenant_client.post(
         f"/triggers/{schedule_id}/fire",
-        json={"payload": payload},
+        json=fire,
+        headers=retry_key,
     )
     assert first.status_code == 200, f"fire failed: {first.status_code} {first.text}"
     first_body = first.json()
@@ -81,10 +87,11 @@ async def test_fire_creates_real_goal_and_dedups_second_fire(tenant_client: Any)
     # a separate gap tracked for a follow-up (needs rls_context on both the
     # write and the read).
 
-    # ── Second identical fire: deduplicated, no new goal ──────────────────────
+    # ── Retry of the same delivery: deduplicated, no new goal ──────────────────────
     second = await tenant_client.post(
         f"/triggers/{schedule_id}/fire",
-        json={"payload": payload},
+        json=fire,
+        headers=retry_key,
     )
     assert second.status_code == 200, f"second fire failed: {second.status_code} {second.text}"
     second_body = second.json()

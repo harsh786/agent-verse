@@ -12,12 +12,13 @@ Run with:
 
 from __future__ import annotations
 
+import contextlib
+
 import asyncio
 import json
 import secrets
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -47,26 +48,9 @@ def _ctx(tid: str) -> TenantContext:
     return TenantContext(tenant_id=tid, plan=PlanTier.PROFESSIONAL, api_key_id="k")
 
 
-@pytest_asyncio.fixture
-async def app_db(pg_url: str) -> AsyncIterator[Any]:
+@contextlib.asynccontextmanager
+async def _app_db_on(pg_url: str) -> AsyncIterator[Any]:
     """Session factory on a fresh NOBYPASSRLS role (what production runs as)."""
-    async with _app_role_db(pg_url) as factory:
-        yield factory
-
-
-@pytest.fixture(scope="module")
-def rotation_pg_url(pg_url: str) -> Iterator[str]:
-    """A database of the rotation test's own: rotate_master_key walks EVERY
-    tenant's secrets, so a value another test sealed with a different master key
-    in the shared ``pg_url`` database failed it in full-suite order."""
-    from tests._test_backends import fresh_migrated_database
-
-    with fresh_migrated_database(pg_url) as url:
-        yield url
-
-
-@asynccontextmanager
-async def _app_role_db(pg_url: str) -> AsyncIterator[Any]:
     password = secrets.token_urlsafe(24)
     role = f"test_app_conn_{secrets.token_hex(4)}"
     admin = create_async_engine(pg_url)
@@ -91,6 +75,13 @@ async def _app_role_db(pg_url: str) -> AsyncIterator[Any]:
     finally:
         await engine.dispose()
         await admin.dispose()
+
+
+@pytest_asyncio.fixture
+async def app_db(pg_url: str) -> AsyncIterator[Any]:
+    """Session factory on a fresh NOBYPASSRLS role (what production runs as)."""
+    async with _app_db_on(pg_url) as factory:
+        yield factory
 
 
 @pytest_asyncio.fixture
@@ -401,14 +392,17 @@ async def test_legacy_redis_secrets_are_backfilled_and_read_repaired(
 
 
 @pytest.mark.asyncio
-async def test_rotation_reencrypts_postgres_connector_secrets(
-    rotation_pg_url: str, redis: Any
-) -> None:
-    async with _app_role_db(rotation_pg_url) as app_db:
-        await _rotate_connector_secrets(app_db, redis, rotation_pg_url)
+async def test_rotation_reencrypts_postgres_connector_secrets(redis: Any, pg_url: str) -> None:
+    # A full rotation walks EVERY tenant's secrets in every store; in the shared
+    # database other tests' values (under other keys) made it report "failed".
+    from tests._test_backends import fresh_migrated_database
+
+    with fresh_migrated_database(pg_url) as isolated_url:
+        async with _app_db_on(isolated_url) as app_db:
+            await _rotation_reencrypts(app_db, redis, isolated_url)
 
 
-async def _rotate_connector_secrets(app_db: Any, redis: Any, pg_url: str) -> None:
+async def _rotation_reencrypts(app_db: Any, redis: Any, pg_url: str) -> None:
     from app.providers.vault import CredentialVault, get_vault, rotate_master_key
 
     await _mark_backfilled(app_db)

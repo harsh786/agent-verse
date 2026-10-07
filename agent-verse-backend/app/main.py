@@ -2880,6 +2880,24 @@ def create_app(
                     _ge_stop.bind_repository(None)
                 except Exception as _ge_stop_exc:
                     logger.warning("guardrails_repository_unbind_failed", error=str(_ge_stop_exc))
+                # Same for the process-wide knowledge-graph store: it must not keep
+                # this lifespan's pool (bound to this lifespan's event loop) after
+                # shutdown — a later user ran its queries on a dead loop.
+                try:
+                    from app.knowledge_graph.store import kg_store as _kg_stop
+
+                    _kg_stop.set_db(None)
+                except Exception as _kg_stop_exc:
+                    logger.warning("kg_store_unbind_failed", error=str(_kg_stop_exc))
+                # ... and the process-wide verifier calibration store (bound above).
+                try:
+                    from app.intelligence.verifier_calibration import (
+                        _default_calibration_store as _cal_stop,
+                    )
+
+                    _cal_stop._db = None
+                except Exception as _cal_stop_exc:
+                    logger.warning("calibration_store_unbind_failed", error=str(_cal_stop_exc))
                 await active.shutdown()
         else:
             start_process_reranker_warmup()

@@ -192,9 +192,12 @@ async def test_no_path_param_operation_leaks_across_tenants(
         body = synth.value(schema) if schema else {}
         resp = await _req(ca, "POST", path, body)
         if resp is not None and resp.status_code >= 500:
-            if resp.status_code == 503 and "not enabled" in resp.text.lower():
+            if resp.status_code == 503 and any(
+                w in resp.text.lower() for w in ("not enabled", "not configured")
+            ):
                 # A feature switched off by configuration, reported as such —
-                # not a server error (e.g. CIVILIZATION_ENABLED unset).
+                # not a server error (e.g. CIVILIZATION_ENABLED unset, or no
+                # object storage for training-export jobs).
                 notes.append(f"feature disabled: POST {path}")
             elif resp.status_code == 501:
                 # An honest "not implemented" (e.g. golden datasets) creates

@@ -38,6 +38,8 @@ from app.tenancy.context import PlanTier, TenantContext
 pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+# Taken at import: the grant window must outlast a long full-suite run (the gate
+# checks against the real clock), so it spans days, not an hour.
 _NOW = datetime.now(UTC)
 
 
@@ -86,7 +88,7 @@ async def app_factory(postgres_url: str) -> AsyncIterator[Any]:
             grantee_agent_id="agent-1",
             scopes=("jira.*",),
             not_before=_NOW - timedelta(hours=1),
-            expires_at=_NOW + timedelta(hours=1),
+            expires_at=_NOW + timedelta(days=7),
         )
     )
     app_url = (

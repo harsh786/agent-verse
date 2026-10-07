@@ -57,22 +57,27 @@ def test_slack_server_tool_definitions() -> None:
         assert "parameters" in tool
 
 
-def test_builtin_registry_wiring_returns_correct_count() -> None:
+def _clear_required_env(monkeypatch, keep: tuple[str, ...] = ()) -> None:
+    """Unset every env var a built-in server requires (DOCKER_HOST included), so
+    the result does not depend on the machine running the tests."""
+    from app.mcp.servers.registry_wiring import get_builtin_server_configs
+
+    for c in get_builtin_server_configs():
+        for key in c.get("requires_env", []):
+            if key not in keep:
+                monkeypatch.delenv(key, raising=False)
+
+
+def test_builtin_registry_wiring_returns_correct_count(monkeypatch) -> None:
     """get_builtin_server_configs() returns all catalog entries regardless of env vars.
 
     3 original (github, postgres, slack) + 12 PM connectors + 11 new servers = 26+ total.
     """
     import os
 
-    # Ensure none of the env vars are set so only zero-requirement servers are active
-    for key in [
-        "GITHUB_TOKEN", "POSTGRES_MCP_URL", "SLACK_BOT_TOKEN",
-        "JIRA_BASE_URL", "CONFLUENCE_BASE_URL", "ASANA_ACCESS_TOKEN",
-        "LINEAR_API_KEY", "NOTION_API_KEY", "TRELLO_API_KEY",
-        "MONDAY_API_KEY", "TODOIST_API_TOKEN", "BASECAMP_ACCOUNT_ID",
-        "WRIKE_ACCESS_TOKEN", "CLICKUP_API_TOKEN", "SMARTSUITE_API_KEY",
-    ]:
-        os.environ.pop(key, None)
+    # Ensure none of the required env vars are set so only zero-requirement
+    # servers are active.
+    _clear_required_env(monkeypatch)
 
     from app.mcp.servers.registry_wiring import get_builtin_server_configs
 
@@ -100,7 +105,8 @@ def test_builtin_registry_wiring_returns_correct_count() -> None:
 
 def test_builtin_registry_wiring_active_with_env_var(monkeypatch) -> None:
     """Setting GITHUB_TOKEN makes the GitHub server active (alongside zero-req servers)."""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
+    _clear_required_env(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "test-github-token")
 
     # Re-import to pick up env change
     import os

@@ -129,6 +129,13 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
+    # Nothing reads a task result (goal, workflow and ingestion state is in
+    # Postgres). With results on, every apply_async made the SENDING process
+    # subscribe to the task's Redis result channel; after one Redis blip that
+    # subscriber gave up for good ("Retry limit exceeded ... The Celery
+    # application must be restarted"), so every workflow trigger answered 500
+    # until the API was restarted (the beat had the same, B1-14).
+    task_ignore_result=True,
     timezone="UTC",
     enable_utc=True,
     worker_max_tasks_per_child=100,

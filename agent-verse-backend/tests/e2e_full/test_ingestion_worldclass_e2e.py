@@ -42,20 +42,31 @@ class _CapturingBus:
 
 
 def _minimal_pdf(text: str) -> bytes:
-    """A tiny but valid single-page PDF with one text-showing operator."""
-    body = (
-        b"%PDF-1.4\n"
-        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
-        b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
-        b"4 0 obj<</Length 60>>stream\n"
-        b"BT /F1 18 Tf 72 700 Td (" + text.encode() + b") Tj ET\n"
-        b"endstream endobj\n"
-        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
-        b"trailer<</Root 1 0 R>>\n%%EOF"
-    )
-    return body
+    """A tiny but valid single-page PDF with one text-showing operator.
+
+    Includes the cross-reference table and ``startxref`` a strict parser needs
+    (the earlier fixture had neither and is now refused as "not a readable PDF").
+    """
+    content = b"BT /F1 18 Tf 72 700 Td (" + text.encode() + b") Tj ET\n"
+    objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+        b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+        b"<</Length " + str(len(content)).encode() + b">>stream\n" + content + b"endstream",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj".encode() + obj + b"endobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += f"trailer<</Size {len(objects) + 1}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF".encode()
+    return bytes(out)
 
 
 def _tiny_png() -> bytes:
@@ -152,10 +163,12 @@ async def test_ingestion_worldclass_e2e(app: object, _seeded_tenant: str) -> Non
     # Retrieved chunks carry the document-level hash + provenance for dedup.
     assert any(h.metadata.get("doc_content_hash") for h in hits)
 
-    # ── The WS-12 top fix: re-ingesting the SAME CSV dedups (skip), not re-index.
+    # ── The WS-12 top fix: re-ingesting the SAME, unchanged document dedups (skip),
+    # not re-index. Dedup is per document (P1b-6): the same bytes under ANOTHER
+    # document id are a separate document and are indexed.
     reingest = await pipeline.ingest(
         RawDocument(
-            doc_id="csv-1-again", source_id="e2e-src", tenant_id=tenant_id,
+            doc_id="csv-1", source_id="e2e-src", tenant_id=tenant_id,
             content=csv_bytes, content_type="text/csv", title="people.csv",
         ),
         _config(),
