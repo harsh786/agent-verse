@@ -100,7 +100,14 @@ class TestInMemoryStore:
         store = SourceConfigStore()
         await store.create(_make_config(source_id="s1", tenant_id="t1"))
         await store.create(_make_config(source_id="s2", tenant_id="t2"))
-        await store.create(_make_config(source_id="s3", tenant_id="t1"))
+        # A different target: the same seed into the same collection is a duplicate.
+        await store.create(
+            _make_config(
+                source_id="s3",
+                tenant_id="t1",
+                connection_config={"seed_urls": ["https://example.org"]},
+            )
+        )
         result = await store.list("t1")
         assert {c.source_id for c in result} == {"s1", "s3"}
 

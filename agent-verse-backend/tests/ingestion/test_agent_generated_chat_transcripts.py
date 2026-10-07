@@ -131,6 +131,7 @@ def test_a_long_session_keeps_its_latest_messages() -> None:
 async def _create(app: Any, tenant: Any, kinds: list[str]) -> Any:
     from fastapi.testclient import TestClient
 
+    import app.api.ingestion as ingestion_mod
     from app.api.ingestion import router as ingestion_router
 
     app.include_router(ingestion_router)
@@ -140,6 +141,9 @@ async def _create(app: Any, tenant: Any, kinds: list[str]) -> Any:
         request.state.tenant = tenant
         return await call_next(request)
 
+    # The API's in-process Source dict outlives one app: a Source left by an
+    # earlier case would make this one a duplicate registration (409).
+    ingestion_mod._SOURCES.clear()
     client = TestClient(app)
     return client, client.post("/sources", json={
         "name": "chats", "family": "agent_generated", "source_type": "agent_generated",

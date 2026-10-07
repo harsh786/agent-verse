@@ -46,6 +46,7 @@ from app.rag.contracts import (
     UnavailableRAGStrategyError,
     resolve_rag_strategy,
 )
+from app.rag.duplicate_documents import collapse_duplicate_documents, document_identity
 from app.rag.embedding_cache import EmbeddingCache as _EmbeddingCache
 from app.rag.engine import (
     RetrievalResult as EngineRetrievalResult,
@@ -2058,6 +2059,38 @@ def _canonical_result(
     )
 
 
+def _collapse_duplicate_citations(
+    result: RAGExecutionResult, strategy: RAGStrategy
+) -> RAGExecutionResult:
+    """Every strategy's final citations: one per document passage (best-ranked kept).
+
+    The persisted hybrid search already collapses before its top-k cut; this net
+    covers every other strategy (web, multi-hop, fusion, reranked paths), so a
+    collection holding a document twice (two Sources of one upstream target)
+    never cites the same passage twice.
+    """
+    kept, dropped = collapse_duplicate_documents(
+        result.citations, lambda c: document_identity(c.metadata, c.content)
+    )
+    if not dropped:
+        return result
+    return result.model_copy(
+        update={
+            "citations": kept,
+            "grounded": bool(kept),
+            "strategy_trace": [
+                *result.strategy_trace,
+                RAGStrategyTrace(
+                    strategy=strategy,
+                    action="duplicate_documents_collapsed",
+                    status="complete",
+                    detail={"dropped": dropped},
+                ),
+            ],
+        }
+    )
+
+
 class RetrievalGateway:
     """Authenticate, authorize, and dispatch one canonical RAG execution."""
 
@@ -2502,6 +2535,7 @@ class RetrievalGateway:
         else:
             raise TypeError("RAG strategy adapter returned an unsupported result type")
 
+        normalized = _collapse_duplicate_citations(normalized, strategy)
         total_latency_ms = (time.monotonic() - started) * 1000
         normalized = normalized.model_copy(
             update={

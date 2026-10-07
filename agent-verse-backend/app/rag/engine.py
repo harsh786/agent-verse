@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.observability.logging import get_logger
 from app.rag.bm25 import BM25CorpusScorer, BM25Hit
+from app.rag.duplicate_documents import collapse_duplicate_documents, document_identity
 from app.rag.lexical_query import analyze_query
 from app.rag.rerank_stage import apply_default_rerank
 
@@ -800,6 +801,13 @@ async def hybrid_search(
 
     # Sort by RRF score descending
     fused.sort(key=lambda item: (-item[1], item[0]))
+    # The same passage of the same document indexed twice (two Sources reading
+    # one upstream target into this collection) is served once — the best-scoring
+    # copy — and before the top_k cut, so the duplicate does not displace other
+    # evidence.
+    fused, duplicate_hits = collapse_duplicate_documents(
+        fused, lambda item: document_identity(item[3], item[2])
+    )
 
     results = [
         RetrievalResult(
@@ -824,6 +832,7 @@ async def hybrid_search(
         fts_hits=len(fts_ranks),
         trgm_hits=len(trgm_ranks),
         bm25_hits=len(bm25_ranks),
+        duplicate_document_hits=duplicate_hits,
     )
 
     return results

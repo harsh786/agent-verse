@@ -33,6 +33,12 @@ from app.ingestion.source_config import (
     SourceFamily,
     apply_configuration_health,
 )
+from app.ingestion.source_identity import (
+    CANONICAL_TARGET_INDEX,
+    DuplicateSourceError,
+    canonical_target_hash_for,
+    find_duplicate_in,
+)
 from app.observability.logging import get_logger
 
 # Bounded batch for the due-source beat scan, most-overdue first. An unbounded
@@ -79,6 +85,12 @@ _SCALAR_FIELDS = (
     "version",
     "config_status",
     "config_status_reason",
+)
+
+
+# Fields whose change re-derives ``canonical_target_hash`` (and re-checks duplicates).
+_TARGET_FIELDS = frozenset(
+    {"connection_config", "collection_id", "include_patterns", "exclude_patterns", "source_type"}
 )
 
 
@@ -204,12 +216,25 @@ class SourceConfigStore:
     # ── writes ────────────────────────────────────────────────────────────────
 
     async def create(self, config: SourceConfig) -> SourceConfig:
+        """Persist a new Source.
+
+        Raises :class:`DuplicateSourceError` when a Source of the same tenant
+        already reads the same canonical target into the same collection — checked
+        first, and enforced by the partial unique index on
+        ``canonical_target_hash`` so that of two concurrent creates exactly one wins.
+        """
         # A Source that can never index is parked from the start (L-02), so the
         # scheduler never dispatches it and the API shows why.
         apply_configuration_health(config)
         if self._db is None:
+            existing = find_duplicate_in(self._mem.values(), config)
+            if existing is not None:
+                raise DuplicateSourceError(existing)
             self._mem[config.source_id] = config
             return config
+        existing = await self.find_duplicate(config)
+        if existing is not None:
+            raise DuplicateSourceError(existing)
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -226,24 +251,135 @@ class SourceConfigStore:
         tenant_vault = await self._tenant_vault(config.tenant_id)
         for f in _JSON_FIELDS:
             params[f] = _json_param(f, getattr(config, f), tenant_vault)
-        cols = ["id", "tenant_id", "family", *[f for f in _SCALAR_FIELDS if f != "family"]]
+        params["canonical_target_hash"] = canonical_target_hash_for(config)
+        cols = [
+            "id",
+            "tenant_id",
+            "family",
+            *[f for f in _SCALAR_FIELDS if f != "family"],
+            "canonical_target_hash",
+        ]
         json_cols = list(_JSON_FIELDS)
         placeholders = [f":{c}" for c in cols] + [f"CAST(:{c} AS jsonb)" for c in json_cols]
         all_cols = cols + json_cols
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, config.tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        f"INSERT INTO source_configs ({', '.join(all_cols)}) "
+                        f"VALUES ({', '.join(placeholders)})"
+                    ),
+                    params,
+                )
+        except Exception as exc:
+            await self._raise_if_duplicate(exc, config, params["canonical_target_hash"])
+            raise
+        _log.info("source.created", source_id=config.source_id, source_type=config.source_type)
+        return config
+
+    async def _raise_if_duplicate(
+        self, exc: BaseException, config: SourceConfig, target_hash: str | None
+    ) -> None:
+        """Turn a violation of the canonical-target unique index (a concurrent
+        create/update of the same target won the race) into DuplicateSourceError."""
+        if target_hash is None or CANONICAL_TARGET_INDEX not in str(exc):
+            return
+        existing = await self._id_by_hash(
+            config.tenant_id, config.collection_id, target_hash, exclude=config.source_id
+        )
+        _log.info(
+            "source.duplicate_target_refused",
+            source_id=config.source_id,
+            existing_source_id=existing,
+            race=True,
+        )
+        raise DuplicateSourceError(existing or "unknown") from exc
+
+    async def _id_by_hash(
+        self, tenant_id: str, collection_id: str, target_hash: str, *, exclude: str
+    ) -> str | None:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT id FROM source_configs WHERE tenant_id = :tid "
+                        "AND collection_id = :cid AND canonical_target_hash = :h "
+                        "AND id <> :ex ORDER BY created_at LIMIT 1"
+                    ),
+                    {"tid": tenant_id, "cid": collection_id, "h": target_hash, "ex": exclude},
+                )
+            ).first()
+        return str(row[0]) if row is not None else None
+
+    async def find_duplicate(
+        self, config: SourceConfig, *, exclude_source_id: str | None = None
+    ) -> str | None:
+        """Id of another Source of ``config.tenant_id`` that reads the same canonical
+        target into the same collection, or ``None``.
+
+        Rows whose ``canonical_target_hash`` is still NULL (written before the
+        column existed and not back-filled, e.g. a secret the migration could not
+        open) are compared by computing their key from the decrypted config, so the
+        refusal does not depend on the back-fill having covered every row.
+        """
+        if self._db is None:
+            return find_duplicate_in(
+                self._mem.values(), config, exclude_source_id=exclude_source_id
+            )
+        collection = (config.collection_id or "").strip()
+        wanted = canonical_target_hash_for(config)
+        if not collection or wanted is None:
+            return None
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        tenant_vault = None
         async with (
             self._db() as session,
             session.begin(),
             sqlalchemy_rls_context(session, config.tenant_id),
         ):
-            await session.execute(
-                text(
-                    f"INSERT INTO source_configs ({', '.join(all_cols)}) "
-                    f"VALUES ({', '.join(placeholders)})"
-                ),
-                params,
-            )
-        _log.info("source.created", source_id=config.source_id, source_type=config.source_type)
-        return config
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT * FROM source_configs WHERE tenant_id = :tid "
+                        "AND collection_id = :cid AND id <> :ex "
+                        "AND (canonical_target_hash = :h OR canonical_target_hash IS NULL) "
+                        "ORDER BY canonical_target_hash NULLS LAST, created_at"
+                    ),
+                    {
+                        "tid": config.tenant_id,
+                        "cid": collection,
+                        "ex": exclude_source_id or config.source_id,
+                        "h": wanted,
+                    },
+                )
+            ).mappings().all()
+        for row in rows:
+            if row.get("canonical_target_hash") == wanted:
+                return str(row["id"])
+            if tenant_vault is None:
+                tenant_vault = await self._tenant_vault(config.tenant_id)
+            try:
+                legacy, _ = _row_to_config_checked(row, tenant_vault)
+            except Exception:
+                continue
+            if canonical_target_hash_for(legacy) == wanted:
+                return str(row["id"])
+        return None
 
     async def update(
         self, source_id: str, tenant_id: str, **fields: Any
@@ -252,6 +388,17 @@ class SourceConfigStore:
             cfg = self._mem.get(source_id)
             if cfg is None or cfg.tenant_id != tenant_id:
                 return None
+            if self._affects_target(fields):
+                import dataclasses
+
+                probe = dataclasses.replace(
+                    cfg, **{k: v for k, v in fields.items() if hasattr(cfg, k)}
+                )
+                existing = find_duplicate_in(
+                    self._mem.values(), probe, exclude_source_id=source_id
+                )
+                if existing is not None:
+                    raise DuplicateSourceError(existing)
             for k, v in fields.items():
                 if hasattr(cfg, k):
                     setattr(cfg, k, v)
@@ -260,20 +407,30 @@ class SourceConfigStore:
             return cfg
         if not fields:
             return await self.get(source_id, tenant_id)
-        if self._affects_configuration_health(fields):
-            # Re-derive the status from the merged config: fixing the problem
-            # makes the Source schedulable again, breaking it parks it.
-            current = await self.get(source_id, tenant_id)
-            if current is None:
+        merged: SourceConfig | None = None
+        if self._affects_configuration_health(fields) or self._affects_target(fields):
+            merged = await self.get(source_id, tenant_id)
+            if merged is None:
                 return None
             for k, v in fields.items():
-                if hasattr(current, k):
-                    setattr(current, k, v)
-            apply_configuration_health(current)
+                if hasattr(merged, k):
+                    setattr(merged, k, v)
+        target_hash: str | None = None
+        if merged is not None and self._affects_target(fields):
+            # Re-pointing a Source at a target another Source already feeds into
+            # the same collection is refused like creating it (409).
+            existing = await self.find_duplicate(merged, exclude_source_id=source_id)
+            if existing is not None:
+                raise DuplicateSourceError(existing)
+            target_hash = canonical_target_hash_for(merged)
+        if merged is not None and self._affects_configuration_health(fields):
+            # Re-derive the status from the merged config: fixing the problem
+            # makes the Source schedulable again, breaking it parks it.
+            apply_configuration_health(merged)
             fields = {
                 **fields,
-                "config_status": current.config_status,
-                "config_status_reason": current.config_status_reason,
+                "config_status": merged.config_status,
+                "config_status_reason": merged.config_status_reason,
             }
         from sqlalchemy import text
 
@@ -294,24 +451,37 @@ class SourceConfigStore:
             elif k in _SCALAR_FIELDS or k in ("last_synced_at",):
                 set_parts.append(f"{k} = :{k}")
                 params[k] = v
+        if merged is not None and self._affects_target(fields):
+            set_parts.append("canonical_target_hash = :canonical_target_hash")
+            params["canonical_target_hash"] = target_hash
         set_parts.append("updated_at = now()")
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
-            await session.execute(
-                text(
-                    f"UPDATE source_configs SET {', '.join(set_parts)} "
-                    "WHERE id = :source_id AND tenant_id = :tenant_id"
-                ),
-                params,
-            )
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        f"UPDATE source_configs SET {', '.join(set_parts)} "
+                        "WHERE id = :source_id AND tenant_id = :tenant_id"
+                    ),
+                    params,
+                )
+        except Exception as exc:
+            if merged is not None:
+                await self._raise_if_duplicate(exc, merged, target_hash)
+            raise
         return await self.get(source_id, tenant_id)
 
     @staticmethod
     def _affects_configuration_health(fields: dict[str, Any]) -> bool:
         return "collection_id" in fields and "config_status" not in fields
+
+    @staticmethod
+    def _affects_target(fields: dict[str, Any]) -> bool:
+        """Fields that change a Source's canonical target or its collection."""
+        return bool(_TARGET_FIELDS.intersection(fields))
 
     async def mark_needs_configuration(
         self, source_id: str, tenant_id: str, *, reason: str

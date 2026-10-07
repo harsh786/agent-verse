@@ -23,6 +23,7 @@ Endpoints (this list is checked against the registered routes by a test):
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from typing import Any
 
@@ -36,6 +37,7 @@ from app.ingestion.source_config import (
     apply_configuration_health,
     configuration_problem,
 )
+from app.ingestion.source_identity import DuplicateSourceError, find_duplicate_in
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
@@ -170,8 +172,6 @@ _SOURCES: dict[str, SourceConfig] = {}
 
 
 def _serialize_source(s: SourceConfig) -> dict:
-    import dataclasses
-
     from app.ingestion.source_secrets import mask_connection_config
 
     d = dataclasses.asdict(s)
@@ -424,13 +424,41 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         exclude_patterns=body.exclude_patterns,
     )
     store = _get_source_store(request)
-    if store is not None:
-        await store.create(config)
-    else:
-        apply_configuration_health(config)
-        _SOURCES[source_id] = config
+    try:
+        if store is not None:
+            await store.create(config)
+        else:
+            existing = find_duplicate_in(_SOURCES.values(), config)
+            if existing is not None:
+                raise DuplicateSourceError(existing)
+            apply_configuration_health(config)
+            _SOURCES[source_id] = config
+    except DuplicateSourceError as exc:
+        raise _duplicate_source_http(exc) from exc
     _forget_agent_generated_listeners(config.source_type, tenant.tenant_id)
     return _serialize_source(config)
+
+
+def _duplicate_source_http(exc: DuplicateSourceError) -> HTTPException:
+    """409 naming the Source that already feeds the same data into the collection.
+
+    Registering the same upstream target twice into one knowledge collection
+    indexed every document a second time (same ``source_url`` twice, search
+    returning each passage twice); a different collection list / prefix / table
+    set, or a different target collection, is a different Source and allowed.
+    """
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": (
+                "A source already reads this data into this knowledge collection "
+                f"(source {exc.existing_source_id}); sync or edit that source instead, "
+                "or choose a different collection, prefix or target collection."
+            ),
+            "code": "duplicate_source",
+            "existing_source_id": exc.existing_source_id,
+        },
+    )
 
 
 def _forget_agent_generated_listeners(source_type: str, tenant_id: str) -> None:
@@ -472,8 +500,17 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
     store = _get_source_store(request)
     _forget_agent_generated_listeners(source.source_type, tenant.tenant_id)
     if store is not None:
-        updated = await store.update(source_id, tenant.tenant_id, **update_data)
+        try:
+            updated = await store.update(source_id, tenant.tenant_id, **update_data)
+        except DuplicateSourceError as exc:
+            raise _duplicate_source_http(exc) from exc
         return _serialize_source(updated or source)
+    probe = dataclasses.replace(
+        source, **{k: v for k, v in update_data.items() if hasattr(source, k)}
+    )
+    existing = find_duplicate_in(_SOURCES.values(), probe, exclude_source_id=source_id)
+    if existing is not None:
+        raise _duplicate_source_http(DuplicateSourceError(existing))
     for key, val in update_data.items():
         if hasattr(source, key):
             setattr(source, key, val)
