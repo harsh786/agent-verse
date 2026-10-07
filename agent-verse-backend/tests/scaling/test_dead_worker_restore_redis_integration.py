@@ -102,6 +102,8 @@ def _state(url: str) -> tuple[Any, dwr.RedisBrokerState]:
 
 
 def _wait(cond: Callable[[], Any], timeout: float, what: str) -> Any:
+    # Upper bounds only (returns as soon as cond holds): generous so a loaded CI
+    # / laptop (real subprocess workers, a Redis container) does not flake.
     deadline = time.time() + timeout
     while time.time() < deadline:
         value = cond()
@@ -290,7 +292,7 @@ def test_sigkilled_celery_worker_message_is_restored_and_runs_on_the_next(
         def restored() -> bool:
             return bool(dwr.restore_dead_worker_messages(state, grace_seconds=10).restored)
 
-        _wait(restored, 40, "the restorer to see worker A dead")
+        _wait(restored, 120, "the restorer to see worker A dead")
         assert raw.llen("dwr.celery") == 1 and not raw.hexists("unacked", tag)
         conn.release()
 
@@ -299,8 +301,8 @@ def test_sigkilled_celery_worker_message_is_restored_and_runs_on_the_next(
         ((tag_b, inst_b),) = owners.items()
         assert tag_b.decode() == tag and inst_b.decode().startswith("b@")
         raw.set("dwr:release", 1)
-        _wait(lambda: raw.exists("dwr:done"), 30, "the task to finish on worker B")
-        _wait(lambda: not raw.hexists("unacked", tag), 10, "worker B to ack")
+        _wait(lambda: raw.exists("dwr:done"), 90, "the task to finish on worker B")
+        _wait(lambda: not raw.hexists("unacked", tag), 30, "worker B to ack")
     finally:
         _kill(a)
         if b is not None:

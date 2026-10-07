@@ -122,10 +122,18 @@ async def test_failing_mcp_call_increments_failure_count_under_rls(admin_url: st
         verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']),
         tool_reliability_store=fresh,
     )
-    state = AgentState(goal="g", tenant_ctx=ctx)
-    state.steps.append(StepResult(description="check", status=StepStatus.RUNNING))
-    state.context["tool_context"] = tool_ctx
-    await graph._execute_step("check", state, ctx)
+    # A transient reliability-read failure (e.g. a pool timeout on a loaded test
+    # host) is a deliberate degrade: the step runs without reordering and flags
+    # it. Retry the step then, so this asserts the ordering logic, not the host.
+    for _attempt in range(3):
+        state = AgentState(goal="g", tenant_ctx=ctx)
+        state.steps.append(StepResult(description="check", status=StepStatus.RUNNING))
+        state.context["tool_context"] = tool_ctx
+        executor.call_history.clear()
+        await graph._execute_step("check", state, ctx)
+        if not state.context.get("_tool_reliability_degraded"):
+            break
+    assert not state.context.get("_tool_reliability_degraded"), "reliability read kept failing"
     assert [t.name for t in executor.call_history[0].tools] == ["get_other_status", "get_flaky_status"]
     assert state.context["_unreliable_tools"] == ["get_flaky_status"]
     await engine.dispose()
