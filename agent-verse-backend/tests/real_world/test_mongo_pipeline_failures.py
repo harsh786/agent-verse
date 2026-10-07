@@ -477,7 +477,12 @@ def test_mcp_tool_errors_retry_and_failure_path(api: LiveAPI, cleanup: Any,
             f"rw-mongo-tool-failures-{t}", server_id=good["server_id"],
             stalled_server_id=stalled["server_id"], orders=orders))
         run_id = wfx.trigger_run(api, cleanup, wf_id)
-        run = wfx.wait_status(api, run_id, {"complete"}, 900)
+        # Governance gates the $out aggregate (a write through a read tool) behind a
+        # human approval before the tool itself can refuse it. Approve every gate so
+        # the tool's own refusal, the retries and the failure path are exercised.
+        run, gates = wfx.drive_approvals(api, run_id, {}, 900, until={"complete"})
+        evidence["approval_gates"] = [(g.get("step_id"), g.get("action"), g.get("http"))
+                                      for g in gates]
         steps = wfx.get_steps(api, run_id)
         evidence.update(run_id=run_id, status=run.get("status"), steps={
             k: {"status": v.get("status"), "output": mask(wfx.step_output(v))[:220],
