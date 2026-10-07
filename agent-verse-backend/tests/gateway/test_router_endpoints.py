@@ -694,11 +694,19 @@ class TestDownloadCommandFile:
         )
 
         class _FakeResponse:
-            content = b"file-bytes"
             is_redirect = False
+            headers: dict[str, str] = {}
+            closed = False
 
             def raise_for_status(self) -> None:
                 return None
+
+            async def aiter_bytes(self):  # type: ignore[no-untyped-def]
+                yield b"file-"
+                yield b"bytes"
+
+            async def aclose(self) -> None:
+                _FakeResponse.closed = True
 
         class _FakeClient:
             async def __aenter__(self) -> _FakeClient:
@@ -707,9 +715,13 @@ class TestDownloadCommandFile:
             async def __aexit__(self, *a: object) -> None:
                 return None
 
-            # request_public drives the (pinned) client via .request per hop.
-            async def request(self, method: str, url: str, **kw: object) -> _FakeResponse:
-                assert (method, url) == ("GET", "https://example.com/f.txt")
+            # request_public(stream=True) drives the (pinned) client per hop via
+            # build_request + send(stream=True), so the body can be capped.
+            def build_request(self, method: str, url: str, **kw: object) -> tuple[str, str]:
+                return (method, url)
+
+            async def send(self, req: tuple[str, str], *, stream: bool) -> _FakeResponse:
+                assert req == ("GET", "https://example.com/f.txt") and stream
                 return _FakeResponse()
 
         import httpx as _httpx
@@ -719,6 +731,7 @@ class TestDownloadCommandFile:
             filename="a.txt", content_type="text/plain", url="https://example.com/f.txt"
         )
         assert await gw._download_command_file(cf) == b"file-bytes"
+        assert _FakeResponse.closed
 
 
 class TestEnsureInboxCollection:
