@@ -1104,8 +1104,11 @@ def create_app(
                 return None
             model = configured_model
             if not model:
-                provider_default = getattr(provider, "_default_model", "")
-                model = provider_default.strip() if isinstance(provider_default, str) else ""
+                # The RAG strategy LLM role (saved Model Registry order first), only
+                # if this tenant provider serves it; else the provider's default.
+                from app.ai_router.role_preference import servable_role_model
+
+                model = servable_role_model("rag_strategy", provider).strip()
             return (
                 ResolvedLLM(
                     provider=provider,
@@ -1116,8 +1119,11 @@ def create_app(
                 else None
             )
 
-        provider_default = getattr(_app_provider, "_default_model", "")
-        model = provider_default.strip() if isinstance(provider_default, str) else ""
+        # The RAG strategy LLM role's model (query rewrite / HyDE / verifier):
+        # saved Model Registry order > env pin > the provider's default.
+        from app.ai_router.role_preference import servable_role_model
+
+        model = servable_role_model("rag_strategy", _app_provider).strip()
         if not model and isinstance(_app_provider, FakeProvider):
             model = "fake-provider"
         if not model:

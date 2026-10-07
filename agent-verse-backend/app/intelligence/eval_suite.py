@@ -185,8 +185,10 @@ class LLMJudge:
                 f"- overall: Weighted average"
             )
 
-            model = getattr(self._provider, "_default_model", "")
+            from app.ai_router.role_preference import resolve_role_model
             from app.providers.guarded_completion import complete_decision
+
+            model = resolve_role_model("eval_judge", provider=self._provider)
 
             resp = await complete_decision(
                 self._provider,

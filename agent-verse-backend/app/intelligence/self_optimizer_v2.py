@@ -1106,6 +1106,7 @@ Respond with ONLY valid JSON:
                 indent=2,
             )
 
+            from app.ai_router.role_preference import resolve_role_model
             from app.providers.guarded_completion import (
                 complete_decision,
                 generation_timeout_seconds,
@@ -1115,7 +1116,8 @@ Respond with ONLY valid JSON:
             response = await complete_decision(
                 provider,
                 CompletionRequest(
-                    model=configured_default_model("claude-haiku-3-5"),
+                    model=resolve_role_model("self_optimizer", provider=provider)
+                    or configured_default_model("claude-haiku-3-5"),
                     messages=[
                         Message(role="system", content=self.OPTIMIZER_PROMPT),
                         Message(role="user", content=user_content),

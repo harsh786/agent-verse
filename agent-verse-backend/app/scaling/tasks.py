@@ -3747,8 +3747,11 @@ def run_goal(
                 del strategy
                 if tenant_context.tenant_id != tenant_id:
                     return None
-                provider_default = getattr(provider, "_default_model", "")
-                model = provider_default.strip() if isinstance(provider_default, str) else ""
+                # The RAG strategy LLM role's model (saved order > env pin >
+                # the provider's default), as on the API.
+                from app.ai_router.role_preference import servable_role_model
+
+                model = servable_role_model("rag_strategy", provider).strip()
                 if not model and isinstance(provider, FakeProvider):
                     model = "fake-provider"
                 if not model:

@@ -639,10 +639,9 @@ class ModelOrchestratorAdapter:
         deployment can actually serve, and picks the cheapest when several are
         configured. Falls back to the tier assignment when nothing is registered.
         """
-        if task_type in (
-            "planning", "execution", "verification", "classification",
-            "reflection", "think", "thinking",
-        ):
+        from app.ai_router.role_preference import ROUTED_TASK_TYPES
+
+        if task_type in ROUTED_TASK_TYPES:
             # A per-agent model_override wins; then the per-goal role map (models
             # the goal's provider serves: pins, then hybrid/on-prem/NVIDIA
             # profile) — "cheapest configured" cannot tell roles apart when
@@ -687,6 +686,7 @@ class ModelOrchestratorAdapter:
                 "reflection": "planner",
                 "think": "planner",
                 "thinking": "planner",
+                "supervisor": "planner",
                 "classification": "classifier",
                 "judge": "judge",
             }.get(task_type, "planner")
@@ -699,6 +699,7 @@ class ModelOrchestratorAdapter:
             "reflection": assignment.planner,
             "think": assignment.planner,
             "thinking": assignment.planner,
+            "supervisor": assignment.planner,
             "classification": assignment.classifier,
             "judge": assignment.judge,
         }

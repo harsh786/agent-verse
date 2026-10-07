@@ -171,8 +171,12 @@ class SupervisorAgent:
         timeout_per_subtask: float | None = None,
         continuation: bool = False,
         child_timeout_seconds: float | None = None,
+        model: str = "",
     ) -> None:
         self._planner = planner_provider
+        # The supervisor role's model, resolved by the caller with the goal's
+        # router (role_preference.resolve_role_model); see _role_model().
+        self._model = model
         self._goal_service = goal_service
         self._router = agent_router
         self._max_parallel = max(1, int(max_parallel))
@@ -183,6 +187,20 @@ class SupervisorAgent:
         # The goal's default child timeout (subgoal_timeout_seconds / the parent's
         # effective goal timeout); per-task plan timeouts win over it.
         self._child_timeout_default = child_timeout_seconds
+
+    def _role_model(self) -> str:
+        """The supervisor's model: the caller's resolution, else the shared resolver.
+
+        It used to be ``planner._default_model`` (falling back to a hardcoded
+        ``claude-opus-4-8``): the env-default model, whatever the operator ranked
+        first in the Model Registry or pinned for planning — a goal whose every
+        other role ran on-prem had its decomposition and synthesis in the cloud.
+        """
+        if self._model:
+            return self._model
+        from app.ai_router.role_preference import resolve_role_model
+
+        return resolve_role_model("supervisor", provider=self._planner)
 
     def _task_timeout(self, task: SubAgentTask, tenant_ctx: Any) -> float:
         """This sub-task's timeout: the plan's, else the goal's/agent's, else the plan tier's."""
@@ -586,7 +604,7 @@ class SupervisorAgent:
 
         req = CompletionRequest(
             messages=[Message(role="user", content=decompose_prompt.format(goal=goal))],
-            model=getattr(self._planner, "_default_model", "claude-opus-4-8"),
+            model=self._role_model(),
         )
         try:
             from app.providers.guarded_completion import complete_decision
@@ -652,7 +670,7 @@ class SupervisorAgent:
         try:
             from app.providers.base import CompletionRequest, Message
 
-            model = getattr(self._planner, "_default_model", "claude-opus-4-8")
+            model = self._role_model()
             from app.providers.guarded_completion import (
                 complete_decision,
                 generation_timeout_seconds,

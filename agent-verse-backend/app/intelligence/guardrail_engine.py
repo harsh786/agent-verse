@@ -372,12 +372,22 @@ class LLMJudge:
         model: str = "",
         threshold: float = 0.7,
     ) -> None:
+        self._provider_factory = provider_factory
+        # An explicitly configured judge model; else resolved per call (role_preference).
+        self._model = model
+        self._threshold = threshold
+
+    def _judge_model(self, provider: Any) -> str:
+        """The configured judge model, else the guardrail_judge role's model (saved
+        order > env pin > the provider's own model); the system default last."""
+        if self._model:
+            return self._model
+        from app.ai_router.role_preference import resolve_role_model
         from app.providers.model_defaults import configured_default_model
 
-        self._provider_factory = provider_factory
-        # Use the system-configured model; the cloud slug is only a last resort.
-        self._model = model or configured_default_model("gpt-4o-mini")
-        self._threshold = threshold
+        return resolve_role_model("guardrail_judge", provider=provider) or (
+            configured_default_model("gpt-4o-mini")
+        )
 
     async def evaluate(
         self, text: str, *, tenant_id: str | None = None
@@ -396,7 +406,7 @@ class LLMJudge:
             response = await complete_decision(
                 provider,
                 CompletionRequest(
-                    model=self._model,
+                    model=self._judge_model(provider),
                     messages=[
                         Message(role="system", content=self.SYSTEM_PROMPT),
                         Message(role="user", content=text[:2000]),  # cap to 2 k chars

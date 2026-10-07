@@ -491,6 +491,45 @@ class GuardedDecisionProvider:
         return getattr(self._inner, name)
 
 
+def _route_unset_model(request: Any, role: str, provider: Any) -> tuple[Any, list[str]]:
+    """Give a known role's call with no model the role's model (role_preference).
+
+    Callers across the runtime send ``model=""`` ("provider default") — on a
+    deployment whose env default is a cloud model, every such role (agent
+    router, goal classifier, debate, judges, guardrails, memory, RAG strategy
+    LLMs, ...) ignored the operator's saved order and ran in the cloud. Only a
+    role listed in ``role_preference.ROLE_TASK_TYPES`` is routed, only to a model
+    the provider can actually serve, and the provider's own default stays the
+    last fallback. Never raises: the request is returned unchanged on any doubt.
+    """
+    import dataclasses
+
+    try:
+        from app.ai_router.role_preference import resolve_role_model, role_task_type
+
+        task = role_task_type(role)
+        if not task or not dataclasses.is_dataclass(request):
+            return request, []
+        model = resolve_role_model(role, provider=provider)
+        default = str(getattr(provider, "_default_model", "") or "")
+        if not model or model == default:
+            return request, []
+        from app.providers.model_dispatch import can_serve_model
+
+        if not can_serve_model(provider, model):
+            return request, []
+        from app.ai_router.role_preference import preferred_model_and_fallbacks
+
+        # The rest of the saved order, then the provider default (an env pin
+        # without a saved order fails over to the provider default only).
+        ranked, fallbacks = preferred_model_and_fallbacks(task, provider)
+        if ranked != model:
+            fallbacks = [default] if default else []
+        return dataclasses.replace(request, model=model), fallbacks  # type: ignore[type-var]
+    except Exception:  # pragma: no cover - never block a call over routing
+        return request, []
+
+
 async def complete_decision(
     provider: Any,
     request: Any,
@@ -529,6 +568,10 @@ async def complete_decision(
     """
     if getattr(type(provider), "_agentverse_guarded", False):
         return await provider.complete(request)
+    if not str(getattr(request, "model", "") or ""):
+        request, role_fallbacks = _route_unset_model(request, role, provider)
+        if role_fallbacks and not fallback_models:
+            fallback_models = role_fallbacks
     scope = _scope.get()
     tenant = _tenant(tenant_ctx, tenant_id)
     reservation: _Reservation | None = None

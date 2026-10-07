@@ -82,6 +82,15 @@ class VerifierMixin:
         _strategy_c = agent_state.context.get("_execution_strategy")
         _strategy_verify_model = getattr(_strategy_c, "verifier_model", "") if _strategy_c else ""
         if _strategy_verify_model:
+            # An explicit operator choice for verification (per-agent override,
+            # tenant pin, saved Model Registry order) is never replaced by the
+            # automatic "fastest model" routing.
+            from app.ai_router.role_preference import explicit_role_model
+
+            with contextlib.suppress(Exception):
+                if explicit_role_model(self._model_router, "verification"):
+                    _strategy_verify_model = ""
+        if _strategy_verify_model:
             _verify_model = _strategy_verify_model
             with contextlib.suppress(Exception):
                 await self._emit(

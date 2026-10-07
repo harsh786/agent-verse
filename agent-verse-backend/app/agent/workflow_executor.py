@@ -418,7 +418,9 @@ class WorkflowExecutor:
                 from app.providers.base import CompletionRequest, Message
 
                 context_text = f"\nPrior context:\n{prior_context}" if prior_context else ""
-                model = getattr(self._provider, "_default_model", "")
+                from app.ai_router.role_preference import resolve_role_model
+
+                model = resolve_role_model("workflow_step", provider=self._provider)
                 from app.providers.guarded_completion import (
                     complete_decision,
                     generation_timeout_seconds,
@@ -500,6 +502,7 @@ class WorkflowExecutor:
             'Reply as JSON: {"success": true|false, "reason": "<one sentence>"}'
         )
         try:
+            from app.ai_router.role_preference import resolve_role_model
             from app.providers.guarded_completion import complete_decision
 
             # Breaker + timeout via complete_decision; spend is charged below through
@@ -509,7 +512,7 @@ class WorkflowExecutor:
                 provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
-                    model=getattr(provider, "_default_model", ""),
+                    model=resolve_role_model("verifier", provider=provider),
                     max_tokens=200,
                 ),
                 role="verifier",

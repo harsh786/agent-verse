@@ -306,6 +306,10 @@ class AgentGraph(
         self._cost_tracker = cost_tracker
         self._step_callback = step_callback
         self._answer_synthesizer = answer_synthesizer
+        _bind_router = getattr(answer_synthesizer, "bind_model_router", None)
+        if model_router is not None and callable(_bind_router):
+            with contextlib.suppress(Exception):
+                _bind_router(model_router)
         self._grounding_checker = grounding_checker
         self._consensus_verifier = consensus_verifier
         self._calibration_store = calibration_store
@@ -358,9 +362,14 @@ class AgentGraph(
     def runtime_profile(self) -> Any | None:
         return self._runtime_profile
 
-    def _role_model_id(self, provider: Any) -> str:
-        """Best-effort model id for a wired role provider (planner/executor/verifier)."""
-        return str(getattr(provider, "_default_model", "") or "")
+    def _role_model_id(self, provider: Any, task_type: str) -> str:
+        """The model that serves a role (planner/executor/verifier) — the routed one.
+
+        It used to be the provider's default model: the capability profiles and
+        learned rates were keyed on a model that may never serve the role (the
+        planner records its rates under the routed planning model).
+        """
+        return self._routed_model(task_type, provider)
 
     def _resolve_execution_strategy(self) -> Any:
         """Resolve the per-model execution strategy from the wired role models.
@@ -378,9 +387,9 @@ class AgentGraph(
             from app.agent.execution_strategy import profile_for, resolve
 
             return resolve(
-                planner=profile_for(self._role_model_id(self._planner)),
-                executor=profile_for(self._role_model_id(self._executor)),
-                verifier=profile_for(self._role_model_id(self._verifier)),
+                planner=profile_for(self._role_model_id(self._planner, "planning")),
+                executor=profile_for(self._role_model_id(self._executor, "execution")),
+                verifier=profile_for(self._role_model_id(self._verifier, "verification")),
                 fast_model_id=self._fast_model_id or None,
             )
         except Exception:  # pragma: no cover - defensive
@@ -407,8 +416,8 @@ class AgentGraph(
             from app.agent.execution_strategy import profile_for
             from app.agent.strategy_adaptivity import apply_exploration, refine_strategy
 
-            planner_model = self._role_model_id(self._planner)
-            executor_model = self._role_model_id(self._executor)
+            planner_model = self._role_model_id(self._planner, "planning")
+            executor_model = self._role_model_id(self._executor, "execution")
             tid = getattr(tenant_ctx, "tenant_id", None)
             s_rate = await tracker.rate(planner_model, tenant_id=tid, kind="structured")
             p_rate = await tracker.rate(executor_model, tenant_id=tid, kind="parallel")
@@ -1152,15 +1161,18 @@ class AgentGraph(
         raise last_exc
 
     def _routed_model(self, task_type: str, provider: Any) -> str:
-        router = getattr(self, "_model_router", None)
-        if router is not None:
-            try:
-                routed = router.model_for(task_type)
-                if routed:
-                    return str(routed)
-            except Exception:
-                pass
-        return str(getattr(provider, "_default_model", "") or "")
+        """THE model for a graph role (``role_preference.resolve_role_model``):
+        the goal's router when wired, else saved order > env pin > the
+        provider's own model."""
+        from app.ai_router.role_preference import resolve_role_model
+
+        try:
+            return resolve_role_model(
+                task_type, router=getattr(self, "_model_router", None), provider=provider
+            )
+        except Exception:
+            # Last resort only: the resolver never raises in practice.
+            return str(getattr(provider, "_default_model", "") or "")
 
     def _role_fallback_models(self) -> list[str]:
         """Other configured models an LLM role may fail over to, in preference order.

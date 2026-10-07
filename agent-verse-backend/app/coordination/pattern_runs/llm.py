@@ -104,14 +104,25 @@ class PatternLLM:
             )
         self.calls += 1
         target = provider if provider is not None else self._provider
+        role = f"coordination_{self._pattern}_{step}"
+        if not model:
+            # A specific deployment (MoA proposer) keeps its own model; the run's
+            # provider serves the role's model (role_preference: saved order >
+            # env pin > the provider's default).
+            if provider is not None:
+                model = provider_model(target)
+            else:
+                from app.ai_router.role_preference import resolve_role_model
+
+                model = resolve_role_model(role, provider=target) or provider_model(target)
         response = await complete_decision(
             target,
             CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=model or provider_model(target),
+                model=model,
                 max_tokens=max_tokens,
             ),
-            role=f"coordination_{self._pattern}_{step}",
+            role=role,
             tenant_ctx=self._tenant_ctx,
             goal_id=self._goal_id,
         )

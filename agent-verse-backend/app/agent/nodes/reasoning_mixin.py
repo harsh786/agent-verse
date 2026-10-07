@@ -32,14 +32,33 @@ from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: 
 class ReasoningMixin:
     """Mixin: CoT/reflection nodes (think, reflect, self_consistency, tree_of_thoughts, peer_review, supervisor, debate, refine)."""  # noqa: E501
 
+    def _role_model(self, role: str, provider: Any = None) -> str:
+        """THE model for *role* in this goal (``role_preference.resolve_role_model``
+        with this goal's router: override > tenant pin > saved order > role map >
+        env pin > provider default)."""
+        from app.ai_router.role_preference import resolve_role_model
+
+        try:
+            return resolve_role_model(
+                role, router=getattr(self, "_model_router", None), provider=provider
+            )
+        except Exception:  # pragma: no cover - never block a pattern over routing
+            return str(getattr(provider, "_default_model", "") or "")
+
     def _charging(self, provider: Any, role: str, agent_state: AgentState) -> Any:
-        """Wrap *provider* so pattern-internal LLM calls are charged to the goal/tenant."""
+        """Wrap *provider* so pattern-internal LLM calls are charged to the goal/tenant
+        and served by the role's model (never the provider's env default)."""
+        fallbacks: list[str] = []
+        with contextlib.suppress(Exception):
+            fallbacks = list(self._role_fallback_models())
         return ChargingProvider(
             provider,
             graph=self,
             role=role,
             agent_state=agent_state,
             tenant_ctx=agent_state.tenant_ctx,
+            model=self._role_model(role, provider),
+            fallback_models=fallbacks,
         )
 
     @staticmethod
@@ -134,14 +153,10 @@ class ReasoningMixin:
                     }
                 )
                 return {"agent_state": agent_state}
-            _refine_model = ""
-            if self._model_router is not None:
-                with contextlib.suppress(Exception):
-                    _refine_model = (
-                        self._model_router.model_for("refine")
-                        or self._model_router.model_for("execute")
-                        or ""
-                    )
+            # "refine" / "execute" are not task types the routers know: model_for
+            # fell through to the env single-model fallback (a cloud model on an
+            # on-prem-ranked deployment). Resolved like every other role now.
+            _refine_model = self._role_model("refine", self._executor)
 
             refine_prompt = (
                 f"Task: {last_step.description}\n\n"
@@ -529,8 +544,10 @@ class ReasoningMixin:
                 parent_goal_id=_parent_id,
                 kind="supervisor",
             )
+            _supervisor_provider = self._charging(self._planner, "supervisor", agent_state)
             supervisor = SupervisorAgent(
-                planner_provider=self._charging(self._planner, "supervisor", agent_state),
+                planner_provider=_supervisor_provider,
+                model=_supervisor_provider._default_model,
                 goal_service=goal_service,
                 agent_router=getattr(self, "_agent_router", None),
                 # a01-F006-05: on a worker the parent parks (waiting_children) and

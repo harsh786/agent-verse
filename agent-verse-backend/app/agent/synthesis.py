@@ -52,6 +52,12 @@ class AnswerSynthesizer:
         self._llm = llm_provider
         self._max_output_tokens = max_output_tokens
         self._enforce_gate = enforce_citation_gate
+        # The goal's role router (bound by AgentGraph): a per-agent override or a
+        # tenant planning pin then decides the synthesis model too.
+        self._model_router: Any = None
+
+    def bind_model_router(self, router: Any) -> None:
+        self._model_router = router
 
     def _apply_citation_gate(self, answer: CitedAnswer, steps: list[Any]) -> CitedAnswer:
         """T6: strip claims not supported by a cited step (anti-hallucination gate).
@@ -168,7 +174,10 @@ class AnswerSynthesizer:
         assert llm is not None
         from dataclasses import replace
 
-        from app.ai_router.role_preference import preferred_model_and_fallbacks
+        from app.ai_router.role_preference import (
+            preferred_model_and_fallbacks,
+            resolve_role_model,
+        )
         from app.providers.guarded_completion import (
             complete_decision,
             generation_timeout_seconds,
@@ -177,6 +186,11 @@ class AnswerSynthesizer:
         # The saved reasoning order (Model Registry) picks the synthesis model and
         # its failover chain; without one the provider default answers, as before.
         model, fallbacks = preferred_model_and_fallbacks("planning", llm)
+        if self._model_router is not None:
+            routed = resolve_role_model("answer_synthesis", router=self._model_router, provider=llm)
+            if routed and routed != model:
+                fallbacks = [m for m in ([model] if model else []) + fallbacks if m != routed]
+                model = routed
         if model:
             req = replace(req, model=model)
         resp = await complete_decision(

@@ -258,6 +258,33 @@ class ModelDispatchProvider:
             setattr(self._inner, name, value)
 
 
+def can_serve_model(provider: Any, model: str) -> bool:
+    """True when *provider* (or a provider it wraps) routes *model* to a server.
+
+    A :class:`ModelDispatchProvider` routes every registry model (own
+    ``base_url``, override provider, or its cluster); a multi-endpoint cluster
+    serves the models in its ``_endpoints``. Any other provider is assumed to
+    serve only its own default model — a role's model is never sent to an API
+    that cannot serve it.
+    """
+    if not model:
+        return False
+    current = provider
+    for _ in range(8):  # wrapper chains are short; bound the walk
+        if current is None:
+            return False
+        if isinstance(current, ModelDispatchProvider):
+            return True
+        own = getattr(current, "__dict__", {})
+        endpoints = own.get("_endpoints")
+        if isinstance(endpoints, dict) and model in endpoints:
+            return True
+        if own.get("_default_model") == model:
+            return True
+        current = own.get("_inner") or own.get("_provider")
+    return False
+
+
 def with_model_dispatch(provider: Any) -> Any:
     """Wrap a real platform provider; placeholders and ``None`` pass through."""
     if provider is None or isinstance(provider, ModelDispatchProvider):

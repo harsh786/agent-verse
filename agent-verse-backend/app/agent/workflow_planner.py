@@ -203,9 +203,10 @@ Return ONLY the JSON, no other text."""
             import json
             import re
 
+            from app.ai_router.role_preference import resolve_role_model
             from app.providers.base import CompletionRequest, Message
 
-            model = getattr(self._provider, "_default_model", "")
+            model = resolve_role_model("workflow_planner", provider=self._provider)
             from app.providers.guarded_completion import (
                 complete_decision,
                 generation_timeout_seconds,

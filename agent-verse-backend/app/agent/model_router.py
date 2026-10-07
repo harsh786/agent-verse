@@ -18,6 +18,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from app.ai_router.deployment_roles import ROLE_ALIASES as _ROLE_ALIASES
+from app.ai_router.role_preference import ROLE_PIN_ENV as _ROLE_PIN_ENV_TABLE
+from app.ai_router.role_preference import ROUTED_TASK_TYPES as _ROUTED_TASK_TYPES
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,15 +92,8 @@ _PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
 }
 
 
-_ROLE_PIN_ENV: dict[str, str] = {
-    "planning": "DEFAULT_PLANNING_MODEL",
-    "reflection": "DEFAULT_PLANNING_MODEL",
-    "think": "DEFAULT_PLANNING_MODEL",
-    "thinking": "DEFAULT_PLANNING_MODEL",
-    "execution": "DEFAULT_EXECUTION_MODEL",
-    "classification": "DEFAULT_EXECUTION_MODEL",
-    "verification": "DEFAULT_VERIFICATION_MODEL",
-}
+# One table for both routers and the single-call resolver (role_preference).
+_ROLE_PIN_ENV: dict[str, str] = _ROLE_PIN_ENV_TABLE
 
 
 def _apply_env_model_overrides(base: ModelRouterConfig) -> ModelRouterConfig:
@@ -177,10 +172,7 @@ class ModelRouter:
         return dict(self._role_map)
 
     # Reasoning roles that route through the generic configured-model registry.
-    _REGISTRY_TASKS = frozenset(
-        {"planning", "execution", "verification", "classification",
-         "reflection", "think", "thinking"}
-    )
+    _REGISTRY_TASKS = _ROUTED_TASK_TYPES
 
     def model_for(self, task_type: str, fallback: str = "") -> str:
         """Return the optimal model name for the given task type.
@@ -242,6 +234,8 @@ class ModelRouter:
             "reflection": self._config.planning_model,
             "think": self._config.planning_model,
             "thinking": self._config.planning_model,
+            # The supervisor decomposes / synthesizes the goal: planning tier.
+            "supervisor": self._config.planning_model,
         }
         model = mapping.get(task_type, "")
         if not model:

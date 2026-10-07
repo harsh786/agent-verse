@@ -33,8 +33,8 @@ from app.agent.fanout_ledger import (
     reconcile_children,
 )
 from app.agent.state import AgentState, GoalStatus, SubGoal
+from app.ai_router.role_preference import resolve_role_model
 from app.providers.base import CompletionRequest, LLMProvider, Message
-from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.tenancy.context import TenantContext
 
 
@@ -81,7 +81,9 @@ async def decompose_goal(
             Message(role="system", content=GOAL_TREE_SYSTEM),
             Message(role="user", content=f"Goal: {goal}"),
         ],
-        model=model or _configured_default_model("claude-opus-4-8"),
+        # The graph's planning model; else the goal_tree role's own resolution
+        # (saved order > env pin > the planner's model) — never a hardcoded slug.
+        model=model or resolve_role_model("goal_tree", provider=planner),
     )
     from app.providers.guarded_completion import complete_decision
 
@@ -200,7 +202,7 @@ async def _synthesize_goal_tree_results(
             generation_timeout_seconds,
         )
 
-        model = getattr(provider, "_default_model", "")
+        model = resolve_role_model("goal_tree_synthesis", provider=provider)
         resp = await complete_decision(
             provider,
             CompletionRequest(

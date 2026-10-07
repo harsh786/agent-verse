@@ -49,6 +49,7 @@ _TASK_ALIASES: dict[str, TaskType] = {
     "reflection": TaskType.PLANNING,
     "think": TaskType.PLANNING,
     "thinking": TaskType.PLANNING,
+    "supervisor": TaskType.PLANNING,
     "judge": TaskType.JUDGE,
     "embedding": TaskType.EMBEDDING,
     "rerank": TaskType.RERANK,

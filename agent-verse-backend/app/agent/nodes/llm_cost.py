@@ -256,22 +256,63 @@ class ChargingProvider:
     supervisor decomposition) that call the provider internally, so their LLM spend
     reaches the tenant budget too. Everything else is delegated unchanged.
     Each call also gets the per-model circuit breaker and a bounded timeout.
+
+    ``model`` is the role's model, resolved by the graph through
+    ``role_preference.resolve_role_model`` (override > tenant pin > saved order >
+    role map > env pin). Pattern code asks for the provider default (``model=""``
+    or ``provider._default_model``); such a request is sent to the role's model
+    instead — the supervisor used to run on the env-default cloud model while
+    every other role followed the operator's on-prem ranking.
     """
 
     # complete_decision() on this proxy calls it directly (no double charge).
     _agentverse_guarded = True
 
     def __init__(
-        self, provider: Any, *, graph: Any, role: str, agent_state: Any, tenant_ctx: Any
+        self,
+        provider: Any,
+        *,
+        graph: Any,
+        role: str,
+        agent_state: Any,
+        tenant_ctx: Any,
+        model: str = "",
+        fallback_models: Any = (),
     ) -> None:
         self._inner = provider
         self._graph = graph
         self._role = role
         self._agent_state = agent_state
         self._tenant_ctx = tenant_ctx
+        self._model = model
+        self._fallback_models = [m for m in (fallback_models or ()) if m and m != model]
+
+    @property
+    def _default_model(self) -> str:
+        """The role's model — what pattern code reads as "the provider's model"."""
+        return self._model or str(getattr(self._inner, "_default_model", "") or "")
+
+    @property
+    def default_model(self) -> str:
+        return self._default_model
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+    def _routed(self, request: Any) -> Any:
+        """*request* with the role's model when it asked for the provider default."""
+        import dataclasses
+
+        asked = str(getattr(request, "model", "") or "")
+        inner_default = str(getattr(self._inner, "_default_model", "") or "")
+        if (
+            self._model
+            and asked in ("", inner_default)
+            and asked != self._model
+            and dataclasses.is_dataclass(request)
+        ):
+            return dataclasses.replace(request, model=self._model)  # type: ignore[type-var]
+        return request
 
     async def complete(self, request: Any) -> Any:
         from app.providers.guarded_completion import (
@@ -279,6 +320,7 @@ class ChargingProvider:
             generation_timeout_seconds,
         )
 
+        request = self._routed(request)
         # Breaker + timeout only; charged just below against this goal.
         resp = await complete_decision(
             self._inner,
@@ -286,6 +328,11 @@ class ChargingProvider:
             role=self._role,
             charge=False,
             timeout_seconds=generation_timeout_seconds(),
+            fallback_models=(
+                self._fallback_models
+                if self._model and getattr(request, "model", "") == self._model
+                else ()
+            ),
         )
         await charge_llm_call(
             self._graph,

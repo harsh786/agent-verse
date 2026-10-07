@@ -107,6 +107,7 @@ async def judge_case(
     decision timeout and the per-model circuit breaker; a budget refusal is a
     judge error (nothing was spent).
     """
+    from app.ai_router.role_preference import resolve_role_model
     from app.providers.base import CompletionRequest, Message
     from app.providers.guarded_completion import complete_decision
 
@@ -117,7 +118,10 @@ async def judge_case(
             provider,
             CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=str(judge.get("model") or getattr(provider, "_default_model", "") or ""),
+                # The suite's explicit judge model, else the judge role's model.
+                model=str(
+                    judge.get("model") or resolve_role_model("ai_ops_judge", provider=provider)
+                ),
                 max_tokens=400,
                 json_object=True,
             ),

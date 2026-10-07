@@ -98,8 +98,20 @@ def _resolve(dep: Any, probe: str) -> Any:
 
 
 def _provider_model(provider: Any) -> str:
-    """The provider's configured model id ('' → the provider uses its own default)."""
-    for attr in ("default_model", "_default_model", "model"):
+    """The model a strategy-runtime call runs on: the ``strategy`` role's model.
+
+    ``role_preference.resolve_role_model``: the saved Model Registry order, else
+    the planning env pin, else the provider's own configured model ('' → the
+    provider uses its default). It used to be the provider's default only, so
+    supervisor / goal_tree / debate run on the strategy runtime ignored an
+    on-prem model the operator ranked first.
+    """
+    from app.ai_router.role_preference import resolve_role_model
+
+    resolved = resolve_role_model("strategy", provider=provider)
+    if resolved:
+        return resolved
+    for attr in ("default_model", "model"):
         value = getattr(provider, attr, None)
         if isinstance(value, str) and value:
             return value

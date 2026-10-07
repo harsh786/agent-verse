@@ -57,6 +57,7 @@ ROLE_ALIASES = {
     "reflection": "planning",
     "think": "planning",
     "thinking": "planning",
+    "supervisor": "planning",
     "classification": "execution",
 }
 

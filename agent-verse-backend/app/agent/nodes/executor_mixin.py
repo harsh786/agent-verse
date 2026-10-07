@@ -3908,7 +3908,7 @@ class ExecutorMixin:
                         "[error" not in _o.lower() and "requires approval" not in _o.lower()
                         for _, _o in _extra_outputs
                     )
-                    _exec_model_b = str(getattr(self._executor, "_default_model", "") or "")
+                    _exec_model_b = self._routed_model("execution", self._executor)
                     with contextlib.suppress(Exception):
                         await _cap_tracker_b.record(
                             _exec_model_b,

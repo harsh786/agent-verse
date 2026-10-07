@@ -52,7 +52,14 @@ def proposer_pool(
         if model.strip():
             key = (_provider_id(primary), model.strip())
             pool.setdefault(key, _Deployment(primary, key[0], key[1]))
-    primary_key = (_provider_id(primary), provider_model(primary))
+    # The run's own provider proposes on the coordination role's model (saved
+    # Model Registry order first), not on its env default.
+    from app.ai_router.role_preference import resolve_role_model
+
+    primary_model = resolve_role_model("coordination_moa", provider=primary) or provider_model(
+        primary
+    )
+    primary_key = (_provider_id(primary), primary_model)
     pool.setdefault(primary_key, _Deployment(primary, *primary_key))
     return list(pool.values())
 

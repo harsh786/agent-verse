@@ -656,11 +656,13 @@ class PlannerMixin:
         # Fallback: the deployment's configured model, else "" — every provider
         # treats an empty model as "use my own default". The hard-coded OpenAI
         # slug sent "gpt-5.2" to Anthropic/Gemini/on-prem providers.
+        from app.ai_router.role_preference import resolve_role_model
         from app.providers.model_defaults import configured_default_model
 
-        planning_model = getattr(self._planner, "_default_model", None) or configured_default_model(
-            ""
-        )
+        # Without a router: saved order > env pin > the planner's own model.
+        planning_model = resolve_role_model(
+            "planner", provider=self._planner
+        ) or configured_default_model("")
         # Update ModelOrchestratorAdapter with current runtime profile for budget-aware selection
         try:
             _runtime_profile_for_router = agent_state.context.get("_runtime_profile")

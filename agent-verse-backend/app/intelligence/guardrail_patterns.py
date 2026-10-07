@@ -574,7 +574,10 @@ DOMAIN_GUARDRAIL_TEMPLATES: dict[str, dict] = {
             },
             "pii": {"enabled": True, "severity_threshold": "low", "redact": True},
             "cloud_destruction": {"enabled": True, "require_hitl": True},
-            "llm_judge": {"enabled": True, "model": "gpt-4o-mini", "threshold": 0.6},
+            # No model pin: the judge follows the guardrail_judge role resolution
+            # (saved Model Registry order first) — a hardcoded cloud slug sent
+            # every HIPAA judge call to a model an on-prem deployment cannot serve.
+            "llm_judge": {"enabled": True, "model": "", "threshold": 0.6},
             "output_scan": {"enabled": True},
         },
         "severity_actions": {

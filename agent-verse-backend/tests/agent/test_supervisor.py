@@ -69,8 +69,11 @@ async def test_decompose_uses_non_empty_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_decompose_uses_default_model_fallback_when_attribute_absent() -> None:
-    """If provider has no _default_model, _decompose falls back to a non-empty string."""
+async def test_decompose_uses_default_model_fallback_when_attribute_absent(monkeypatch) -> None:
+    """No saved order, no env pin, no provider ``_default_model``: the request asks
+    for the provider's own default (``""``) — never a hardcoded vendor slug
+    (``claude-opus-4-8`` used to be sent to whatever provider served the goal)."""
+    monkeypatch.delenv("DEFAULT_PLANNING_MODEL", raising=False)
     captured: list[Any] = []
 
     class NoModelProvider:
@@ -87,8 +90,8 @@ async def test_decompose_uses_default_model_fallback_when_attribute_absent() -> 
     await supervisor._decompose("do something", None)
 
     if captured:
-        # The model should be non-empty (falls back to hardcoded default)
-        assert captured[0].model != "", "model must not be empty string"
+        assert "claude" not in captured[0].model
+        assert captured[0].model in ("", supervisor._role_model())
 
 
 @pytest.mark.asyncio
