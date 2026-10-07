@@ -4,7 +4,97 @@
 > "Read `docs/audits/fixwave/AGENT-HANDOFF.md` and continue from **§4 In flight** then **§5 Queue**,
 > following **§3 Procedure** exactly. Do not redo anything in **§2 Done**."
 
-Last updated: 2026-10-06. `origin/main` = `f0dedbde9` (local `main` identical at time of writing).
+Last updated: **2026-10-07** — see **§0** (supersedes §4/§5 below; older sections kept as history).
+`origin/main` = `66f27dab1` at time of writing.
+
+---
+
+## 0. 2026-10-07 update (READ FIRST — supersedes §4 and §5)
+
+### 0.1 Merged and pushed to main today (do not redo)
+Batches: batch 3 `46ba316a1` (governance/core/tools/services-B/critic-2/restorer), fork-2 full-suite fixes
+`3e3ae9f27`, batch 4 `d8bfb6c7e` (critic-1/3/4/5, services-A, decisions: subgoals/email/cleanup/ssrf/
+prompt-injection/autonomy, frontend waiting_children). Final full backend suite on d95fdbea2: **36,665 passed,
+2 load flakes** (both made load-tolerant in `e365edee8`). Frontend 5,311/5,311.
+
+Live-E2E driven fixes (all on main):
+| Commit | Fix |
+|---|---|
+| `32be0339f` | access-log redaction kept %-args (uvicorn crash per line); 429 Retry-After delta-seconds; compose backend start_period 150s |
+| `e8b4fc063` | NEW live suites (no mocks): MongoDB pipeline + failures, chaos, scale, on-prem Model Registry, OCR (tests/real_world) |
+| `786f36fff` / `0b7a984c8` | OCR honest 422/502 + one 25 MiB cap; prod nginx client_max_body_size 64m |
+| `3f154b4b2` | Redis blip no longer 500s every authenticated request (permission cache) |
+| `c9b5f21cf` | DB outage → retryable 503 (never 500 / empty 200) |
+| `a36df92a1` | registry embedding model with its own base_url/key used everywhere; dimension guard |
+| `d95fdbea2` | orphaned ingestion sync detected + resumed in ~6 min (heartbeat lease, fencing, 3 attempts) |
+| `8ae1de0df` | webhook replay refusal audited; voice model loading off the event loop |
+| `8f078be27` | thinking-model support (registry `thinking` auto/off/on; Qwen3.5-4B works with `"thinking":"off"`) |
+| `84262a07d` | failover provenance (fallback_from), no complete-with-empty-answer, registry never shows a refused embedder as selected |
+| `9a9678c1e` | `kill -USR2 <pid>` dumps all thread stacks (faulthandler) |
+| `102e537ad` / `64512f79d` | workflow HITL timeout actions (escalate/auto_approve/auto_reject/pause) + 60 s indexed sweep; builder timeout options match DSL |
+| `377609e6c` / `a0dfc3cf5` | bounded cross-encoder + ColBERT reranking with a 2.5 s budget (root cause of KB search 503 "strategy deadline exceeded": CPU/GIL starvation) |
+| `08b7a8709` | MongoDB poison docs: per-document decode isolation → DLQ, odd BSON rendered, operator retry |
+| `649ac4da9` | S3: tenant AWS clients never use ambient creds / IMDS (worker blanked undecryptable secrets → default chain → 169.254.169.254); Helm embedding settings + AWS_EC2_METADATA_DISABLED |
+| `587e615f8` | RAG grounding: citation context budget, key-path vs marker parsing, structured/multilingual judge prompt, real refusal reason |
+| `0d8541d07` | workflow tool-step retry classification (non-retryable stop), skipped steps replayed not re-run, errors/attempts recorded |
+| `ac555e4b5` | duplicate source registration refused (409, canonical target + unique index); search collapses duplicate docs |
+| `5f4da8d28` | no SIGTERM handler at import time (only Celery worker processes) |
+| `26248d881` / `ab425a0ed` | live-test drift fixes (connect-failure collections; MCP gate approval) |
+| `eb6c8e95b` | Model Registry dialog: write-only API key field, key badges, output_dimensions for embeddings |
+| `26e01b9b5` | every agent/runtime LLM role resolves through role_preference (supervisor leaked to cloud); simple goals no longer fan out |
+| `fed6c29d9` | workflow worker connector secrets + OAuth manager; undecryptable secret names VAULT_MASTER_KEY |
+| `0dbca85aa` | workflow code steps run in a hardened code-sandbox runner service (compose + both Helm charts) |
+| `66f27dab1` | goals/workflows use Model Registry models, never a silent FakeProvider; builder lists registry models; truthful registry status |
+
+Live results on the rebuilt stack: **MongoDB pipeline + failures 14/14**, **OCR 6/6**, on-prem registry 6 pass /
+3 env-skips (gemma served without chat template; one global EMBEDDING_DIM) / 1 fail (supervisor routing, fixed in
+`26e01b9b5`, re-run pending).
+
+### 0.2 In flight (branches/worktrees under .claude/worktrees/)
+- `fix/reasoning-registry-everywhere` (fx-reasoning-all): resolve_reasoning + central hook for model ""/"default";
+  RAG/chat/org/guardrails/evals/self-optimizer/NL triggers/KG/memory; remove router literal profiles; guard test.
+- `fix/vision-ocr-registry` (fx-vision-ocr): resolve_vision/resolve_ocr, no reasoning fallback, seeder merge bug,
+  browser_agent/pipeline/vision_parser via dispatch, general.py "default" id.
+- `fix/rerank-registry` (fx-rerank-registry): registry reranker as default tier, configurable cross-encoder,
+  ColBERT checkpoint, seed on-prem reranker.
+- `feat/per-collection-embedders` (fx-percoll-embed): each KB collection bound to its own embedder/dimension.
+- Baseline live suite (tests/real_world minus the new suites) running; 35 pass / 8 fail so far on the PRE-fix
+  deployment (goal strategies, approvals, budget audit, KB re-embed/hard retrieval) — re-run after redeploy.
+Audit driving the model work: scratchpad `model_audit.md` (copy the content into a doc if the scratchpad is gone).
+
+### 0.3 Queue (strict order)
+1. Speech STT/TTS through the registry. 2. Embedding side paths (after per-collection embedders): llm_step
+embedding with the chat provider, content-type embed literals, provider `.embed`, BYOK embed. 3. Redeploy: build
+ALL images **including db-migrate** (and code-sandbox) BEFORE running db-migrate; restart launchd
+(`launchctl kickstart -k gui/$(id -u)/com.local.agentverse.runforever`). 4. Re-run baseline failures, on-prem suite,
+MongoDB + OCR regression. 5. Chaos (`RW_CHAOS=1`). 6. Scale (`RW_SCALE=1`, on-prem embedder). 7. Zero-failure sweep
+(full backend, e2e_full normal + E2E_LEAST_PRIVILEGE=1, frontend vitest, Playwright). 8. Report + this doc.
+9. Cleanup old branches/worktrees + `wc-probe` tenant — ASK the owner first.
+
+### 0.4 Owner actions on the Kubernetes cluster (cannot be done by an agent: real keys / cluster access)
+- ONE `VAULT_MASTER_KEY` on every pod (root cause of the S3 IMDS error and the Gmail "could not resolve credential").
+- Deploy the new image; embedder via Helm (`secrets.nvidiaApiKey`, `embedding.nvidiaEmbedModel`, dims 2048) or the
+  Model Registry (provider nvidia, base URL https://integrate.api.nvidia.com/v1, key, Test connection).
+- `secrets.codeSandboxToken` + code-sandbox image. Commands: docs/ops/k8s-redeploy-checklist.md §4-5,
+  docs/ops/code-sandbox.md. Gemini embeddings: model `gemini-embedding-001` (not gemini-2.5-flash), output dims = index.
+
+### 0.5 Live E2E environment (this machine)
+- Runner env: `/private/tmp/claude-501/rw/wc/env.sh` (tenants primary=enterprise, second=free, approver key;
+  infra creds from earlier runs' infra.env files; chaos container names; on-prem URLs). Keys live only in 0600
+  json files; never print them. `PLATFORM_ADMIN_TENANT_IDS` added to agent-verse-backend/.env (backup in rw/wc).
+- On-prem cluster (vLLM): Qwen/Qwen3.5-4B :30080 (thinking model → `thinking: off`), gemma-4-E2B :30081 (no chat
+  template), Qwen3-Embedding-0.6B :30082 (1024-d), Qwen3-Reranker-0.6B :30083 — all at http://192.168.63.104.
+- Run suites ONE at a time; concurrent suites interfere (shared fixtures/cleanup) and overload the colima VM.
+- Langfuse/ClickHouse are optional extras: start only the core services (`up -d --no-deps <svc…>`).
+- MongoDB fixture `agentverse-rw-mongo` was recreated (old one kept as `agentverse-rw-mongo-broken`) because its
+  start command could not rewrite its own key file after a crash.
+- Lessons: build db-migrate before migrating (a migration importing new app code failed with a stale image);
+  testcontainers left behind accumulate (Ryuk disabled) — remove ones >12 h old; a hot backend can be diagnosed
+  with `docker kill -s USR2 agentverse-backend-backend-1` + `docker logs`.
+
+### 0.6 Parked by the owner
+Architecture docs 1–32/39 (brief in branch docs/world-class), the five capstone scenarios, the 149 out-of-scope
+backlog items, org-collab and channels.
 
 ---
 
