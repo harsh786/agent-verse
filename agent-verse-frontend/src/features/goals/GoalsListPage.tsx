@@ -176,7 +176,7 @@ export function GoalsListPage() {
       [...selectedGoals]
         .filter((id) => {
           const g = filteredGoals.find((g) => g.id === id);
-          return g && ["executing", "planning"].includes(g.status);
+          return g && ["executing", "planning", "waiting_children"].includes(g.status);
         })
         .map((id) => goalsApi.cancel(id))
     );
@@ -449,7 +449,7 @@ export function GoalsListPage() {
                   </td>
                   {/* Fix 5: per-row cancel with spinner */}
                   <td className="px-4 py-3 text-right">
-                    {["executing", "planning"].includes(goal.status) && (
+                    {["executing", "planning", "waiting_children"].includes(goal.status) && (
                       <button
                         onClick={(e) => handleCancel(goal.id, e)}
                         disabled={cancellingIds.has(goal.id)}

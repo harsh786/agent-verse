@@ -1136,7 +1136,7 @@ export function GoalDetailPage() {
 
       {/* ── Action buttons ── */}
       <div className="flex flex-wrap gap-2">
-        {["executing", "planning"].includes(goal.status) && (
+        {["executing", "planning", "waiting_children"].includes(goal.status) && (
           <>
             <button
               onClick={() => cancelMutation.mutate()}
