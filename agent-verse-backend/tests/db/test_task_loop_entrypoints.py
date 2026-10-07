@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,12 @@ async def test_captured_system_factory_engine_is_disposed_at_every_loop_end(
     monkeypatch.setattr(sess, "get_settings", lambda: settings)
     monkeypatch.setattr(sess, "_system_engine", None)
     monkeypatch.setattr(sess, "_system_session_factory", None)
+    # Process-global: engines (or engine mocks) earlier tests left behind would be
+    # disposed here too, and one whose dispose() fails aborts the sweep before it
+    # reaches ours — the test failed only in full-suite order.
+    monkeypatch.setattr(sess, "_engine", None)
+    monkeypatch.setattr(sess, "_session_factory", None)
+    monkeypatch.setattr(sess, "_task_engines", weakref.WeakSet())
     with patch("app.db.session._make_engine", side_effect=[first, second]):
         captured = sess.get_system_session_factory()  # held across loops
         await sess.dispose_task_engine()  # end of loop A

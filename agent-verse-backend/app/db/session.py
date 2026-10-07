@@ -142,7 +142,11 @@ async def dispose_task_engine() -> None:
     # _task_engines), application and maintenance alike; a disposed engine
     # rebuilds its pool lazily on next use.
     for engine in list(_task_engines):
-        await engine.dispose()
+        # One engine that cannot be disposed must not leak the others.
+        try:
+            await engine.dispose()
+        except Exception as exc:
+            logging.getLogger(__name__).warning("task_engine_dispose_failed: %s", exc)
     _system_engine = None
     _system_session_factory = None
     # Drop the references so the NEXT event loop builds a fresh engine instead of

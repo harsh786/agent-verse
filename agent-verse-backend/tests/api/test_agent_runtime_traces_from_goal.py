@@ -16,6 +16,8 @@ goal's persisted execution_context.
 
 from __future__ import annotations
 
+import uuid
+
 import inspect
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -76,23 +78,26 @@ def env(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Goals, AgentRunti
 
 async def test_worker_run_goal_trace_reports_outcome_and_cost(env: Any) -> None:
     client, goals, store = env
+    # A unique goal id: cost_breakdown is process-global and other tests record
+    # role costs under short ids like "g1", which inflated the totals here.
+    gid = f"g-{uuid.uuid4().hex}"
     started = datetime.now(UTC) - timedelta(seconds=90)
-    goals.goals["g1"] = {
+    goals.goals[gid] = {
         "status": "executing", "created_at": started.isoformat(),
         "completed_at": None, "failure_reason": None,
     }
     # Created at submit (as GoalService does) and never touched again: the goal
     # then runs and finishes on a Celery worker.
-    await store.put_trace(AgentRunTrace(trace_id="tr1", goal_id="g1", tenant_id=_CTX.tenant_id))
-    cost_breakdown.record_role_cost("g1", "planner", "model-a", 100, 20, 0.01)
-    cost_breakdown.record_role_cost("g1", "executor", "model-b", 300, 50, 0.03)
-    cost_breakdown.record_role_cost("g1", "executor", "model-b", 10, 5, 0.002)
+    await store.put_trace(AgentRunTrace(trace_id="tr1", goal_id=gid, tenant_id=_CTX.tenant_id))
+    cost_breakdown.record_role_cost(gid, "planner", "model-a", 100, 20, 0.01)
+    cost_breakdown.record_role_cost(gid, "executor", "model-b", 300, 50, 0.03)
+    cost_breakdown.record_role_cost(gid, "executor", "model-b", 10, 5, 0.002)
 
     running = client.get("/agent-runtime/traces/tr1", headers=H).json()
     assert running["status"] == "executing" and running["success"] is False
     assert running["duration_ms"] >= 89_000
 
-    goals.goals["g1"].update(
+    goals.goals[gid].update(
         status="complete", completed_at=(started + timedelta(seconds=60)).isoformat()
     )
     done = client.get("/agent-runtime/traces/tr1", headers=H).json()
