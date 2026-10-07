@@ -71,8 +71,19 @@ async def _insert(conn: Any, table: str, values: dict[str, Any]) -> None:
     await conn.execute(text(f"INSERT INTO {table} ({names}) VALUES ({params})"), row)
 
 
+@pytest.fixture(scope="module")
+def isolated_pg_url(pg_url: str) -> Any:
+    """A database of this module's own: rotation scans EVERY tenant's rows, so a
+    value another test sealed with a different master key (in the shared
+    ``pg_url`` database) made the rotation fail honestly in full-suite order."""
+    from tests._test_backends import fresh_migrated_database
+
+    with fresh_migrated_database(pg_url) as url:
+        yield url
+
+
 @pytest.fixture
-async def env(pg_url: str, redis_url: str) -> Any:
+async def env(isolated_pg_url: str, redis_url: str) -> Any:
     import redis.asyncio as aioredis
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -85,7 +96,7 @@ async def env(pg_url: str, redis_url: str) -> Any:
     old = CredentialVault(master_key=OLD_KEY)
     tenant_key = bytes(range(32))
     tenant_vault = CredentialVault.from_byok(tenant_key)
-    engine = create_async_engine(pg_url)
+    engine = create_async_engine(isolated_pg_url)
     async with engine.begin() as conn:
         await conn.execute(text("SET session_replication_role = replica"))  # skip FK seeding
         for t in (T1, T2):
@@ -173,6 +184,31 @@ async def env(pg_url: str, redis_url: str) -> Any:
     await redis.set(f"llm_config:{T2}", json.dumps({"encrypted_key": old.encrypt("sk-t2")}))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield {"factory": factory, "redis": redis, "engine": engine, "tenant_vault": tenant_vault}
+    # Remove everything seeded for T1/T2: the session database is shared, and a
+    # later rotation (e.g. the connector-registry rotation test) walks every
+    # tenant — values left under this test's keys made it report "failed".
+    async with engine.begin() as conn:
+        await conn.execute(text("SET session_replication_role = replica"))
+        tables = (
+            await conn.execute(
+                text(
+                    "SELECT c.table_name FROM information_schema.columns c "
+                    "JOIN information_schema.tables t USING (table_schema, table_name) "
+                    "WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id' "
+                    "AND t.table_type = 'BASE TABLE'"
+                )
+            )
+        ).scalars()
+        for table in tables:
+            await conn.execute(
+                # tenant_id is TEXT in most tables, UUID in a few: compare as text.
+                text(f'DELETE FROM "{table}" WHERE tenant_id::text IN (:a, :b)'),
+                {"a": T1, "b": T2},
+            )
+        await conn.execute(text("DELETE FROM tenants WHERE id IN (:a, :b)"), {"a": T1, "b": T2})
+    for pattern in (f"*{T1}*", f"*{T2}*"):
+        async for key in redis.scan_iter(match=pattern):
+            await redis.delete(key)
     await redis.aclose()
     await engine.dispose()
 
