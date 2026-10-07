@@ -17,21 +17,27 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.security_runtime import injection_patterns
+
 if TYPE_CHECKING:
     from app.orchestration.runtime_profile import GoalRuntimeProfile
 
 logger = logging.getLogger(__name__)
 
-_INJECTION_PATTERNS = [
-    re.compile(
-        r"(?i)(ignore|forget|disregard)\s+(previous|prior|above|all)\s+(instructions?|prompts?|rules?|context)"
+# Local injection scan: the shared normalized detector's CORE set plus this
+# call site's own extra — destructive SQL in tool arguments.
+_SQL_PATTERNS: tuple[injection_patterns.InjectionPattern, ...] = (
+    injection_patterns.InjectionPattern(
+        id="sql.destructive_statement",
+        family="sql",
+        severity="high",
+        regex=re.compile(r"\b(?:drop\s+table|delete\s+from|truncate\s+table|alter\s+table)\b"),
+        negatable=False,
     ),
-    re.compile(
-        r"(?i)(you are now|act as|pretend to be|roleplay as)\s+.{0,50}(without|ignore|bypass)"
-    ),
-    re.compile(r"(?i)(system\s*prompt|hidden\s*instruction|jailbreak)"),
-    re.compile(r"(?i)(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE\s+TABLE|ALTER\s+TABLE)"),
-]
+)
+_INJECTION_PATTERNS: tuple[injection_patterns.InjectionPattern, ...] = (
+    injection_patterns.CORE_PATTERNS + _SQL_PATTERNS
+)
 
 _PII_PATTERNS = [
     re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
@@ -218,7 +224,7 @@ class GuardrailEnforcer:
         )
 
     def _check_injection(self, content: str) -> bool:
-        return any(p.search(content) for p in _INJECTION_PATTERNS)
+        return injection_patterns.contains_injection(content, _INJECTION_PATTERNS)
 
     def _check_pii(self, content: str) -> bool:
         return any(p.search(content) for p in _PII_PATTERNS)

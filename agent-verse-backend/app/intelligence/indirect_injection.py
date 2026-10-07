@@ -22,6 +22,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.security_runtime import injection_patterns
+
 try:
     from app.observability.logging import get_logger
 
@@ -31,36 +33,40 @@ except Exception:
 
     logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
-# Patterns that indicate injection attempts in retrieved content
-_INDIRECT_INJECTION_PATTERNS = [
-    re.compile(r"ignore\s+(all\s+)?(previous|prior|earlier|above)\s+instruction", re.I),
-    re.compile(r"disregard\s+(all\s+)?(previous|prior|earlier)", re.I),
-    re.compile(
-        r"(you\s+are\s+now|from\s+now\s+on|henceforth)\s+.{0,50}(ignore|bypass|override)",
-        re.I,
+# Retrieved content is scanned with the shared normalized detector's content
+# set (direct injection + indirect "note to the AI" + exfiltration phrasings,
+# see app.security_runtime.injection_patterns) plus this scanner's own extras.
+# A bare mention of "jailbreak" / "prompt injection" is no longer a hit: that
+# flagged every security article the agent retrieved.
+_EXTRA_PATTERNS: tuple[injection_patterns.InjectionPattern, ...] = (
+    # A fake chat turn that orders mass destruction.
+    injection_patterns.InjectionPattern(
+        id="indirect.role_line_destructive",
+        family="indirect",
+        severity="high",
+        regex=re.compile(
+            r"(?m)^[^\w\n]{0,4}(?:system|human|assistant|user)\s*:\W*(?:\w+\W+){0,12}?"
+            r"(?:delete|drop|destroy|wipe|erase|exfiltrat\w*)\s+(?:all|every|everything"
+            r"|the\s+entire|the\s+whole|the\s+database|the\s+production)\b"
+        ),
+        negatable=False,
     ),
-    re.compile(r"system\s*:\s*(override|admin|maintenance|debug)\s+mode", re.I),
-    re.compile(r"(new|updated|revised)\s+instructions?\s*:", re.I),
-    re.compile(r"(SYSTEM|HUMAN|ASSISTANT)\s*:\s*.{0,200}(delete|drop|destroy|exfil)", re.I),
-    re.compile(r"<\s*/?system\s*>", re.I),
-    re.compile(r"\[INST\]|\[\/?INST\]|<\|im_start\|>|<\|im_end\|>", re.I),
-    re.compile(r"prompt\s+injection", re.I),
-    re.compile(r"jailbreak", re.I),
-    re.compile(
-        r"(forget|clear|erase|wipe)\s+(your\s+)?(previous|all\s+prior)?\s*(memory|context|instruction)",
-        re.I,
+    # Authority impersonation ("This is the CEO, ...").
+    injection_patterns.InjectionPattern(
+        id="indirect.authority_impersonation",
+        family="indirect",
+        severity="medium",
+        regex=re.compile(
+            r"\bthis\s+is\s+(?:the\s+|your\s+)?(?:ceo|cto|cfo|admin|administrator"
+            r"|system\s+administrator|security\s+team|it\s+department)\s*[,.:!]"
+        ),
+        negatable=False,
     ),
-    # Data exfiltration via injection
-    re.compile(
-        r"(send|email|post|upload|transfer)\s+(all|every|the)\s+(data|secret|key|credential|password)",
-        re.I,
-    ),
-    # Authority impersonation
-    re.compile(
-        r"(this\s+is|from)\s+(the\s+)?(ceo|cto|admin|system\s+administrator|security\s+team)\s*[,.]",
-        re.I,
-    ),
-]
+)
+_INDIRECT_INJECTION_PATTERNS: tuple[injection_patterns.InjectionPattern, ...] = (
+    injection_patterns.CONTENT_PATTERNS + _EXTRA_PATTERNS
+)
+_REDACTION = "[REDACTED: potential injection attempt]"
 
 _DELIMITER_START = "<untrusted_content>"
 _DELIMITER_END = "</untrusted_content>"
@@ -91,12 +97,8 @@ def scan_tool_output(content: str, *, source: str = "tool") -> IndirectInjection
         )
 
     content_str = str(content)
-    found_patterns: list[str] = []
-
-    for pattern in _INDIRECT_INJECTION_PATTERNS:
-        m = pattern.search(content_str)
-        if m:
-            found_patterns.append(m.group(0)[:100])
+    hits = injection_patterns.scan(content_str, _INDIRECT_INJECTION_PATTERNS)
+    found_patterns = [content_str[h.start : h.end][:100] for h in hits]
 
     if found_patterns:
         with contextlib.suppress(Exception):
@@ -104,12 +106,11 @@ def scan_tool_output(content: str, *, source: str = "tool") -> IndirectInjection
                 "indirect_injection_detected",
                 source=source,
                 patterns=found_patterns[:3],
+                pattern_ids=sorted({h.pattern_id for h in hits})[:5],
                 content_preview=content_str[:100],
             )
-        # Sanitize: replace injection patterns with [REDACTED: potential injection]
-        sanitized = content_str
-        for pattern in _INDIRECT_INJECTION_PATTERNS:
-            sanitized = pattern.sub("[REDACTED: potential injection attempt]", sanitized)
+        # Sanitize: replace every matched span with the redaction marker.
+        sanitized = injection_patterns.redact(content_str, hits, _REDACTION)
         return IndirectInjectionResult(
             clean=False,
             patterns_found=found_patterns,

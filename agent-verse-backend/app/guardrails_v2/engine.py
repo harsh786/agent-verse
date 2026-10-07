@@ -18,6 +18,7 @@ from app.guardrails_v2.models import (
     GuardrailViolation,
     ViolationCategory,
 )
+from app.security_runtime import injection_patterns
 
 _log = logging.getLogger(__name__)
 
@@ -80,53 +81,13 @@ _SECRET_PATTERNS = [
     (r'(?i)password\s*[=:]\s*["\']?[\w!@#$%^&*]+', "Password in text"),
 ]
 
-_INJECTION_PATTERNS = [
-    r"ignore\s+previous\s+instructions",
-    r"disregard\s+(all\s+)?previous",
-    r"forget\s+(everything|all)",
-    r"you\s+are\s+now\s+",
-    r"pretend\s+(you\s+are|to\s+be)",
-    r"act\s+as\s+",
-    r"jailbreak",
-    r"dan\s+mode",
-]
+# Prompt-injection detection is the shared, normalized detector (NFKC-style
+# folding, zero-width/bidi stripping, homoglyph + leetspeak views, curated
+# patterns with ids/severities). The engine uses the CORE (direct) set.
+_INJECTION_PATTERNS = injection_patterns.CORE_PATTERNS
 
-# Plain-text injection phrases used when scanning *de-obfuscated* variants of the
-# content (base64 / rot13 / leetspeak / homoglyph). Kept phrase-based (not regex)
-# because the decoded text is normalised before matching.
-_INJECTION_PHRASES = (
-    "ignore previous instructions",
-    "ignore all previous instructions",
-    "disregard previous",
-    "disregard all previous",
-    "forget everything",
-    "forget all",
-    "you are now",
-    "pretend you are",
-    "pretend to be",
-    "act as",
-    "reveal the system prompt",
-    "system prompt",
-    "jailbreak",
-    "dan mode",
-)
-
-# Common Unicode confusables (Cyrillic / Greek look-alikes and full-width forms)
-# folded to their ASCII equivalent so homoglyph-obfuscated injections are caught.
-# NFKC alone does not map Cyrillic → Latin, so we carry an explicit table.
-_HOMOGLYPH_MAP = str.maketrans(
-    {
-        "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y",
-        "і": "i", "ѕ": "s", "ԁ": "d", "ո": "n", "к": "k", "м": "m", "т": "t",
-        "н": "h", "в": "b", "ѐ": "e", "ё": "e",
-        "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
-        "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
-        "ο": "o", "ι": "i", "ν": "v", "α": "a", "ρ": "p", "τ": "t", "υ": "u",
-    }
-)
-
-# Leetspeak substitutions (digits / symbols → letters).
-_LEET_MAP = str.maketrans("4310!7$", "aeiolts")
+# How an obfuscated hit is labelled in ``matches`` (kept stable for callers/logs).
+_OBFUSCATION_LABELS = {"unicode": "homoglyph", "leetspeak": "leetspeak"}
 
 
 def _baseline_rules(tenant_id: str) -> list[GuardrailRule]:
@@ -196,40 +157,21 @@ def _rule_from_spec(tenant_id: str, rule_id: str, spec: dict[str, Any]) -> Guard
 
 
 def _injection_deobfuscation_hit(content: str) -> str | None:
-    """Return an obfuscation label if a de-obfuscated variant reveals an injection.
+    """Return an encoding label if a DECODED variant of *content* is an injection.
 
-    Covers base64, rot13, leetspeak and Unicode-homoglyph obfuscation of the
-    phrases in ``_INJECTION_PHRASES``. Deterministic and LLM-free so it is safe
-    on the hot path and in the red-team corpus. Returns ``None`` when nothing
-    matches (clean content must never be flagged here).
+    Covers base64 and rot13 (homoglyph / zero-width / leetspeak obfuscation is
+    handled by the shared detector's normalization itself). Deterministic and
+    LLM-free so it is safe on the hot path and in the red-team corpus. Returns
+    ``None`` when nothing matches (clean content must never be flagged here).
     """
     import base64
     import codecs
-    import unicodedata
 
-    def _has_phrase(text: str) -> bool:
-        low = text.lower()
-        return any(phrase in low for phrase in _INJECTION_PHRASES)
+    if injection_patterns.contains_injection(codecs.encode(content, "rot_13")):
+        return "rot13"
 
-    # Homoglyph: NFKC + explicit confusable fold.
-    folded = unicodedata.normalize("NFKC", content).translate(_HOMOGLYPH_MAP)
-    if folded.lower() != content.lower() and _has_phrase(folded):
-        return "homoglyph"
-
-    # Leetspeak.
-    leet = content.translate(_LEET_MAP)
-    if leet.lower() != content.lower() and _has_phrase(leet):
-        return "leetspeak"
-
-    # ROT13.
-    try:
-        rot = codecs.encode(content, "rot_13")
-        if _has_phrase(rot):
-            return "rot13"
-    except Exception:  # pragma: no cover - rot13 never raises on str
-        pass
-
-    # Base64: decode plausible tokens and re-scan.
+    # Base64: decode plausible tokens and scan them together in one pass.
+    decoded_tokens: list[str] = []
     for token in re.findall(r"[A-Za-z0-9+/=]{16,}", content):
         try:
             decoded = base64.b64decode(token + "===", validate=False).decode(
@@ -237,8 +179,10 @@ def _injection_deobfuscation_hit(content: str) -> str | None:
             )
         except Exception:
             continue
-        if _has_phrase(decoded):
-            return "base64"
+        if decoded:
+            decoded_tokens.append(decoded)
+    if decoded_tokens and injection_patterns.contains_injection("\n".join(decoded_tokens)):
+        return "base64"
 
     return None
 
@@ -802,11 +746,19 @@ class GuardrailsEngine:
         return {"triggered": len(matched) > 0, "matches": matched, "category": "keywords"}
 
     def _check_injection(self, content: str) -> dict[str, Any]:
-        content_lower = content.lower()
-        for pattern in _INJECTION_PATTERNS:
-            if re.search(pattern, content_lower):
-                return {"triggered": True, "matches": [pattern], "category": "prompt_injection"}
-        # Encoded / obfuscated injections (base64 / rot13 / leetspeak / homoglyph).
+        hit = injection_patterns.first_match(content, _INJECTION_PATTERNS)
+        if hit is not None:
+            matches = [hit.pattern_id]
+            if hit.obfuscation is not None:
+                label = _OBFUSCATION_LABELS.get(hit.obfuscation, hit.obfuscation)
+                matches.insert(0, f"{label}-encoded injection")
+            return {
+                "triggered": True,
+                "matches": matches,
+                "category": "prompt_injection",
+                "severity": hit.severity,
+            }
+        # Encoded injections (base64 / rot13).
         obfuscation = _injection_deobfuscation_hit(content)
         if obfuscation is not None:
             return {
