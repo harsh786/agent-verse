@@ -44,8 +44,15 @@ async def test_rollback_engine_in_agent_graph_uses_async():
     """AgentGraph must use rollback_all_async in its failure path."""
 
 
-    source = _agent_source()
-    # Must contain rollback_all_async somewhere in the graph
+    import pathlib
+
+    # The graph's failure path goes through rollback_goal_side_effects (shared
+    # with the timeout / cancel-with-rollback triggers), which awaits
+    # rollback_all_async.
+    source = _agent_source() + pathlib.Path("app/reliability/rollback.py").read_text(
+        encoding="utf-8"
+    )
+    assert "rollback_goal_side_effects" in _agent_source()
     assert "rollback_all_async" in source, (
         "AgentGraph must call rollback_all_async() (not rollback_all()) "
         "to guarantee rollback completion on step failure"

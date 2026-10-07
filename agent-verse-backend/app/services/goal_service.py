@@ -98,6 +98,8 @@ _DEDUP_SCOPE_KEY = "_dedup_scope"
 # redelivery and the stuck-goal sweeper own it) or {"kind": "in_process",
 # "replica": <GoalService._replica_id>}. Restart recovery only touches the latter,
 # and only once that replica's heartbeat is gone.
+# execution_context flag: this replica's cancel asked for rollback=true.
+_CANCEL_ROLLBACK_KEY = "_cancel_rollback"
 _RUNNER_KEY = "runner"
 _RUNNER_WORKER = "worker"
 _RUNNER_IN_PROCESS = "in_process"
@@ -4044,6 +4046,9 @@ class GoalService:
                     # Terminal: learn from the outcome (bounded; never raises).
                     await self._learn_from_goal_outcome(goal_id, tenant_ctx, final_state)
             except TimeoutError:
+                # A timeout is a failure: undo registered side effects, the same
+                # path as the verifier's permanent failure (a08-F200-03).
+                await self._rollback_aborted_goal(loop, "timeout", callback)
                 if record is not None:
                     record.status = GoalStatus.FAILED
                     record.error_message = f"Goal timed out after {_goal_timeout_s}s{_timeout_note}"
@@ -4060,6 +4065,9 @@ class GoalService:
                     ),
                 )
             except asyncio.CancelledError:
+                if record is not None and record.execution_context.get(_CANCEL_ROLLBACK_KEY):
+                    # cancel_goal(rollback=True): undo before the task ends.
+                    await self._rollback_aborted_goal(loop, "cancel", callback)
                 # A terminal status was already set by whoever cancelled the task
                 # (cancel_goal / a HITL rejection) along with its terminal event.
                 if record is not None and record.status not in _TERMINAL_STATUSES:
@@ -4071,7 +4079,11 @@ class GoalService:
                 # Cancelled from ANOTHER replica (Redis flag, seen at a step
                 # boundary). That replica already persisted CANCELLED, emitted
                 # goal_cancelled (fanned out here over Redis) and released the
-                # slot — only settle local state and close local streams.
+                # slot — only settle local state and close local streams, after
+                # the opt-in rollback the cancel / emergency stop asked for.
+                _rb_trigger = await self._remote_stop_wants_rollback(goal_id, record)
+                if _rb_trigger:
+                    await self._rollback_aborted_goal(loop, _rb_trigger, callback)
                 if record is not None:
                     record.status = GoalStatus.CANCELLED
                     record.completed_at = record.completed_at or datetime.now(UTC).isoformat()
@@ -5527,7 +5539,9 @@ class GoalService:
             with suppress(Exception):
                 cancel(goal_id)
 
-    async def cancel_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+    async def cancel_goal(
+        self, goal_id: str, tenant_ctx: TenantContext, *, rollback: bool = False
+    ) -> dict[str, Any]:
         """Cancel a running goal.  Idempotent if the goal is already terminal.
 
         Works from any replica: the goal is loaded from Postgres when this
@@ -5535,13 +5549,25 @@ class GoalService:
         replica's in-process loop or a Celery worker) through the Redis cancel
         flag, which both poll. If that flag cannot be written for a goal running
         elsewhere the call fails (503) without changing anything.
+
+        *rollback* (opt-in, default off: a cancel keeps what was done) asks the
+        runner to undo the goal's registered side effects as it stops
+        (a08-F200-03). The request is audited first; an audit that cannot be
+        written refuses the cancel (503) before anything changes.
         """
+        import functools
+
         from app.reliability.goal_lifecycle import signal_cancel
 
         record = await self._aget_record(goal_id, tenant_ctx)
         if record.status in _TERMINAL_STATUSES:
             return {"goal_id": goal_id, "status": record.status.value}
-        await self._signal_runner(record, signal_cancel, "cancel")
+        if rollback:
+            await self._audit_rollback_request(goal_id, tenant_ctx, source="cancel")
+            record.execution_context[_CANCEL_ROLLBACK_KEY] = True
+        await self._signal_runner(
+            record, functools.partial(signal_cancel, rollback=rollback), "cancel"
+        )
 
         # Persist to the DB directly. The worker normally writes terminal status,
         # but a cancelled goal whose worker already died (or a stuck/zombie
@@ -5569,6 +5595,60 @@ class GoalService:
         cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
         await self._dispatch_event(goal_id, cancelled_event, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": GoalStatus.CANCELLED.value}
+
+    async def _audit_rollback_request(
+        self, goal_id: str, tenant_ctx: TenantContext, *, source: str
+    ) -> None:
+        """Audit an operator's request to undo a goal's side effects (fail closed)."""
+        from app.governance.audit import AuditEvent
+        from app.governance.permissions import ActionLevel
+
+        event = AuditEvent(
+            goal_id=goal_id,
+            tool_name=f"goal_{source}",
+            action_level=ActionLevel.APPROVAL,
+            outcome="rollback_requested",
+            api_key_id=getattr(tenant_ctx, "api_key_id", None),
+            note=f"{source} with rollback=true: the goal's side effects will be undone",
+        )
+        try:
+            if hasattr(self._audit_log, "record_async"):
+                await self._audit_log.record_async(event, tenant_ctx=tenant_ctx)
+            else:
+                self._audit_log.record(event, tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            raise ServiceUnavailableError(
+                f"Cannot {source} goal {goal_id} with rollback: the request could not be "
+                "audited",
+                cause=exc,
+            ) from exc
+
+    async def _rollback_aborted_goal(
+        self, runner: Any, trigger: str, emit: Callable[[dict[str, Any]], Any]
+    ) -> None:
+        """Undo a timed-out / cancelled-with-rollback goal's side effects (once)."""
+        from app.reliability.rollback import find_rollback_engine, rollback_goal_side_effects
+
+        try:
+            await rollback_goal_side_effects(
+                find_rollback_engine(runner), trigger=trigger, emit=emit
+            )
+        except Exception as exc:
+            _svc_logger.warning("goal_rollback_failed", trigger=trigger, error=str(exc)[:200])
+
+    async def _remote_stop_wants_rollback(self, goal_id: str, record: GoalRecord | None) -> str:
+        """The rollback trigger a cancel / e-stop seen at a step boundary asked for, or ""."""
+        from app.governance.emergency_stop import stop_requests_rollback
+        from app.reliability.goal_lifecycle import cancel_rollback_requested
+
+        redis = getattr(self, "_redis", None)
+        if await cancel_rollback_requested(goal_id, redis):
+            return "cancel"
+        if record is not None and await stop_requests_rollback(
+            redis, record.tenant_id, (record.execution_context or {}).get("org_id")
+        ):
+            return "emergency_stop"
+        return ""
 
     async def pause_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Pause a running goal at its next step boundary — from any replica.

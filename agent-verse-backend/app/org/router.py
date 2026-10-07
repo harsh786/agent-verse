@@ -2038,6 +2038,39 @@ async def org_delete_role(
 # ── Emergency Stop / Pause (QA10) ────────────────────────────────────────────
 
 
+async def _audit_org_stop_rollback(request: Request, ctx: Any, org_id: str) -> None:
+    """Audit an org emergency stop that asked for rollback (a08-F200-03).
+
+    The stop itself is already persisted (it must never wait on an audit): a
+    failed audit write is logged loudly, the rollback request stands.
+    """
+    import structlog as _slog
+
+    try:
+        from app.governance.audit import AuditEvent
+        from app.governance.permissions import ActionLevel
+
+        audit_log = getattr(request.app.state, "audit_log", None)
+        if audit_log is None:
+            raise RuntimeError("no audit log configured")
+        event = AuditEvent(
+            goal_id="emergency_stop",
+            tool_name="org_emergency_stop",
+            action_level=ActionLevel.APPROVAL,
+            outcome="rollback_requested",
+            api_key_id=getattr(ctx, "api_key_id", None),
+            note=f"org={org_id},rollback=true",
+        )
+        if hasattr(audit_log, "record_async"):
+            await audit_log.record_async(event, tenant_ctx=ctx)
+        else:
+            audit_log.record(event, tenant_ctx=ctx)
+    except Exception as exc:
+        _slog.get_logger(__name__).error(
+            "org.emergency_stop_rollback_audit_failed", org_id=org_id, error=str(exc)[:200]
+        )
+
+
 async def _publish_stop_event(event_type: str, tenant_id: str, org_id: str, **payload: Any) -> None:
     """Announce a stop/resume on the org event stream (a08-F180-03).
 
@@ -2107,6 +2140,13 @@ async def org_emergency_stop_status(org_id: str, request: Request) -> dict[str, 
 async def org_emergency_stop(
     org_id: str,
     request: Request,
+    rollback: bool = Query(
+        False,
+        description=(
+            "Also undo the executed side effects of the org goals the stop halts "
+            "(opt-in; audited). Off by default."
+        ),
+    ),
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
     _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
@@ -2138,7 +2178,11 @@ async def org_emergency_stop(
         try:
             # Read by app.governance.emergency_stop at submit, start and each step.
             stop_record = await activate_org_stop(
-                redis, tenant_id, org_id, activated_by=str(getattr(ctx, "api_key_id", "") or "")
+                redis,
+                tenant_id,
+                org_id,
+                activated_by=str(getattr(ctx, "api_key_id", "") or ""),
+                rollback=rollback,
             )
         except EmergencyStopUnavailableError as exc:
             # Answering "stopped" without persisting the flag told operators the
@@ -2154,7 +2198,10 @@ async def org_emergency_stop(
             org_id,
             activated_at=stop_record.get("activated_at"),
             activated_by=stop_record.get("activated_by"),
+            rollback=rollback,
         )
+        if rollback:
+            await _audit_org_stop_rollback(request, ctx, org_id)
 
         # Mark the org's non-terminal goals cancelled off the request path (keyset
         # batches on a worker). The flag above already halts them at their next
@@ -2169,7 +2216,7 @@ async def org_emergency_stop(
             await _asyncio.wait_for(
                 _asyncio.to_thread(
                     cancel_goals_for_emergency_stop.apply_async,
-                    kwargs={"tenant_id": tenant_id, "org_id": org_id},
+                    kwargs={"tenant_id": tenant_id, "org_id": org_id, "rollback": rollback},
                     retry=False,
                 ),
                 timeout=5.0,

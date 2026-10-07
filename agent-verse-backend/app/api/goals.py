@@ -726,10 +726,25 @@ async def get_goal_pattern_selection(request: Request, goal_id: str) -> dict[str
 
 
 @router.post("/{goal_id}/cancel")
-async def cancel_goal(request: Request, goal_id: str) -> dict[str, Any]:
+async def cancel_goal(
+    request: Request,
+    goal_id: str,
+    rollback: bool = Query(
+        False,
+        description=(
+            "Also undo the goal's executed side effects (created issues, sent "
+            "messages, ...) through their registered inverses. Off by default: a "
+            "cancel keeps what was done. The request is audited."
+        ),
+    ),
+) -> dict[str, Any]:
     tenant = _require_tenant(request)
     svc = _goal_service(request)
-    result: dict[str, Any] = await svc.cancel_goal(goal_id=goal_id, tenant_ctx=tenant)
+    result: dict[str, Any] = await svc.cancel_goal(
+        goal_id=goal_id, tenant_ctx=tenant, rollback=rollback
+    )
+    if rollback:
+        result = {**result, "rollback_requested": True}
     return result
 
 

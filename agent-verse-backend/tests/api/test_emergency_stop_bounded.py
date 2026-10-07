@@ -76,7 +76,7 @@ def test_large_backlog_is_cancelled_off_the_request_path(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert svc.cancel_goal.await_count == gov_api._ESTOP_INLINE_CANCEL_LIMIT
-    assert enqueued == [{"tenant_id": "t-estop-bounded", "org_id": None}]
+    assert enqueued == [{"tenant_id": "t-estop-bounded", "org_id": None, "rollback": False}]
     assert body["celery_signal_sent"] is True
     assert body["goal_cancellation"] == "enqueued"
     assert body["partial"] is False
@@ -106,3 +106,36 @@ def test_failed_enqueue_is_reported_not_claimed(monkeypatch: pytest.MonkeyPatch)
     assert body["goal_cancellation"] == "not_enqueued"
     assert body["partial"] is True
     assert any("cancel_task_not_enqueued" in e for e in body["errors"])
+
+
+def test_rollback_is_opt_in_and_reaches_every_cancel(
+    enqueued: list[dict[str, Any]],
+) -> None:
+    """a08-F200-03: ``rollback=true`` is recorded on the stop, passed to every
+    inline cancel and to the batched task, and audited; the default is no rollback."""
+    import asyncio
+    import json
+
+    from app.governance.audit import AuditLog
+
+    svc = _goal_service(gov_api._ESTOP_INLINE_CANCEL_LIMIT + 1)
+    client = _client(svc)
+    audit = AuditLog()
+    client.app.state.audit_log = audit  # type: ignore[attr-defined]
+    body = client.post(
+        "/governance/emergency-stop?rollback=true", headers={"X-API-Key": "k"}
+    ).json()
+    assert body["rollback_requested"] is True
+    assert all(c.kwargs.get("rollback") is True for c in svc.cancel_goal.await_args_list)
+    assert enqueued == [{"tenant_id": "t-estop-bounded", "org_id": None, "rollback": True}]
+    raw = asyncio.run(
+        client.app.state._redis.get("emergency_stop:t-estop-bounded")  # type: ignore[attr-defined]
+    )
+    assert json.loads(raw)["rollback"] is True
+    notes = [e.note for e in audit.query(tenant_ctx=_CTX)]
+    assert any("rollback=true" in n for n in notes)
+
+    svc2 = _goal_service(1)
+    body2 = _client(svc2).post("/governance/emergency-stop", headers={"X-API-Key": "k"}).json()
+    assert body2["rollback_requested"] is False
+    assert not svc2.cancel_goal.await_args.kwargs.get("rollback", False)

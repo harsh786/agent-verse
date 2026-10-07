@@ -283,3 +283,102 @@ class RollbackEngine:
 
     def __len__(self) -> int:
         return len(self._stack)
+
+
+# ── Goal-level rollback triggers (a08-F200-02 / F200-03) ─────────────────────
+
+
+def find_rollback_engine(runner: Any) -> RollbackEngine | None:
+    """The ``RollbackEngine`` of a goal runner (an AgentGraph or a wrapper of one)."""
+    seen: set[int] = set()
+    current = runner
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        attrs = getattr(current, "__dict__", {})
+        engine = attrs.get("_rollback_engine")
+        if isinstance(engine, RollbackEngine):
+            return engine
+        current = attrs.get("_runner") or attrs.get("_inner") or attrs.get("_graph")
+    return None
+
+
+async def rollback_goal_side_effects(
+    engine: RollbackEngine | None,
+    *,
+    trigger: str,
+    emit: Callable[[dict[str, Any]], Any] | None = None,
+) -> dict[str, Any] | None:
+    """Undo a goal's registered side effects once; report what really happened.
+
+    The single path every goal-level rollback goes through: the verifier's
+    permanent failure, a goal TIMEOUT, and an operator cancel / emergency stop
+    that asked for ``rollback=true``. The stack is popped as it runs, so a
+    second trigger finds nothing left to undo (inverses run once). ``None``
+    when there was nothing registered. The report is emitted as a
+    ``rollback_report`` event (durable goal event, audit evidence).
+    """
+    import inspect
+
+    if engine is None or len(engine) == 0:
+        return None
+    await engine.rollback_all_async()
+    report = getattr(engine, "last_report", None)
+    summary: dict[str, Any] = {"trigger": trigger}
+    if isinstance(report, RollbackReport):
+        summary.update(report.as_dict())
+    logger.info(
+        "goal_rollback_complete trigger=%s counts=%s", trigger, summary.get("counts")
+    )
+    if emit is not None:
+        try:
+            res = emit({"type": "rollback_report", **summary})
+            if inspect.isawaitable(res):
+                await res
+        except Exception as exc:
+            logger.warning("rollback_report_emit_failed trigger=%s error=%s", trigger, exc)
+    return summary
+
+
+def rehydrate_from_ledger(
+    engine: RollbackEngine | None,
+    entries: list[dict[str, Any]],
+    *,
+    tenant_ctx: Any,
+    mcp_client: Any = None,
+) -> int:
+    """Re-register the undo records of calls a crashed run already executed.
+
+    A resumed (redelivered / requeued) goal starts with an empty in-memory
+    stack, so a later failure, timeout or cancel-with-rollback could not undo
+    what the first attempt did (a08-F200-02). The OI-1 action ledger keeps every
+    executed side-effecting call (tool, server, arguments, sanitised output);
+    each becomes an undo record again, oldest first. Nothing is undone here.
+    Returns the number of records registered.
+    """
+    import json
+
+    if engine is None:
+        return 0
+    n = 0
+    for entry in sorted(entries, key=lambda e: float(e.get("at") or 0.0)):
+        tool = str(entry.get("tool") or "")
+        if not tool:
+            continue
+        raw_args = entry.get("arguments")
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
+        except (ValueError, TypeError):
+            args = {}  # truncated in the ledger: inverses read ids from the output
+        if not isinstance(args, dict):
+            args = {}
+        engine.register_tool_call(
+            action=f"resumed:{tool}",
+            tool_names=[tool],
+            arguments=args,
+            output=entry.get("output", ""),
+            server_id=str(entry.get("server_id") or ""),
+            tenant_ctx=tenant_ctx,
+            mcp_client=mcp_client,
+        )
+        n += 1
+    return n

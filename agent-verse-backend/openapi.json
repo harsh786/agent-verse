@@ -1597,7 +1597,8 @@
             "type": "string"
           },
           "timeout_seconds": {
-            "default": 300,
+            "default": 0,
+            "minimum": 0.0,
             "title": "Timeout Seconds",
             "type": "integer"
           },
@@ -19080,7 +19081,7 @@
     },
     "/api/v1/workflows/import-yaml": {
       "post": {
-        "description": "Import a workflow definition from a YAML body.",
+        "description": "Import a workflow definition from a YAML body (always a NEW draft workflow).\n\nWebhook HMAC secrets (B2-GAP-3): an exported YAML carries ``auth: hmac``\nwebhooks with the secret masked (``hmac_secret: '********'``) \u2014 exports never\ncontain it. Importing such a file is refused with **422** naming the fix: put\na new secret in ``hmac_secret`` (and configure the sender with it), or remove\n``auth: hmac``. The import is never created with an empty secret (it would\nrefuse every delivery), never copies a secret from another workflow, and no\nsecret is generated or echoed back. A plaintext ``hmac_secret`` in the YAML\nis stored vault-encrypted and masked in the response.",
         "operationId": "import_yaml_api_v1_workflows_import_yaml_post",
         "responses": {
           "201": {
@@ -29636,6 +29637,18 @@
               "title": "Goal Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Also undo the goal's executed side effects (created issues, sent messages, ...) through their registered inverses. Off by default: a cancel keeps what was done. The request is audited.",
+            "in": "query",
+            "name": "rollback",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also undo the goal's executed side effects (created issues, sent messages, ...) through their registered inverses. Off by default: a cancel keeps what was done. The request is audited.",
+              "title": "Rollback",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -31096,6 +31109,20 @@
       "post": {
         "description": "Stop all autonomous work for this tenant until an admin lifts the stop.\n\nUse for: security incidents, runaway agents, cost overruns.\n\n1. Persists ``emergency_stop:{tenant}`` in Redis with NO expiry (it used to\n   expire after 300 s). Every enforcement point reads it: goal submission,\n   goal start (worker + in-process) and every step boundary on every\n   replica and worker. If it cannot be written the call fails 503 \u2014 it\n   used to answer \"All running goals cancelled\" with nothing persisted.\n2. Cancels every non-terminal goal of the tenant through the cross-replica\n   cancel path (DB-backed listing; it used to see only this replica's\n   in-memory goals).\n3. Rejects every pending approval.\n\nAdmin-only. Every per-goal cancel and per-approval reject failure is\nreported (``failed_*``, ``partial``); the stop flag itself still blocks\nthose goals at their next step boundary.",
         "operationId": "emergency_stop_governance_emergency_stop_post",
+        "parameters": [
+          {
+            "description": "Also undo the executed side effects of every goal the stop halts (opt-in; audited). Off by default: the stop keeps what was done.",
+            "in": "query",
+            "name": "rollback",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also undo the executed side effects of every goal the stop halts (opt-in; audited). Off by default: the stop keeps what was done.",
+              "title": "Rollback",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -31108,6 +31135,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Emergency Stop",
@@ -46946,7 +46983,7 @@
     },
     "/triggers/dlq/{dlq_id}/retry": {
       "post": {
-        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.",
+        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.\n\nThe retry is dispatched under the dedup key the original firing had\n(``trigger_dlq.idempotency_key``, B2-OPEN-2), so it is idempotent with a\nsender redelivery of the same firing: after a successful redelivery the\nretry is a ``dedup`` no-op, and a redelivery after the retry is deduped.\nEither way the entry is resolved. A throttled retry is not dead-lettered\nagain \u2014 this entry stays open for the next retry.",
         "operationId": "retry_dlq_entry_triggers_dlq__dlq_id__retry_post",
         "parameters": [
           {
@@ -47091,7 +47128,7 @@
     },
     "/triggers/webhooks/{webhook_type}/{token}": {
       "post": {
-        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).",
+        "description": "Unified typed webhook endpoint \u2014 routes GitHub, Stripe, Jira, etc.\n\n``webhook_type == \"webhook\"`` is the generic signed webhook (B2): JSON, form\nor text bodies; ``X-Signature`` HMAC-SHA256 (optionally over\n``\"{X-Webhook-Timestamp}.{body}\"`` with a 300 s replay window); the\nsender's delivery id makes a redelivery run once; a throttled delivery is\nanswered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).\n\nReplay protection of a signed generic delivery (B2-GAP-1): the delivery-id\nheaders are not signed, so identity comes from the signed bytes. A legacy\nbody-only signature dedupes on the signed body, unwindowed, and the body of\nevery delivery that ran is remembered (``vendor_webhook_replay_guard``) for as\nlong as the secret that signed it is accepted: the same signed body never\nfires twice. Senders whose events can repeat a byte-identical body must use\nthe timestamped scheme, whose exact signed bytes are guarded for the window.",
         "operationId": "receive_typed_webhook_triggers_webhooks__webhook_type___token__post",
         "parameters": [
           {
@@ -50484,6 +50521,18 @@
             "schema": {
               "title": "Org Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Also undo the executed side effects of the org goals the stop halts (opt-in; audited). Off by default.",
+            "in": "query",
+            "name": "rollback",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also undo the executed side effects of the org goals the stop halts (opt-in; audited). Off by default.",
+              "title": "Rollback",
+              "type": "boolean"
             }
           },
           {

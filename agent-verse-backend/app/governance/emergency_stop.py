@@ -178,7 +178,7 @@ def _decode_flag(raw: Any) -> dict[str, Any] | None:
 
 
 async def activate_stop(
-    redis: Any, key: str, *, activated_by: str, reason: str = ""
+    redis: Any, key: str, *, activated_by: str, reason: str = "", rollback: bool = False
 ) -> dict[str, Any]:
     """Persist a stop flag WITHOUT a TTL: it lasts until explicitly lifted.
 
@@ -193,6 +193,8 @@ async def activate_stop(
         "activated_at": datetime.now(UTC).isoformat(),
         "activated_by": activated_by,
         "reason": reason,
+        # Opt-in (a08-F200-03): goals it stops also undo their side effects.
+        "rollback": bool(rollback),
     }
     try:
         # Plain SET (no EX/KEEPTTL) also discards the TTL of an older flag.
@@ -211,11 +213,21 @@ async def activate_stop(
 
 
 async def activate_org_stop(
-    redis: Any, tenant_id: str, org_id: str, *, activated_by: str, reason: str = ""
+    redis: Any,
+    tenant_id: str,
+    org_id: str,
+    *,
+    activated_by: str,
+    reason: str = "",
+    rollback: bool = False,
 ) -> dict[str, Any]:
     """Org stop: the flag plus its entry in the tenant's org-stop index (WF-17)."""
     record = await activate_stop(
-        redis, org_stop_key(tenant_id, org_id), activated_by=activated_by, reason=reason
+        redis,
+        org_stop_key(tenant_id, org_id),
+        activated_by=activated_by,
+        reason=reason,
+        rollback=rollback,
     )
     try:
         await redis.sadd(org_stop_index_key(tenant_id), str(org_id))
@@ -328,6 +340,42 @@ def enforce_emergency_stop_sync(
     return None
 
 
+def _stop_rollback(raw: Any) -> bool:
+    record = _decode_flag(raw)
+    return bool(record and record.get("rollback"))
+
+
+async def stop_requests_rollback(redis: Any, tenant_id: str, org_id: str | None) -> bool:
+    """Whether an ACTIVE stop of the tenant (or the goal's org) asked for rollback.
+
+    False on any read error (rollback is opt-in: never undo on an unknown state).
+    """
+    if redis is None or not tenant_id:
+        return False
+    try:
+        if _stop_rollback(await redis.get(tenant_stop_key(tenant_id))):
+            return True
+        return bool(org_id) and _stop_rollback(
+            await redis.get(org_stop_key(tenant_id, str(org_id)))
+        )
+    except Exception as exc:
+        _log.warning("emergency_stop_rollback_read_failed", error=str(exc))
+        return False
+
+
+def stop_requests_rollback_sync(redis: Any, tenant_id: str | None, org_id: str | None) -> bool:
+    """Sync variant of :func:`stop_requests_rollback` (worker)."""
+    if redis is None or not tenant_id:
+        return False
+    try:
+        if _stop_rollback(redis.get(tenant_stop_key(tenant_id))):
+            return True
+        return bool(org_id) and _stop_rollback(redis.get(org_stop_key(tenant_id, str(org_id))))
+    except Exception as exc:
+        _log.warning("emergency_stop_rollback_read_failed", error=str(exc))
+        return False
+
+
 async def goal_org_id(db_factory: Any, tenant_id: str, goal_id: str) -> str | None:
     """Read ``goals.execution_context->>'org_id'`` under the tenant RLS GUC."""
     from sqlalchemy import text
@@ -354,6 +402,7 @@ async def cancel_goals_under_stop(
     org_id: str | None = None,
     *,
     batch_size: int = 500,
+    rollback: bool = False,
 ) -> dict[str, int]:
     """Cancel every non-terminal goal of the tenant (or of one org) in keyset batches.
 
@@ -394,7 +443,7 @@ async def cancel_goals_under_stop(
         scanned += len(ids)
         for gid in ids:
             try:
-                await signal_cancel(gid, redis, strict=True)
+                await signal_cancel(gid, redis, strict=True, rollback=rollback)
             except Exception:
                 signal_failures += 1
         async with db_factory() as session, session.begin():  # noqa: SIM117

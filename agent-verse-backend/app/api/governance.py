@@ -1449,7 +1449,9 @@ async def get_emergency_stop(request: Request) -> dict[str, Any]:
 _ESTOP_INLINE_CANCEL_LIMIT = 200
 
 
-async def _enqueue_estop_cancel(tenant_id: str, org_id: str | None = None) -> bool:
+async def _enqueue_estop_cancel(
+    tenant_id: str, org_id: str | None = None, *, rollback: bool = False
+) -> bool:
     """Enqueue the batched e-stop cancel task; False when the broker refused it."""
     import logging
 
@@ -1460,7 +1462,7 @@ async def _enqueue_estop_cancel(tenant_id: str, org_id: str | None = None) -> bo
         await asyncio.wait_for(
             asyncio.to_thread(
                 cancel_goals_for_emergency_stop.apply_async,
-                kwargs={"tenant_id": tenant_id, "org_id": org_id},
+                kwargs={"tenant_id": tenant_id, "org_id": org_id, "rollback": rollback},
                 retry=False,
             ),
             timeout=5.0,
@@ -1476,6 +1478,13 @@ async def _enqueue_estop_cancel(tenant_id: str, org_id: str | None = None) -> bo
 @router.post("/emergency-stop")
 async def emergency_stop(
     request: Request,
+    rollback: bool = Query(
+        False,
+        description=(
+            "Also undo the executed side effects of every goal the stop halts "
+            "(opt-in; audited). Off by default: the stop keeps what was done."
+        ),
+    ),
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     """Stop all autonomous work for this tenant until an admin lifts the stop.
@@ -1516,6 +1525,7 @@ async def emergency_stop(
             _stop_redis(request),
             tenant_stop_key(ctx.tenant_id),
             activated_by=str(getattr(ctx, "api_key_id", "") or ""),
+            rollback=rollback,
         )
     except EmergencyStopUnavailableError as exc:
         _log.error("emergency_stop_not_persisted: %s", exc)
@@ -1542,7 +1552,12 @@ async def emergency_stop(
             needs_batch_cancel = True
         for goal_id in running[:_ESTOP_INLINE_CANCEL_LIMIT]:
             try:
-                await goal_service.cancel_goal(goal_id=goal_id, tenant_ctx=ctx)
+                await goal_service.cancel_goal(
+                    goal_id=goal_id,
+                    tenant_ctx=ctx,
+                    # Only when asked: the default call is unchanged.
+                    **({"rollback": True} if rollback else {}),
+                )
                 cancelled_goals.append(goal_id)
             except Exception as exc:
                 _log.warning("emergency_stop_cancel_failed goal_id=%s: %s", goal_id, exc)
@@ -1551,7 +1566,7 @@ async def emergency_stop(
     goal_cancellation = "inline"
     cancel_task_enqueued = False
     if needs_batch_cancel:
-        cancel_task_enqueued = await _enqueue_estop_cancel(ctx.tenant_id)
+        cancel_task_enqueued = await _enqueue_estop_cancel(ctx.tenant_id, rollback=rollback)
         goal_cancellation = "enqueued" if cancel_task_enqueued else "not_enqueued"
         if not cancel_task_enqueued:
             errors.append("cancel_task_not_enqueued")
@@ -1616,6 +1631,7 @@ async def emergency_stop(
                 outcome="stop_activated",
                 api_key_id=getattr(ctx, "api_key_id", ""),
                 note=(
+                    f"rollback={'true' if rollback else 'false'},"
                     f"cancelled_goals={len(cancelled_goals)},"
                     f"rejected_approvals={len(rejected_approvals)},"
                     f"failed_goals={len(failed_goals)},"
@@ -1656,6 +1672,7 @@ async def emergency_stop(
         "failed_approvals": failed_approvals,
         # Whether the batched cancel task was really enqueued (INC-03: this was
         # a hard-coded True). The persisted flag is what workers read either way.
+        "rollback_requested": rollback,
         "celery_signal_sent": cancel_task_enqueued,
         "goal_cancellation": goal_cancellation,
         "audit_recorded": audit_recorded,
