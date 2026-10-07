@@ -35,6 +35,14 @@ class SignalResult(BaseModel):
     delivered: bool
     reason: str
     requires_confirmation: bool = False
+    channel_delivered: bool | None = Field(
+        None,
+        description=(
+            "null when only the web thread was targeted; true/false whether the push "
+            "to the signal's external channel succeeded (false also when no channel "
+            "push is configured — the message is still in the principal's thread)"
+        ),
+    )
 
 
 def _tenant_id(request: Request) -> str:
@@ -64,4 +72,5 @@ async def ingest_signal(body: SignalRequest, request: Request) -> SignalResult:
         delivered=outcome.delivered,
         reason=outcome.reason,
         requires_confirmation=outcome.requires_confirmation,
+        channel_delivered=outcome.channel_delivered,
     )

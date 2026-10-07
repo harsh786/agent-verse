@@ -9,6 +9,7 @@ quiet hours, under the daily rate limit. This module is the pure decision gate;
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,24 @@ class ProactivePreferences:
     quiet_hours: tuple[int, int] | None = None
     max_per_day: int = 5
     channels: frozenset[str] = field(default_factory=lambda: frozenset({"web"}))
+    # IANA zone the quiet hours and the daily cap's "day" are measured in.
+    timezone: str = "UTC"
+
+
+@dataclass(frozen=True)
+class ProactiveDelivery:
+    """What ``ChatService.deliver_proactive`` actually delivered.
+
+    The thread write always happened (it raises otherwise). ``channel_delivered``
+    is None when only the web thread was targeted, True when the external channel
+    push succeeded, and False — with ``channel_error`` — when it failed or no
+    channel push is configured.
+    """
+
+    message: Any
+    session_id: str
+    channel_delivered: bool | None = None
+    channel_error: str | None = None
 
 
 @dataclass(frozen=True)

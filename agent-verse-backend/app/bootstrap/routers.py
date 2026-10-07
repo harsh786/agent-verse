@@ -165,8 +165,8 @@ def _wire_proactive_engine(app: FastAPI) -> None:
 
     chat_service = app.state.chat_service
 
-    async def _deliver(signal: Any, proposal: Any) -> None:
-        await chat_service.deliver_proactive(
+    async def _deliver(signal: Any, proposal: Any) -> Any:
+        return await chat_service.deliver_proactive(
             principal_id=signal.principal_id,
             tenant_id=signal.tenant_id,
             message=proposal.message,

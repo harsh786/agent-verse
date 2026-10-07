@@ -128,14 +128,14 @@ async def test_durable_counter_hooks_back_rate_limit() -> None:
     # restarts/replicas. Simulate an already-exhausted counter.
     rec = _Recorder()
     prefs = ProactivePreferences(max_per_day=3)
-    store = {("t1", "2026-01-01"): 3}
-    recorded: list[tuple[str, str]] = []
+    store = {("t1", "t1", "2026-01-01"): 3}
+    recorded: list[tuple[str, str, str]] = []
     eng = ProactiveEngine(
         deliver=rec.deliver,
         preferences_provider=lambda _pid: prefs,
         clock=_clock(12),
-        count_provider=lambda pid, day: store.get((pid, day), 0),
-        count_recorder=lambda pid, day: recorded.append((pid, day)),
+        count_provider=lambda tid, pid, day: store.get((tid, pid, day), 0),
+        count_recorder=lambda tid, pid, day: recorded.append((tid, pid, day)),
     )
     out = await eng.handle(_signal(title="x"))
     assert not out.delivered and out.reason == "rate_limited"

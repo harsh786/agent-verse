@@ -40,8 +40,8 @@ def _build(prefs: ProactivePreferences | None = None):
     chat = ChatService()
     audits: list[dict[str, Any]] = []
 
-    async def _deliver(signal: Any, proposal: Any) -> None:
-        await chat.deliver_proactive(
+    async def _deliver(signal: Any, proposal: Any) -> Any:
+        return await chat.deliver_proactive(
             principal_id=signal.principal_id, tenant_id=signal.tenant_id,
             message=proposal.message, channel=signal.channel,
         )
@@ -71,7 +71,7 @@ def test_signal_delivers_into_chat_thread_and_audits() -> None:
     assert data["requires_confirmation"] is True  # high-impact → confirmation
 
     # The proactive message is now in the principal's chat thread.
-    session_id = chat._principal_sessions[TENANT]
+    session_id = chat._principal_sessions[(TENANT, TENANT)]
     history = chat.list_messages(session_id, TENANT)
     assert history and history[-1].role == "assistant"
     assert "rebook" in history[-1].content.lower()
@@ -95,7 +95,7 @@ def test_quiet_hours_signal_is_not_delivered() -> None:
     # Either delivered or quiet_hours depending on the hour; when gated, no thread.
     if not body["delivered"]:
         assert body["reason"] in ("quiet_hours", "rate_limited")
-        assert TENANT not in chat._principal_sessions
+        assert (TENANT, TENANT) not in chat._principal_sessions
 
 
 def test_unknown_signal_kind_makes_no_proposal() -> None:
@@ -104,15 +104,17 @@ def test_unknown_signal_kind_makes_no_proposal() -> None:
     r = client.post("/v1/proactive/signals", json={"kind": "random_noise"})
     assert r.status_code == 200
     assert r.json() == {"delivered": False, "reason": "no_proposal",
-                        "requires_confirmation": False}
+                        "requires_confirmation": False, "channel_delivered": None}
 
 
 async def test_deliver_proactive_creates_session_when_none_open() -> None:
     chat = ChatService()
-    msg = await chat.deliver_proactive(
+    out = await chat.deliver_proactive(
         principal_id="p1", tenant_id="t1", message="Reminder: standup at 10."
     )
+    msg = out.message
     assert msg is not None and msg.role == "assistant"
-    session_id = chat._principal_sessions["p1"]
+    session_id = chat._principal_sessions[("t1", "p1")]
+    assert out.session_id == session_id
     history = chat.list_messages(session_id, "t1")
     assert history[-1].content == "Reminder: standup at 10."
