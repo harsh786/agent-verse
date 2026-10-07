@@ -234,11 +234,18 @@ def test_applicable_keys_match_the_runtime() -> None:
 
 
 # ── a05-F095-04: the rollout gate pins a fully-autonomous agent's config ─────
+#
+# Owner decision: applying a winner to a fully-autonomous agent is accepted; the
+# agent is demoted in the same transaction and its eval suite re-run against
+# the new config (promotion back is the post-run hook's job).
 
 
-async def _set_autonomy(agents_db: Any, mode: str) -> None:
+async def _set_autonomy(agents_db: Any, mode: str, suite: str | None = None) -> None:
     async with agents_db() as s:
-        await s.execute(text("UPDATE agents SET autonomy_mode = :m WHERE id = 'a1'"), {"m": mode})
+        await s.execute(
+            text("UPDATE agents SET autonomy_mode = :m, eval_suite_id = :s WHERE id = 'a1'"),
+            {"m": mode, "s": suite},
+        )
         await s.commit()
 
 
@@ -250,23 +257,98 @@ async def _agent_row(agents_db: Any) -> tuple[Any, ...]:
         return tuple(res.fetchone())
 
 
-async def test_apply_never_rewrites_a_fully_autonomous_agents_gated_config(
+async def _marker(agents_db: Any) -> dict[str, Any] | None:
+    import json as _json
+
+    async with agents_db() as s:
+        res = await s.execute(text("SELECT autonomy_revalidation FROM agents WHERE id = 'a1'"))
+        raw = res.fetchone()[0]
+    return _json.loads(raw) if isinstance(raw, str) else raw
+
+
+class _Dispatched:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def __call__(self, tenant_id: str, plan: str, run_id: str) -> None:
+        self.calls.append((tenant_id, plan, run_id))
+
+
+async def _suite(tenant: str, suite: str) -> Any:
+    from app.intelligence.eval_suite_store import EvalSuiteStore
+
+    store = EvalSuiteStore(None, tenant)
+    await store.create(suite, name=suite, description="")
+    await store.import_tasks(
+        suite, [{"goal": f"g{i}", "expected_tools": ["t"]} for i in range(5)], replace=False
+    )
+    return store
+
+
+def _optimizer(agents_db: Any, tenant: str, dispatch: Any = None) -> SelfOptimizerV2:
+    from app.intelligence.eval_suite_store import EvalSuiteStore
+
+    return SelfOptimizerV2(
+        _Redis(), agents_db, lambda: None,
+        eval_store_factory=lambda tid: EvalSuiteStore(None, tid),
+        revalidation_dispatcher=dispatch,
+    )
+
+
+async def test_apply_to_a_fully_autonomous_agent_demotes_it_and_starts_its_suite(
     agents_db: Any,
 ) -> None:
-    await _set_autonomy(agents_db, "fully-autonomous")
-    opt = SelfOptimizerV2(_Redis(), agents_db, lambda: None)
-    ok = await opt.apply_suggestion(
-        "t1", "a1", "exp-1", {"system_prompt": "new prompt", "autonomy_mode": "fully-autonomous"}
+    import uuid as _uuid
+
+    tenant = f"t1-{_uuid.uuid4().hex[:6]}"
+    async with agents_db() as s:
+        await s.execute(text("UPDATE agents SET tenant_id = :t WHERE id = 'a1'"), {"t": tenant})
+        await s.commit()
+    suite = f"s-{_uuid.uuid4().hex[:6]}"
+    store = await _suite(tenant, suite)
+    await _set_autonomy(agents_db, "fully-autonomous", suite)
+    dispatched = _Dispatched()
+    outcome: dict[str, Any] = {}
+    reason = await _optimizer(agents_db, tenant, dispatched)._apply_suggestion(
+        tenant, "a1", "exp-1",
+        {"system_prompt": "new prompt", "autonomy_mode": "fully-autonomous"},
+        outcome=outcome,
     )
-    assert ok is False
-    assert await _agent_row(agents_db) == ("old prompt", "fully-autonomous")
+    assert reason is None
+    assert await _agent_row(agents_db) == ("new prompt", "bounded-autonomous")
+    marker = await _marker(agents_db)
+    assert marker is not None and marker["state"] == "pending"
+    assert marker["reason"] == "config_changed_pending_eval"
+    assert marker["source"] == "self_optimizer_apply:exp-1"
+    assert outcome["revalidation"]["run_id"] == marker["run_id"]
+    assert dispatched.calls == [(tenant, "free", marker["run_id"])]
+    run = await store.get_run(marker["run_id"])
+    assert run is not None and run["status"] == "running" and run["agent_id"] == "a1"
+    assert run["agent_config_hash"] == marker["agent_config_hash"]
 
 
-async def test_apply_pending_reports_the_rollout_gate(agents_db: Any) -> None:
-    await _set_autonomy(agents_db, "fully-autonomous")
-    opt = SelfOptimizerV2(_Redis(), agents_db, lambda: None)
-    reason = await opt._apply_suggestion("t1", "a1", "exp-1", {"system_prompt": "new prompt"})
-    assert reason == "rollout_gate"
+async def test_apply_when_the_run_cannot_start_still_demotes_and_says_why(
+    agents_db: Any,
+) -> None:
+    await _set_autonomy(agents_db, "fully-autonomous", None)  # no suite attached
+    reason = await _optimizer(agents_db, "t1")._apply_suggestion(
+        "t1", "a1", "exp-1", {"system_prompt": "new prompt"}
+    )
+    assert reason is None
+    assert await _agent_row(agents_db) == ("new prompt", "bounded-autonomous")
+    marker = await _marker(agents_db)
+    assert marker is not None and marker["state"] == "failed"
+    assert "No eval suite" in marker["error"]
+
+
+async def test_apply_pending_returns_the_revalidation(agents_db: Any) -> None:
+    await _set_autonomy(agents_db, "fully-autonomous", None)
+    opt = _optimizer(agents_db, "t1")
+    outcome: dict[str, Any] = {}
+    assert await opt._apply_suggestion(
+        "t1", "a1", "exp-1", {"system_prompt": "new prompt"}, outcome=outcome
+    ) is None
+    assert outcome["revalidation"]["reason"] == "config_changed_pending_eval"
 
 
 async def test_apply_proceeds_when_the_gate_is_disabled_by_the_owner(

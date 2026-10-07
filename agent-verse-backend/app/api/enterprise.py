@@ -956,8 +956,13 @@ async def apply_experiment(request: Request, experiment_id: str) -> dict:
             status_code=_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Self-optimizer v2 not available",
         )
+    # Applying to a fully-autonomous agent demotes it and re-runs its eval suite
+    # against the new config (owner decision on a05-F095-04); the run starts
+    # through this app (Celery workers, or in-process without them).
     result = await self_opt_v2.apply_pending(
-        tenant_id=ctx.tenant_id, experiment_id=experiment_id
+        tenant_id=ctx.tenant_id,
+        experiment_id=experiment_id,
+        dispatcher=eval_run_dispatcher(request, ctx, _eval_store(request)),
     )
     if not result.get("applied"):
         from fastapi import HTTPException as _HTTPException
@@ -965,20 +970,14 @@ async def apply_experiment(request: Request, experiment_id: str) -> dict:
         reason = result.get("reason")
         if reason == "not_found":
             raise _HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
-        if reason == "rollout_gate":
-            raise _HTTPException(
-                status_code=409,
-                detail=(
-                    "Cannot apply experiment: the agent is fully-autonomous and its eval "
-                    "rollout gate vouches only for its current config. Demote it to "
-                    "bounded-autonomous, apply, re-run its eval suite, then promote it."
-                ),
-            )
         raise _HTTPException(status_code=409, detail=f"Cannot apply experiment: {reason}")
     return {
         "experiment_id": experiment_id,
         "agent_id": result.get("agent_id"),
         "status": "applied",
+        # Set when the agent was fully-autonomous: it is now bounded-autonomous
+        # until its eval suite passes against the new config.
+        "revalidation": result.get("revalidation"),
     }
 
 
@@ -1639,13 +1638,24 @@ def _eval_runs_on_workers(request: Request, store: Any) -> bool:
 
 def _start_in_process_run(request: Request, ctx: Any, store: Any, run_id: str) -> None:
     """Without Celery (dev / single process): the same steps, looped in this process."""
+    import functools
+
     from app.api._deps import get_agent_store
     from app.intelligence.eval_suite import platform_judge
     from app.intelligence.eval_suite_jobs import run_until_done
     from app.intelligence.eval_suite_post_run import on_run_completed
 
-    goal_service = request.app.state.goal_service
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        raise RuntimeError("Goal service not configured")
     judge = platform_judge(getattr(request.app.state, "_app_provider", None))
+    # The hook resolves an agent re-validation through THIS app's agent store
+    # (the in-memory build has no database to build one from).
+    on_completed = functools.partial(
+        on_run_completed,
+        agent_store=getattr(request.app.state, "agent_store", None),
+        audit_log=getattr(request.app.state, "audit_log", None),
+    )
 
     async def _load_agent(agent_id: str) -> dict[str, Any] | None:
         found: dict[str, Any] | None = await get_agent_store(request).get_async(
@@ -1659,11 +1669,33 @@ def _start_in_process_run(request: Request, ctx: Any, store: Any, run_id: str) -
     task = asyncio.create_task(
         run_until_done(
             store=store, run_id=run_id, goal_service=goal_service, tenant_ctx=ctx,
-            judge=judge, agent_loader=_load_agent, on_completed=on_run_completed,
+            judge=judge, agent_loader=_load_agent, on_completed=on_completed,
         )
     )
     running.add(task)  # keep a strong reference until it finishes
     task.add_done_callback(running.discard)
+
+
+def dispatch_eval_run(request: Request, ctx: Any, store: Any, run_id: str, plan: str) -> str:
+    """Start executing an enqueued run: Celery workers, else this process. Raises on failure."""
+    if _eval_runs_on_workers(request, store):
+        from app.scaling.tasks import run_eval_suite_worker
+
+        run_eval_suite_worker.apply_async(
+            args=[ctx.tenant_id, plan, run_id, 0], queue="maintenance"
+        )
+        return "celery"
+    _start_in_process_run(request, ctx, store, run_id)
+    return "in_process"
+
+
+def eval_run_dispatcher(request: Request, ctx: Any, store: Any) -> Any:
+    """A ``RunDispatcher`` (tenant_id, plan, run_id) bound to this request's app."""
+
+    async def _dispatch(_tenant_id: str, plan: str, run_id: str) -> None:
+        dispatch_eval_run(request, ctx, store, run_id, plan)
+
+    return _dispatch
 
 
 @intelligence_router.post("/eval-suites/{suite_id}/run", status_code=202)
@@ -1711,20 +1743,11 @@ async def run_eval_suite(
         agent_config_hash=config_hash, enqueue=True, tenant_plan=plan,
         concurrency=concurrency,
     )
-    if _eval_runs_on_workers(request, store):
-        try:
-            from app.scaling.tasks import run_eval_suite_worker
-
-            run_eval_suite_worker.apply_async(
-                args=[ctx.tenant_id, plan, run_id, 0], queue="maintenance"
-            )
-        except Exception as exc:
-            await store.fail_run(run_id, f"could not enqueue the run's workers: {exc}")
-            raise HTTPException(503, "Could not enqueue the eval run; try again") from exc
-        executor = "celery"
-    else:
-        _start_in_process_run(request, ctx, store, run_id)
-        executor = "in_process"
+    try:
+        executor = dispatch_eval_run(request, ctx, store, run_id, plan)
+    except Exception as exc:
+        await store.fail_run(run_id, f"could not enqueue the run's workers: {exc}")
+        raise HTTPException(503, "Could not enqueue the eval run; try again") from exc
     return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": total,
             "dataset_version": version, "agent_id": agent_id, "agent_config_hash": config_hash,
             "concurrency": concurrency, "executor": executor}

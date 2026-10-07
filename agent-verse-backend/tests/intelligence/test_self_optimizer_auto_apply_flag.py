@@ -119,7 +119,7 @@ async def test_apply_pending_applies_candidate_winner() -> None:
 
     applied: list[dict] = []
 
-    async def spy_apply(tid, aid, eid, cfg):
+    async def spy_apply(tid, aid, eid, cfg, **_kw):
         applied.append({"agent": aid, "cfg": cfg})
         return None  # applied (else: the reason it was not)
 

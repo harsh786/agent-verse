@@ -57,9 +57,6 @@ def _make_app():
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(g2_router)
     app.include_router(trust_router)
-    from app.governance.trust_approval_store import InMemoryTrustApprovalStore
-
-    app.state.trust_approval_store = InMemoryTrustApprovalStore()
     return app
 
 
@@ -292,38 +289,6 @@ def test_audit_export_surfaces_a_failing_audit_query():
     resp = TestClient(app).get("/trust/audit/export", headers=_HEADERS)
     assert resp.status_code == 503, resp.json()
 
-def test_multi_approver_flow():
-    client = TestClient(_make_app())
-    # Create approval requiring 2 approvers
-    create = client.post("/trust/approvals", json={
-        "goal_id": "g-approve-test",
-        "step_description": "Deploy to production",
-        "risk_level": "critical",
-        "required_approvers": 2,
-    }, headers=_HEADERS)
-    assert create.status_code == 200
-    approval_id = create.json()["approval_id"]
-
-    # First approval — not enough
-    resp1 = client.post(f"/trust/approvals/{approval_id}/approve", json={}, headers=_APPROVER_HEADERS["alice"])
-    assert resp1.json()["status"] == "pending"
-    assert resp1.json()["approver_count"] == 1
-
-    # Second approval — reaches threshold
-    resp2 = client.post(f"/trust/approvals/{approval_id}/approve", json={}, headers=_APPROVER_HEADERS["bob"])
-    assert resp2.json()["status"] == "approved"
-
-def test_reject_approval():
-    client = TestClient(_make_app())
-    create = client.post("/trust/approvals", json={"goal_id": "g-reject", "step_description": "Destructive op"}, headers=_HEADERS)
-    approval_id = create.json()["approval_id"]
-
-    reject = client.post(f"/trust/approvals/{approval_id}/reject", json={
-        "reason": "Too risky",
-    }, headers=_HEADERS)
-    assert reject.status_code == 200
-    assert reject.json()["status"] == "rejected"
-
 def test_policy_simulation():
     client = TestClient(_make_app())
     resp = client.post("/trust/policy/simulate", json={
@@ -347,31 +312,6 @@ def test_list_compliance_bundles():
     # a03-F057-03: the governance catalogue (the ids enable/disable accept).
     assert "pci_dss" in bundle_ids
     assert "pci" not in bundle_ids
-
-def test_approval_not_found():
-    client = TestClient(_make_app())
-    resp = client.post("/trust/approvals/nonexistent-id/approve", json={}, headers=_HEADERS)
-    assert resp.status_code == 404
-
-def test_list_approvals_filters_by_status():
-    client = TestClient(_make_app())
-    pending = client.post(
-        "/trust/approvals", json={"goal_id": "g-1", "step_description": "op 1"}, headers=_HEADERS
-    ).json()["approval_id"]
-    rejected = client.post(
-        "/trust/approvals", json={"goal_id": "g-2", "step_description": "op 2"}, headers=_HEADERS
-    ).json()["approval_id"]
-    client.post(f"/trust/approvals/{rejected}/reject", json={"reason": "no"}, headers=_HEADERS)
-
-    resp = client.get("/trust/approvals?status=pending", headers=_HEADERS)
-    assert resp.status_code == 200
-    ids = {a["approval_id"] for a in resp.json()["approvals"]}
-    assert pending in ids
-    assert rejected not in ids
-
-    resp_all = client.get("/trust/approvals", headers=_HEADERS)
-    ids_all = {a["approval_id"] for a in resp_all.json()["approvals"]}
-    assert {pending, rejected} <= ids_all
 
 def test_active_compliance_bundles_starts_empty_and_fully_autonomous():
     client = TestClient(_make_app())
@@ -468,151 +408,17 @@ def test_audit_integrity_reports_an_intact_chain_from_an_async_verifier():
 # ── Trust: multi-approver separation of duties ───────────────────────────────
 
 
-def test_one_approver_cannot_satisfy_a_multi_approver_requirement():
-    """A 3-of-N approval must need three DISTINCT approvers.
-
-    Regression: `approve_request` appended to `approval["approvers"]` with no
-    check that the caller had already approved, and then compared
-    `len(approvers) >= required_approvers`. So one person calling the endpoint
-    three times — or a double-clicked / retried request — satisfied a
-    three-approver requirement alone, defeating the separation-of-duties control
-    the field exists to enforce.
-    """
-    client = TestClient(_make_app())
-    created = client.post(
-        "/trust/approvals",
-        json={"goal_id": "g1", "tool_name": "wire_transfer",
-              "risk_level": "high", "required_approvers": 3},
-        headers=_HEADERS,
-    ).json()
-    approval_id = created["approval_id"]
-
-    first = client.post(
-        f"/trust/approvals/{approval_id}/approve",
-        json={}, headers=_APPROVER_HEADERS["alice"],
-    )
-    assert first.status_code == 200
-    assert first.json()["status"] == "pending"
-
-    # Same approver again — must not count a second time.
-    for _ in range(2):
-        again = client.post(
-            f"/trust/approvals/{approval_id}/approve",
-            json={}, headers=_APPROVER_HEADERS["alice"],
-        )
-        assert again.status_code == 409, again.json()
-
-    listed = client.get("/trust/approvals", headers=_HEADERS).json()
-    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
-    assert approval["status"] == "pending", approval
-    assert len(approval["approvers"]) == 1, approval["approvers"]
-
-
-def test_three_distinct_approvers_do_satisfy_the_requirement():
-    client = TestClient(_make_app())
-    approval_id = client.post(
-        "/trust/approvals",
-        json={"goal_id": "g2", "required_approvers": 3},
-        headers=_HEADERS,
-    ).json()["approval_id"]
-
-    for who in ("alice", "bob"):
-        r = client.post(f"/trust/approvals/{approval_id}/approve",
-                        json={}, headers=_APPROVER_HEADERS[who])
-        assert r.json()["status"] == "pending", r.json()
-
-    final = client.post(f"/trust/approvals/{approval_id}/approve",
-                        json={}, headers=_APPROVER_HEADERS["carol"])
-    assert final.json()["status"] == "approved", final.json()
-    assert final.json()["approver_count"] == 3
-
-
-# ── Trust: approver identity comes from the authenticated principal ──────────
-
-
-def test_approver_cannot_be_spoofed_via_the_request_body():
-    """One key must not be able to vote as several people.
-
-    Regression: approve_request read ``approver_id`` straight from the JSON body
-    (defaulting to "anonymous"), so a single API key could post
-    {"approver_id": "alice"}, then {"approver_id": "bob"}, ... and satisfy an
-    N-approver requirement alone while the audit trail named people who never
-    approved. The approver is now the authenticated key; a body value naming
-    anyone else is rejected.
-    """
-    client = TestClient(_make_app())
-    approval_id = client.post(
-        "/trust/approvals",
-        json={"goal_id": "g-spoof", "required_approvers": 2},
-        headers=_HEADERS,
-    ).json()["approval_id"]
-
-    for who in ("alice", "bob"):
-        r = client.post(f"/trust/approvals/{approval_id}/approve",
-                        json={"approver_id": who}, headers=_HEADERS)
-        assert r.status_code == 403, r.json()
-
-    listed = client.get("/trust/approvals", headers=_HEADERS).json()
-    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
-    assert approval["status"] == "pending", approval
-    assert approval["approvers"] == [], approval["approvers"]
-
-
-def test_recorded_approver_is_the_authenticated_key():
-    client = TestClient(_make_app())
-    approval_id = client.post(
-        "/trust/approvals", json={"goal_id": "g-who"}, headers=_HEADERS,
-    ).json()["approval_id"]
-
-    # Naming yourself explicitly is fine; omitting it is fine too.
-    r = client.post(f"/trust/approvals/{approval_id}/approve",
-                    json={"approver_id": "kid-alice"}, headers=_APPROVER_HEADERS["alice"])
-    assert r.status_code == 200, r.json()
-
-    listed = client.get("/trust/approvals", headers=_HEADERS).json()
-    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
-    assert [a["approver_id"] for a in approval["approvers"]] == ["kid-alice"]
-
-
-def test_rejector_cannot_be_spoofed_and_is_recorded_from_the_key():
-    client = TestClient(_make_app())
-    approval_id = client.post(
-        "/trust/approvals", json={"goal_id": "g-rej-who"}, headers=_HEADERS,
-    ).json()["approval_id"]
-
-    spoofed = client.post(f"/trust/approvals/{approval_id}/reject",
-                          json={"approver_id": "cfo", "reason": "no"}, headers=_HEADERS)
-    assert spoofed.status_code == 403, spoofed.json()
-
-    ok = client.post(f"/trust/approvals/{approval_id}/reject",
-                     json={"reason": "no"}, headers=_APPROVER_HEADERS["bob"])
-    assert ok.status_code == 200, ok.json()
-    listed = client.get("/trust/approvals", headers=_HEADERS).json()
-    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
-    assert approval["rejected_by"] == "kid-bob", approval
-
-
-# ── Role checks on votes and compliance bundles ────────────────────────────
+# ── Role checks on compliance bundles ────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_a_viewer_key_cannot_approve_reject_or_toggle_compliance_bundles() -> None:
-    """Regression: any key (even a viewer's) could vote toward an approval quorum
-    and disable a compliance bundle, lifting its autonomy ceiling."""
+async def test_a_viewer_key_cannot_toggle_compliance_bundles() -> None:
+    """Regression: any key (even a viewer's) could disable a compliance bundle,
+    lifting its autonomy ceiling."""
     from httpx import ASGITransport, AsyncClient
 
     app = _make_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        created = await c.post(
-            "/trust/approvals",
-            json={"action": "deploy", "required_approvals": 1},
-            headers=_HEADERS,
-        )
-        approval_id = created.json().get("approval_id") or created.json().get("id")
-        for path in (f"/trust/approvals/{approval_id}/approve",
-                     f"/trust/approvals/{approval_id}/reject"):
-            r = await c.post(path, json={}, headers=_VIEWER_HEADERS)
-            assert r.status_code == 403, (path, r.text)
         r = await c.post("/trust/compliance-bundles/hipaa/enable", headers=_VIEWER_HEADERS)
         assert r.status_code == 403
         r = await c.delete("/trust/compliance-bundles/hipaa", headers=_VIEWER_HEADERS)
@@ -637,22 +443,55 @@ def test_every_listed_compliance_bundle_can_be_enabled() -> None:
         assert r.status_code == 200, r.text
 
 
-def test_trust_approvals_are_503_without_a_wired_store() -> None:
-    """a03-F057-04: no silent module-dict fallback that answers 200."""
-    app = _make_app()
-    app.state.trust_approval_store = None
-    client = TestClient(app)
-    created = client.post("/trust/approvals", json={"tool_name": "deploy"}, headers=_HEADERS)
-    assert created.status_code == 503
-    assert client.get("/trust/approvals", headers=_HEADERS).status_code == 503
+# ── a03-F057-01: /trust/approvals is retired (410 Gone) ─────────────────────
 
 
-def test_in_memory_app_build_wires_the_in_memory_store_and_pooled_does_not() -> None:
-    from app.governance.trust_approval_store import InMemoryTrustApprovalStore
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/trust/approvals"),
+        ("get", "/trust/approvals?status=pending"),
+        ("post", "/trust/approvals"),
+        ("post", "/trust/approvals/a-1/approve"),
+        ("post", "/trust/approvals/a-1/reject"),
+    ],
+)
+def test_trust_approvals_answer_410_with_a_pointer_to_governance_approvals(
+    method: str, path: str
+) -> None:
+    """Trust approvals never gated anything; every route now says so and where to go."""
+    client = TestClient(_make_app())
+    kwargs = {"json": {"goal_id": "g", "required_approvers": 2}} if method == "post" else {}
+    r = getattr(client, method)(path, headers=_HEADERS, **kwargs)
+    assert r.status_code == 410, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "TRUST_APPROVALS_RETIRED"
+    assert detail["replacement"] == "/governance/approvals"
+    assert "/governance/approvals" in detail["message"]
+    assert "/governance/approvals" in r.headers["link"]
+
+
+def test_retired_trust_approvals_still_require_authentication() -> None:
+    r = TestClient(_make_app()).get("/trust/approvals")
+    assert r.status_code == 401
+
+
+def test_no_trust_approval_store_is_wired_any_more() -> None:
     from app.main import create_app
 
-    assert isinstance(
-        create_app(manage_pools=False).state.trust_approval_store, InMemoryTrustApprovalStore
-    )
-    pooled = create_app(manage_pools=True)
-    assert getattr(pooled.state, "trust_approval_store", None) is None
+    for manage_pools in (False, True):
+        app = create_app(manage_pools=manage_pools)
+        assert getattr(app.state, "trust_approval_store", None) is None
+
+
+def test_the_openapi_contract_marks_trust_approvals_deprecated() -> None:
+    paths = _make_app().openapi()["paths"]
+    for path, method in (
+        ("/trust/approvals", "get"),
+        ("/trust/approvals", "post"),
+        ("/trust/approvals/{approval_id}/approve", "post"),
+        ("/trust/approvals/{approval_id}/reject", "post"),
+    ):
+        op = paths[path][method]
+        assert op.get("deprecated") is True, (path, method)
+        assert "410" in op["responses"], (path, method)

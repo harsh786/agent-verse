@@ -6,11 +6,10 @@ import datetime
 import hashlib
 import inspect
 import json
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.governance.audit_v2 import audit_admin_action
 from app.tenancy.rbac import require_role
@@ -23,39 +22,6 @@ def _require_tenant(request: Request):
     if ctx is None:
         raise HTTPException(401, "Unauthorized")
     return ctx
-
-
-def _acting_principal(tenant: Any, body: dict[str, Any]) -> str:
-    """The approver/rejector identity: the authenticated key, never the body.
-
-    ``approver_id`` used to be read from the JSON body (default "anonymous"), so
-    one API key could vote as "alice", then "bob", ... — satisfying an
-    N-approver requirement alone and writing people who never approved into the
-    trail. A body value is still tolerated for backward compatibility, but only
-    when it names the caller; anything else is an impersonation attempt.
-    """
-    principal = str(getattr(tenant, "api_key_id", "") or "")
-    if not principal:
-        raise HTTPException(403, "Cannot attribute this decision to an authenticated principal")
-    claimed = body.get("approver_id")
-    if claimed is not None and claimed != principal:
-        raise HTTPException(403, "approver_id must match the authenticated principal")
-    return principal
-
-
-def _approval_store(request: Request) -> Any:
-    """The approval store wired on app.state, or 503.
-
-    The lifespan wires the Postgres ``TrustApprovalStore``; the in-memory app
-    build (``create_app(manage_pools=False)``) wires ``InMemoryTrustApprovalStore``.
-    There is no module-dict fallback any more (a03-F057-04): it answered 200
-    for approvals that lived in one process's memory, vanished on restart and
-    did not exist on the next replica.
-    """
-    store = getattr(request.app.state, "trust_approval_store", None)
-    if store is None:
-        raise HTTPException(503, "Approval store unavailable; retry shortly.")
-    return store
 
 
 @router.get("/audit/integrity")
@@ -200,103 +166,60 @@ async def export_audit_evidence(request: Request) -> Any:
     )
 
 
-@router.post("/approvals")
-async def submit_approval_request(request: Request) -> dict[str, Any]:
-    """Submit a multi-approver approval request."""
-    tenant = _require_tenant(request)
-    body = await request.json()
+# ── /trust/approvals: retired (a03-F057-01, owner decision) ──────────────────
+#
+# Trust approvals were recorded and voted on, but no agent, tool gate or worker
+# ever read them: an "approved" request authorised nothing and a "rejected" one
+# blocked nothing, next to the real HITL gateway (/governance/approvals) that
+# does hold execution and supports quorum. The endpoints answer 410 Gone for one
+# release so clients get a clear pointer instead of a 404; remove them after.
+# The ``trust_approval_requests`` / ``trust_approval_votes`` tables are kept
+# (no destructive migration); nothing writes them any more.
 
-    store = _approval_store(request)
-    approval_id = str(uuid.uuid4())
-    required = body.get("required_approvers", 1)
-    await store.create(
-        tenant_id=tenant.tenant_id,
-        approval_id=approval_id,
-        goal_id=body.get("goal_id"),
-        step_description=body.get("step_description", ""),
-        tool_name=body.get("tool_name", ""),
-        risk_level=body.get("risk_level", "high"),
-        required_approvers=required,
-    )
-    return {"approval_id": approval_id, "status": "pending", "required_approvers": required}
+_TRUST_APPROVALS_GONE = {
+    "code": "TRUST_APPROVALS_RETIRED",
+    "message": (
+        "/trust/approvals has been retired: its approvals never gated execution. "
+        "Use /governance/approvals (GET to list pending requests, "
+        "POST /governance/approvals/{request_id}/approve or /reject to decide), "
+        "which blocks the step until it is decided and supports multi-approver quorum."
+    ),
+    "replacement": "/governance/approvals",
+}
 
 
-@router.post("/approvals/{approval_id}/approve")
-async def approve_request(
-    request: Request,
-    approval_id: str,
-    # Any key could vote (as itself) — a viewer key counted toward an N-approver
-    # quorum. Same role as /governance/approvals.
-    _rbac: None = Depends(require_role("approver")),
-) -> dict[str, Any]:
-    """Approve a pending request. Supports multi-approver."""
-    tenant = _require_tenant(request)
-    body = await request.json()
-    approver_id = _acting_principal(tenant, body)
-    note = body.get("note", "")
-
-    store = _approval_store(request)
-    from app.governance.trust_approval_store import (
-        ApprovalNotFoundError,
-        ApprovalNotPendingError,
-        DuplicateApproverError,
+def _trust_approvals_gone(request: Request) -> JSONResponse:
+    _require_tenant(request)
+    return JSONResponse(
+        status_code=410,
+        content={"detail": _TRUST_APPROVALS_GONE},
+        headers={"Link": '</governance/approvals>; rel="successor-version"'},
     )
 
-    try:
-        refreshed = await store.add_vote(
-            tenant_id=tenant.tenant_id,
-            approval_id=approval_id,
-            approver_id=approver_id,
-            note=note,
-        )
-    except ApprovalNotFoundError:
-        raise HTTPException(404, "Approval not found") from None
-    except ApprovalNotPendingError as exc:
-        raise HTTPException(400, f"Approval is already {exc.status}") from None
-    except DuplicateApproverError:
-        raise HTTPException(
-            409, "approver has already approved this request"
-        ) from None
-    return {
-        "approval_id": approval_id,
-        "status": refreshed["status"],
-        "approver_count": len(refreshed["approvers"]),
-        "required": refreshed["required_approvers"],
-    }
+
+_GONE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    410: {"description": "Retired; use /governance/approvals."}
+}
 
 
-@router.post("/approvals/{approval_id}/reject")
-async def reject_request(
-    request: Request,
-    approval_id: str,
-    _rbac: None = Depends(require_role("approver")),
-) -> dict[str, Any]:
-    """Reject a pending request."""
-    tenant = _require_tenant(request)
-    body = await request.json()
-    rejected_by = _acting_principal(tenant, body)
-
-    store = _approval_store(request)
-    from app.governance.trust_approval_store import ApprovalNotFoundError
-
-    try:
-        await store.reject(
-            tenant_id=tenant.tenant_id,
-            approval_id=approval_id,
-            reason=body.get("reason", ""),
-            rejected_by=rejected_by,
-        )
-    except ApprovalNotFoundError:
-        raise HTTPException(404, "Approval not found") from None
-    return {"approval_id": approval_id, "status": "rejected"}
+@router.get("/approvals", deprecated=True, status_code=410, responses=_GONE_RESPONSES)
+@router.post("/approvals", deprecated=True, status_code=410, responses=_GONE_RESPONSES)
+async def trust_approvals_retired(request: Request) -> JSONResponse:
+    """Retired (410 Gone): use ``/governance/approvals``."""
+    return _trust_approvals_gone(request)
 
 
-@router.get("/approvals")
-async def list_approvals(request: Request, status: str | None = None) -> dict[str, Any]:
-    """List approval requests for the tenant, optionally filtered by status."""
-    tenant = _require_tenant(request)
-    approvals = await _approval_store(request).list(tenant.tenant_id, status)
-    return {"approvals": approvals, "total": len(approvals)}
+@router.post(
+    "/approvals/{approval_id}/approve", deprecated=True, status_code=410,
+    responses=_GONE_RESPONSES,
+)
+@router.post(
+    "/approvals/{approval_id}/reject", deprecated=True, status_code=410,
+    responses=_GONE_RESPONSES,
+)
+async def trust_approval_decision_retired(request: Request, approval_id: str) -> JSONResponse:
+    """Retired (410 Gone): decide on ``/governance/approvals/{request_id}/approve|reject``."""
+    return _trust_approvals_gone(request)
 
 
 @router.post("/policy/simulate")

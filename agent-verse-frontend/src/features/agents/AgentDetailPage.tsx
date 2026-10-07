@@ -25,6 +25,7 @@ import {
   type PatternFlags,
 } from './ReasoningPatterns';
 import { A2APublishPanel } from './A2APublishPanel';
+import { AutonomyRevalidationNotice } from './AutonomyRevalidationNotice';
 import { ConnectorPicker, useRegisteredConnectors } from './ConnectorPicker';
 import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
 
@@ -225,6 +226,9 @@ export function AgentDetailPage() {
     queryKey: ["agent", agentId],
     queryFn: () => agentsApi.get(agentId!),
     enabled: !!agentId,
+    // While a demoted agent's eval suite re-runs, poll so the promotion (or
+    // the failed result) shows up without a reload.
+    refetchInterval: (query) => (query.state.data?.pending_promotion ? 5000 : false),
   });
 
   // Fix 6: Use agentsApi.listVersions instead of raw fetch
@@ -352,6 +356,9 @@ export function AgentDetailPage() {
     onSuccess: (data) => {
       navigate(`/agents/${data.agent_id}`);
       toast({ kind: 'success', message: 'Agent cloned.' });
+      // A fully-autonomous original is cloned bounded-autonomous (the clone
+      // has never passed its own rollout gate); say so.
+      if (data.autonomy_note) toast({ kind: 'warning', message: data.autonomy_note });
     },
     onError: (e) => toast({ kind: 'error', message: `Clone failed: ${e}` }),
   });
@@ -426,7 +433,7 @@ export function AgentDetailPage() {
                 {agent.name}
               </h1>
               <p className="text-xs text-[#5A7494] font-mono mt-1">{agent.agent_id}</p>
-              <p className="text-sm text-[#A0B4CC] mt-1">{agent.autonomy_mode}</p>
+              <p className="text-sm text-[#A0B4CC] mt-1" data-testid="agent-autonomy">{agent.autonomy_mode}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -486,6 +493,8 @@ export function AgentDetailPage() {
             </button>
           </div>
         </div>
+
+        <AutonomyRevalidationNotice revalidation={agent.autonomy_revalidation} />
 
         <div className="mt-3">
           <ReasoningPatternsSummary agent={agent} />
@@ -550,6 +559,13 @@ export function AgentDetailPage() {
               <ConnectorPicker value={editConnectors} onChange={setEditConnectors} />
             </div>
             <ReasoningPatternsFieldset value={editFlags} onChange={setEditFlags} />
+            {agent.autonomy_mode === 'fully-autonomous' && (
+              <p className="text-xs text-muted-foreground" data-testid="revalidation-hint">
+                Changing this agent&apos;s behaviour (connectors, reasoning patterns, prompt,
+                model or limits) re-validates it: it runs bounded-autonomous until its eval
+                suite passes against the new configuration, then returns to fully-autonomous.
+              </p>
+            )}
             {saveMutation.error && (
               // e.g. 409 ROLLOUT_GATE_FAILED when switching to fully-autonomous
               // on an eval suite whose latest run does not pass.

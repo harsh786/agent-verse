@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -184,6 +185,19 @@ def _routing_tokens(text_: str) -> set[str]:
     return set(toks[:_MAX_ROUTING_TOKENS])
 
 
+def _revalidation_fields(marker: Any) -> dict[str, Any]:
+    """The agent API's view of its re-validation state (a05-F095-04 decision).
+
+    ``autonomy_revalidation`` is the stored marker (or None); ``pending_promotion``
+    is True while the agent is demoted and its eval-suite run is under way.
+    """
+    record = dict(marker) if isinstance(marker, dict) else None
+    return {
+        "autonomy_revalidation": record,
+        "pending_promotion": bool(record and record.get("state") == "pending"),
+    }
+
+
 class AgentStore:
     """Per-tenant in-memory agent registry.
 
@@ -203,6 +217,7 @@ class AgentStore:
         record["a2a_public"] = False
         record.setdefault("a2a_description", "")
         record.setdefault("a2a_skills", [])
+        record.update(_revalidation_fields(None))
         if self._db is not None:
             await self._db_persist_agent(record)
         self._data[(tenant_ctx.tenant_id, agent_id)] = record
@@ -321,6 +336,7 @@ class AgentStore:
             "a2a_skills": list(getattr(row, "a2a_skills", None) or []),
             "domain_context": getattr(row, "domain_context", None) or "general",
             "domain_metadata": dict(getattr(row, "domain_metadata", None) or {}),
+            **_revalidation_fields(getattr(row, "autonomy_revalidation", None)),
         }
 
     # ── async DB reads ─────────────────────────────────────────────────────────
@@ -610,6 +626,7 @@ class AgentStore:
 
         if self._db is None:
             rec.update(data)
+            rec.update(_revalidation_fields(rec.get("autonomy_revalidation")))
             return True
         if self._db is not None:
             try:
@@ -637,6 +654,7 @@ class AgentStore:
                     "a2a_skills",
                     "domain_context",
                     "domain_metadata",
+                    "autonomy_revalidation",
                 }
                 updates = {k: v for k, v in data.items() if k in allowed}
                 if not updates:
@@ -685,8 +703,91 @@ class AgentStore:
                 ) from exc
         if updated:
             rec.update(data)
+            rec.update(_revalidation_fields(rec.get("autonomy_revalidation")))
             self._data[(tenant_ctx.tenant_id, agent_id)] = rec
         return updated
+
+    async def transition_revalidation(
+        self,
+        agent_id: str,
+        *,
+        token: str,
+        data: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        """Compare-and-set for the re-validation state machine.
+
+        Writes ``data`` (``autonomy_revalidation`` and optionally
+        ``autonomy_mode``) only while the agent is still ``bounded-autonomous``
+        with the PENDING marker ``token``. False when anything changed since
+        (an operator changed autonomy, a newer config change replaced the
+        marker, the marker was already resolved): a stale run never promotes.
+        """
+        allowed = {"autonomy_revalidation", "autonomy_mode"}
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if not updates:
+            return False
+
+        def _matches(rec: dict[str, Any] | None) -> bool:
+            marker = (rec or {}).get("autonomy_revalidation")
+            return (
+                rec is not None
+                and rec.get("autonomy_mode") == "bounded-autonomous"
+                and isinstance(marker, dict)
+                and marker.get("state") == "pending"
+                and marker.get("token") == token
+            )
+
+        key = (tenant_ctx.tenant_id, agent_id)
+        if self._db is None:
+            rec = self._data.get(key)
+            if not _matches(rec):
+                return False
+            assert rec is not None
+            rec.update(updates)
+            rec.update(_revalidation_fields(rec.get("autonomy_revalidation")))
+            return True
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        params: dict[str, Any] = {"id": agent_id, "tid": tenant_ctx.tenant_id, "token": token}
+        set_parts = []
+        if "autonomy_revalidation" in updates:
+            params["marker"] = json.dumps(updates["autonomy_revalidation"])
+            set_parts.append("autonomy_revalidation = CAST(:marker AS jsonb)")
+        if "autonomy_mode" in updates:
+            params["mode"] = str(updates["autonomy_mode"])
+            set_parts.append("autonomy_mode = :mode")
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text(
+                    f"UPDATE agents SET {', '.join(set_parts)}, updated_at = NOW() "
+                    "WHERE id = :id AND tenant_id = :tid AND is_active = TRUE "
+                    "AND autonomy_mode = 'bounded-autonomous' "
+                    "AND (autonomy_revalidation ->> 'state') = 'pending' "
+                    "AND (autonomy_revalidation ->> 'token') = :token"
+                ),
+                params,
+            )
+            changed = bool(result.rowcount)
+            if changed and "autonomy_mode" in updates:
+                from app.services.a2a_directory import sync_public_agent
+
+                await sync_public_agent(
+                    session, agent_id=agent_id, tenant_id=tenant_ctx.tenant_id
+                )
+        if changed:
+            cached = self._data.get(key)
+            if cached is not None:
+                cached.update(updates)
+                cached.update(_revalidation_fields(cached.get("autonomy_revalidation")))
+        return changed
 
     def update_permissions(
         self,
@@ -1377,7 +1478,15 @@ async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
 # FIX 2: PUT /{agent_id} — full field update
 @router.put("/{agent_id}")
 async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest) -> dict[str, Any]:
-    """Update an agent's configuration. All fields are optional."""
+    """Update an agent's configuration. All fields are optional.
+
+    Changing the behaviour config (prompt, goal template, model, connectors,
+    policies, collections, limits, reasoning patterns) of a ``fully-autonomous``
+    agent demotes it to ``bounded-autonomous`` and re-runs its eval suite
+    against the new config; it returns to ``fully-autonomous`` automatically
+    when that run passes the rollout gate. The response's
+    ``autonomy_revalidation`` / ``pending_promotion`` show that state.
+    """
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
 
@@ -1416,23 +1525,13 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
         update_data.update(_merged)
         update_data["pattern_flags"] = _merged
 
-    # Becoming fully-autonomous, changing the suite that vouches for it, or
-    # changing the behaviour config of a fully-autonomous agent (a05-F095-04:
-    # the gate pins agent_config_hash, yet a PUT could rewrite system_prompt /
-    # model / connectors of an agent already fully-autonomous) requires the
-    # suite's latest completed run to pass the gate FOR THE CONFIG BEING
-    # WRITTEN (MEM-52) — so a behaviour change is refused until the suite has
-    # run against it (demote, change, re-run, promote).
-    proposed = {**current, **update_data}
-    if _gate_on and new_autonomy == "fully-autonomous" and (
-        current.get("autonomy_mode") != "fully-autonomous"
-        or new_eval_suite != current.get("eval_suite_id")
-        or _behaviour_config_changed(current, proposed)
-    ):
-        await _enforce_rollout_gate(
-            request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
-            agent_config=proposed,
-        )
+    # Becoming fully-autonomous / a new vouching suite is gated (409); a
+    # behaviour change to a fully-autonomous agent demotes and re-validates it
+    # (owner decision on a05-F095-04, see _plan_autonomy_change).
+    plan = await _plan_autonomy_change(
+        request, tenant_ctx, agent_id=agent_id, current=current, update_data=update_data,
+        requested_mode=body.autonomy_mode, source="agent_update", refuse_promotion=True,
+    )
 
     # QA-15: a new trigger / goal template goes through the same gate as create
     # (422 before anything is written), and the agent's schedule is replaced
@@ -1459,21 +1558,199 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
             await _undo_agent_reschedule(
                 request, current, agent_id=agent_id, tenant_ctx=tenant_ctx
             )
+        await _abandon_autonomy_change(plan)
         raise
     if not updated:
         if reschedule:
             await _undo_agent_reschedule(
                 request, current, agent_id=agent_id, tenant_ctx=tenant_ctx
             )
+        await _abandon_autonomy_change(plan)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
 
+    await _finish_autonomy_change(
+        request, tenant_ctx, agent_id=agent_id, store=store, plan=plan,
+        requested_mode=body.autonomy_mode,
+    )
+
     result = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
     if schedule_id and result is not None:
         return {**result, "schedule_id": schedule_id}
     return result  # type: ignore[return-value]
+
+
+# ── Autonomy changes behind the rollout gate (a05-F095-04 owner decision) ────
+
+
+@dataclass
+class _AutonomyPlan:
+    """What an agent write does to its autonomy, decided before the write."""
+
+    marker: dict[str, Any] | None = None
+    eval_store: Any = None
+    previous: dict[str, Any] | None = None
+    cancelled: bool = False
+    tenant_plan: str = "free"
+    source: str = "agent_update"
+
+
+async def _plan_autonomy_change(
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    agent_id: str,
+    current: dict[str, Any],
+    update_data: dict[str, Any],
+    requested_mode: str | None,
+    source: str,
+    refuse_promotion: bool,
+) -> _AutonomyPlan:
+    """Decide (and stage into ``update_data``) the write's autonomy effects.
+
+    * Becoming fully-autonomous, or changing the suite that vouches for it,
+      needs the suite's latest completed run to pass the gate FOR THE CONFIG
+      BEING WRITTEN (MEM-52). With ``refuse_promotion`` (PUT) a failing gate is
+      409; otherwise (snapshot rollback) the write is applied bounded-autonomous
+      and re-validated like a config change.
+    * A behaviour-config change to an agent that IS fully-autonomous is
+      accepted: demoted to bounded-autonomous in the same write, its suite run
+      against the new config, promoted back when it passes
+      (app.intelligence.autonomy_revalidation). Nothing is demoted when a run
+      already vouches for the new config.
+    * Changed again while being re-validated: re-test the newest config.
+    * An operator's explicit autonomy change cancels a pending re-validation.
+    """
+    from app.intelligence import autonomy_revalidation as reval
+
+    gate_on = _eval_gate_enabled()
+    current_mode = current.get("autonomy_mode")
+    new_autonomy = update_data.get("autonomy_mode") or current_mode
+    new_eval_suite = update_data.get("eval_suite_id") or current.get("eval_suite_id")
+    proposed = {**current, **update_data}
+    behaviour_changed = _behaviour_config_changed(current, proposed)
+    suite_changed = new_eval_suite != current.get("eval_suite_id")
+    manual_autonomy_change = requested_mode is not None and requested_mode != current_mode
+    plan = _AutonomyPlan(
+        previous=reval.marker_of(current),
+        tenant_plan=str(getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"),
+        source=source,
+    )
+    revalidate = False
+    if gate_on and new_autonomy == reval.FULLY_AUTONOMOUS and (
+        current_mode != reval.FULLY_AUTONOMOUS or suite_changed or behaviour_changed
+    ):
+        if (current_mode == reval.FULLY_AUTONOMOUS and behaviour_changed) or not refuse_promotion:
+            report = await _rollout_gate_report(
+                request, tenant_ctx, agent_id=agent_id,
+                eval_suite_id=str(new_eval_suite or "") or None, agent_config=proposed,
+            )
+            revalidate = not report["gate_passed"]
+        else:
+            await _enforce_rollout_gate(
+                request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
+                agent_config=proposed,
+            )
+    elif (
+        gate_on
+        and not manual_autonomy_change
+        and reval.is_pending(current)
+        and (behaviour_changed or suite_changed)
+    ):
+        revalidate = True
+
+    if manual_autonomy_change and plan.previous and plan.previous.get("state") == reval.PENDING:
+        update_data["autonomy_revalidation"] = reval.cancelled_by_operator(
+            plan.previous, new_mode=str(requested_mode), actor=tenant_ctx.api_key_id
+        )
+        plan.cancelled = True
+
+    if revalidate:
+        from app.intelligence.eval_suite_store import EvalSuiteStore
+
+        plan.eval_store = EvalSuiteStore(
+            getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
+        )
+        update_data["autonomy_mode"] = reval.BOUNDED_AUTONOMOUS
+        try:
+            plan.marker = await reval.begin_revalidation(
+                plan.eval_store,
+                agent_id=agent_id,
+                proposed={**current, **update_data},
+                source=source,
+                actor=tenant_ctx.api_key_id,
+                tenant_plan=plan.tenant_plan,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "REVALIDATION_UNAVAILABLE",
+                    "message": (
+                        "The eval run that re-validates this agent could not be "
+                        "enqueued; nothing was changed. Try again."
+                    ),
+                },
+            ) from exc
+        update_data["autonomy_revalidation"] = plan.marker
+        plan.cancelled = False
+    return plan
+
+
+async def _abandon_autonomy_change(plan: _AutonomyPlan) -> None:
+    """The agent write failed: fail the run enqueued for it."""
+    from app.intelligence.autonomy_revalidation import abandon_run
+
+    await abandon_run(plan.eval_store, plan.marker, "the agent update was not saved")
+
+
+async def _finish_autonomy_change(
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    agent_id: str,
+    store: AgentStore,
+    plan: _AutonomyPlan,
+    requested_mode: str | None,
+) -> None:
+    """After the write: audit, dispatch the re-validation run, or cancel the old one."""
+    from app.intelligence import autonomy_revalidation as reval
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if plan.marker is not None:
+        from app.api.enterprise import eval_run_dispatcher
+
+        await reval.start_revalidation(
+            eval_store=plan.eval_store,
+            agent_store=store,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+            marker=plan.marker,
+            dispatch=eval_run_dispatcher(request, tenant_ctx, plan.eval_store),
+            tenant_plan=plan.tenant_plan,
+            previous=plan.previous,
+            audit_log=audit_log,
+        )
+    elif plan.cancelled and plan.previous is not None:
+        from app.intelligence.eval_suite_store import EvalSuiteStore
+
+        await reval.abandon_run(
+            EvalSuiteStore(
+                getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
+            ),
+            plan.previous,
+            "re-validation cancelled: an operator changed the agent's autonomy",
+        )
+        await reval.audit_transition(
+            tenant_id=tenant_ctx.tenant_id, agent_id=agent_id, outcome="revalidation_cancelled",
+            actor=tenant_ctx.api_key_id, audit_log=audit_log,
+            note=(
+                f"autonomy set to {requested_mode} ({plan.source}) while re-validation run "
+                f"{plan.previous.get('run_id')} was pending; it will not re-promote"
+            ),
+        )
 
 
 # FIX 5: delete cleans up associated schedules
@@ -1784,17 +2061,49 @@ async def rollback_agent(request: Request, agent_id: str, snapshot_id: str) -> d
     restore_data = {
         k: v
         for k, v in snapshot.items()
-        if k not in ("snapshot_id", "snapshotted_at", "version", "agent_id", "tenant_id")
+        if k not in (
+            "snapshot_id", "snapshotted_at", "version", "agent_id", "tenant_id",
+            # The re-validation state is the live state machine's, never a
+            # snapshot's: restoring an old pending marker could re-promote.
+            "autonomy_revalidation", "pending_promotion",
+        )
     }
 
-    # Persist rollback to DB (and update in-memory cache). update_async answers
-    # False when the agent no longer exists (deleted since the snapshot): that
-    # used to be reported as "rolled_back" anyway.
-    if not await store.update_async(agent_id, restore_data, tenant_ctx=tenant):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent {agent_id} not found"
-        )
-    return {"agent_id": agent_id, "restored_from": snapshot_id, "status": "rolled_back"}
+    current = await store.get_async(agent_id, tenant_ctx=tenant)
+    if current is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    # A snapshot's fully-autonomous mode is restored only through the rollout
+    # gate: when no run vouches for the restored config, it is restored
+    # bounded-autonomous and re-validated (auto-promoted when the suite passes).
+    requested_mode = restore_data.get("autonomy_mode")
+    plan = await _plan_autonomy_change(
+        request, tenant, agent_id=agent_id, current=current, update_data=restore_data,
+        requested_mode=str(requested_mode) if requested_mode else None,
+        source=f"snapshot_rollback:{snapshot_id}", refuse_promotion=False,
+    )
+
+    # Persist rollback to DB (and update in-memory cache)
+    try:
+        updated = await store.update_async(agent_id, restore_data, tenant_ctx=tenant)
+    except Exception:
+        await _abandon_autonomy_change(plan)
+        raise
+    if not updated:
+        await _abandon_autonomy_change(plan)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    await _finish_autonomy_change(
+        request, tenant, agent_id=agent_id, store=store, plan=plan,
+        requested_mode=str(requested_mode) if requested_mode else None,
+    )
+    restored = await store.get_async(agent_id, tenant_ctx=tenant) or {}
+    return {
+        "agent_id": agent_id,
+        "restored_from": snapshot_id,
+        "status": "rolled_back",
+        "autonomy_mode": restored.get("autonomy_mode"),
+        "autonomy_revalidation": restored.get("autonomy_revalidation"),
+        "pending_promotion": bool(restored.get("pending_promotion")),
+    }
 
 
 @router.get("/{agent_id}/export")
@@ -1872,10 +2181,18 @@ async def clone_agent(
             detail=f"Agent {agent_id} not found",
         )
 
+    # A clone has never passed its OWN rollout gate (runs vouch per agent id),
+    # so a fully-autonomous original is cloned bounded-autonomous.
+    original_mode = original.get("autonomy_mode", "bounded-autonomous")
+    clone_mode = (
+        "bounded-autonomous"
+        if original_mode == "fully-autonomous" and _eval_gate_enabled()
+        else original_mode
+    )
     clone_data: dict[str, Any] = {
         "name": (body.name if body else None) or f"{original['name']} (copy)",
         "goal_template": original.get("goal_template", ""),
-        "autonomy_mode": original.get("autonomy_mode", "bounded-autonomous"),
+        "autonomy_mode": clone_mode,
         "connector_ids": list(original.get("connector_ids", [])),
         "trigger_config": dict(original.get("trigger_config", {})),
         "allowed_collection_ids": list(original.get("allowed_collection_ids", [])),
@@ -1903,7 +2220,22 @@ async def clone_agent(
     check_agent_limit(tenant_ctx, await store.count_async(tenant_ctx=tenant_ctx))
 
     clone_id = await _create_agent_record(store, clone_data, tenant_ctx=tenant_ctx)
-    return {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
+    result: dict[str, Any] = {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
+    if clone_mode != original_mode:
+        note = (
+            f"Cloned as bounded-autonomous: agent {agent_id} is fully-autonomous, but the "
+            "clone has never passed its own rollout gate. Run its eval suite against the "
+            "clone, then promote it."
+        )
+        result["autonomy_note"] = note
+        from app.intelligence.autonomy_revalidation import audit_transition
+
+        await audit_transition(
+            tenant_id=tenant_ctx.tenant_id, agent_id=clone_id, outcome="clone_bounded",
+            actor=tenant_ctx.api_key_id, note=note,
+            audit_log=getattr(request.app.state, "audit_log", None),
+        )
+    return result
 
 
 # ── Agent Identity / JWT Service-Account Credentials ─────────────────────────

@@ -10714,14 +10714,32 @@ async def _resume_stalled_eval_suite_runs_async(
         )
         dispatched += 1
         logger.warning("eval_suite_run_resumed", tenant_id=tenant_id, run_id=run_id)
-    return {"resumed_runs": len(rows), "workers_dispatched": dispatched}
+    # Agent re-validations (a05-F095-04 decision) whose run already ended but
+    # whose marker is still pending: the post-run hook failed, or the run ended
+    # 'failed' (no hook). Resolve them through the same compare-and-set.
+    revalidations: dict[str, int] = {}
+    try:
+        from app.db.session import get_session_factory
+        from app.intelligence.autonomy_revalidation import reconcile_pending_revalidations
+
+        revalidations = await reconcile_pending_revalidations(
+            system_db=db, app_db=get_session_factory()
+        )
+    except Exception as exc:
+        logger.error("agent_revalidation_reconcile_failed", error=str(exc)[:200])
+    return {
+        "resumed_runs": len(rows),
+        "workers_dispatched": dispatched,
+        "revalidations_resolved": int(revalidations.get("resolved", 0)),
+    }
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="app.scaling.tasks.resume_stalled_eval_suite_runs", bind=True, max_retries=0
 )
 def resume_stalled_eval_suite_runs(self: Any) -> dict[str, Any]:
-    """Beat: resume eval-suite runs whose workers died (no progress heartbeat)."""
+    """Beat: resume eval-suite runs whose workers died (no progress heartbeat), and
+    resolve agent re-validations whose run ended without resolving them."""
     result: dict[str, Any] = _run_async(_resume_stalled_eval_suite_runs_async())
     return result
 

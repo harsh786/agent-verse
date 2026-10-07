@@ -85,9 +85,6 @@ def _make_full_app() -> TestClient:
         skills_router,
     ]:
         app.include_router(router)
-    from app.governance.trust_approval_store import InMemoryTrustApprovalStore
-
-    app.state.trust_approval_store = InMemoryTrustApprovalStore()
     return TestClient(app)
 
 
@@ -442,31 +439,12 @@ def test_audit_export_without_an_audit_source_is_an_error_not_an_empty_package()
     assert resp.status_code == 503, resp.json()
 
 
-def test_multi_approver_flow():
+def test_trust_approvals_are_retired_in_favour_of_governance_approvals():
+    """a03-F057-01: trust approvals never gated execution; the route is 410 Gone."""
     client = _make_full_app()
-    create = client.post(
-        "/trust/approvals",
-        json={"goal_id": "g1", "required_approvers": 2},
-        headers=_HDRS_A,
-    )
-    assert create.status_code == 200
-    aid = create.json()["approval_id"]
-
-    resp1 = client.post(
-        f"/trust/approvals/{aid}/approve",
-        json={},
-        headers=_HDRS_A,
-    )
-    assert resp1.status_code == 200
-    assert resp1.json()["status"] == "pending"
-
-    resp2 = client.post(
-        f"/trust/approvals/{aid}/approve",
-        json={},
-        headers=_HDRS_A2,
-    )
-    assert resp2.status_code == 200
-    assert resp2.json()["status"] == "approved"
+    resp = client.post("/trust/approvals", json={"goal_id": "g1"}, headers=_HDRS_A)
+    assert resp.status_code == 410
+    assert resp.json()["detail"]["replacement"] == "/governance/approvals"
 
 
 def test_compliance_bundles_available():

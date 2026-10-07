@@ -4,6 +4,7 @@ apply_suggestion, rollback, arm assignment, compute_delta, list_experiments.
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,6 +33,23 @@ def _make_redis(data: dict | None = None) -> AsyncMock:
     redis.setex = AsyncMock(side_effect=_setex)
     add_counter_ops(redis, store)
     return redis
+
+def _rollback_execute(control_config_json: str) -> Any:
+    """execute(): the experiment's control config, the agent's current config
+    columns (a bounded agent: no re-validation), anything else a no-op."""
+
+    async def _execute(stmt: Any, *_a: Any, **_k: Any) -> Any:
+        sql = str(stmt)
+        if "control_config FROM improvement_experiments" in sql:
+            return MagicMock(fetchone=MagicMock(return_value=(control_config_json,)))
+        if "FROM agents" in sql:
+            return MagicMock(
+                fetchone=MagicMock(return_value=("now", "", "", "bounded-autonomous", 15, 0))
+            )
+        return MagicMock(rowcount=1)
+
+    return AsyncMock(side_effect=_execute)
+
 
 
 def _make_db_session(fetchone_return=None, fetchall_return=None):
@@ -278,7 +296,8 @@ async def test_apply_suggestion_db_error_returns_false():
 @pytest.mark.asyncio
 async def test_rollback_success():
     redis = _make_redis()
-    mock_session = _make_db_session(fetchone_return=(json.dumps({"system_prompt": "original"}),))
+    mock_session = _make_db_session()
+    mock_session.execute = _rollback_execute(json.dumps({"system_prompt": "original"}))
     opt = _make_optimizer(redis=redis, db_session=mock_session)
 
     result = await opt.rollback("t1", "a1", "exp1", "performance_degradation")

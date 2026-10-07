@@ -94,6 +94,12 @@ class Agent(Base):
         default=dict,
         server_default=text("'{}'"),
     )
+    # Owner decision on a05-F095-04: a config change to a fully-autonomous agent
+    # demotes it and re-runs its rollout-gate eval suite; this holds the pending
+    # marker and, once resolved, the outcome (app.intelligence.autonomy_revalidation).
+    autonomy_revalidation: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

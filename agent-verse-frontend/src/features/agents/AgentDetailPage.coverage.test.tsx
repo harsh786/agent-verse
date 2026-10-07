@@ -288,6 +288,26 @@ describe('AgentDetailPage — readiness widget and error toasts', () => {
     });
   });
 
+  test('cloning a fully-autonomous agent warns that the clone is bounded-autonomous', async () => {
+    const note = 'Cloned as bounded-autonomous: the clone has never passed its own rollout gate.';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/clone') && method === 'POST')
+        return json({ ...AGENT, agent_id: 'clone-1', autonomy_mode: 'bounded-autonomous', autonomy_note: note }, 201);
+      if (url.includes('/versions')) return json([]);
+      if (url.includes('/goals')) return json({ goals: [] });
+      return json(AGENT);
+    });
+    renderPage();
+    await screen.findByTestId('agent-name');
+    await userEvent.click(screen.getByRole('button', { name: /clone agent/i }));
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === 'warning' && t.message === note)).toBe(true);
+    });
+  });
+
   test('toasts an error when export fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);

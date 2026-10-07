@@ -195,11 +195,22 @@ Respond with ONLY valid JSON:
         db_factory: Any,
         llm_provider_factory: Any,
         auto_apply: bool = True,
+        *,
+        eval_store_factory: Any = None,
+        agent_store: Any = None,
+        revalidation_dispatcher: Any = None,
     ) -> None:
         self._redis = redis
         self._db = db_factory
         self._llm_factory = llm_provider_factory
         self._state = TenantOptimizationState(redis)
+        # Re-validation of a fully-autonomous agent whose config a winner (or a
+        # rollback) changes (owner decision on a05-F095-04): the eval-suite store
+        # the run is enqueued in, the agent store for the marker's
+        # compare-and-set, and how the run is started (default: Celery workers).
+        self._eval_store_factory = eval_store_factory
+        self._agent_store = agent_store
+        self._revalidation_dispatcher = revalidation_dispatcher
         # Closed-loop control: when True (the default), a winning candidate is
         # written back to the agent automatically. When False, the experiment
         # still concludes and records its winner, but the config is left pending a
@@ -403,8 +414,15 @@ Respond with ONLY valid JSON:
         agent_id: str,
         experiment_id: str,
         candidate_config: dict[str, Any],
+        *,
+        dispatcher: Any = None,
+        outcome: dict[str, Any] | None = None,
     ) -> str | None:
-        """Apply the candidate; ``None`` on success, else the reason it was not applied."""
+        """Apply the candidate; ``None`` on success, else the reason it was not applied.
+
+        ``outcome`` (optional) receives ``revalidation``: the agent's re-validation
+        marker when applying demoted a fully-autonomous agent, else None.
+        """
         from sqlalchemy import text as _t
 
         # Autonomy is never an optimisation target: the rollout gate owns
@@ -416,6 +434,8 @@ Respond with ONLY valid JSON:
         # ── CRITICAL: the live apply, in its OWN committed transaction ──────────
         # The improved config is what the next agent run reads back — it must NOT
         # be rolled back by a failure in the history/experiment bookkeeping below.
+        marker: dict[str, Any] | None = None
+        previous: dict[str, Any] | None = None
         try:
             async with (
                 self._db() as db,
@@ -427,21 +447,21 @@ Respond with ONLY valid JSON:
                 if current_config is None:
                     raise AgentConfigUnavailableError(f"agent {agent_id} not found")
                 if self._rollout_gate_blocks(current_config, candidate_config):
-                    # a05-F095-04: a fully-autonomous agent is vouched for by a
-                    # golden-suite run of its CURRENT config (agent_config_hash);
-                    # rewriting it here would bypass the gate. Left pending: an
-                    # operator demotes the agent, applies, re-runs the suite and
-                    # promotes it again.
-                    logger.warning(
-                        "optimization_apply_blocked_by_rollout_gate",
-                        tenant_id=tenant_id,
-                        agent_id=agent_id,
-                        experiment_id=experiment_id,
+                    # Owner decision on a05-F095-04: a fully-autonomous agent is
+                    # vouched for only by a run of its CURRENT config. The winner
+                    # is applied, the agent demoted in the same transaction, and
+                    # its suite re-run against the new config (promoted back
+                    # automatically when it passes the gate).
+                    marker, previous = await self._prepare_revalidation(
+                        db, tenant_id, agent_id, candidate_config,
+                        source=f"self_optimizer_apply:{experiment_id}",
                     )
-                    return "rollout_gate"
                 await self._write_agent_config(db, tenant_id, agent_id, candidate_config)
+                if marker is not None:
+                    await self._write_demotion(db, tenant_id, agent_id, marker)
                 await db.commit()
         except Exception as exc:
+            await self._abandon_revalidation(tenant_id, marker)
             logger.error(
                 "optimization_apply_error",
                 error=str(exc),
@@ -449,6 +469,12 @@ Respond with ONLY valid JSON:
                 agent_id=agent_id,
             )
             return "apply_failed"
+        if marker is not None:
+            marker = await self._start_revalidation(
+                tenant_id, agent_id, marker, previous=previous, dispatcher=dispatcher
+            )
+        if outcome is not None:
+            outcome["revalidation"] = marker
 
         # ── BEST-EFFORT: history + experiment bookkeeping (separate txn) ────────
         # A failure here is logged but never negates the already-applied config.
@@ -516,6 +542,128 @@ Respond with ONLY valid JSON:
         )
         return None
 
+    # ── re-validation of a fully-autonomous agent (a05-F095-04 decision) ─────
+
+    def _eval_store(self, tenant_id: str) -> Any:
+        if self._eval_store_factory is not None:
+            return self._eval_store_factory(tenant_id)
+        from app.intelligence.eval_suite_store import EvalSuiteStore
+
+        return EvalSuiteStore(self._db, tenant_id)
+
+    def _revalidation_agent_store(self) -> Any:
+        if self._agent_store is not None:
+            return self._agent_store
+        from app.api.agents import AgentStore
+
+        return AgentStore(self._db)
+
+    async def _prepare_revalidation(
+        self,
+        db: Any,
+        tenant_id: str,
+        agent_id: str,
+        candidate_config: dict[str, Any],
+        *,
+        source: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """``(marker, previous_marker)`` for demoting the agent; marker None = no demotion.
+
+        No demotion when a completed run already vouches for the new config. The
+        run is enqueued here, BEFORE the agent write (see autonomy_revalidation).
+        """
+        from sqlalchemy import select
+
+        from app.api.agents import AgentStore
+        from app.db.models.agent import Agent
+        from app.intelligence import autonomy_revalidation as reval
+        from app.intelligence.rollout_gate import check_agent_rollout_gate
+
+        row = (
+            await db.execute(
+                select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise AgentConfigUnavailableError(f"agent {agent_id} not found")
+        agent = AgentStore._row_to_dict(row)
+        proposed = {**agent, **candidate_config, "autonomy_mode": reval.BOUNDED_AUTONOMOUS}
+        eval_store = self._eval_store(tenant_id)
+        if agent.get("eval_suite_id"):
+            report = await check_agent_rollout_gate(
+                agent_id=agent_id, eval_suite_id=agent.get("eval_suite_id"),
+                tenant_id=tenant_id, db=getattr(eval_store, "_db", None),
+                agent_config=proposed,
+            )
+            if report.get("gate_passed"):
+                return None, None
+        marker = await reval.begin_revalidation(
+            eval_store, agent_id=agent_id, proposed=proposed, source=source,
+            actor="system:self-optimizer",
+            tenant_plan=await reval.tenant_plan_of(self._db, tenant_id),
+        )
+        return marker, reval.marker_of(agent)
+
+    @staticmethod
+    async def _write_demotion(
+        db: Any, tenant_id: str, agent_id: str, marker: dict[str, Any]
+    ) -> None:
+        """Demote with the marker — only an agent that is STILL fully-autonomous."""
+        from sqlalchemy import text as _t
+
+        result = await db.execute(
+            _t(
+                "UPDATE agents SET autonomy_mode = 'bounded-autonomous', "
+                "autonomy_revalidation = :marker, updated_at = NOW() "
+                "WHERE id = :agent_id AND tenant_id = :tenant_id "
+                "AND autonomy_mode = 'fully-autonomous'"
+            ),
+            {"marker": json.dumps(marker), "agent_id": agent_id, "tenant_id": tenant_id},
+        )
+        if getattr(result, "rowcount", 1) == 0:
+            # Someone changed its autonomy since it was read: do not apply
+            # behind the gate; the caller rolls the whole write back.
+            raise AgentConfigUnavailableError(
+                f"agent {agent_id} is no longer fully-autonomous; not applied"
+            )
+
+    async def _abandon_revalidation(self, tenant_id: str, marker: dict[str, Any] | None) -> None:
+        if marker is None:
+            return
+        from app.intelligence.autonomy_revalidation import abandon_run
+
+        await abandon_run(self._eval_store(tenant_id), marker, "the config change was not saved")
+
+    async def _start_revalidation(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        marker: dict[str, Any],
+        *,
+        previous: dict[str, Any] | None,
+        dispatcher: Any,
+    ) -> dict[str, Any]:
+        from app.intelligence import autonomy_revalidation as reval
+        from app.tenancy.context import PlanTier, TenantContext
+
+        ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="self-optimizer")
+        try:
+            return await reval.start_revalidation(
+                eval_store=self._eval_store(tenant_id),
+                agent_store=self._revalidation_agent_store(),
+                tenant_ctx=ctx,
+                agent_id=agent_id,
+                marker=marker,
+                dispatch=dispatcher or self._revalidation_dispatcher or reval.celery_dispatch,
+                tenant_plan=await reval.tenant_plan_of(self._db, tenant_id),
+                previous=previous,
+                db_factory=self._db,
+            )
+        except Exception as exc:  # the config and the demotion are committed
+            logger.error("optimization_revalidation_start_failed", tenant_id=tenant_id,
+                         agent_id=agent_id, error=str(exc)[:200])
+            return marker
+
     @staticmethod
     def _rollout_gate_blocks(current: dict[str, Any], candidate: dict[str, Any]) -> bool:
         """Would applying *candidate* change the gated config of a fully-autonomous agent?"""
@@ -527,7 +675,9 @@ Respond with ONLY valid JSON:
             current, {**current, **candidate}
         )
 
-    async def apply_pending(self, tenant_id: str, experiment_id: str) -> dict[str, Any]:
+    async def apply_pending(
+        self, tenant_id: str, experiment_id: str, *, dispatcher: Any = None
+    ) -> dict[str, Any]:
         """Manually apply a concluded experiment whose winner was never auto-applied.
 
         This is the human-in-the-loop half of the self-improvement loop: when
@@ -565,14 +715,17 @@ Respond with ONLY valid JSON:
             return {"applied": False, "reason": "already_applied"}
 
         candidate_config = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg or "{}")
+        outcome: dict[str, Any] = {}
         reason = await self._apply_suggestion(
-            tenant_id, agent_id_str, experiment_id, candidate_config
+            tenant_id, agent_id_str, experiment_id, candidate_config,
+            dispatcher=dispatcher, outcome=outcome,
         )
         return {
             "applied": reason is None,
             "agent_id": agent_id_str,
             "experiment_id": experiment_id,
             "reason": reason,
+            "revalidation": outcome.get("revalidation"),
         }
 
     async def rollback(
@@ -585,6 +738,8 @@ Respond with ONLY valid JSON:
         """Roll back to the control config from the experiment."""
         from sqlalchemy import text as _t
 
+        marker: dict[str, Any] | None = None
+        previous: dict[str, Any] | None = None
         try:
             async with (
                 self._db() as db,
@@ -612,7 +767,21 @@ Respond with ONLY valid JSON:
                     k: v for k, v in (control_config or {}).items() if k != "autonomy_mode"
                 }
 
+                # A rollback that changes a fully-autonomous agent's behaviour
+                # config re-validates it like an apply (a05-F095-04 decision).
+                current_config = await self._read_current_agent_config_with_session(
+                    db, tenant_id, agent_id
+                )
+                if current_config is not None and self._rollout_gate_blocks(
+                    current_config, control_config
+                ):
+                    marker, previous = await self._prepare_revalidation(
+                        db, tenant_id, agent_id, control_config,
+                        source=f"self_optimizer_rollback:{experiment_id}",
+                    )
                 await self._write_agent_config(db, tenant_id, agent_id, control_config)
+                if marker is not None:
+                    await self._write_demotion(db, tenant_id, agent_id, marker)
                 await db.execute(
                     _t("""
                         UPDATE improvement_experiments
@@ -623,7 +792,15 @@ Respond with ONLY valid JSON:
                     {"reason": reason, "id": experiment_id, "tenant_id": tenant_id},
                 )
                 await db.commit()
-
+        except Exception as exc:
+            await self._abandon_revalidation(tenant_id, marker)
+            logger.error("rollback_error", error=str(exc))
+            return False
+        try:
+            if marker is not None:
+                await self._start_revalidation(
+                    tenant_id, agent_id, marker, previous=previous, dispatcher=None
+                )
             await self._state.update(
                 tenant_id,
                 agent_id,
