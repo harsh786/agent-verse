@@ -1,6 +1,6 @@
 """Tests for S3Connector — validate_connection, get_delta pagination/filtering,
 on_webhook, estimate_doc_count, and the pattern-matching helper. boto3 is
-installed in this environment, so we patch boto3.Session/boto3.client rather
+installed in this environment, so we patch boto3.Session rather
 than injecting a fake module; the ImportError branch is exercised by setting
 sys.modules["boto3"] = None (mirrors the pypdf pattern used elsewhere)."""
 from __future__ import annotations
@@ -230,7 +230,7 @@ class TestOnWebhook:
             "Body": MagicMock(read=MagicMock(return_value=b"webhook body")),
             "ContentType": "text/plain",
         }
-        with patch("boto3.client", return_value=mock_s3):
+        with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=mock_s3))):
             connector = S3Connector()
             docs = [d async for d in connector.on_webhook(_make_config(), payload, {})]
         assert len(docs) == 1
@@ -256,7 +256,7 @@ class TestOnWebhook:
             b'{"Records": [{"eventName": "ObjectCreated:Put", '
             b'"s3": {"bucket": {"name": "my-bucket"}, "object": {"key": "bad.txt"}}}]}'
         )
-        with patch("boto3.client", side_effect=RuntimeError("no creds")):
+        with patch("boto3.Session", side_effect=RuntimeError("no creds")):
             connector = S3Connector()
             docs = [d async for d in connector.on_webhook(_make_config(), payload, {})]
         assert len(docs) == 1
@@ -267,12 +267,12 @@ class TestEstimateDocCount:
     def test_success(self):
         mock_s3 = MagicMock()
         mock_s3.list_objects_v2.return_value = {"KeyCount": 42}
-        with patch("boto3.client", return_value=mock_s3):
+        with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=mock_s3))):
             connector = S3Connector()
             assert connector.estimate_doc_count(_make_config()) == 42
 
     def test_exception_returns_none(self):
-        with patch("boto3.client", side_effect=RuntimeError("fail")):
+        with patch("boto3.Session", side_effect=RuntimeError("fail")):
             connector = S3Connector()
             assert connector.estimate_doc_count(_make_config()) is None
 

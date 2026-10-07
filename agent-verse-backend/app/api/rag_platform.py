@@ -36,7 +36,11 @@ from app.rag.raft import (
     RAFTSubmissionPendingError,
     RAFTUnsupportedProviderError,
 )
-from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
+from app.rag_platform.retriever import (
+    RAGRetriever,
+    RAGSynthesisError,
+    citation_verification_detail,
+)
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
 
@@ -182,11 +186,12 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     if result.answer and not result.grounded:
         # Same contract as /knowledge/chat: an answer that fails citation
         # verification is a 422, never a 200 the caller might take as fact.
-        last = result.strategy_trace[-1].detail if result.strategy_trace else {}
+        last = citation_verification_detail(result.strategy_trace)
         logger.warning(
             "rag_query_answer_ungrounded",
             strategy=result.resolved_strategy_id.value,
             reason=last.get("reason"),
+            unsupported_claims=[str(c)[:200] for c in last.get("unsupported_claims", [])][:5],
             citations=len(result.citations),
         )
         raise HTTPException(

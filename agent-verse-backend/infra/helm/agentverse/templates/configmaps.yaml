@@ -21,6 +21,28 @@ data:
   {{- if .Values.platformAdminTenantIds }}
   PLATFORM_ADMIN_TENANT_IDS: {{ .Values.platformAdminTenantIds | quote }}
   {{- end }}
+  # BUG A defence in depth: botocore never asks the EC2 instance metadata service for
+  # credentials / region. Tenant S3 / Kinesis clients never consult it anyway
+  # (app/net/aws_clients.py); this also covers every other boto3 use in the pod.
+  AWS_EC2_METADATA_DISABLED: "true"
+  # BUG B: the embedding provider (values: embedding.*; keys come from the Secret).
+  {{- with .Values.embedding }}
+  {{- if .nvidiaEmbedModel }}
+  NVIDIA_EMBED_MODEL: {{ .nvidiaEmbedModel | quote }}
+  {{- end }}
+  {{- if .nvidiaEmbedDim }}
+  NVIDIA_EMBED_DIM: {{ .nvidiaEmbedDim | quote }}
+  {{- end }}
+  {{- if .baseUrl }}
+  EMBEDDING_BASE_URL: {{ .baseUrl | quote }}
+  {{- end }}
+  {{- if .model }}
+  EMBEDDING_MODEL: {{ .model | quote }}
+  {{- end }}
+  {{- if .dim }}
+  EMBEDDING_DIM: {{ .dim | quote }}
+  {{- end }}
+  {{- end }}
   # a06-F099-03: dead-worker message restore (values: celeryDeadWorkerRestore.*).
   CELERY_DEAD_WORKER_RESTORE_ENABLED: {{ .Values.celeryDeadWorkerRestore.enabled | quote }}
   CELERY_DEAD_WORKER_GRACE_SECONDS: {{ .Values.celeryDeadWorkerRestore.graceSeconds | quote }}

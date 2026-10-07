@@ -124,6 +124,8 @@ class WorkflowState(TypedDict, total=False):
     completed_branch: Annotated[str | None, _last_write]  # last conditional branch taken
     error: Annotated[str | None, _last_write]
     error_step_id: Annotated[str | None, _last_write]
+    # The failing step's final error, classification, attempts and error id.
+    error_detail: Annotated[dict[str, Any] | None, _last_write]
 
     # ── HITL ─────────────────────────────────────────────────────────────
     hitl_request_id: Annotated[str | None, _last_write]  # pending HITLWorkflowRequest UUID

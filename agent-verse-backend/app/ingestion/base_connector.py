@@ -85,6 +85,34 @@ class ConnectorUnavailableError(RuntimeError):
     """
 
 
+class ConnectorSecretsUndecryptableError(ConnectorUnavailableError):
+    """The Source's stored credentials cannot be decrypted by this process.
+
+    The value is encrypted but this pod's vault key is not the one that sealed it
+    (typically one workload on a different ``VAULT_MASTER_KEY`` than the API). The
+    blanked credential must never turn into an anonymous connection or the pod's
+    own ambient identity (for AWS: the instance-metadata IAM role), so the run
+    fails with this reason instead.
+    """
+
+    def __init__(self, source_type: str, keys: list[str]) -> None:
+        self.keys = list(keys)
+        super().__init__(
+            f"{source_type}: the source's stored credentials ({', '.join(self.keys)}) could "
+            "not be decrypted on this server — its vault key differs from the one they "
+            "were saved with. Give every pod (API and all workers) the same "
+            "VAULT_MASTER_KEY, or re-enter the credentials. Refusing to connect "
+            "without them."
+        )
+
+
+def refuse_undecryptable_secrets(config: SourceConfig) -> None:
+    """Raise :class:`ConnectorSecretsUndecryptableError` if the config lost a secret."""
+    keys = list(getattr(config, "undecryptable_secrets", None) or [])
+    if keys:
+        raise ConnectorSecretsUndecryptableError(config.source_type, keys)
+
+
 class ConnectorFetchError(RuntimeError):
     """The connector could not read its source: connection, authentication,
     listing or query failed (USR-1).

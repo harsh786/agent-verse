@@ -18,8 +18,10 @@ import contextlib
 import hashlib
 import json as _json
 import os
+import random
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -29,6 +31,14 @@ from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import WorkflowDefinition
 from app.workflow.registry import StepTypeRegistry
+from app.workflow.retry_policy import (
+    REASON_EXHAUSTED,
+    REASON_NON_RETRYABLE,
+    FailureClass,
+    classify_failure,
+    retry_delay,
+    should_retry,
+)
 from app.workflow.state import (
     StepStatus,
     WorkflowCancelled,
@@ -121,8 +131,67 @@ def _step_timeout_error(
     return err
 
 
+_ERROR_TEXT_MAX = 2000
+
+
+def _attempt_entry(
+    attempt: int, exc: BaseException | None, failure: FailureClass, elapsed_s: float
+) -> dict[str, Any]:
+    """One failed attempt as recorded in the step's ``attempt_log``."""
+    return {
+        "attempt": attempt,
+        "error": (str(exc) if exc is not None else "step failed")[:_ERROR_TEXT_MAX],
+        "error_type": type(exc).__name__ if exc is not None else None,
+        "error_kind": failure.kind,
+        "retryable": failure.retryable,
+        "error_id": failure.error_id,
+        "duration_ms": int(max(0.0, elapsed_s) * 1000),
+    }
+
+
+def _failure_detail(
+    exc: BaseException | None,
+    failure: FailureClass | None,
+    attempt_log: list[dict[str, Any]],
+    *,
+    max_attempts: int,
+    reason: str,
+) -> dict[str, Any]:
+    """Why a step stopped trying: its final error, classification and attempts."""
+    failure = failure or FailureClass("error", True)
+    return {
+        "error": (str(exc) if exc is not None else "step failed")[:_ERROR_TEXT_MAX],
+        "error_kind": failure.kind,
+        "retryable": failure.retryable,
+        "error_id": failure.error_id,
+        "attempts": len(attempt_log) or 1,
+        "max_attempts": max_attempts,
+        "reason": reason,
+    }
+
+
+def _failure_summary(failure: dict[str, Any]) -> str:
+    """`` (3 of 3 attempts, timeout; retries exhausted)`` — for a run's error text."""
+    attempts = int(failure.get("attempts") or 1)
+    max_attempts = int(failure.get("max_attempts") or 1)
+    parts = [f"{attempts} of {max_attempts} attempt{'s' if max_attempts != 1 else ''}"]
+    parts.append(str(failure.get("error_kind") or "error"))
+    if failure.get("reason") == REASON_NON_RETRYABLE:
+        parts.append("not retried: non-retryable")
+    else:
+        parts.append("retries exhausted")
+    if failure.get("error_id") and str(failure["error_id"]) not in str(failure.get("error")):
+        parts.append(f"error id {failure['error_id']}")
+    return " (" + "; ".join(parts) + ")"
+
+
 class WorkflowCompiler:
     """Compiles workflow DSL definitions into executable LangGraph graphs."""
+
+    # Injection points for the retry loop (a fake clock / sleep / jitter in tests).
+    _sleep: Callable[[float], Awaitable[Any]]
+    _monotonic: Callable[[], float]
+    _rand: Callable[[], float]
 
     def __init__(
         self,
@@ -140,6 +209,9 @@ class WorkflowCompiler:
         # a long-lived worker with every distinct workflow version it ran.
         self._cache: OrderedDict[str, CompiledWorkflow] = OrderedDict()
         self._cache_size = max(1, cache_size or _default_cache_size())
+        self._sleep = asyncio.sleep
+        self._monotonic = time.monotonic
+        self._rand = random.random
 
     def bind_services(self, **services: Any) -> None:
         """Add/replace step services after construction and drop compiled graphs.
@@ -431,6 +503,15 @@ class WorkflowCompiler:
                         if _prior.get("output") is None:
                             return replay
                         return {**replay, "step_outputs": {step.id: _prior["output"]}}
+                    if _prior and _prior.get("status") == StepStatus.SKIPPED.value:
+                        # ``on_failure: skip`` is a final decision. A resume (e.g.
+                        # after a sibling's approval) used to run the skipped step
+                        # AGAIN — every retry repeated, the step's timing reset and
+                        # a refused write re-sent. Replay its recorded skip output.
+                        prior_out = _prior.get("output")
+                        if not isinstance(prior_out, dict) or not prior_out.get("_skipped"):
+                            prior_out = {"_skipped": True, "error": _prior.get("error") or ""}
+                        return {"step_outputs": {step.id: prior_out}}
                     if _prior and _prior.get("status") == StepStatus.RUNNING.value:
                         # WF-14: the step was in flight when its worker died (the
                         # run's lease keeps a live worker from being swept). Run
@@ -470,14 +551,20 @@ class WorkflowCompiler:
                     run_store, state, step, attempt_number=attempt_number
                 )
 
-            # DSL enforcement (2.W-7): retry with backoff, per-step deadline,
-            # and on_failure routing on exhaustion.
-            max_attempts = max(1, getattr(step.retry, "max_attempts", 1))
+            # DSL enforcement (2.W-7): retry with backoff, a deadline PER
+            # ATTEMPT, and on_failure routing once the step stops trying. Only a
+            # retryable failure (timeout, transport, 5xx / unavailable) is
+            # retried; a non-retryable one (denied, refused, invalid) stops at
+            # once with the reason ``non_retryable``.
+            max_attempts = max(1, int(getattr(step.retry, "max_attempts", 1) or 1))
             timeout_s = self._parse_step_timeout(step.timeout)
             last_exc: BaseException | None = None
+            last_failure: FailureClass | None = None
+            attempt_log: list[dict[str, Any]] = []
+            stop_reason = REASON_EXHAUSTED
             for attempt in range(1, max_attempts + 1):
                 deadline: Any = None
-                started = time.monotonic()
+                started = self._monotonic()
                 try:
                     if timeout_s and timeout_s > 0:
                         async with asyncio.timeout(timeout_s) as deadline:
@@ -490,7 +577,7 @@ class WorkflowCompiler:
                     # timeout) used to be reported as "exceeded timeout 180s"
                     # after 61 s; keep its real cause and the real elapsed time.
                     last_exc = _step_timeout_error(
-                        step, exc, time.monotonic() - started, deadline
+                        step, exc, self._monotonic() - started, deadline
                     )
                 except WorkflowConfigurationError as exc:
                     # A wiring problem: record the failed step and fail the run.
@@ -501,10 +588,8 @@ class WorkflowCompiler:
                     with contextlib.suppress(Exception):
                         exc.workflow_step_id = step.id  # type: ignore[attr-defined]
                     raise
-                except Exception as exc:  # routed per step.on_failure below
+                except Exception as exc:  # retried / routed per step.on_failure below
                     last_exc = exc
-                    if not self._should_retry(step.retry, exc):
-                        break
                 else:
                     if persist:
                         await self._record_step_finish(
@@ -515,15 +600,62 @@ class WorkflowCompiler:
                             (result.get("step_outputs") or {}).get(step.id),
                             result.get("error"),
                             state_delta=_state_delta(result),
+                            attempts=attempt,
+                            attempt_log=attempt_log,
+                        )
+                    if attempt_log:
+                        _log.info(
+                            "workflow_step_succeeded_after_retry",
+                            run_id=state.get("run_id"),
+                            step_id=step.id,
+                            attempts=attempt,
                         )
                     return result
-                if attempt < max_attempts:
-                    delay = self._retry_delay(step.retry, attempt)
-                    if delay > 0:
-                        await asyncio.sleep(delay)
+                last_failure = classify_failure(last_exc)
+                entry = _attempt_entry(
+                    attempt, last_exc, last_failure, self._monotonic() - started
+                )
+                attempt_log.append(entry)
+                if not should_retry(step.retry, last_exc, last_failure):
+                    stop_reason = REASON_NON_RETRYABLE
+                    break
+                if attempt >= max_attempts:
+                    break
+                delay = retry_delay(step.retry, attempt, rand=self._rand)
+                entry["retry_in_ms"] = int(delay * 1000)
+                _log.warning(
+                    "workflow_step_retrying",
+                    run_id=state.get("run_id"),
+                    step_id=step.id,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    error_kind=last_failure.kind,
+                    delay_s=round(delay, 3),
+                    error=entry["error"][:300],
+                )
+                if persist:
+                    # ``attempts`` counts attempts started: the next one included.
+                    await self._record_step_attempt(
+                        run_store, state, step, attempts=attempt + 1, attempt_log=attempt_log
+                    )
+                if delay > 0:
+                    await self._sleep(delay)
 
+            failure = _failure_detail(
+                last_exc,
+                last_failure,
+                attempt_log,
+                max_attempts=max_attempts,
+                reason=stop_reason,
+            )
             return await self._handle_step_failure(
-                run_store, state, step, last_exc, persist
+                run_store,
+                state,
+                step,
+                last_exc,
+                persist,
+                failure=failure,
+                attempt_log=attempt_log,
             )
 
         node_fn.__name__ = f"step_{step.id}"
@@ -608,12 +740,18 @@ class WorkflowCompiler:
         error: str | None,
         *,
         state_delta: dict[str, Any] | None = None,
+        attempts: int | None = None,
+        attempt_log: list[dict[str, Any]] | None = None,
     ) -> None:
         extra: dict[str, Any] = {}
         if state_delta:
             extra["state_delta"] = state_delta
             if state_delta.get("cost_usd"):
                 extra["cost_usd"] = state_delta["cost_usd"]
+        if attempts is not None:
+            extra["attempts"] = attempts
+        if attempt_log:
+            extra["attempt_log"] = attempt_log
         try:
             await run_store.record_step_finish(
                 run_id=state["run_id"],
@@ -628,6 +766,30 @@ class WorkflowCompiler:
             )
         except Exception as exc:
             _log.warning("step_finish_persist_failed", step_id=step.id, error=str(exc))
+
+    @staticmethod
+    async def _record_step_attempt(
+        run_store: Any,
+        state: WorkflowState,
+        step: Any,
+        *,
+        attempts: int,
+        attempt_log: list[dict[str, Any]],
+    ) -> None:
+        """Publish a failed attempt of a still-running step (steps API / SSE)."""
+        recorder = getattr(run_store, "record_step_attempt", None)
+        if recorder is None:
+            return
+        try:
+            await recorder(
+                run_id=state["run_id"],
+                tenant_id=state["tenant_id"],
+                step_id=step.id,
+                attempts=attempts,
+                attempt_log=attempt_log,
+            )
+        except Exception as exc:  # persistence must never break execution
+            _log.warning("step_attempt_persist_failed", step_id=step.id, error=str(exc))
 
     # ── DSL enforcement helpers (2.W-7) ──────────────────────────────────────
 
@@ -652,28 +814,13 @@ class WorkflowCompiler:
 
     @staticmethod
     def _should_retry(retry: Any, exc: BaseException) -> bool:
-        """Honour RetryConfig.fail_on / retry_on exception-name filters."""
-        from app.workflow.guardrails import WorkflowGuardrailBlockedError
-
-        if isinstance(exc, WorkflowGuardrailBlockedError):
-            return False  # a policy verdict, not a transient failure (P8b-2)
-        name = type(exc).__name__
-        fail_on = getattr(retry, "fail_on", None) or []
-        if name in fail_on:
-            return False
-        retry_on = getattr(retry, "retry_on", None) or []
-        return not (retry_on and name not in retry_on)
+        """Whether a failed attempt may be retried (see ``retry_policy.should_retry``)."""
+        return should_retry(retry, exc)
 
     @staticmethod
     def _retry_delay(retry: Any, attempt: int) -> float:
         """Backoff delay in seconds before the next attempt (1-based)."""
-        base = max(0, getattr(retry, "base_delay_ms", 0)) / 1000.0
-        backoff = getattr(retry, "backoff", "exponential")
-        if backoff == "fixed":
-            return base
-        if backoff == "linear":
-            return base * attempt
-        return base * (2 ** (attempt - 1))
+        return retry_delay(retry, attempt)
 
     async def _handle_step_failure(
         self,
@@ -682,48 +829,101 @@ class WorkflowCompiler:
         step: Any,
         exc: BaseException | None,
         persist: bool,
+        *,
+        failure: dict[str, Any] | None = None,
+        attempt_log: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Route a step that has exhausted its retries per step.on_failure."""
+        """Route a step that stopped trying per step.on_failure.
+
+        ``failure`` (final error, classification, attempts, error id, why it
+        stopped) is recorded wherever the outcome lands: the skip output, the
+        failed step row, the paused or failed run.
+        """
         policy = getattr(step, "on_failure", "pause")
         err = str(exc) if exc is not None else "step failed"
+        if failure is None:
+            failure = _failure_detail(
+                exc,
+                classify_failure(exc) if exc is not None else None,
+                [],
+                max_attempts=max(1, int(getattr(step.retry, "max_attempts", 1) or 1)),
+                reason=REASON_EXHAUSTED,
+            )
+        attempts = int(failure.get("attempts") or 1)
         outputs = state.get("step_outputs") or {}
 
         if policy == "skip":
+            # The skip output keeps WHY the step was skipped, for downstream steps
+            # (``{{steps.x.output.error}}``) and the steps API — it used to be
+            # persisted as null, so the cause was recorded nowhere visible.
+            skipped = {"_skipped": True, **failure}
             if persist:
                 await self._record_step_finish(
-                    run_store, state, step, StepStatus.SKIPPED, None, err
+                    run_store,
+                    state,
+                    step,
+                    StepStatus.SKIPPED,
+                    skipped,
+                    err,
+                    attempts=attempts,
+                    attempt_log=attempt_log,
                 )
-            return {"step_outputs": {**outputs, step.id: {"_skipped": True, "error": err}}}
+            return {"step_outputs": {**outputs, step.id: skipped}}
 
         if policy == "use_default":
             default = getattr(step, "on_failure_default", None)
             out = default if isinstance(default, dict) else {"result": default}
             if persist:
                 await self._record_step_finish(
-                    run_store, state, step, StepStatus.COMPLETE, out, err
+                    run_store,
+                    state,
+                    step,
+                    StepStatus.COMPLETE,
+                    out,
+                    err,
+                    attempts=attempts,
+                    attempt_log=attempt_log,
                 )
             return {"step_outputs": {**outputs, step.id: out}}
 
         # Both "pause" and "abort" record the step as failed.
         if persist:
             await self._record_step_finish(
-                run_store, state, step, StepStatus.FAILED, None, err
+                run_store,
+                state,
+                step,
+                StepStatus.FAILED,
+                None,
+                err,
+                attempts=attempts,
+                attempt_log=attempt_log,
             )
+        # A retry policy in play: the run's error says how it ended.
+        run_error = err
+        if int(failure.get("max_attempts") or 1) > 1:
+            run_error = err + _failure_summary(failure)
 
         if policy == "abort":
-            failure = exc if exc is not None else RuntimeError(err)
-            # Tell the runner which step failed so the run row records it.
+            raised = exc if exc is not None else RuntimeError(err)
+            # Tell the runner which step failed so the run row records it, with
+            # the failure's classification and attempts.
             with contextlib.suppress(Exception):
-                failure.workflow_step_id = step.id  # type: ignore[attr-defined]
-            raise failure
+                raised.workflow_step_id = step.id  # type: ignore[attr-defined]
+                raised.workflow_step_failure = {  # type: ignore[attr-defined]
+                    **failure,
+                    "step_id": step.id,
+                }
+                raised.workflow_run_error = run_error  # type: ignore[attr-defined]
+            raise raised
 
         # Default "pause": halt the run for operator intervention. Downstream
         # nodes short-circuit on ``paused_by`` (see node_fn guard).
         return {
             "status": WorkflowRunStatus.PAUSED,
             "paused_by": f"step_failure:{step.id}",
-            "error": err,
+            "error": run_error,
             "error_step_id": step.id,
+            "error_detail": {**failure, "step_id": step.id},
         }
 
     @staticmethod

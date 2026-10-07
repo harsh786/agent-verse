@@ -544,3 +544,52 @@ async def test_timer_wait_set_get_and_single_claim(seeded: dict, factories: tupl
     # A failed re-dispatch releases the claim so the next scan retries it.
     await store.release_timer_claim(tid, due)
     assert due in {c["run_id"] for c in await store.claim_due_timer_waits()}
+
+
+async def test_step_attempts_and_run_error_detail_round_trip(seeded: dict) -> None:
+    """Retry attempts are visible while the step runs and after it is skipped; an
+    aborted run keeps the failing step's classified error (workflow retry fix)."""
+    store: PostgresWorkflowRunStore = seeded["store"]
+    tid = seeded["tenant_a"]
+    run_id = str(uuid.uuid4())
+    await store.create(run_id=run_id, workflow_id=seeded["workflow_id"], tenant_id=tid)
+    await store.record_step_start(run_id=run_id, tenant_id=tid, step_id="hung", step_type="tool")
+    first = [{"attempt": 1, "error": "timed out", "error_kind": "timeout", "retryable": True,
+              "retry_in_ms": 400}]
+    assert await store.record_step_attempt(
+        run_id=run_id, tenant_id=tid, step_id="hung", attempts=2, attempt_log=first
+    )
+    live = await store.get_step_result(tid, run_id, "hung")
+    assert live is not None
+    assert (live["status"], live["attempts"], live["attempt_log"]) == ("running", 2, first)
+
+    log = [*first, {"attempt": 2, "error": "timed out", "error_kind": "timeout",
+                    "retryable": True}]
+    skipped = {"_skipped": True, "error": "timed out", "attempts": 2, "reason": "x"}
+    await store.record_step_finish(
+        run_id=run_id, tenant_id=tid, step_id="hung", status=StepStatus.SKIPPED,
+        output=skipped, error="timed out", attempts=2, attempt_log=log,
+    )
+    (row,) = await store.list_step_results(tid, run_id)
+    assert row["status"] == "skipped"
+    assert row["output"] == skipped
+    assert row["attempts"] == 2
+    assert row["attempt_log"] == log
+    # A finished step is not rewritten by a late attempt record.
+    assert not await store.record_step_attempt(
+        run_id=run_id, tenant_id=tid, step_id="hung", attempts=9, attempt_log=[]
+    )
+
+    detail = {"step_id": "hung", "attempts": 1, "reason": "non_retryable",
+              "error_id": "3b4863b2c150"}
+    await store.update_status(
+        run_id, WorkflowRunStatus.FAILED, tenant_id=tid, error="denied",
+        error_step_id="hung", error_detail=detail,
+    )
+    run = await store.get(tid, run_id)
+    assert run is not None
+    assert run["error_detail"] == detail
+    # Legacy rows (no attempt columns written) read as one attempt.
+    await store.record_step_start(run_id=run_id, tenant_id=tid, step_id="old", step_type="tool")
+    legacy = await store.get_step_result(tid, run_id, "old")
+    assert legacy is not None and legacy["attempts"] == 1 and legacy["attempt_log"] == []

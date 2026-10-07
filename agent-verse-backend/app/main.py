@@ -1407,6 +1407,22 @@ def create_app(
                 # yet: re-resolve now (the Celery worker resolves with the store
                 # wired too, so both embed with the SAME model).
                 _rebind_registry_embedder()
+                if getattr(app.state, "embedder", None) is None:
+                    # BUG B: no embedder yet. An operator may register one in the
+                    # Model Registry (no cluster access needed): bind it when the
+                    # shared registry changes instead of 503-ing until a restart.
+                    import asyncio as _late_emb_asyncio
+
+                    from app.providers.embedder_factory import (
+                        watch_for_late_registry_embedder,
+                    )
+
+                    app.state._late_embedder_task = _late_emb_asyncio.create_task(
+                        watch_for_late_registry_embedder(
+                            _rebind_registry_embedder,
+                            is_bound=lambda: getattr(app.state, "embedder", None) is not None,
+                        )
+                    )
                 # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7 + Fix 2)
                 # langgraph-checkpoint-redis >= 0.0.6 returns an async context manager from
                 # from_conn_string(); we must enter it via __aenter__ to get the real saver.
@@ -2935,6 +2951,13 @@ def create_app(
                     import asyncio as _repo_asyncio
 
                     await _repo_asyncio.gather(*_repo_tasks, return_exceptions=True)
+                if _late_emb_task := getattr(app.state, "_late_embedder_task", None):
+                    _late_emb_task.cancel()
+                    import asyncio as _late_asyncio
+                    import contextlib
+
+                    with contextlib.suppress(Exception, _late_asyncio.CancelledError):
+                        await _late_emb_task
                 if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
                     _ps_task.cancel()
                     import asyncio as _ps_asyncio

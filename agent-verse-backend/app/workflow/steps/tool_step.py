@@ -26,6 +26,7 @@ from typing import Any
 from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
+from app.workflow.retry_policy import StepAttemptError, classify_error_text
 from app.workflow.state import WorkflowConfigurationError, WorkflowRunStatus, WorkflowState
 from app.workflow.steps import StepServiceUnavailableError
 
@@ -83,6 +84,37 @@ def has_tool_governance(services: dict[str, Any]) -> bool:
     """Whether the step services carry tenant governance for tool steps (QA-7)."""
     return (
         services.get("policy_engine") is not None or services.get("db_session_factory") is not None
+    )
+
+
+# A built-in connector's result ``status`` for a call it refused before (or
+# instead of) running it: trying again cannot change the answer.
+_NON_RETRYABLE_TOOL_STATUS = {
+    "operator_refused": "refused",
+    "egress_refused": "refused",
+    "tls_refused": "refused",
+    "credentials_required": "unauthorized",
+    "invalid_arguments": "validation",
+    "dependency_missing": "configuration",
+    "connector_disabled": "configuration",
+}
+
+
+def tool_failure(tool: str | None, result: Any) -> StepAttemptError:
+    """The classified error of a failed ``ToolCallResult``."""
+    message = str(getattr(result, "error", "") or f"tool '{tool}' failed")
+    output = getattr(result, "output", None)
+    status = str(output.get("status") or "") if isinstance(output, dict) else ""
+    kind = _NON_RETRYABLE_TOOL_STATUS.get(status)
+    if kind is not None:
+        return StepAttemptError(message, kind=kind, retryable=False)
+    failure = classify_error_text(message)
+    return StepAttemptError(
+        message,
+        kind=failure.kind,
+        retryable=failure.retryable,
+        error_id=failure.error_id,
+        status_code=failure.status_code,
     )
 
 
@@ -203,7 +235,9 @@ class ToolStepNode:
             from app.workflow.idempotency import step_idempotency_key
 
             # WF-14: the MCP call carries this step's deterministic key
-            # (Idempotency-Key header + _meta.idempotencyKey).
+            # (Idempotency-Key header + _meta.idempotencyKey). Every retry of the
+            # step repeats the SAME key: an attempt that timed out may still
+            # have been applied, and the key lets the receiver recognise it.
             with idempotency_scope(step_idempotency_key(state, self.step.id)):
                 result = await self.mcp_client.call_tool_by_name(
                     tool_name=self.step.tool or "",
@@ -212,10 +246,11 @@ class ToolStepNode:
                     server_id=self.step.server_id or None,
                 )
             if hasattr(result, "success"):  # ToolCallResult
-                # Raise on failure so the runner's on_failure handling (pause /
-                # skip / abort) applies — preserving the tool step's error contract.
+                # Raise on failure so the runner's retry and on_failure handling
+                # (pause / skip / abort) apply, classified: a refused operator or
+                # an authorization denial is never retried, a timeout is.
                 if not result.success:
-                    raise RuntimeError(result.error or f"tool '{self.step.tool}' failed")
+                    raise tool_failure(self.step.tool, result)
                 output = {"success": True, "output": result.output, "error": ""}
                 if getattr(result, "stale", False) is True:
                     # a02-F030-04: served from the read cache while the

@@ -175,6 +175,7 @@ def _serialize_source(s: SourceConfig) -> dict:
     from app.ingestion.source_secrets import mask_connection_config
 
     d = dataclasses.asdict(s)
+    d.pop("undecryptable_secrets", None)  # load-time diagnostic, not Source data
     d["family"] = s.family.value if hasattr(s.family, "value") else str(s.family)
     # Credentials never leave the API — not in plaintext (as they used to on every
     # GET/POST/PATCH) and not encrypted either. Secret values are masked and the
