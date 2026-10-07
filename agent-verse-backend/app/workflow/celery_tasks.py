@@ -96,16 +96,25 @@ def _build_worker_runner() -> Any:
     # receive services from the COMPILER (node_class(step, ctx, **compiler._services)),
     # so these must go on the compiler, not the runner.
     from app.ocr.engine import OcrEngine
-    from app.providers.llm_resolution import TenantLLMProviderResolver, platform_llm_provider
+    from app.providers.llm_resolution import (
+        TenantLLMProviderResolver,
+        is_placeholder_provider,
+        platform_llm_provider,
+    )
 
     # BYOK-3: LLM steps resolve the RUN's tenant provider per execution (tenant
     # BYOK → this platform provider → "no LLM provider configured for tenant").
     # This used to be one process-wide resolve_provider() — the tenant's own key
     # was never used, and with no platform key steps got the canned FakeProvider.
-    _wf_provider = platform_llm_provider()  # None when no real platform LLM
+    # With no env provider this is the Model Registry-backed provider, kept even
+    # while the registry is empty: the runner is cached per process, and the
+    # resolver re-checks it per step, so a model added later is used at once.
+    _wf_platform_live = platform_llm_provider()
     _wf_llm_resolver = TenantLLMProviderResolver(
-        platform_provider=_wf_provider, db_factory=db_factory
+        platform_provider=_wf_platform_live, db_factory=db_factory
     )
+    # Directly-injected fallback for steps without a resolver: no placeholder.
+    _wf_provider = None if is_placeholder_provider(_wf_platform_live) else _wf_platform_live
     _wf_knowledge: Any = None
     try:
         from app.rag.store import KnowledgeStore

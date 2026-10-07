@@ -119,6 +119,24 @@ const formFromModel = (m: ConfiguredModel): FormState => ({
 
 const keyOf = (m: ConfiguredModel) => m.key || `${m.provider}/${m.model_id}`;
 
+/** Whether the model can serve now (older backends send no `servable`). */
+const usable = (m: ConfiguredModel) => m.provider_ready && m.servable !== false;
+
+type CoverageState = 'ready' | 'not_ready' | 'none';
+
+/**
+ * The truth per capability, from the registry rows themselves: ready when a
+ * model can serve it now, not usable when models are listed but none can, not
+ * configured when the capability has no model at all.
+ */
+const coverageOf = (group: CapabilityGroup | undefined): { state: CoverageState; ready: number } => {
+  if (!group || group.models.length === 0) return { state: 'none', ready: 0 };
+  const ready = group.ready_count
+    ?? group.models.filter((m) => usable(m) && !m.refused).length;
+  const state = group.status ?? (ready > 0 ? 'ready' : 'not_ready');
+  return { state, ready };
+};
+
 /** host:port of an endpoint URL for compact display; the raw value if it does not parse. */
 const endpointHost = (url: string) => {
   try {
@@ -401,6 +419,36 @@ export function ModelRegistryPage() {
         {isLoading && <p className="text-sm text-muted-foreground">Loading models…</p>}
         {isError && <p className="text-sm text-destructive">Failed to load the model registry.</p>}
 
+        {!isLoading && !isError && data && (
+          <div
+            data-testid="capability-coverage"
+            className="flex flex-wrap gap-2 rounded-2xl border border-border bg-card px-4 py-3 text-xs"
+          >
+            {CAPABILITIES.map((cap) => {
+              const { state, ready } = coverageOf(groupFor(cap.key));
+              const cls = state === 'ready'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300'
+                : state === 'not_ready'
+                  ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300'
+                  : 'border-border text-muted-foreground';
+              const text = state === 'ready'
+                ? `ready (${ready})`
+                : state === 'not_ready' ? 'not usable' : 'not configured';
+              return (
+                <span
+                  key={cap.key}
+                  data-testid={`coverage-${cap.key}`}
+                  data-state={state}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 ${cls}`}
+                >
+                  {state === 'ready' ? <Check className="h-3 w-3" /> : null}
+                  <strong className="font-semibold">{cap.label}</strong> {text}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
         {!isLoading && CAPABILITIES.map((cap) => {
           const group = groupFor(cap.key);
           const serverModels = group?.models ?? [];
@@ -419,7 +467,7 @@ export function ModelRegistryPage() {
           if (dirty) {
             let n = 0;
             models.forEach((m, i) => {
-              if (!m.provider_ready || m.refused) return;
+              if (!usable(m) || m.refused) return;
               if (primaryIdx === -1) primaryIdx = i;
               else fallbackNo.set(i, ++n);
             });
@@ -435,6 +483,8 @@ export function ModelRegistryPage() {
             });
           }
           const anyNotReady = models.some((m) => !m.provider_ready);
+          const anyNotServed = models.some((m) => m.provider_ready && m.servable === false);
+          const coverage = coverageOf(group);
           const busy = saveOrder.isPending || resetOrder.isPending;
 
           return (
@@ -450,7 +500,19 @@ export function ModelRegistryPage() {
                       {group.order_mode === 'preference' ? 'Preference order' : 'Cheapest first'}
                     </span>
                   )}
-                  <span>{models.length} configured</span>
+                  {coverage.state === 'not_ready' && (
+                    <span
+                      className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                      title="Models are listed, but none of them can serve this category right now"
+                    >
+                      Not usable
+                    </span>
+                  )}
+                  <span data-testid={`capability-count-${cap.key}`}>
+                    {group && group.models.length > 0
+                      ? `${coverage.ready} of ${models.length} ready`
+                      : `${models.length} configured`}
+                  </span>
                 </div>
               </div>
               {group?.note && (
@@ -474,7 +536,7 @@ export function ModelRegistryPage() {
                           primary
                             ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-900/20'
                             : 'border-border bg-background'
-                        } ${m.provider_ready ? '' : 'opacity-60'}`}
+                        } ${usable(m) ? '' : 'opacity-60'}`}
                       >
                         <div className="flex min-w-0 items-center gap-3">
                           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">
@@ -501,6 +563,14 @@ export function ModelRegistryPage() {
                                   No API key
                                 </span>
                               )}
+                              {m.provider_ready && m.servable === false && (
+                                <span
+                                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                                  title="Named in the server configuration, but no API key or endpoint is configured to serve it"
+                                >
+                                  Not served
+                                </span>
+                              )}
                               {m.has_api_key ? (
                                 <span
                                   className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
@@ -508,7 +578,7 @@ export function ModelRegistryPage() {
                                 >
                                   <KeyRound className="h-3 w-3" /> Key saved
                                 </span>
-                              ) : m.provider_ready && (
+                              ) : usable(m) && (
                                 <span
                                   className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
                                   title="No key saved with this model: the provider's key configured on the server is used"
@@ -601,7 +671,14 @@ export function ModelRegistryPage() {
               )}
               {anyNotReady && (
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Models marked “No API key” are skipped at runtime until their provider key is set.
+                  Models marked “No API key” are skipped at runtime until their provider key is set
+                  or the model is saved with its own API key or endpoint URL.
+                </p>
+              )}
+              {anyNotServed && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Models marked “Not served” are named in the server configuration, but nothing is
+                  configured to call them; add the model here with its endpoint URL or API key.
                 </p>
               )}
               {group && canModify && models.length > 0 && (

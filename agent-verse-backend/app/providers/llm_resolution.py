@@ -58,8 +58,9 @@ class NoLLMProviderConfiguredError(TenantProviderError):
 def no_provider_message(tenant_id: str | None = None) -> str:
     who = f"tenant {tenant_id!r}" if tenant_id else "this request"
     return (
-        f"no LLM provider configured for {who}: save an API key under Settings → LLM "
-        "Providers (PUT /tenants/me/llm) or configure a platform LLM key"
+        f"no LLM provider configured for {who}: add a model in the Model Registry, save an "
+        "API key under Settings → LLM Providers (PUT /tenants/me/llm) or set a platform "
+        "provider key"
     )
 
 
@@ -104,7 +105,16 @@ class UnconfiguredLLMProvider(FakeProvider):
 
 
 def is_placeholder_provider(provider: Any) -> bool:
-    """None, the canned FakeProvider or the unconfigured stand-in: not a real LLM."""
+    """None, the canned FakeProvider or the unconfigured stand-in: not a real LLM.
+
+    A registry-backed platform provider (``RegistryLLMProvider``) is a
+    placeholder exactly while the Model Registry has no usable text model —
+    checked NOW, so a model added after startup counts at once.
+    """
+    from app.providers.registry_llm import is_registry_llm
+
+    if is_registry_llm(provider):
+        return not provider.has_models()
     return provider is None or isinstance(provider, FakeProvider)
 
 
@@ -175,7 +185,13 @@ async def abuild_tenant_byok_provider(
 
 
 def platform_llm_provider() -> Any | None:
-    """The platform's real provider (deployment cluster, then env registry), or None."""
+    """The platform's provider (deployment cluster, env registry, Model Registry), or None.
+
+    With no env provider this is the registry-backed provider even while the
+    Model Registry is empty: long-lived callers (the workflow worker's runner)
+    keep it and see a model added later; per call they check
+    :func:`is_placeholder_provider`, which is true while nothing is usable.
+    """
     from app.scaling.tasks import _worker_deployment_provider
 
     deployment = _worker_deployment_provider()
@@ -184,7 +200,11 @@ def platform_llm_provider() -> Any | None:
     from app.providers.registry import resolve_provider
 
     resolved = resolve_provider()
-    return None if is_placeholder_provider(resolved) else resolved
+    if not is_placeholder_provider(resolved):
+        return resolved
+    from app.providers.registry_llm import registry_backed_provider
+
+    return registry_backed_provider()
 
 
 _UNSET: Any = object()

@@ -929,3 +929,76 @@ describe('ModelRegistryPage — per-model API key and embedding dimensions', () 
     expect(failed).not.toHaveTextContent(/rejected the API key/);
   });
 });
+
+describe('ModelRegistryPage — capability coverage reflects what can actually serve', () => {
+  const COVERAGE = {
+    total: 4,
+    capabilities: [
+      {
+        capability: 'text_generation',
+        status: 'ready',
+        ready_count: 1,
+        selected_model_id: 'qwen-lan',
+        fallback_model_ids: [],
+        order_mode: 'cost',
+        preference: [],
+        models: [
+          // Saved with its own key, no URL: ready (it used to say "No API key").
+          model({ provider: 'groq', model_id: 'own-key-llm', rank: 1, has_api_key: true, servable: true }),
+          // Named in env, nothing behind it.
+          model({ provider: 'openai', model_id: 'gpt-4o', rank: 2, source: 'env', servable: false }),
+        ],
+      },
+      {
+        capability: 'embedding',
+        status: 'not_ready',
+        ready_count: 0,
+        selected_model_id: null,
+        fallback_model_ids: [],
+        order_mode: 'cost',
+        preference: [],
+        models: [
+          model({ provider: 'openai', model_id: 'text-embedding-3-small', capabilities: ['embedding'], rank: 1, source: 'env', servable: false }),
+        ],
+      },
+    ],
+  };
+
+  test('the coverage strip says ready / not usable / not configured per capability', async () => {
+    mockFetch({ registry: COVERAGE });
+    renderPage();
+    const strip = await screen.findByTestId('capability-coverage');
+    expect(within(strip).getByTestId('coverage-text_generation')).toHaveAttribute('data-state', 'ready');
+    expect(within(strip).getByTestId('coverage-text_generation')).toHaveTextContent('Reasoning ready (1)');
+    expect(within(strip).getByTestId('coverage-embedding')).toHaveAttribute('data-state', 'not_ready');
+    expect(within(strip).getByTestId('coverage-embedding')).toHaveTextContent('Embeddings not usable');
+    for (const cap of ['vision', 'ocr', 'rerank']) {
+      expect(within(strip).getByTestId(`coverage-${cap}`)).toHaveAttribute('data-state', 'none');
+    }
+    expect(screen.getByTestId('capability-count-text_generation')).toHaveTextContent('1 of 2 ready');
+    expect(screen.getByTestId('capability-count-embedding')).toHaveTextContent('0 of 1 ready');
+  });
+
+  test('an own-key model is not "No API key"; an env model nothing serves is "Not served"', async () => {
+    mockFetch({ registry: COVERAGE });
+    renderPage();
+    const ownKey = (await screen.findByText('own-key-llm')).closest('li') as HTMLElement;
+    expect(within(ownKey).queryByText('No API key')).not.toBeInTheDocument();
+    expect(within(ownKey).getByText('Key saved')).toBeInTheDocument();
+    expect(ownKey.className).not.toMatch(/opacity-60/);
+    const envOnly = screen.getByText('gpt-4o').closest('li') as HTMLElement;
+    expect(within(envOnly).getByText('Not served')).toBeInTheDocument();
+    expect(within(envOnly).queryByText('Provider key')).not.toBeInTheDocument();
+    expect(envOnly.className).toMatch(/opacity-60/);
+    expect(screen.getAllByText(/named in the server configuration, but nothing is configured/i).length)
+      .toBeGreaterThan(0);
+  });
+
+  test('an older backend without status fields falls back to provider_ready', async () => {
+    mockFetch();
+    renderPage();
+    const strip = await screen.findByTestId('capability-coverage');
+    expect(within(strip).getByTestId('coverage-text_generation')).toHaveTextContent('Reasoning ready (2)');
+    expect(within(strip).getByTestId('coverage-embedding')).toHaveAttribute('data-state', 'ready');
+  });
+});

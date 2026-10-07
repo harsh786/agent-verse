@@ -261,6 +261,9 @@ def test_run_goal_updates_submitted_goal_status_and_events(monkeypatch: Any) -> 
     assert status_updates == ["executing", "complete"]
     assert [event["type"] for event in appended_events] == [
         "worker_started",
+        # No LLM configured (development): the goal's events say the canned
+        # FakeProvider answered.
+        "llm_provider_simulated",
         "plan_ready",
         "step_complete",
         "worker_complete",

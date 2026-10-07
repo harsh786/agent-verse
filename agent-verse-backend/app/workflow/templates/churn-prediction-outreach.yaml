@@ -21,7 +21,6 @@ definition:
     - id: main_step
       type: llm
       prompt: "Process the following for Churn Prediction Outreach: {{inputs.topic}}"
-      model: gpt-4o
     - id: review
       type: hitl
       depends_on: [main_step]

@@ -122,14 +122,20 @@ def is_eligible(m: Any) -> bool:
     """Whether selection may pick *m* right now.
 
     Env-seeded models are what the deployment is configured with, so they are
-    always eligible. A registry override (UI / catalog import) is eligible only
-    when its provider has credentials — an imported Groq model without
-    ``GROQ_API_KEY`` stays listed but is skipped instead of failing every call.
+    always eligible. A registry override (UI / catalog import) is eligible when
+    it names its own endpoint, carries its own API key for a provider whose
+    public API it can reach, or its provider has credentials — an imported Groq
+    model without ``GROQ_API_KEY`` stays listed but is skipped instead of
+    failing every call.
     """
     if (getattr(m, "extra", None) or {}).get("source") != "override":
         return True
     if getattr(m, "base_url", None):
         return True  # it names its own endpoint (checked when it was saved)
+    from app.providers.model_dispatch import keyed_endpoint_usable
+
+    if keyed_endpoint_usable(m):
+        return True  # its own saved key reaches its provider's API
     from app.ai_router.model_catalog import provider_ready
 
     return provider_ready(str(getattr(m, "provider", "")))

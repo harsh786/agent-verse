@@ -113,10 +113,12 @@ describe('WorkflowStepConfig — llm extra branches', () => {
     expect(onUpdate).toHaveBeenCalledWith({ max_tokens: 2000 });
   });
 
-  test('model select reports edits', () => {
-    const { onUpdate } = renderConfig(makeNode('llm'));
-    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gemini-1.5-pro' } });
-    expect(onUpdate).toHaveBeenCalledWith({ model: 'gemini-1.5-pro' });
+  test('model select reports edits (back to the registry default clears the model)', () => {
+    // A legacy hard-coded model stays visible (flagged) until the user changes it.
+    const { onUpdate } = renderConfig(makeNode('llm', { model: 'gemini-1.5-pro' }));
+    expect(screen.getByLabelText('Model')).toHaveValue('gemini-1.5-pro');
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: '' } });
+    expect(onUpdate).toHaveBeenCalledWith({ model: undefined });
   });
 
   test('JSON output toggle reflects an initially-true value', () => {

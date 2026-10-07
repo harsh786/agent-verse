@@ -15,11 +15,13 @@ _log = get_logger(__name__)
 
 
 def _default_model_for(provider: Any) -> str:
-    """"" for a tenant's own provider (BYOK-3: its configured default_model applies),
+    """"" for a tenant's own provider (BYOK-3: its configured default_model applies)
+    and for the Model Registry-backed platform provider (the registry order picks),
     else the system-configured model."""
     from app.providers.model_defaults import configured_default_model
+    from app.providers.registry_llm import is_registry_llm
 
-    if getattr(provider, "_byok_tenant_id", None):
+    if getattr(provider, "_byok_tenant_id", None) or is_registry_llm(provider):
         return ""
     return configured_default_model("gpt-4o")
 
@@ -60,6 +62,14 @@ class LLMStepNode:
             step_id=self.step.id,
             required=not state.get("is_test_run"),
         )
+
+        # The node's Model choice (a Model Registry model) is served through the
+        # registry dispatch; an unknown model fails the step with a clear error.
+        completion_provider: Any = provider
+        if provider is not None and self.step.model:
+            from app.workflow.llm_provider import step_model_provider
+
+            completion_provider = step_model_provider(provider, self.step.model, self.step.id)
 
         # Optional RAG context injection
         rag_context = ""
@@ -151,7 +161,7 @@ class LLMStepNode:
             # policy applies), like any other provider error.
             run_id = str(state.get("run_id") or "")
             response = await complete_decision(
-                provider,
+                completion_provider,
                 req,
                 role="workflow_llm_step",
                 tenant_id=str(state.get("tenant_id") or "") or None,

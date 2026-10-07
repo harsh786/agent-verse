@@ -3331,11 +3331,61 @@ def run_goal(
         # self-hosted endpoint). The previous ad-hoc `OpenAICompatibleProvider(
         # api_key=...)` ignored base_url and model, so a self-hosted deployment hit
         # the official OpenAI API with a bogus "gpt-5.2" default and 404'd.
-        from app.providers.fake import FakeProvider as _RegFake
+        # With no env provider this is the Model Registry's models (own
+        # base_url / own key), resolved per goal so a model added after the
+        # worker started is used at once — the same as the API.
+        from app.providers.llm_resolution import is_placeholder_provider
         from app.providers.registry import resolve_provider as _resolve_provider
 
+        with contextlib.suppress(Exception):  # registry unreadable → env only
+            _wire_worker_model_registry_store()
         _resolved = _resolve_provider()
-        real_provider = None if isinstance(_resolved, _RegFake) else _resolved
+        real_provider = None if is_placeholder_provider(_resolved) else _resolved
+
+    if real_provider is None:
+        from app.providers.llm_resolution import (
+            NoLLMProviderConfiguredError,
+            fake_llm_allowed,
+            no_provider_message,
+        )
+
+        if not fake_llm_allowed():
+            # Never run a real goal on canned output outside development/test:
+            # fail it honestly (the worker used to fall back to FakeProvider here
+            # in every environment, because the unconfigured stand-in IS a
+            # FakeProvider subclass).
+            _no_llm = NoLLMProviderConfiguredError(no_provider_message(tenant_id))
+            _run_async(mark_worker_failed(_no_llm))
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            if _lock:
+                _lock.release(goal_id)
+            return {
+                "status": "failed",
+                "goal_id": goal_id,
+                "reason": "no_llm_provider_configured",
+                "message": str(_no_llm),
+            }
+        logger.warning(
+            "llm_fake_provider_serving goal_id=%s: no LLM configured; the canned "
+            "FakeProvider answers (development only). Add a model in the Model Registry "
+            "or set a provider key.",
+            goal_id,
+        )
+        with contextlib.suppress(Exception):
+            _run_async(
+                append_submitted_goal_event(
+                    {
+                        "type": "llm_provider_simulated",
+                        "provider": "fake",
+                        "model": "fake-provider",
+                        "message": (
+                            "No LLM is configured: results come from the canned FakeProvider "
+                            "(development only). Add a model in the Model Registry or set a "
+                            "provider key."
+                        ),
+                    }
+                )
+            )
 
     used_fake_provider = real_provider is None
     provider = real_provider or FakeProvider(
@@ -4100,7 +4150,11 @@ def run_goal(
         # Block fake execution outside development/test — a real LLM provider
         # (the tenant's own key or the platform's) is required. BYOK-3: this used
         # to block only ENVIRONMENT == "production"; staging ran canned answers.
-        from app.providers.llm_resolution import fake_llm_allowed, no_provider_message
+        from app.providers.llm_resolution import (
+            NoLLMProviderConfiguredError,
+            fake_llm_allowed,
+            no_provider_message,
+        )
 
         if used_fake_provider and not fake_llm_allowed():
             _no_llm_msg = no_provider_message(tenant_id)
@@ -10255,14 +10309,16 @@ async def _active_orgs_for_maintenance(system_db: Any, *, limit: int = 100) -> l
 def _worker_llm_provider() -> Any:
     """The worker's real LLM provider, or None (never the no-key FakeProvider)."""
     try:
-        from app.providers.fake import FakeProvider
+        from app.providers.llm_resolution import is_placeholder_provider
         from app.providers.registry import resolve_provider
 
+        with contextlib.suppress(Exception):  # Model Registry models count too
+            _wire_worker_model_registry_store()
         provider = resolve_provider()
     except Exception as exc:
         logger.warning("worker_llm_provider_unavailable", error=str(exc)[:160])
         return None
-    return None if isinstance(provider, FakeProvider) else provider
+    return None if is_placeholder_provider(provider) else provider
 
 
 @celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
@@ -10620,11 +10676,13 @@ def _ai_ops_worker_platform_provider() -> Any:
     provider = _worker_deployment_provider()
     if provider is not None:
         return provider
-    from app.providers.fake import FakeProvider as _RegFake
+    from app.providers.llm_resolution import is_placeholder_provider
     from app.providers.registry import resolve_provider as _resolve_provider
 
+    with contextlib.suppress(Exception):  # Model Registry models count too
+        _wire_worker_model_registry_store()
     resolved = _resolve_provider()
-    return None if isinstance(resolved, _RegFake) else resolved
+    return None if is_placeholder_provider(resolved) else resolved
 
 
 def _ai_ops_worker_deps() -> tuple[Any, Any, Any, str]:

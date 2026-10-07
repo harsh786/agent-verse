@@ -468,6 +468,33 @@ _CAPABILITY_NOTES = {
 }
 
 
+def _row_servable(m: Any) -> bool:
+    """Whether something in this deployment can actually serve *m* right now.
+
+    ``provider_ready`` is the selection rule, under which an env-seeded model is
+    always eligible — so a model named in env (``DEFAULT_MODEL``,
+    ``EMBEDDING_MODEL``, …) with no key or endpoint behind it was reported as a
+    working model and its capability as covered. A registry entry with its own
+    endpoint URL or its own saved key is servable whatever the env holds.
+    """
+    import os
+
+    from app.ai_router.model_catalog import provider_ready
+    from app.ai_router.selection import is_eligible
+    from app.providers.model_dispatch import keyed_endpoint_usable
+
+    if not is_eligible(m):
+        return False
+    if (m.extra or {}).get("source") == "override":
+        return True
+    if getattr(m, "base_url", None) or keyed_endpoint_usable(m):
+        return True
+    provider = str(getattr(m, "provider", "") or "").strip().lower()
+    if provider in ("openai", "openai_compatible") and (os.getenv("OPENAI_BASE_URL") or "").strip():
+        return True  # a self-hosted OpenAI-compatible endpoint (key optional)
+    return provider_ready(provider)
+
+
 def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
     from app.ai_router.selection import is_eligible, model_key
 
@@ -485,7 +512,11 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         "quality_score": m.quality_score,
         "is_available": m.is_available,
         # False: the provider has no credentials here, so selection skips it.
+        # A model with its own endpoint URL or its own saved key is ready.
         "provider_ready": is_eligible(m),
+        # Whether anything can actually serve it now (env-seeded models are
+        # always eligible, but one named in env with no key/endpoint is not).
+        "servable": _row_servable(m),
         "source": (m.extra or {}).get("source", "env"),
         "origin": (m.extra or {}).get("origin", ""),
         "base_url": getattr(m, "base_url", None),
@@ -604,6 +635,12 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
         preference = model_registry.preference_order(cap)
         rows = [_configured_dict(m, rank=i + 1) for i, m in enumerate(ordered)]
         fallback = resolve_fallback_models(task, selected) if selected else []
+        servable_ids = {r["model_id"] for r in rows if r["provider_ready"] and r["servable"]}
+        if selected and selected not in servable_ids and servable_ids:
+            # An env-named model nothing can serve is skipped at runtime (the
+            # registry's own models answer): present what actually runs.
+            selected = next(r["model_id"] for r in rows if r["model_id"] in servable_ids)
+            fallback = [m for m in fallback if m in servable_ids and m != selected]
         active: dict[str, Any] | None = None
         if cap is ModelCapability.EMBEDDING:
             _annotate_embedding_rows(request, rows)
@@ -612,8 +649,20 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
             fallback = []
             active = _active_embedder_status(request)
             selected = _embedding_selected(rows, active)
+        ready_rows = [
+            r for r in rows if r["provider_ready"] and r["servable"] and not r.get("refused")
+        ]
+        if cap is ModelCapability.EMBEDDING and active and active.get("status") in (
+            "not_configured",
+            "unavailable",
+        ):
+            ready_rows = []  # nothing embeds, whatever the rows say
         group: dict[str, Any] = {
             "capability": cap.value,
+            # The truth per capability: "ready" when at least one model can
+            # serve it now, "not_ready" when models are listed but none can.
+            "status": "ready" if ready_rows else "not_ready",
+            "ready_count": len(ready_rows),
             "selected_model_id": selected,
             "fallback_model_ids": fallback,
             "order_mode": "preference" if preference else "cost",

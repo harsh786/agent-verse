@@ -913,8 +913,17 @@ export interface ConfiguredModel {
   supports_structured_output: boolean;
   quality_score: number;
   is_available: boolean;
-  /** False when the provider has no API key configured — skipped at runtime. */
+  /**
+   * False when selection skips the model: its provider has no API key here and
+   * the entry has neither its own endpoint URL nor its own saved key.
+   */
   provider_ready: boolean;
+  /**
+   * Whether anything in this deployment can actually serve the model now. An
+   * env-named model (DEFAULT_MODEL, EMBEDDING_MODEL, …) with no key or endpoint
+   * behind it is false. Absent on older backends (treat as provider_ready).
+   */
+  servable?: boolean;
   /** Refused for this deployment (e.g. embedding dimension mismatch); never the primary. */
   refused?: boolean;
   refusal_reason?: string | null;
@@ -956,6 +965,13 @@ export type ThinkingMode = 'auto' | 'off' | 'on';
 
 export interface CapabilityGroup {
   capability: ModelCapability | string;
+  /**
+   * "ready" when at least one model can serve the capability now; "not_ready"
+   * when models are listed but none can. Absent on older backends.
+   */
+  status?: 'ready' | 'not_ready';
+  /** How many listed models can serve the capability now. */
+  ready_count?: number;
   selected_model_id: string;
   fallback_model_ids: string[];
   order_mode: 'preference' | 'cost';

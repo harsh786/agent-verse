@@ -164,8 +164,11 @@ def test_unbound_production_goal_never_uses_legacy_loop_on_graph_failure(
         def __init__(self, **kwargs: Any) -> None:
             raise RuntimeError("private graph assembly secret")
 
+    class _RealProvider:
+        """Any real provider: production never runs a goal on the canned fake."""
+
     monkeypatch.setattr(_graph_mod, "AgentGraph", BrokenGraph)
-    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
+    monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: _RealProvider())
     monkeypatch.setenv("ENVIRONMENT", "production")
 
     result = tasks.run_goal.run(

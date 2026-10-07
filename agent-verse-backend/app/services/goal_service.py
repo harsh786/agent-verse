@@ -1655,6 +1655,21 @@ class GoalService:
             _app_provider = getattr(app_state, "_app_provider", None)
             if _app_provider is not None and not isinstance(_app_provider, _FakeProviderType):
                 provider = _app_provider
+            if provider is not None:
+                from app.providers.llm_resolution import is_placeholder_provider
+
+                if is_placeholder_provider(provider):
+                    provider = None  # registry-backed, but no usable model right now
+
+        # 2b. No env provider: the Model Registry's text models (own base_url /
+        # own key) are the platform LLM, checked PER GOAL so a model added after
+        # startup is used at once. Registry-only deployments used to run every
+        # goal on the canned FakeProvider here.
+        if provider is None and getattr(app_state, "_llm_provider_override", None) is None:
+            from app.providers.registry_llm import registry_backed_provider, registry_has_usable_llm
+
+            if registry_has_usable_llm():
+                provider = registry_backed_provider()
 
         # 3. Fall back to env-var provider
         if provider is None:
@@ -3976,6 +3991,23 @@ class GoalService:
                 record.execution_context["provider_warning"] = (
                     "No real LLM provider configured. Results are simulated."
                 )
+                # Visible in the goal's own events too: the model was the fake one.
+                record.execution_context["llm_provider"] = "fake"
+                with suppress(Exception):
+                    await self._dispatch_event(
+                        goal_id,
+                        {
+                            "type": "llm_provider_simulated",
+                            "provider": "fake",
+                            "model": "fake-provider",
+                            "message": (
+                                "No LLM is configured: results come from the canned "
+                                "FakeProvider (development only). Add a model in the Model "
+                                "Registry or set a provider key."
+                            ),
+                        },
+                        tenant_ctx=tenant_ctx,
+                    )
 
             # Guarantee tool_context is always available: fall back to building
             # a basic context (RPA tools) when the caller didn't pass one.

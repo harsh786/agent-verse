@@ -18,7 +18,8 @@ import { KeyValueEditor } from './config-fields/KeyValueEditor';
 import { CollapsibleSection } from './config-fields/AdvancedSection';
 import { NLTriggerAssist } from './NLTriggerAssist';
 import { useQuery } from '@tanstack/react-query';
-import { connectorsApi } from '@/lib/api/client';
+import { connectorsApi, modelsApi } from '@/lib/api/client';
+import { DEFAULT_MODEL_OPTION, llmModelOptions } from './llmModelOptions';
 import { connectorLabel, connectorTypeLabel, qualifiedToolName } from '@/lib/connectors';
 
 interface StepConfigProps {
@@ -274,6 +275,16 @@ function TriggerConfig({ data, onUpdate }: PanelProps) {
 
 function LLMConfig({ data, onUpdate }: PanelProps) {
   const temperature = data.temperature as number | undefined;
+  const current = String(data.model ?? '');
+  const configured = useQuery({
+    queryKey: ['configured-models'],
+    queryFn: () => modelsApi.listConfigured(),
+    staleTime: 30_000,
+  });
+  const textModels =
+    configured.data?.capabilities?.find((g) => g.capability === 'text_generation')?.models ?? [];
+  const options = llmModelOptions(textModels, current);
+  const unknown = !!current && configured.isSuccess && !textModels.some((m) => m.model_id === current);
   return (
     <>
       <TextAreaField
@@ -285,16 +296,29 @@ function LLMConfig({ data, onUpdate }: PanelProps) {
       />
       <SelectField
         label="Model"
-        value={String(data.model ?? 'gpt-4o')}
-        onChange={(v) => onUpdate({ model: v })}
-        options={[
-          { label: 'GPT-4o', value: 'gpt-4o' },
-          { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
-          { label: 'Claude 3.5 Sonnet', value: 'claude-3-5-sonnet-20241022' },
-          { label: 'Claude 3.5 Haiku', value: 'claude-3-5-haiku-20241022' },
-          { label: 'Gemini 1.5 Pro', value: 'gemini-1.5-pro' },
-        ]}
+        value={current}
+        onChange={(v) => onUpdate({ model: v || undefined })}
+        options={options}
       />
+      {configured.isError && (
+        <p className="text-xs text-white/40 flex items-start gap-1.5">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          Could not load the Model Registry; the step uses the registry order.
+        </p>
+      )}
+      {configured.isSuccess && textModels.length === 0 && (
+        <p className="text-xs text-amber-300/80 flex items-start gap-1.5">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          No text-generation model is configured. Add one in the Model Registry.
+        </p>
+      )}
+      {unknown && (
+        <p role="alert" className="text-xs text-amber-300/80 flex items-start gap-1.5">
+          <ShieldAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          {current} is not configured in the Model Registry — this step will fail. Pick a
+          configured model or {DEFAULT_MODEL_OPTION}.
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <NumberField
           label="Temperature"

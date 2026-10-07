@@ -281,14 +281,32 @@ def resolve_provider(
     # staging workflows answered with canned text as if a model had.
     from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
 
-    if not fake_llm_allowed():
+    placeholder: Any = None if fake_llm_allowed() else UnconfiguredLLMProvider()
+
+    # No env provider, but the Model Registry has usable text models (own
+    # base_url / own key / a provider whose env key exists): THEY are the
+    # platform LLM — never the placeholder (registry-only deployments ran every
+    # goal on the canned FakeProvider). Resolved per call, see registry_llm.
+    if provider_configs is None:
+        from app.providers.registry_llm import registry_backed_provider, registry_has_usable_llm
+
+        if registry_has_usable_llm():
+            logger.info("provider_resolved", type="registry", name="Model Registry")
+            return registry_backed_provider()
+
+    if placeholder is not None:
         logger.error("no_platform_llm_provider_configured")
-        return UnconfiguredLLMProvider()
+        return placeholder
 
     # Fallback: FakeProvider for dev/test — uses realistic cycling responses so
     # the AgentGraph fully executes (plan → execute → verify → complete) even
     # without an LLM API key.
     logger.warning("no_llm_provider_configured_using_fake")
+    return fake_dev_provider()
+
+
+def fake_dev_provider() -> Any:
+    """The canned development/test FakeProvider (never outside development/test)."""
     from app.providers.fake import FakeProvider
 
     _fake_responses = [

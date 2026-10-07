@@ -43,26 +43,57 @@ def _env(name: str) -> str:
     return get_provider_env(name)
 
 
-def _provider_config(provider: str, model: str) -> Any | None:
-    """A ProviderConfig for *provider* from the deployment's credentials, or None."""
+# Providers whose public API a registry model can reach with ONLY its own saved
+# credential (no ``base_url``): the adapter uses the provider's default endpoint.
+KEYED_ENDPOINT_PROVIDERS = frozenset(
+    {"anthropic", "openai", "nvidia", "groq", "gemini", "xai", "openrouter"}
+)
+
+
+def has_own_api_key(m: Any) -> bool:
+    """Whether a registry entry carries its own (vault-encrypted) credential."""
+    return bool(str((getattr(m, "extra", None) or {}).get("api_key_encrypted") or "").strip())
+
+
+def keyed_endpoint_usable(m: Any) -> bool:
+    """A registry entry without ``base_url`` whose own key reaches its provider's API."""
+    return (
+        not getattr(m, "base_url", None)
+        and has_own_api_key(m)
+        and _norm(str(getattr(m, "provider", "") or "")) in KEYED_ENDPOINT_PROVIDERS
+    )
+
+
+def _provider_config(provider: str, model: str, api_key: str | None = None) -> Any | None:
+    """A ProviderConfig for *provider* from the deployment's credentials, or None.
+
+    ``api_key`` (a registry model's own decrypted credential) replaces the
+    provider's env key.
+    """
     import os
 
     from app.providers.registry import ProviderConfig
 
     p = _norm(provider)
+
+    def _key(env_name: str) -> str:
+        return api_key if api_key else _env(env_name)
+
     if p == "anthropic":
-        key = _env("ANTHROPIC_API_KEY")
+        key = _key("ANTHROPIC_API_KEY")
         return ProviderConfig("anthropic", api_key=key, models=[model]) if key else None
     if p == "openai":
-        key = _env("OPENAI_API_KEY")
+        key = _key("OPENAI_API_KEY")
         base = os.getenv("OPENAI_BASE_URL", "") or "https://api.openai.com/v1"
+        if api_key:  # the model's own key belongs to the official API
+            base = "https://api.openai.com/v1"
         return ProviderConfig("openai", base_url=base, api_key=key, models=[model]) if key else None
     if p == "nvidia":
-        key = _env("NVIDIA_API_KEY")
+        key = _key("NVIDIA_API_KEY")
         base = _env("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1"
         return ProviderConfig("nvidia", base_url=base, api_key=key, models=[model]) if key else None
     if p == "groq":
-        key = _env("GROQ_API_KEY")
+        key = _key("GROQ_API_KEY")
         return (
             ProviderConfig(
                 "groq", base_url="https://api.groq.com/openai/v1", api_key=key, models=[model]
@@ -71,13 +102,13 @@ def _provider_config(provider: str, model: str) -> Any | None:
             else None
         )
     if p == "gemini":
-        key = _env("GOOGLE_API_KEY")
+        key = _key("GOOGLE_API_KEY")
         return ProviderConfig("gemini", api_key=key, models=[model]) if key else None
     if p == "xai":
-        key = _env("XAI_API_KEY")
+        key = _key("XAI_API_KEY")
         return ProviderConfig("xai", api_key=key, models=[model]) if key else None
     if p == "openrouter":
-        key = _env("OPENROUTER_API_KEY")
+        key = _key("OPENROUTER_API_KEY")
         return ProviderConfig("openrouter", api_key=key, models=[model]) if key else None
     if p == "ollama":
         base = _env("OLLAMA_BASE_URL")
@@ -118,6 +149,20 @@ def _endpoint_overrides(model: str) -> list[Any]:
             if m.model_id == model
             and getattr(m, "base_url", None)
             and (m.extra or {}).get("source") == "override"
+        ]
+    except Exception:  # pragma: no cover - never block a call
+        return []
+
+
+def _keyed_overrides(model: str) -> list[Any]:
+    """Entries of *model* with their own credential but no ``base_url``."""
+    try:
+        from app.ai_router.registry import model_registry
+
+        return [
+            m
+            for m in model_registry.list_configured()
+            if m.model_id == model and keyed_endpoint_usable(m)
         ]
     except Exception:  # pragma: no cover - never block a call
         return []
@@ -199,6 +244,42 @@ class ModelDispatchProvider:
             self._adapters.setdefault(key, adapter)
             return self._adapters[key]
 
+    def _keyed_adapter(self, endpoint: Any) -> Any | None:
+        """The provider's own API with the model's saved credential (cached).
+
+        For a registry model saved with an API key but no ``base_url``: without
+        this, its key was ignored and the model was "skipped at runtime" unless
+        the provider's env key happened to be set.
+        """
+        from app.ai_router.model_endpoints import endpoint_api_key
+
+        secret = str((getattr(endpoint, "extra", None) or {}).get("api_key_encrypted") or "")
+        key = f"key:{_norm(endpoint.provider)}|{endpoint.model_id}|{hash(secret)}"
+        with self._lock:
+            if key in self._adapters:
+                return self._adapters[key]
+        adapter: Any = None
+        try:
+            from app.providers.registry import _instantiate_provider
+
+            cfg = _provider_config(
+                endpoint.provider,
+                endpoint.model_id,
+                api_key=endpoint_api_key(endpoint.provider, endpoint),
+            )
+            adapter = _instantiate_provider(cfg) if cfg is not None else None
+            if adapter is not None and not getattr(adapter, "_agentverse_provider_type", None):
+                adapter._agentverse_provider_type = _norm(endpoint.provider)
+        except Exception as exc:
+            logger.warning(
+                "model_dispatch_keyed_adapter_failed model=%s error=%s",
+                endpoint.model_id, str(exc)[:200],
+            )
+            adapter = None
+        with self._lock:
+            self._adapters.setdefault(key, adapter)
+            return self._adapters[key]
+
     def target_for(self, model: str | None) -> Any:
         """The provider object that should serve *model*."""
         if not model:
@@ -207,6 +288,12 @@ class ModelDispatchProvider:
         # is served there, whatever the platform provider is.
         for endpoint in _endpoint_overrides(model):
             adapter = self._endpoint_adapter(endpoint)
+            if adapter is not None:
+                return adapter
+        # A model saved with its own API key (no URL) is served by its
+        # provider's public API with that key.
+        for endpoint in _keyed_overrides(model):
+            adapter = self._keyed_adapter(endpoint)
             if adapter is not None:
                 return adapter
         endpoints = getattr(self._inner, "_endpoints", None)

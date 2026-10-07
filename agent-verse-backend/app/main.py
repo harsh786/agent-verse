@@ -166,6 +166,17 @@ def _apply_onprem_settings(settings: Settings) -> None:
         settings.rag_hosted_reranker_allow_internal = True  # trusted LAN endpoint
 
 
+def _registry_llm_at_startup(settings: Any) -> bool:
+    """The Model Registry already holds a usable text model (production start guard)."""
+    try:
+        from app.providers.registry_llm import registry_llm_configured_at_startup
+
+        return registry_llm_configured_at_startup(str(getattr(settings, "redis_url", "") or ""))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("registry_llm_startup_check_failed", error=str(exc)[:200])
+        return False
+
+
 def _resolve_provider_for_app(settings: Settings) -> Any:
     """Resolve a real LLM provider from environment, or FakeProvider as last resort.
 
@@ -201,11 +212,15 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
         env = os.getenv("ENVIRONMENT", "development").lower()
         # LLM_REQUIRE_PLATFORM_KEY=false: a BYOK-only deployment starts without a
         # platform key (tenants without their own key get an honest error).
-        if env == "production" and platform_key_required():
+        if (
+            env == "production"
+            and platform_key_required()
+            and not _registry_llm_at_startup(settings)
+        ):
             raise RuntimeError(
                 "FATAL: No LLM provider configured for production. "
-                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-                "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
+                "Add a model in the Model Registry, or set ANTHROPIC_API_KEY, "
+                "OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, or OLLAMA_BASE_URL."
             )
         from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
 
@@ -810,11 +825,12 @@ def create_app(
             if (
                 _os.getenv("ENVIRONMENT", "development").lower() == "production"
                 and platform_key_required()
+                and not _registry_llm_at_startup(settings)
             ):
                 raise RuntimeError(
                     "FATAL: No LLM provider configured for production. "
-                    "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-                    "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
+                    "Add a model in the Model Registry, or set ANTHROPIC_API_KEY, "
+                    "OPENAI_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY, or OLLAMA_BASE_URL."
                 )
             from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
 
@@ -839,6 +855,15 @@ def create_app(
     except Exception as _reg_exc:
         logger.warning("provider_registry_failed_fallback", error=str(_reg_exc)[:60])
         _app_provider = _resolve_provider_for_app(settings)
+    # The platform LLM for long-lived wiring (workflow / NL-trigger resolvers):
+    # with no env provider, the Model Registry's models resolved PER CALL, so a
+    # model added after startup is used without a restart. Per call the
+    # resolvers treat it as absent while the registry has no usable model.
+    from app.providers.registry_llm import live_platform_provider, registry_backed_provider
+
+    _platform_live = live_platform_provider(_app_provider) or registry_backed_provider(
+        _app_provider
+    )
     _meta_agent = MetaAgentPlanner(provider=_app_provider)
     _schedule_store = ScheduleStore()
     _nl_sched = NLScheduler(provider=_app_provider)
@@ -1216,6 +1241,24 @@ def create_app(
     if _embedder_proxy is not None:
         _embedder_proxy.add_change_listener(_on_embedder_reloaded)
 
+    def _bind_registry_llm() -> bool | None:
+        """Make the registry-backed provider the platform LLM when it can serve.
+
+        ``None``: nothing to do (a real env provider, or app.state's provider
+        was replaced, e.g. by a test); ``True``: bound; ``False``: the registry
+        has no usable text model yet.
+        """
+        if not isinstance(_app_provider, FakeProvider):
+            return None
+        if getattr(app.state, "_app_provider", None) is not _app_provider:
+            return None
+        if not _platform_live.has_models():
+            return False
+        app.state._app_provider = _platform_live
+        app.state.llm_provider = _platform_live
+        logger.info("llm_bound_from_registry")
+        return True
+
     def _rebind_registry_embedder() -> None:
         """Re-resolve the embedder now that the registry store is wired.
 
@@ -1427,6 +1470,21 @@ def create_app(
                         watch_for_late_registry_embedder(
                             _rebind_registry_embedder,
                             is_bound=lambda: getattr(app.state, "embedder", None) is not None,
+                        )
+                    )
+                # No env LLM provider: once the registry store is wired, its
+                # models are the platform LLM. Bind now, or as soon as an
+                # operator adds one (goals resolve the registry per goal anyway).
+                if _bind_registry_llm() is False:
+                    import asyncio as _late_llm_asyncio
+
+                    from app.providers.registry_llm import watch_for_late_registry_llm
+
+                    app.state._late_llm_task = _late_llm_asyncio.create_task(
+                        watch_for_late_registry_llm(
+                            _bind_registry_llm,
+                            is_bound=lambda: getattr(app.state, "_app_provider", None)
+                            is not _app_provider,
                         )
                     )
                 # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7 + Fix 2)
@@ -2071,7 +2129,7 @@ def create_app(
                     llm_provider=_wf_platform,
                     provider=_wf_platform,
                     llm_provider_resolver=_WFLLMResolver(
-                        platform_provider=_wf_platform, db_factory=db_factory
+                        platform_provider=_platform_live, db_factory=db_factory
                     ),
                     ocr_engine=_WFOcrEngine(),
                     knowledge_store=getattr(app.state, "knowledge_store", None),
@@ -2957,6 +3015,13 @@ def create_app(
                     import asyncio as _repo_asyncio
 
                     await _repo_asyncio.gather(*_repo_tasks, return_exceptions=True)
+                if _late_llm_task := getattr(app.state, "_late_llm_task", None):
+                    _late_llm_task.cancel()
+                    import asyncio as _late_llm_aio
+                    import contextlib
+
+                    with contextlib.suppress(Exception, _late_llm_aio.CancelledError):
+                        await _late_llm_task
                 if _late_emb_task := getattr(app.state, "_late_embedder_task", None):
                     _late_emb_task.cancel()
                     import asyncio as _late_asyncio
@@ -3248,6 +3313,9 @@ def create_app(
     # app.state per call so the lifespan's Postgres/Redis swaps apply.
     app.state.pattern_run_service = PatternRunService(app.state)
     app.state._app_provider = _app_provider
+    # Registry-backed platform LLM (see _platform_live); the lifespan binds it as
+    # _app_provider once the Model Registry has a usable model.
+    app.state.platform_llm = _platform_live
     # Collaboration insights and schedule suggestions read app.state.llm_provider,
     # which nothing set, so they always used their rule-based fallback even with
     # a real LLM configured. Bind the real provider (never the no-key
@@ -3442,9 +3510,7 @@ def create_app(
             # QA-7: tool steps honour the tenant's governance policies.
             policy_engine=_policy_engine,
             # BYOK-3: tenant BYOK → platform → "no LLM provider configured".
-            llm_provider_resolver=TenantLLMProviderResolver(
-                platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
-            ),
+            llm_provider_resolver=TenantLLMProviderResolver(platform_provider=_platform_live),
         )
         _wf_runner = WorkflowRunner(compiler=_wf_compiler)
         # In-memory (no-DB) engine: sub_workflow runs its child inline via this
@@ -3460,9 +3526,7 @@ def create_app(
         _nl_trigger_resolver = NLTriggerResolver(
             llm_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider,
             # BYOK-3: the calling tenant's own key first, then the platform's.
-            llm_provider_resolver=TenantLLMProviderResolver(
-                platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
-            ),
+            llm_provider_resolver=TenantLLMProviderResolver(platform_provider=_platform_live),
         )
         _system_template_store = SystemTemplateStore()
 
