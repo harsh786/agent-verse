@@ -15,7 +15,8 @@
     "status": {
       "complete": "Complete", "failed": "Failed",
       "executing": "Executing", "planning": "Planning",
-      "waiting_human": "Awaiting Approval", "cancelled": "Cancelled"
+      "waiting_human": "Awaiting Approval", "waiting_children": "Waiting on sub-goals",
+      "cancelled": "Cancelled"
     },
     "tabs": { "results": "Results", "execution": "Execution", "events": "Developer Log", "eval": "Eval", "explain": "Why?" },
     "actions": { "cancel": "Cancel", "pause": "Pause", "resume": "Resume", "refresh": "Refresh" }

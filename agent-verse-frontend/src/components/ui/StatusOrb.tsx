@@ -9,7 +9,7 @@ export type OrbStatus =
   | 'running' | 'executing' | 'active'
   | 'completed' | 'complete' | 'success' | 'published'
   | 'failed' | 'error'
-  | 'pending' | 'planning' | 'waiting_human' | 'waiting' | 'queued'
+  | 'pending' | 'planning' | 'waiting_human' | 'waiting_children' | 'waiting' | 'queued'
   | 'idle' | 'paused' | 'draft'
   | 'offline' | 'unknown'
   | 'connected' | 'degraded'
@@ -23,6 +23,7 @@ const ORB_COLOR: Record<string, string> = {
   failed:        '#EF4444', error:        '#EF4444',
   degraded:      '#F59E0B',
   pending:       '#F59E0B', planning:     '#F59E0B', waiting_human: '#F59E0B',
+  waiting_children: '#F59E0B',
   waiting:       '#F59E0B', queued:       '#F59E0B',
   idle:          '#475569', paused:       '#475569', draft:     '#8B5CF6',
   offline:       '#1E2535', unknown:      '#1E2535',
@@ -30,7 +31,7 @@ const ORB_COLOR: Record<string, string> = {
 
 const PULSE_SET = new Set([
   'running', 'executing', 'active', 'pending', 'planning',
-  'waiting_human', 'queued', 'connected',
+  'waiting_human', 'waiting_children', 'queued', 'connected',
 ]);
 
 interface StatusOrbProps {

@@ -7,7 +7,7 @@
 
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { useGoalStream } from './useGoalStream';
+import { isTerminalGoalEvent, useGoalStream } from './useGoalStream';
 import { useAuthStore } from '@/stores/auth';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -342,6 +342,40 @@ describe('useGoalStream — reconnection, backoff, and resilience', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     ctl2.push(sseFrame({ type: 'goal_complete' }));
     await advance(0);
+  });
+
+  test('worker_complete with a waiting_children status is not terminal (fan-out parent parked)', async () => {
+    vi.useFakeTimers();
+    const ctl1 = makeControllableStream();
+    const ctl2 = makeControllableStream();
+    const streams = [ctl1, ctl2];
+    let call = 0;
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(streams[call++].stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderHook(() => useGoalStream('goal-wc'));
+    ctl1.push(sseFrame({ type: 'goal_waiting_children', pattern: 'supervisor', children: 3 }));
+    ctl1.push(sseFrame({ type: 'worker_complete', status: 'waiting_children' }));
+    await advance(0);
+    ctl1.close();
+    await advance(1000);
+    // The stream stays live: it reconnects to follow the parent's re-entry.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    ctl2.push(sseFrame({ type: 'goal_complete' }));
+    await advance(0);
+  });
+
+  test('isTerminalGoalEvent: waiting_children is a suspension, not an end', () => {
+    expect(isTerminalGoalEvent({ type: 'worker_complete', status: 'waiting_children' })).toBe(false);
+    expect(isTerminalGoalEvent({ type: 'goal_waiting_children' })).toBe(false);
+    expect(isTerminalGoalEvent({ type: 'worker_complete', status: 'complete' })).toBe(true);
   });
 
   test('backs off exponentially across repeated network failures (1s, 2s, 4s, 8s)', async () => {
