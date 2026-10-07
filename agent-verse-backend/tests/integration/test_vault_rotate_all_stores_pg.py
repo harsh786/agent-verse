@@ -71,8 +71,19 @@ async def _insert(conn: Any, table: str, values: dict[str, Any]) -> None:
     await conn.execute(text(f"INSERT INTO {table} ({names}) VALUES ({params})"), row)
 
 
+@pytest.fixture(scope="module")
+def isolated_pg_url(pg_url: str) -> Any:
+    """A database of this module's own: rotation scans EVERY tenant's rows, so a
+    value another test sealed with a different master key (in the shared
+    ``pg_url`` database) made the rotation fail honestly in full-suite order."""
+    from tests._test_backends import fresh_migrated_database
+
+    with fresh_migrated_database(pg_url) as url:
+        yield url
+
+
 @pytest.fixture
-async def env(pg_url: str, redis_url: str) -> Any:
+async def env(isolated_pg_url: str, redis_url: str) -> Any:
     import redis.asyncio as aioredis
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -85,7 +96,7 @@ async def env(pg_url: str, redis_url: str) -> Any:
     old = CredentialVault(master_key=OLD_KEY)
     tenant_key = bytes(range(32))
     tenant_vault = CredentialVault.from_byok(tenant_key)
-    engine = create_async_engine(pg_url)
+    engine = create_async_engine(isolated_pg_url)
     async with engine.begin() as conn:
         await conn.execute(text("SET session_replication_role = replica"))  # skip FK seeding
         for t in (T1, T2):

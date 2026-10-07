@@ -78,6 +78,45 @@ def migrated_postgres() -> Iterator[str]:
 
 
 @contextmanager
+def fresh_migrated_database(server_url: str) -> Iterator[str]:
+    """Yield the DSN of a new, fully-migrated database on ``server_url``'s server.
+
+    For tests whose subject scans a whole store across tenants (e.g. the vault
+    master-key rotation), so rows other tests left in the shared ``pg_url``
+    database cannot change their result. Dropped afterwards.
+    """
+    import asyncio
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+
+    import asyncpg
+
+    name = f"isolated_{uuid.uuid4().hex[:12]}"
+    raw = server_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    async def _exec(sql: str) -> None:
+        conn = await asyncpg.connect(raw)
+        try:
+            await conn.execute(sql)
+        finally:
+            await conn.close()
+
+    def _admin(sql: str) -> None:
+        # Callers may already be inside an event loop: run on a fresh one in a thread.
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(asyncio.run, _exec(sql)).result()
+
+    _admin(f'CREATE DATABASE "{name}"')
+    base, _, _db = server_url.rpartition("/")
+    url = f"{base}/{name}"
+    try:
+        alembic_upgrade_head(url)
+        yield url
+    finally:
+        _admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+@contextmanager
 def redis_container() -> Iterator[str]:
     """Yield the URL of a fresh Redis container."""
     try:
