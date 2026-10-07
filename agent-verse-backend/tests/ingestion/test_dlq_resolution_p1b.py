@@ -47,7 +47,7 @@ async def test_operator_retry_refetches_a_permanently_failed_object() -> None:
     pipeline, tracker = _Pipeline(), _tracker()
     s3 = MagicMock()
     s3.get_object.return_value = _ok(b"readable now")
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         outcome = await _retry_one_dlq_entry(
             dlq_entry_for(doc), tracker, pipeline, _store(_config()), force=True
         )
@@ -60,7 +60,7 @@ async def test_operator_retry_refetches_a_permanently_failed_object() -> None:
 async def test_the_automatic_retry_still_gives_up_on_a_permanent_failure() -> None:
     doc = await _failed_webhook_doc(_denied())
     pipeline, tracker = _Pipeline(), _tracker()
-    with patch("boto3.client") as client:
+    with patch("boto3.Session") as client:
         outcome = await _retry_one_dlq_entry(dlq_entry_for(doc), tracker, pipeline,
                                              _store(_config()))
     assert outcome == "permanent"

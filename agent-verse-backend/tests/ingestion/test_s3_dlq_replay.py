@@ -103,7 +103,7 @@ def _store(config: SourceConfig) -> MagicMock:
 async def _failed_webhook_doc(error: Exception) -> RawDocument:
     s3 = MagicMock()
     s3.get_object.side_effect = error
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         docs = [d async for d in S3Connector().on_webhook(_config(), _event("late.txt"), {})]
     assert len(docs) == 1
     return docs[0]
@@ -125,7 +125,7 @@ async def test_dlq_retry_refetches_the_object_and_resolves() -> None:
     pipeline, tracker = _Pipeline(), _tracker()
     s3 = MagicMock()
     s3.get_object.return_value = _ok(b"fresh content")
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         outcome = await _retry_one_dlq_entry(
             dlq_entry_for(doc), tracker, pipeline, _store(_config())
         )
@@ -142,7 +142,7 @@ async def test_a_replay_that_fails_transiently_again_stays_in_the_dlq() -> None:
     pipeline, tracker = _Pipeline(), _tracker()
     s3 = MagicMock()
     s3.get_object.side_effect = _throttled()
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         outcome = await _retry_one_dlq_entry(
             dlq_entry_for(doc), tracker, pipeline, _store(_config())
         )
@@ -161,7 +161,7 @@ async def test_a_replay_that_now_fails_permanently_is_marked_permanent() -> None
     s3.get_object.side_effect = ClientError(
         {"Error": {"Code": "NoSuchKey"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "GetObject"
     )
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         outcome = await _retry_one_dlq_entry(
             dlq_entry_for(doc), tracker, pipeline, _store(_config())
         )
@@ -196,7 +196,7 @@ async def test_a_permanent_failure_reference_is_not_replayed() -> None:
     )
     assert doc.metadata[CONNECTOR_FAILURE_RETRYABLE_KEY] is False
     pipeline, tracker = _Pipeline(), _tracker()
-    with patch("boto3.client") as client:
+    with patch("boto3.Session") as client:
         outcome = await _retry_one_dlq_entry(
             dlq_entry_for(doc), tracker, pipeline, _store(_config())
         )

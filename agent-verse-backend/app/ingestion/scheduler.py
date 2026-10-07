@@ -849,14 +849,31 @@ async def _sync_locked(
 
     # ── Get connector ────────────────────────────────────────────────────────
     try:
+        # Credentials this worker cannot decrypt (its vault key differs from the
+        # API's) were blanked by the store: never run on them — an S3 client
+        # without keys fell back to the pod's ambient AWS chain / IMDS.
+        from app.ingestion.base_connector import (
+            ConnectorSecretsUndecryptableError,
+            refuse_undecryptable_secrets,
+        )
+
+        refuse_undecryptable_secrets(config)
         connector_cls = get_connector(config.source_type)
     except (KeyError, RuntimeError) as exc:
-        # The module failed to import / the type is unknown / its flag is off.
+        # The module failed to import / the type is unknown / its flag is off,
+        # or the stored credentials are undecryptable here.
         # Record a failed job (the UI's sync status shows the reason) and free
         # the lock — this used to escape before the try/finally, holding it.
         from app.ingestion.connector_registry import connector_error_message
 
-        message = connector_error_message(exc)
+        if isinstance(exc, ConnectorSecretsUndecryptableError):
+            _log.error(
+                "ingestion_source_secrets_undecryptable source=%s tenant=%s keys=%s",
+                source_id, tenant_id, exc.keys,
+            )
+            message = str(exc)
+        else:
+            message = connector_error_message(exc)
         failed_job = await tracker.create_job(
             config,
             job_id=job_id or lease.job_id,
