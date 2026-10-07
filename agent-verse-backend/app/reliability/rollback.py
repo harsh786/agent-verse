@@ -185,7 +185,9 @@ class RollbackEngine:
                     try:
                         asyncio.get_running_loop()
                     except RuntimeError:
-                        result = asyncio.run(result)
+                        from app.db.session import run_in_fresh_loop
+
+                        result = run_in_fresh_loop(result)
                     else:
                         result.close()  # never awaited: no "never awaited" warning
                         logger.error(

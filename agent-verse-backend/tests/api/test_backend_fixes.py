@@ -745,7 +745,7 @@ class TestGoalLifecycle:
         assert not is_valid_transition("cancelled", "complete")
         assert not is_valid_transition("complete", "complete")
         assert allowed_predecessors("cancelled") == frozenset(
-            {"planning", "executing", "verifying", "waiting_human"}
+            {"planning", "executing", "verifying", "waiting_human", "waiting_children"}
         )
 
     def test_planning_to_executing_valid(self) -> None:
