@@ -150,7 +150,12 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     pipeline_cls.assert_called_once()
     kwargs = pipeline_cls.call_args.kwargs
     assert kwargs["knowledge_store"] is fake_knowledge_store
-    assert kwargs["embedder"] is fake_provider
+    # The embedder is traced (cost + spans) around the resolved provider.
+    from app.observability.traced_provider import TracedProvider
+
+    embedder = kwargs["embedder"]
+    assert isinstance(embedder, TracedProvider)
+    assert embedder._inner is fake_provider
     # Stage 6 PII + Stage 1 quota are wired (both were previously never passed).
     from app.ingestion.pii import RegexPIIAnalyzer
     from app.ingestion.quota import IngestionQuotaEnforcer
