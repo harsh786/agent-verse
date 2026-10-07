@@ -2804,11 +2804,21 @@ class ExecutorMixin:
             # Durable (Postgres, tenant-scoped) when bound — not this process's memory.
             from app.observability.cost_breakdown import arecord_role_cost as _rrc
 
+            # Provenance: the model that SERVED the call — after a failover the
+            # requested ``_exec_model`` (e.g. a dead pinned model) did not, and
+            # it used to be recorded as the executor's model anyway.
+            from app.providers.circuit_breaker import fallback_from_of as _fb_of
+
+            _served_exec_model = str(
+                resp.model if hasattr(resp, "model") and resp.model else _exec_model
+            )
+            _exec_fallback_from = [m for m in _fb_of(resp) if m != _served_exec_model]
             await _rrc(
                 goal_id=_charge_goal_id,
                 tenant_id=tenant_ctx.tenant_id,
                 role="executor",
-                model=_exec_model,
+                model=_served_exec_model,
+                fallback_from=_exec_fallback_from,
                 input_tok=getattr(resp, "input_tokens", 0),
                 output_tok=getattr(resp, "output_tokens", 0),
                 cost=(

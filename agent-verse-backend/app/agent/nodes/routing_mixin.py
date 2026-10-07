@@ -43,6 +43,44 @@ class RoutingMixin:
         )
 
     def _route(self, state: GraphState) -> str:
+        decision = self._route_decision(state)
+        agent_state: AgentState | None = state.get("agent_state")
+        if (
+            decision == "max_iter"
+            and agent_state is not None
+            and state.get("terminal_reason") != "guardrail_rejected"
+        ):
+            self._label_empty_answer_failure(agent_state)
+        return decision
+
+    @staticmethod
+    def _label_empty_answer_failure(agent_state: AgentState) -> None:
+        """A run that ends failed because it never produced an answer says so.
+
+        The verifier refuses an empty final answer (``empty_answer``) and the goal
+        replans; when the run then ends (max iterations, stagnation, reflection
+        exhausted, permanent failure) the failure reason is ``empty_answer``,
+        not a generic "max iterations reached". Budget / guardrail terminations
+        keep their own reason.
+        """
+        if agent_state.status is not GoalStatus.FAILED:
+            return
+        if not agent_state.context.get("_empty_answer"):
+            return
+        if agent_state.context.get("terminal_reason") in ("budget_exceeded", "guardrail_rejected"):
+            return
+        from app.agent.nodes._helpers import EMPTY_ANSWER_CODE
+
+        why = (agent_state.error_message or "").strip()
+        if why.startswith(EMPTY_ANSWER_CODE):
+            return
+        agent_state.error_message = (
+            f"{EMPTY_ANSWER_CODE}: the goal produced no answer (every attempt ended with "
+            f"empty output); {why or 'execution stopped'}"
+        )[:1000]
+        agent_state.context["terminal_reason"] = EMPTY_ANSWER_CODE
+
+    def _route_decision(self, state: GraphState) -> str:
         agent_state: AgentState | None = state.get("agent_state")
         if agent_state is None:
             return "max_iter"

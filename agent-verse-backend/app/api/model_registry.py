@@ -504,6 +504,35 @@ def _annotate_embedding_rows(request: Request, rows: list[dict[str, Any]]) -> No
         row["index_dimension"] = target
 
 
+def _embedding_selected(rows: list[dict[str, Any]], active: dict[str, Any]) -> str | None:
+    """The embedding model the listing presents as selected — never a refused one.
+
+    A row whose vector width does not fit the index (``dimension_mismatch``) is
+    refused for embeddings (the embedder skips it), so it is marked ``refused``
+    with the reason and is never ``selected``, even when it ranks first in the
+    preference order. ``selected`` is the model the process actually embeds
+    with (``active_embedder``) when that is known; otherwise the first eligible
+    row that is not refused. Each row also gets ``selected: bool``.
+    """
+    for row in rows:
+        refused = bool(row.get("dimension_mismatch"))
+        row["refused"] = refused
+        row["refusal_reason"] = str(row.get("dimension_reason") or "") if refused else ""
+    selected: str | None
+    if active.get("status") == "available":
+        selected = str(active.get("model") or "") or None
+    elif active.get("status") == "unknown":
+        selected = next(
+            (r["model_id"] for r in rows if r.get("provider_ready") and not r["refused"]),
+            None,
+        )
+    else:  # not_configured / unavailable: nothing embeds, so nothing is selected
+        selected = None
+    for row in rows:
+        row["selected"] = bool(selected) and row["model_id"] == selected and not row["refused"]
+    return selected
+
+
 def _active_embedder_status(request: Request) -> dict[str, Any]:
     """The embedder this process embeds with, and why a registry model was refused."""
     resolution = getattr(request.app.state, "embedder_resolution", None)
@@ -558,11 +587,14 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
         preference = model_registry.preference_order(cap)
         rows = [_configured_dict(m, rank=i + 1) for i, m in enumerate(ordered)]
         fallback = resolve_fallback_models(task, selected) if selected else []
+        active: dict[str, Any] | None = None
         if cap is ModelCapability.EMBEDDING:
             _annotate_embedding_rows(request, rows)
             # Embeddings never fail over to another model, only to other
             # endpoints of the selected one.
             fallback = []
+            active = _active_embedder_status(request)
+            selected = _embedding_selected(rows, active)
         group: dict[str, Any] = {
             "capability": cap.value,
             "selected_model_id": selected,
@@ -576,7 +608,10 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
             group["failover_providers"] = [
                 r["provider"] for r in rows if r["model_id"] == selected and r["provider_ready"]
             ]
-            group["active_embedder"] = _active_embedder_status(request)
+            group["active_embedder"] = active
+            group["refused_model_ids"] = sorted(
+                {r["model_id"] for r in rows if r.get("refused")}
+            )
         if cap in _CAPABILITY_NOTES:
             group["note"] = _CAPABILITY_NOTES[cap]
         groups.append(group)

@@ -541,6 +541,27 @@ class VerifierMixin:
                         f"high-risk goal ({type(exc).__name__}). " + (reason or "")
                     ).strip()
 
+        # Deterministic gate: a goal is never complete with an empty answer. A
+        # verifier LLM (often the same small model that produced nothing) used to
+        # accept a run whose every step output was empty or whitespace, and the
+        # goal ended ``complete`` with no answer. A tool result or a synthesized
+        # sub-goal result counts as the answer (empty_final_answer). Last, so no
+        # later verdict (consensus, grounding) can turn it back into a success.
+        from app.agent.nodes._helpers import EMPTY_ANSWER_CODE, empty_final_answer
+
+        if success and empty_final_answer(agent_state):
+            success = False
+            retry = True
+            agent_state.context["_empty_answer"] = True
+            reason = (
+                f"{EMPTY_ANSWER_CODE}: the run produced no answer (every step output was "
+                "empty or whitespace and no tool produced a result); re-execute and state "
+                "the answer explicitly."
+            )
+            agent_state.context["verification_retry"] = True
+            self._logger.warning("verifier_empty_answer", goal_id=agent_state.goal_id)
+        else:
+            agent_state.context.pop("_empty_answer", None)
         agent_state.verification_success = success
         agent_state.verification_feedback = reason
         await self._emit({"type": "verification_done", "success": success, "reason": reason})

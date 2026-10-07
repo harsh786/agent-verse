@@ -180,3 +180,31 @@ async def test_goal_service_outcome_comes_from_the_goal_record() -> None:
     other = TenantContext(tenant_id="t-other", plan=PlanTier.FREE, api_key_id="k")
     with pytest.raises(NotFoundError):
         await svc.get_goal_outcome("g9", other)
+
+
+async def test_trace_role_calls_name_the_serving_model_and_the_failed_over_one(env: Any) -> None:
+    """ONPREM-ROUTING-FAILOVER: the dead pinned model is provenance, never "served"."""
+    client, goals, store = env
+    gid = f"g-{uuid.uuid4().hex}"
+    now = datetime.now(UTC)
+    goals.goals[gid] = {
+        "status": "complete", "created_at": now.isoformat(), "completed_at": now.isoformat(),
+        "failure_reason": None,
+    }
+    await store.put_trace(AgentRunTrace(trace_id="tr-fo", goal_id=gid, tenant_id=_CTX.tenant_id))
+    cost_breakdown.record_role_cost(gid, "executor", "Qwen/Qwen3.5-4B", 30, 3, 0.0,
+                                    fallback_from=["rw-dead-closed-port"])
+    cost_breakdown.record_role_cost(gid, "planner", "Qwen/Qwen3.5-4B", 30, 3, 0.0)
+
+    trace = client.get("/agent-runtime/traces/tr-fo", headers=H).json()
+
+    by_role = {c["role"]: c for c in trace["role_calls"]}
+    assert by_role["executor"]["model"] == "Qwen/Qwen3.5-4B"
+    assert by_role["executor"]["fallback_from"] == ["rw-dead-closed-port"]
+    assert by_role["planner"]["fallback_from"] == []
+    served = {c["model"] for c in trace["role_calls"]} | {
+        s["model"] for s in trace["model_selections"]
+    }
+    assert "rw-dead-closed-port" not in served
+    assert {"role": "executor", "model": "Qwen/Qwen3.5-4B",
+            "fallback_from": ["rw-dead-closed-port"]} in trace["model_selections"]

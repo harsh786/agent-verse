@@ -1123,7 +1123,10 @@ class AgentGraph(
                     _stream_once, label=_key, should_retry=lambda: emitted[0] == 0
                 )
                 self._last_served_model = model
-                return resp
+                # Provenance on the response itself (concurrent steps share this
+                # graph): the serving model, and every model tried before it
+                # (failed, or skipped on an open circuit), in order.
+                return _cb.annotate_served_model(resp, model, [m for m in models[:i] if m])
             except Exception as exc:
                 last_exc = exc
                 self._failed_models.append(model)

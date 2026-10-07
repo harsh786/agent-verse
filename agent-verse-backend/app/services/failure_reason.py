@@ -64,6 +64,8 @@ def terminal_reason_code(status: str, text: object) -> str | None:
         return "runner_lost"
     if msg.startswith("dead lettered"):
         return "dead_lettered"
+    if msg.startswith("empty_answer"):
+        return "empty_answer"
     if "timed out" in msg or msg.startswith("timeouterror"):
         return "timeout"
     if "no llm provider configured" in msg or "vault key mismatch" in msg:

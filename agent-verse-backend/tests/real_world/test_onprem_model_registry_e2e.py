@@ -18,17 +18,20 @@ restored in a ``finally`` (``onprem.RegistrySandbox``).
 * ONPREM-REASONING-GOAL — a multi-step arithmetic + retrieval goal over a small KB: the
   answer is right, it cites the KB, and ``role_calls`` prove the on-prem model served
   planner, executor and verifier — no cloud model was called.
-* ONPREM-EMBEDDER — the stack embeds with the on-prem embedder (1024 dims) end to end.
+* ONPREM-EMBEDDER — the stack embeds with the on-prem embedder (1024 dims) end to end
+  (SKIPPED with the switching steps when the deployment's one global EMBEDDING_DIM differs).
 * ONPREM-TEST-CONNECTION-FAILURES — wrong base_url, endpoint down, unroutable address, wrong
   model id: "Test connection" fails honestly and fast.
 * ONPREM-ROUTING-FAILOVER — a dead preferred model (closed port, then unroutable): goals
-  fail over to the next eligible model per the routing precedence (or fail honestly).
+  fail over to the next eligible model per the routing precedence (or fail honestly); the
+  role record names the model that SERVED each call and the dead one in ``fallback_from``.
 * ONPREM-PREFERENCE-CHANGE — removing the on-prem model from the order changes routing for
   the very next goal.
 * ONPREM-CONTEXT-OVERFLOW — a prompt beyond gemma-4-E2B's 1,024 tokens: handled (honest
-  failure or failover), never a 500 or a hung run.
-* ONPREM-EMBED-DIMENSION — an embedder whose dimension differs from the index is refused or
-  never selected; a collection never mixes dimensions.
+  failure or failover), never a 500 or a hung run. SKIPPED when the cluster serves gemma
+  without a chat template (vLLM 400 "default chat template is no longer allowed").
+* ONPREM-EMBED-DIMENSION — an embedder whose dimension differs from the index is marked
+  refused and never becomes the active embedder; a collection never mixes dimensions.
 * ONPREM-ISOLATION — tenant-scoped routing policies stay per tenant; a non-admin tenant
   cannot change the global registry.
 
@@ -123,7 +126,13 @@ def test_register_and_test_connection(api: LiveAPI, registry: dict[str, Any],
         if reg.get("_http") not in (200, 201):
             soft.append(f"register {name} -> {reg}")
     want_probe = {"chat": "chat", "small": "chat", "embed": "embedding", "rerank": "rerank"}
+    # gemma-4-E2B served without a chat template cannot answer the chat probe:
+    # an environment limitation (reported honestly), not a platform failure.
+    small_no_template = op.chat_template_missing(registry["tests"]["small"])
+    evidence["small_no_chat_template"] = small_no_template
     for name, res in registry["tests"].items():
+        if name == "small" and small_no_template:
+            continue
         if not res.get("ok"):
             soft.append(f"Test connection of {name} failed: {mask(res.get('error'))[:160]}")
         if res.get("probe") != want_probe[name]:
@@ -158,6 +167,9 @@ def test_register_and_test_connection(api: LiveAPI, registry: dict[str, Any],
             if res.get("_http") != 200 or not res.get("enforced"):
                 soft.append(f"routing pin {role}: {res}")
     assert not soft, "; ".join(soft)
+    if small_no_template:
+        pytest.skip("everything else passed; Test connection of the small model not "
+                    "checked: " + op.no_chat_template_reason(op.SMALL_MODEL, op.SMALL_URL))
 
 
 # ── ONPREM-REASONING-GOAL ───────────────────────────────────────────────────
@@ -201,7 +213,7 @@ def test_reasoning_goal_served_on_prem(api: LiveAPI, cleanup: Any, registry: dic
                     total_cost_usd=trace.get("total_cost_usd"))
     if goal.get("status") not in ("complete", "completed"):
         soft.append(f"the reasoning goal ended {goal.get('status')}: "
-                    f"{mask(goal.get('error'))[:200]}")
+                    f"{mask(goal.get('failure_reason') or goal.get('error'))[:200]}")
     for needed in ("205", "295", "pune"):
         if needed not in norm(answer):
             soft.append(f"answer lacks {needed!r} (Hosur 205, Pune 295 free; Pune has more)")
@@ -231,10 +243,14 @@ def test_stack_embeds_with_onprem_model(api: LiveAPI, cleanup: Any,
                                         evidence: dict[str, Any]) -> None:
     evidence["embedder"] = embedder_info
     if "qwen3-embedding" not in str(embedder_info.get("model") or "").lower():
-        pytest.skip(f"the stack embeds with {embedder_info.get('model')!r}: the registry "
-                    "cannot repoint embeddings (a per-model base_url is not used for "
-                    f"embeddings); start the stack with ONPREM_EMBEDDING_BASE_URL="
-                    f"{op.EMBED_URL} and the embedding model {op.EMBED_MODEL}")
+        group = op.capability_group(api, "embedding")
+        active = group.get("active_embedder") or {}
+        row = next((m for m in group.get("models") or []
+                    if m.get("model_id") == op.EMBED_MODEL), {})
+        evidence.update(active_embedder=active, onprem_row={
+            k: row.get(k) for k in ("key", "base_url", "dimensions", "index_dimension",
+                                    "dimension_mismatch", "refused", "refusal_reason")})
+        pytest.skip(_embedder_skip_reason(embedder_info, active, row))
     soft: list[str] = []
     if int(embedder_info.get("dimension") or 0) != op.EMBED_DIM:
         soft.append(f"active embedder dimension {embedder_info.get('dimension')}")
@@ -258,6 +274,39 @@ def test_stack_embeds_with_onprem_model(api: LiveAPI, cleanup: Any,
     evidence["embedding_group"] = {k: group.get(k) for k in ("selected_model_id",
                                                              "fallback_model_ids", "order_mode")}
     assert not soft, "; ".join(soft)
+
+
+def _embedder_skip_reason(info: dict[str, Any], active: dict[str, Any],
+                          row: dict[str, Any]) -> str:
+    """Why the stack does not embed with the on-prem model — the current truth.
+
+    A per-model ``base_url`` IS honoured for embeddings (a36df92a1). What blocks
+    the on-prem embedder is the vector width: the deployment has ONE global
+    ``EMBEDDING_DIM`` (one pgvector chunk table per width; the knowledge store,
+    collections and memory all use it), and a model whose width differs is
+    refused. EMBEDDING_DIM is per deployment, never per tenant.
+    """
+    using = (f"the stack embeds with {info.get('model') or active.get('model')!r} "
+             f"({info.get('dimension') or active.get('dimension')}-d)")
+    switch = (f"To run this scenario use a dedicated deployment (EMBEDDING_DIM is global "
+              f"per deployment, not per tenant): set EMBEDDING_BASE_URL={op.EMBED_URL} "
+              f"EMBEDDING_MODEL={op.EMBED_MODEL} EMBEDDING_DIM={op.EMBED_DIM} (an explicit "
+              "EMBEDDING_BASE_URL stops the NVIDIA embedder from overriding it; a 1024-d "
+              "chunk table exists), restart the API and every worker, put "
+              f"{op.PROVIDER}/{op.EMBED_MODEL} first in the embedding preference order, then "
+              "re-embed existing collections (POST /knowledge/collections/{id}/re-embed) or "
+              "start from fresh volumes")
+    if row.get("dimension_mismatch") or row.get("refused"):
+        return (f"{using}: the deployment has ONE global EMBEDDING_DIM "
+                f"({row.get('index_dimension')}) and {op.EMBED_MODEL} returns "
+                f"{row.get('dimensions') or op.EMBED_DIM}-d vectors, so the registry refuses "
+                "it for embeddings (its per-model base_url is honoured; the width is the "
+                f"blocker). {switch}")
+    if not row:
+        return (f"{using}: {op.EMBED_MODEL} is not registered for embeddings (register it "
+                f"with base_url {op.EMBED_URL} and press Test connection). {switch}")
+    return (f"{using}: {op.EMBED_MODEL} is registered but not the active embedder "
+            f"(registry_refusal: {active.get('registry_refusal')!r}). {switch}")
 
 
 # ── ONPREM-TEST-CONNECTION-FAILURES ─────────────────────────────────────────
@@ -324,24 +373,36 @@ def test_dead_preferred_model_fails_over(api: LiveAPI, cleanup: Any, registry: d
             box.pin_role(role, dead["model_id"])
         goal = _goal(api, cleanup, "Compute 12 multiplied by 12 and reply with just the "
                                    "number. Do not use tools.")
-        served = _served(api, goal) if goal.get("status") in ("complete", "completed") else {}
+        trace: dict[str, Any] = {}
+        if goal.get("status") in ("complete", "completed"):
+            with contextlib.suppress(Exception):
+                trace = op.role_trace(api, goal["_id"])
+    served = op.models_by_role(trace)
+    fell_back = op.fallbacks_by_role(trace)
     every = {m for ms in served.values() for m in ms}
     evidence.update(outage=outage, goal_id=goal["_id"], status=goal.get("status"),
                     seconds=goal["_s"], answer=op.goal_text(goal)[:120],
                     served={k: sorted(v) for k, v in served.items()},
-                    error=mask(goal.get("error"))[:240], registry_log=box.log)
+                    fallback_from={k: sorted(v) for k, v in fell_back.items()},
+                    error=mask(goal.get("failure_reason") or goal.get("error"))[:240],
+                    terminal_reason=goal.get("terminal_reason"), registry_log=box.log)
     if goal.get("status") in ("complete", "completed"):
         if dead["model_id"] in every:
             soft.append("the unreachable model is recorded as having served the goal")
+        if not any(dead["model_id"] in ms for ms in fell_back.values()):
+            soft.append("role_calls do not record the failover from the unreachable model "
+                        "(fallback_from)")
+        if not op.goal_text(goal).strip():
+            soft.append("the goal is complete with an empty answer")
         if op.CHAT_MODEL not in every:
             soft.append(f"failover went to {sorted(every)}, not the next model in the order "
                         f"({op.CHAT_MODEL})")
         if "144" not in op.goal_text(goal):
             soft.append(f"wrong answer after failover: {op.goal_text(goal)[:80]!r}")
     else:
-        err = str(goal.get("error") or "")
+        err = str(goal.get("failure_reason") or goal.get("error") or "")
         soft.append(f"no failover to the next eligible model: the goal ended "
-                    f"{goal.get('status')} ({mask(err)[:160]})")
+                    f"{goal.get('status')} ({goal.get('terminal_reason')}: {mask(err)[:160]})")
     if goal["_s"] > GOAL_TIMEOUT * 0.9:
         soft.append(f"the goal needed {goal['_s']}s against a dead model")
     record(evidence, goal_s=goal["_s"])
@@ -393,8 +454,17 @@ def test_removing_model_from_order_changes_routing(api: LiveAPI, cleanup: Any,
 @pytest.mark.scenario("ONPREM-CONTEXT-OVERFLOW")
 def test_prompt_beyond_small_model_context(api: LiveAPI, cleanup: Any, registry: dict[str, Any],
                                            evidence: dict[str, Any]) -> None:
-    if not registry["tests"]["small"].get("ok"):
-        pytest.fail(f"gemma-4-E2B is unreachable: {registry['tests']['small']}")
+    small = registry["tests"]["small"]
+    if op.chat_template_missing(small):
+        # The registry has no per-model context window to shrink Qwen's 32,768
+        # tokens for this check (POST /models/configured does not take one), so
+        # there is no other model with a small window to overflow.
+        evidence["small_test_connection"] = mask(small.get("error"))[:240]
+        pytest.skip(op.no_chat_template_reason(op.SMALL_MODEL, op.SMALL_URL) + "; the "
+                    "registry has no per-model context_window, so the overflow cannot be "
+                    "run against another model with a deliberately small window instead")
+    if not small.get("ok"):
+        pytest.fail(f"gemma-4-E2B is unreachable: {small}")
     filler = " ".join(f"Line {i}: pallet {i} moved from bay {i % 40} to bay {(i * 7) % 40}."
                       for i in range(400))  # ~6,000 tokens, far beyond 1,024
     prompt = f"{filler}\nHow many lines are listed above? Reply with the number only."
@@ -415,6 +485,8 @@ def test_prompt_beyond_small_model_context(api: LiveAPI, cleanup: Any, registry:
                     output=mask(wfx.output_of(steps, "ask"))[:200])
     if run.get("status") not in ("complete", "failed"):
         soft.append(f"the run did not end: {run.get('status')}")
+    if run.get("status") == "failed" and op.chat_template_missing(err):
+        pytest.skip(op.no_chat_template_reason(op.SMALL_MODEL, op.SMALL_URL))
     if run.get("status") == "failed":
         if not any(w in err.lower() for w in ("context", "length", "token", "maximum", "too long",
                                               "exceed")):
@@ -432,25 +504,45 @@ def test_embedding_dimension_never_mixed(api: LiveAPI, cleanup: Any, registry: d
                                          embedder_info: dict[str, Any],
                                          evidence: dict[str, Any]) -> None:
     group = op.capability_group(api, "embedding")
-    rows = [{k: m.get(k) for k in ("key", "dimensions", "dimension_mismatch", "index_dimension")}
+    rows = [{k: m.get(k) for k in ("key", "model_id", "dimensions", "dimension_mismatch",
+                                   "index_dimension", "refused", "selected")}
             for m in group.get("models") or []]
     evidence.update(group_selected=group.get("selected_model_id"), models=rows,
-                    active=embedder_info)
+                    active=embedder_info, active_embedder=group.get("active_embedder"))
     soft: list[str] = []
     mismatched = {str(r["key"]) for r in rows if r.get("dimension_mismatch")}
-    selected_key = next((str(m.get("key")) for m in group.get("models") or []
-                         if m.get("model_id") == group.get("selected_model_id")), "")
-    if selected_key in mismatched:
-        soft.append(f"the selected embedder {selected_key} does not match the index dimension")
+    mismatched_ids = {str(r["model_id"]) for r in rows if r.get("dimension_mismatch")}
+
+    def _check_active(g: dict[str, Any], when: str) -> None:
+        """The embedder that really embeds fits the index and is never a refused one."""
+        act = g.get("active_embedder") or {}
+        index_dim = next((r.get("index_dimension") for r in g.get("models") or []
+                          if r.get("index_dimension")), None)
+        if act.get("model") in mismatched_ids:
+            soft.append(f"{when}: the active embedder {act.get('model')} has the wrong "
+                        "dimension")
+        if index_dim and act.get("dimension") and int(act["dimension"]) != int(index_dim):
+            soft.append(f"{when}: active embedder {act.get('dimension')}-d, index "
+                        f"{index_dim}-d")
+        for r in g.get("models") or []:
+            if r.get("dimension_mismatch") and not r.get("refused"):
+                soft.append(f"{when}: {r.get('key')} has a dimension mismatch but is not "
+                            "marked refused")
+            if r.get("dimension_mismatch") and r.get("selected"):
+                soft.append(f"{when}: refused {r.get('key')} is presented as selected")
+        if g.get("selected_model_id") in mismatched_ids:
+            soft.append(f"{when}: the listing presents refused {g.get('selected_model_id')} "
+                        "as the selected embedder")
+
+    _check_active(group, "listing")
     if mismatched:
         with op.RegistrySandbox(registry["admin"]) as box:
             res = box.set_order("embedding", [sorted(mismatched)[0]])
             after = op.capability_group(api, "embedding")
-        evidence["mismatched_first"] = {"order": res, "selected": after.get("selected_model_id")}
-        chosen = next((str(m.get("key")) for m in after.get("models") or []
-                       if m.get("model_id") == after.get("selected_model_id")), "")
-        if res.get("_http") == 200 and chosen in mismatched:
-            soft.append("an embedder with the wrong dimension became the selected embedder")
+        evidence["mismatched_first"] = {"order": res, "selected": after.get("selected_model_id"),
+                                        "active_embedder": after.get("active_embedder")}
+        if res.get("_http") == 200:
+            _check_active(after, "with the mismatched embedder first")
     active = str(embedder_info.get("model") or "")
     resp = api.post("/knowledge/collections", json={"name": f"rw-dim-{tag()}",
                                                     "embedder_type": op.EMBED_MODEL})

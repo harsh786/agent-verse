@@ -36,7 +36,11 @@ def _optimizer() -> SimpleNamespace:
 
 def _graph(verdict: str, optimizer: SimpleNamespace) -> AgentGraph:
     graph = AgentGraph(
-        planner=FakeProvider(responses=["1. do the thing"]),
+        # A structured plan: a plain-text reply is turned into an empty schema mock
+        # by FakeProvider, and a run that executes nothing has no answer.
+        planner=FakeProvider(responses=[
+            '{"steps": [{"id": "s0", "description": "do the thing", "depends_on": []}]}'
+        ]),
         executor=FakeProvider(responses=["did the thing"]),
         verifier=FakeProvider(responses=[verdict]),
         max_iterations=1,

@@ -302,6 +302,28 @@ def test_onprem_defaults_and_role_proof_helpers() -> None:
     assert op.cloud_models({op.CHAT_MODEL, "claude-sonnet-4", "openai/gpt-4o"}) == [
         "claude-sonnet-4", "openai/gpt-4o"]
     assert op.goal_text({"result": "205 and 295"}) == "205 and 295"
+    # GET /goals/{id} serves the answer in result_artifact (no top-level "result").
+    assert op.goal_text({"result_artifact": {"kind": "text", "summary": "144"}}) == "144"
+    assert op.goal_text({"result_artifact": {
+        "kind": "empty", "summary": "No structured result was produced."}}) == ""
+    failover = {"role_calls": [
+        {"role": "executor", "model": op.CHAT_MODEL, "fallback_from": ["rw-dead-x"]},
+        {"role": "planner", "model": op.CHAT_MODEL}]}
+    assert op.models_by_role(failover) == {"executor": {op.CHAT_MODEL},
+                                           "planner": {op.CHAT_MODEL}}
+    assert op.fallbacks_by_role(failover) == {"executor": {"rw-dead-x"}}
+
+
+def test_onprem_no_chat_template_is_recognised_as_an_environment_limitation() -> None:
+    vllm_400 = ('HTTP 400: {"object":"error","message":"As of transformers v4.44, default '
+                'chat template is no longer allowed, so you must provide a chat template if '
+                'the tokenizer does not define one.","type":"BadRequestError"}')
+    assert op.chat_template_missing({"ok": False, "error": vllm_400})
+    assert op.chat_template_missing(vllm_400)
+    assert not op.chat_template_missing({"ok": False, "error": "ConnectError: refused"})
+    assert not op.chat_template_missing({"ok": True, "error": None})
+    reason = op.no_chat_template_reason(op.SMALL_MODEL, op.SMALL_URL)
+    assert "environment limitation" in reason and op.SMALL_MODEL in reason
 
 
 def test_onprem_registry_payloads_match_the_api_contract() -> None:

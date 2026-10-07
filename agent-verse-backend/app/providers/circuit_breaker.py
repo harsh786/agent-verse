@@ -263,6 +263,32 @@ def breaker_key(provider: Any, request: Any = None) -> str:
     return f"{scope}:{key}" if isinstance(scope, str) and scope else key
 
 
+def annotate_served_model(resp: Any, model: str, fallback_from: list[str]) -> Any:
+    """Stamp *resp* with the model that actually served it (provenance).
+
+    After a failover the request's original ``model`` is NOT the one that
+    answered: callers used to attribute the call (role breakdown, traces) to
+    the requested model — a dead preferred model was recorded as having served
+    the goal. ``fallback_from`` lists the models tried before it, in order
+    (empty when the first model answered). A response that already names its
+    serving model (most providers echo it) keeps that name.
+    """
+    with contextlib.suppress(Exception):
+        if model and not str(getattr(resp, "model", "") or "").strip():
+            resp.model = model
+    with contextlib.suppress(Exception):
+        resp.fallback_from = list(fallback_from)
+    return resp
+
+
+def fallback_from_of(resp: Any) -> list[str]:
+    """The models a response's call failed over from (``[]`` when none / unknown)."""
+    raw = getattr(resp, "fallback_from", None)
+    if not isinstance(raw, list | tuple):
+        return []
+    return [str(m) for m in raw if isinstance(m, str) and m]
+
+
 async def complete_with_failover(
     provider: Any,
     request: Any,
@@ -307,7 +333,8 @@ async def complete_with_failover(
             )
 
         try:
-            return await with_rate_limit_retry(_attempt, label=key)
+            resp = await with_rate_limit_retry(_attempt, label=key)
+            return annotate_served_model(resp, model, [m for m in models[:i] if m])
         except Exception as exc:
             last_exc = exc
             if i + 1 < len(models):

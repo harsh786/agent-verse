@@ -234,6 +234,33 @@ def _strip_reasoning(text: str) -> str:
     return text
 
 
+EMPTY_ANSWER_CODE = "empty_answer"
+
+
+def empty_final_answer(agent_state: Any) -> bool:
+    """True when the run produced nothing a caller could use as its result.
+
+    A goal must never be ``complete`` with an empty answer. The result is the
+    synthesized/cited answer, else the steps' text output (a leading reasoning
+    block alone is not an answer), else what a tool call produced: a step whose
+    successful tool call IS the result (a message sent, a record written, a file
+    produced) is never "empty" even when the model added no prose, and neither
+    is a supervisor's synthesized sub-goal result.
+    """
+    if str(getattr(agent_state, "cited_answer", "") or "").strip():
+        return False
+    context = getattr(agent_state, "context", None)
+    if isinstance(context, dict) and str(context.get("supervisor_result") or "").strip():
+        return False
+    for step in getattr(agent_state, "steps", None) or []:
+        if _strip_reasoning(str(getattr(step, "output", "") or "")).strip():
+            return False
+        for tc in getattr(step, "tool_calls", None) or []:
+            if isinstance(tc, dict) and tc.get("success", True) is not False:
+                return False
+    return True
+
+
 def _first_json_object(text: str) -> dict[str, Any] | None:
     """Return the first balanced top-level JSON object in *text*, or None.
 

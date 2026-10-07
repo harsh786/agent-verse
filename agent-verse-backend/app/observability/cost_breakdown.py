@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -25,6 +26,17 @@ class RoleCostEntry:
     output_tokens: int = 0
     cost_usd: float = 0.0
     calls: int = 0
+    # Provenance: the models this role's calls failed over FROM before ``model``
+    # served them (a dead preferred model is never recorded as the server).
+    fallback_from: list[str] = field(default_factory=list)
+
+
+def _merge_fallback(current: list[str], new: Sequence[str] | None) -> list[str]:
+    out = list(current)
+    for m in new or ():
+        if m and m not in out:
+            out.append(str(m))
+    return out
 
 
 @dataclass
@@ -39,6 +51,7 @@ class GoalCostBreakdown:
         input_tok: int,
         output_tok: int,
         cost: float,
+        fallback_from: Sequence[str] | None = None,
     ) -> None:
         for e in self.entries:
             if e.role == role and e.model == model:
@@ -46,6 +59,7 @@ class GoalCostBreakdown:
                 e.output_tokens += output_tok
                 e.cost_usd += cost
                 e.calls += 1
+                e.fallback_from = _merge_fallback(e.fallback_from, fallback_from)
                 return
         self.entries.append(
             RoleCostEntry(
@@ -55,6 +69,7 @@ class GoalCostBreakdown:
                 output_tokens=output_tok,
                 cost_usd=cost,
                 calls=1,
+                fallback_from=_merge_fallback([], fallback_from),
             )
         )
 
@@ -84,6 +99,7 @@ class GoalCostBreakdown:
                     "output_tokens": e.output_tokens,
                     "cost_usd": round(e.cost_usd, 6),
                     "calls": e.calls,
+                    "fallback_from": list(e.fallback_from),
                 }
                 for e in self.entries
             ],
@@ -163,15 +179,16 @@ def record_role_cost(
     input_tok: int,
     output_tok: int,
     cost: float,
+    fallback_from: Sequence[str] | None = None,
 ) -> None:
     if _backend is not None:
         bd = _backend_load(goal_id) or _goal_breakdowns.setdefault(
             goal_id, GoalCostBreakdown(goal_id=goal_id)
         )
-        bd.record(role, model, input_tok, output_tok, cost)
+        bd.record(role, model, input_tok, output_tok, cost, fallback_from)
         _persist(goal_id, bd)
     else:
-        get_breakdown(goal_id).record(role, model, input_tok, output_tok, cost)
+        get_breakdown(goal_id).record(role, model, input_tok, output_tok, cost, fallback_from)
 
 
 # ── Postgres backend (authoritative when bound) ───────────────────────────────
@@ -186,19 +203,28 @@ def record_role_cost(
 # RLS context. The dict / Redis paths remain only for the no-DB test/dev path.
 _db: Any | None = None
 
+# ``fallback_from`` (migration e1f3a5c7b9d2) accumulates the distinct models the
+# role's calls failed over from; an empty array leaves the stored list as is.
 _UPSERT_SQL = (
     "INSERT INTO goal_cost_breakdowns "
-    "(tenant_id, goal_id, role, model, input_tokens, output_tokens, cost_usd, calls) "
-    "VALUES (CAST(:tid AS uuid), :gid, :role, :model, :in_tok, :out_tok, :cost, 1) "
+    "(tenant_id, goal_id, role, model, input_tokens, output_tokens, cost_usd, calls, "
+    "fallback_from) "
+    "VALUES (CAST(:tid AS uuid), :gid, :role, :model, :in_tok, :out_tok, :cost, 1, "
+    "CAST(:fallback AS jsonb)) "
     "ON CONFLICT (tenant_id, goal_id, role, model) DO UPDATE SET "
     "input_tokens = goal_cost_breakdowns.input_tokens + EXCLUDED.input_tokens, "
     "output_tokens = goal_cost_breakdowns.output_tokens + EXCLUDED.output_tokens, "
     "cost_usd = goal_cost_breakdowns.cost_usd + EXCLUDED.cost_usd, "
     "calls = goal_cost_breakdowns.calls + 1, "
+    "fallback_from = CASE WHEN EXCLUDED.fallback_from = '[]'::jsonb "
+    "THEN goal_cost_breakdowns.fallback_from "
+    "ELSE (SELECT COALESCE(jsonb_agg(DISTINCT m), '[]'::jsonb) FROM "
+    "jsonb_array_elements_text(goal_cost_breakdowns.fallback_from || EXCLUDED.fallback_from) "
+    "AS m) END, "
     "updated_at = now()"
 )
 _SELECT_SQL = (
-    "SELECT role, model, input_tokens, output_tokens, cost_usd, calls "
+    "SELECT role, model, input_tokens, output_tokens, cost_usd, calls, fallback_from "
     "FROM goal_cost_breakdowns "
     "WHERE tenant_id = CAST(:tid AS uuid) AND goal_id = :gid "
     "ORDER BY first_recorded_at, role, model"
@@ -241,11 +267,17 @@ async def arecord_role_cost(
     cost: float,
     *,
     tenant_id: str | None,
+    fallback_from: Sequence[str] | None = None,
 ) -> None:
-    """Record one LLM call's cost for *goal_id* (durable when a DB is bound)."""
+    """Record one LLM call's cost for *goal_id* (durable when a DB is bound).
+
+    *model* is the model that SERVED the call; ``fallback_from`` the models it
+    failed over from first (provenance — never attribute a call to them).
+    """
+    fallback = _merge_fallback([], fallback_from)
     db = _db_for(tenant_id)
     if db is None:
-        record_role_cost(goal_id, role, model, input_tok, output_tok, cost)
+        record_role_cost(goal_id, role, model, input_tok, output_tok, cost, fallback)
         return
     from sqlalchemy import text
 
@@ -267,6 +299,7 @@ async def arecord_role_cost(
                     "in_tok": int(input_tok or 0),
                     "out_tok": int(output_tok or 0),
                     "cost": float(cost or 0.0),
+                    "fallback": json.dumps(fallback),
                 },
             )
     except Exception as exc:
@@ -301,10 +334,23 @@ async def aget_breakdown(goal_id: str, *, tenant_id: str | None) -> GoalCostBrea
                 output_tokens=int(r[3] or 0),
                 cost_usd=float(r[4] or 0.0),
                 calls=int(r[5] or 0),
+                fallback_from=_fallback_column(r[6] if len(r) > 6 else None),
             )
             for r in rows
         ],
     )
+
+
+def _fallback_column(raw: Any) -> list[str]:
+    """The ``fallback_from`` JSONB column as a list of model ids."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [str(m) for m in raw if m]
 
 
 def finalize_breakdown(goal_id: str) -> dict[str, Any]:

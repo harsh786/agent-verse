@@ -12,7 +12,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +42,11 @@ class GoalCostBreakdownRow(Base):
     output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     calls: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Models the role's calls failed over FROM before ``model`` served them
+    # (migration e1f3a5c7b9d2); ``model`` is always the serving model.
+    fallback_from: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     first_recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

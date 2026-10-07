@@ -126,3 +126,20 @@ async def test_cost_metrics_endpoint_reads_the_durable_breakdown(
 
     body = await get_goal_cost_metrics(goal_id, request)
     assert [(r["role"], r["input_tokens"]) for r in body["roles"]] == [("planner", 7)]
+
+
+async def test_failover_provenance_is_sent_with_the_upsert(
+    db: tuple[RlsRecordingDb, _Table],
+) -> None:
+    """``fallback_from`` (the models a call failed over from) reaches the row."""
+    import json
+
+    rec, _table = db
+    goal_id = f"goal-{uuid.uuid4().hex[:8]}"
+    await cb.arecord_role_cost(goal_id, "executor", "qwen", 1, 1, 0.0, tenant_id=_TENANT,
+                               fallback_from=["dead", "dead", ""])
+    await cb.arecord_role_cost(goal_id, "executor", "qwen", 1, 1, 0.0, tenant_id=_TENANT)
+
+    upserts = [s for s in rec.touching("goal_cost_breakdowns") if s.sql.startswith("INSERT")]
+    assert [json.loads(s.params["fallback"]) for s in upserts] == [["dead"], []]
+    assert "fallback_from" in upserts[0].sql

@@ -225,7 +225,10 @@ async def charge_llm_call(
     # 4. Per-goal, per-role breakdown — with the REAL cost (was hard-coded 0.0).
     try:
         from app.observability.cost_breakdown import arecord_role_cost
+        from app.providers.circuit_breaker import fallback_from_of
 
+        # Provenance: ``served_model`` is the model that answered (after any
+        # failover), ``fallback_from`` the models tried before it.
         await arecord_role_cost(
             goal_id=goal_id,
             tenant_id=getattr(tenant_ctx, "tenant_id", None),
@@ -234,6 +237,7 @@ async def charge_llm_call(
             input_tok=prompt_tokens,
             output_tok=completion_tokens,
             cost=cost,
+            fallback_from=[m for m in fallback_from_of(resp) if m != served_model],
         )
     except Exception as exc:
         logger.warning(

@@ -202,6 +202,7 @@ def role_trace(api: LiveAPI, goal_id: str, timeout: float = 120) -> dict[str, An
 
 
 def models_by_role(trace: dict[str, Any]) -> dict[str, set[str]]:
+    """The models that SERVED each role (``model``; never the failed-over ones)."""
     out: dict[str, set[str]] = {}
     for row in (trace.get("role_calls") or []) + (trace.get("model_selections") or []):
         role = str(row.get("role") or "")
@@ -209,6 +210,38 @@ def models_by_role(trace: dict[str, Any]) -> dict[str, set[str]]:
         if role and model:
             out.setdefault(role, set()).add(model)
     return out
+
+
+def fallbacks_by_role(trace: dict[str, Any]) -> dict[str, set[str]]:
+    """The models each role's calls failed over FROM (``role_calls[].fallback_from``)."""
+    out: dict[str, set[str]] = {}
+    for row in trace.get("role_calls") or []:
+        role = str(row.get("role") or "")
+        for model in row.get("fallback_from") or []:
+            if role and model:
+                out.setdefault(role, set()).add(str(model))
+    return out
+
+
+# vLLM refuses chat for a model whose tokenizer ships no chat template (e.g. the
+# base google/gemma-4-E2B): HTTP 400 "... default chat template is no longer
+# allowed ...". The platform reports it honestly; it is a property of how the
+# cluster serves the model, not a platform failure.
+_NO_CHAT_TEMPLATE_HINTS = ("chat template", "chat_template")
+
+
+def chat_template_missing(result: Any) -> bool:
+    """True when a Test-connection result / error text is vLLM's no-chat-template 400."""
+    text = result.get("error") if isinstance(result, dict) else result
+    low = str(text or "").lower()
+    return any(h in low for h in _NO_CHAT_TEMPLATE_HINTS)
+
+
+def no_chat_template_reason(model_id: str, url: str) -> str:
+    return (f"environment limitation: {model_id} at {url} is served WITHOUT a chat template, "
+            "so vLLM answers every chat request with HTTP 400 'default chat template is no "
+            "longer allowed'; the platform reports that honestly. Serve the model with "
+            "--chat-template (or an instruction-tuned variant) to run this check")
 
 
 def cloud_models(models: set[str]) -> list[str]:
@@ -225,8 +258,20 @@ def wait_goal(api: LiveAPI, goal_id: str, timeout: float) -> dict[str, Any]:
 
 
 def goal_text(goal: dict[str, Any]) -> str:
+    """The goal's answer as ``GET /goals/{id}`` serves it.
+
+    The answer lives in ``result_artifact.summary`` (``kind`` ``"empty"`` = no
+    answer, its summary is a placeholder); top-level keys are read first for
+    payloads that carry them. Reading only top-level keys returned ``""`` for
+    every goal, which looked like "complete with an empty answer".
+    """
     for k in ("result", "final_answer", "output", "answer", "summary"):
         v = goal.get(k)
+        if v:
+            return v if isinstance(v, str) else str(v)
+    art = goal.get("result_artifact") or {}
+    if isinstance(art, dict) and art.get("kind") != "empty":
+        v = art.get("summary")
         if v:
             return v if isinstance(v, str) else str(v)
     return ""

@@ -231,6 +231,8 @@ async def _goal_trace_view(request: Request, tenant: Any, goal_id: str) -> dict[
     ended = _parse_ts(outcome.get("completed_at")) or datetime.datetime.now(datetime.UTC)
     duration_ms = max(0.0, (ended - created).total_seconds() * 1000) if created else 0.0
     entries = breakdown.entries
+    # ``model`` is the model that SERVED the role's calls; ``fallback_from`` the
+    # models those calls failed over from first (provenance, never "served").
     role_calls = [
         {
             "role": e.role,
@@ -239,14 +241,23 @@ async def _goal_trace_view(request: Request, tenant: Any, goal_id: str) -> dict[
             "input_tokens": e.input_tokens,
             "output_tokens": e.output_tokens,
             "cost_usd": round(e.cost_usd, 6),
+            "fallback_from": list(getattr(e, "fallback_from", None) or []),
         }
         for e in entries
     ]
     selections: list[dict[str, Any]] = []
     for e in entries:
-        pick = {"role": e.role, "model": e.model}
-        if e.model and pick not in selections:
+        pick: dict[str, Any] = {"role": e.role, "model": e.model}
+        if e.model and not any(
+            s["role"] == e.role and s["model"] == e.model for s in selections
+        ):
             selections.append(pick)
+        fallback = list(getattr(e, "fallback_from", None) or [])
+        if fallback:
+            for s in selections:
+                if s["role"] == e.role and s["model"] == e.model:
+                    merged = list(s.get("fallback_from") or [])
+                    s["fallback_from"] = merged + [m for m in fallback if m not in merged]
     status = outcome.get("status")
     return {
         "goal_id": goal_id,

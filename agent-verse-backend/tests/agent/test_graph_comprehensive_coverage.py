@@ -695,12 +695,16 @@ async def test_node_execute_single_step_sequential() -> None:
 @pytest.mark.asyncio
 async def test_node_execute_plain_string_steps() -> None:
     """Plain text steps (non-JSON) execute as sequential steps."""
-    planner = FakeProvider(responses=["Deploy the app\nRun smoke tests"])
-    executor = FakeProvider(responses=["deployed", "tests passed"])
+    # FakeProvider answers a structured-output planner with a schema mock for a
+    # plain-text reply (an empty plan); the steps are given as plain strings in
+    # the plan JSON so they really execute (an empty run has no answer).
+    planner = FakeProvider(responses=[json.dumps({"steps": ["Summarise the notes",
+                                                            "List the open questions"]})])
+    executor = FakeProvider(responses=["summary", "two open questions"])
     verifier = FakeProvider(responses=['{"success": true, "reason": "ok"}'])
 
     graph = AgentGraph(planner=planner, executor=executor, verifier=verifier)
-    state = await graph.run(goal="deploy and test", tenant_ctx=T)
+    state = await graph.run(goal="summarise the notes", tenant_ctx=T)
 
     assert state.status == GoalStatus.COMPLETE
 
@@ -1045,7 +1049,8 @@ async def test_agent_run_with_cot_enabled() -> None:
     """With enable_cot=True, chain-of-thought node runs before planning."""
     planner = FakeProvider(responses=[
         "Step 1: analyze",  # CoT response
-        "Execute the analysis",  # Plan response
+        json.dumps({"steps": [{"id": "s0", "description": "Execute the analysis",
+                               "depends_on": []}]}),  # Plan response
     ])
     executor = FakeProvider(responses=["analysis complete"])
     verifier = FakeProvider(responses=['{"success": true, "reason": "done"}'])
