@@ -52,7 +52,7 @@ from app.ingestion.source_store import SourceConfigStore
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-PREVIOUS = "f3b5d7e9a1c4"
+PREVIOUS = "a4c6e8f0b2d1"
 TENANT = "tenant-canon-target"
 _URI = "mongodb://reader:reader-pw@mongo-a.example.com:27017,mongo-b.example.com:27017/"
 

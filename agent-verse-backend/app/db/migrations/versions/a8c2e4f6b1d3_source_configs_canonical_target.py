@@ -20,7 +20,7 @@ with the same key — keep the key on the oldest row only; the others stay NULL
 and are logged with their ids so an operator can delete the redundant Source.
 
 Revision ID: a8c2e4f6b1d3
-Revises: f3b5d7e9a1c4
+Revises: a4c6e8f0b2d1
 Create Date: 2026-10-07
 """
 
@@ -35,7 +35,7 @@ from alembic import op
 from sqlalchemy import text
 
 revision: str = "a8c2e4f6b1d3"
-down_revision: str | Sequence[str] | None = "f3b5d7e9a1c4"
+down_revision: str | Sequence[str] | None = "a4c6e8f0b2d1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
