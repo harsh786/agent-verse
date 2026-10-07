@@ -101,7 +101,6 @@ _GUARDED_ROUTERS: tuple[tuple[str, str, str, str | None], ...] = (
     ("sla_router", "app.api.sla", "router", None),
     ("sessions_router", "app.api.sessions", "router", None),
     ("policy_rules_router", "app.api.policy_rules", "router", None),
-    ("v1_router", "app.api.v1.router", "v1_router", None),
     ("model_registry_router", "app.api.model_registry", "router", None),
     ("embeddings_router", "app.api.embeddings", "router", None),
     ("multimodal_router", "app.api.multimodal", "router", None),

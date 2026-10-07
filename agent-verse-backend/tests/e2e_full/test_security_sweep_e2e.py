@@ -34,8 +34,6 @@ _PUBLIC_PREFIXES = (
     # ENT-42 (34c22e9f3): the Kubernetes liveness probe; static {"status": "alive"},
     # in the middleware bypass list next to /health.
     "/livez",
-    "/v1/health",
-    "/v1/info",
     "/metrics",
     "/status",
     "/docs",
