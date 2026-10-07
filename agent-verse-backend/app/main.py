@@ -2920,6 +2920,15 @@ def create_app(
                     _kg_stop.set_db(None)
                 except Exception as _kg_stop_exc:
                     logger.warning("kg_store_unbind_failed", error=str(_kg_stop_exc))
+                # ... and the process-wide verifier calibration store (bound above).
+                try:
+                    from app.intelligence.verifier_calibration import (
+                        _default_calibration_store as _cal_stop,
+                    )
+
+                    _cal_stop._db = None
+                except Exception as _cal_stop_exc:
+                    logger.warning("calibration_store_unbind_failed", error=str(_cal_stop_exc))
                 await active.shutdown()
         else:
             start_process_reranker_warmup()

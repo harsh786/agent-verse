@@ -24,3 +24,10 @@ def test_set_db_none_returns_to_in_memory_mode() -> None:
     store.set_db(object())
     store.set_db(None)
     assert store._db is None
+
+
+def test_lifespan_shutdown_detaches_the_calibration_store() -> None:
+    src = inspect.getsource(main_mod)
+    shutdown = src[src.index("guardrails_repository_unbind_failed"):]
+    shutdown = shutdown[: shutdown.index("await active.shutdown()")]
+    assert "_default_calibration_store" in shutdown and "_db = None" in shutdown
