@@ -20,10 +20,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import json
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -75,6 +77,18 @@ if not v then
 end
 return 0
 """
+# A run claims the lock queued under ARGV[1] (or a free one) and rotates its
+# value to its own attempt token ARGV[2] for ARGV[3] ms (SYNC-ORPHAN): a second
+# delivery of the same task message (a broker redelivery while the first run is
+# alive) then finds the attempt token, not the queued one, and stands down.
+_CLAIM_LUA = """
+local v = redis.call('GET', KEYS[1])
+if v == ARGV[1] or not v then
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+  return 1
+end
+return 0
+"""
 # Extend KEYS[1] only while ARGV[1] holds it.
 _RENEW_LUA = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -95,6 +109,24 @@ def _text(value: Any) -> str:
     return value.decode() if isinstance(value, bytes | bytearray) else str(value)
 
 
+# A running sync's lock value is ``<job id>#<attempt nonce>``; a queued one (taken
+# by the API, the scheduler or orphan recovery) is the bare job id.
+ATTEMPT_SEPARATOR = "#"
+
+
+def lock_job_id(lock_value: str) -> str:
+    """The job id a sync lock value names (queued token or ``job#attempt``)."""
+    return str(lock_value).split(ATTEMPT_SEPARATOR, 1)[0]
+
+
+def new_attempt_token(job_id: str) -> str:
+    return f"{job_id}{ATTEMPT_SEPARATOR}{uuid.uuid4().hex[:12]}"
+
+
+# Statuses of a job that is still owned by a (queued or running) sync.
+ACTIVE_JOB_STATUSES = ("pending", "running")
+
+
 class SyncLease:
     """A held Source sync lock: its token, its fencing token, and its renewal.
 
@@ -112,16 +144,33 @@ class SyncLease:
         token: str,
         fence: int,
         ttl_seconds: int,
+        *,
+        job_id: str | None = None,
     ) -> None:
         self.tracker = tracker
         self.source_id = source_id
         self.tenant_id = tenant_id
         self.token = token
+        # The job this run executes (the lock value's job part).
+        self.job_id = job_id or lock_job_id(token)
         self.fence = fence
         self.ttl_seconds = ttl_seconds
         self.lost = False
         self.reason = ""
         self._task: asyncio.Task[None] | None = None
+        # SYNC-ORPHAN: after each renewal the run's job row is heart-beaten
+        # (``heartbeat_at``); False from it means the job was taken over.
+        self._heartbeat: Callable[[], Awaitable[bool]] | None = None
+
+    def attach_heartbeat(self, heartbeat: Callable[[], Awaitable[bool]]) -> None:
+        """Beat the run's job row after every lock renewal (SYNC-ORPHAN).
+
+        The heartbeat returns False when the row is no longer this run's (orphan
+        recovery requeued it): the lease is then lost and the run stops. A
+        heartbeat that cannot be written (a DB blip) is logged and retried at the
+        next renewal -- the Redis lock, still renewed, keeps the run alive.
+        """
+        self._heartbeat = heartbeat
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._renew_forever())
@@ -145,6 +194,18 @@ class SyncLease:
                 self._lose("the lock expired or was taken by another sync")
                 return
             confirmed = time.monotonic()
+            if self._heartbeat is not None:
+                try:
+                    owned = await self._heartbeat()
+                except Exception as exc:
+                    _log.warning(
+                        "ingestion_job_heartbeat_error source=%s job=%s: %s",
+                        self.source_id, self.job_id, exc,
+                    )
+                    continue
+                if owned is False:
+                    self._lose("its job was requeued by orphan recovery")
+                    return
 
     def _lose(self, reason: str) -> None:
         self.lost = True
@@ -170,6 +231,158 @@ def _orphan_reason(older_than_seconds: int) -> str:
     return (
         f"orphaned: no worker finished this job within {older_than_seconds}s "
         "(the worker was lost or restarted); trigger the sync again"
+    )
+
+
+# ── Worker-loss recovery (SYNC-ORPHAN): claim plan of a sync run's job ─────────
+
+# The job columns served by the API (never the lease token).
+_JOB_COLUMNS = (
+    "id, source_id, tenant_id, status, sync_mode, triggered_by, started_at, completed_at, "
+    "docs_discovered, docs_indexed, docs_skipped, docs_failed, chunks_created, "
+    "bytes_processed, tokens_consumed, cursor_before, cursor_after, error_message, "
+    "created_at, attempts, requeue_reason, heartbeat_at"
+)
+
+REDELIVERED_REASON = "redelivered after its worker was lost"
+
+
+def superseded_message(job_id: str) -> str:
+    return (
+        "worker lost: this sync's worker stopped heart-beating; superseded by sync job "
+        f"{job_id}, which resumes from the last checkpoint"
+    )
+
+
+def resumes_reason(previous_job_id: str) -> str:
+    return f"resumes sync job {previous_job_id} (its worker was lost)"
+
+
+def exhausted_message(runs: int, reason: str) -> str:
+    detail = f" ({reason})" if reason else ""
+    return (
+        f"gave up after {runs} attempt(s): the sync's worker was lost each time{detail}; "
+        "the next scheduled sync resumes from the last checkpoint"
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class JobClaimPlan:
+    """What a sync run does with its job row (see :func:`plan_job_claim`)."""
+
+    action: str  # "insert" (first run) | "resume" (existing active row) | "finished"
+    attempts: int = 1
+    reason: str = ""
+    superseded: tuple[str, ...] = ()
+    exhausted: bool = False
+    error: str = ""
+
+
+def plan_job_claim(
+    *,
+    existing: dict[str, Any] | None,
+    others: list[dict[str, Any]],
+    job_id: str,
+    max_attempts: int | None,
+    inherit_attempts: bool,
+) -> JobClaimPlan:
+    """Decide how a run that now holds the Source's lock claims job ``job_id``.
+
+    * A finished job (completed / failed / cancelled ...) is never run again -- a
+      task message delivered after its job ended does nothing.
+    * An active row requeued by orphan recovery carries the bare job id as its
+      lease token; recovery already counted that attempt. Any other active row
+      (a previous attempt's token) is a broker redelivery after its worker died:
+      one more attempt.
+    * A first run continues the attempt count of the Source's other active jobs
+      when ``inherit_attempts``: they are dead (this run holds the lock), and a
+      scheduled re-run of a sync that keeps killing its worker must stay bounded.
+    * Past ``max_attempts`` the job is failed honestly instead of run.
+    """
+    superseded = tuple(sorted(str(o["id"]) for o in others))
+    if existing is not None:
+        if str(existing.get("status")) not in ACTIVE_JOB_STATUSES:
+            return JobClaimPlan(action="finished")
+        attempts = int(existing.get("attempts") or 1)
+        reason = str(existing.get("requeue_reason") or "")
+        if str(existing.get("lease_token") or "") != job_id:
+            attempts += 1
+            reason = REDELIVERED_REASON
+        action = "resume"
+    else:
+        attempts, reason, action = 1, "", "insert"
+        if others and inherit_attempts:
+            previous = max(others, key=lambda o: (int(o.get("attempts") or 1), str(o["id"])))
+            attempts = int(previous.get("attempts") or 1) + 1
+            reason = resumes_reason(str(previous["id"]))
+    if max_attempts is not None and attempts > max_attempts:
+        return JobClaimPlan(
+            action=action,
+            attempts=attempts - 1,
+            reason=reason,
+            superseded=superseded,
+            exhausted=True,
+            error=exhausted_message(attempts - 1, reason),
+        )
+    return JobClaimPlan(action=action, attempts=attempts, reason=reason, superseded=superseded)
+
+
+def _job_claim_row(job: IngestionJob) -> dict[str, Any]:
+    return {
+        "status": job.status,
+        "attempts": job.attempts,
+        "lease_token": job.lease_token,
+        "requeue_reason": job.requeue_reason,
+    }
+
+
+def _orphan_candidate(job: IngestionJob, age: float) -> dict[str, Any]:
+    return {
+        "id": job.job_id,
+        "tenant_id": job.tenant_id,
+        "source_id": job.source_id,
+        "status": job.status,
+        "triggered_by": job.triggered_by,
+        "attempts": job.attempts,
+        "lease_token": job.lease_token,
+        "cursor_after": job.cursor_after,
+        "requeue_reason": job.requeue_reason,
+        "heartbeat_age_s": age,
+    }
+
+
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+def _job_from_row(row: Any) -> IngestionJob:
+    """An :class:`IngestionJob` from an ``ingestion_jobs`` row (``_JOB_COLUMNS``)."""
+    return IngestionJob(
+        job_id=str(row["id"]),
+        source_id=str(row["source_id"]),
+        tenant_id=str(row["tenant_id"]),
+        status=str(row["status"]),
+        sync_mode=str(row["sync_mode"]),
+        triggered_by=str(row["triggered_by"] or ""),
+        started_at=_iso(row["started_at"]),
+        completed_at=_iso(row["completed_at"]),
+        docs_discovered=int(row["docs_discovered"] or 0),
+        docs_indexed=int(row["docs_indexed"] or 0),
+        docs_skipped=int(row["docs_skipped"] or 0),
+        docs_failed=int(row["docs_failed"] or 0),
+        chunks_created=int(row["chunks_created"] or 0),
+        bytes_processed=int(row["bytes_processed"] or 0),
+        tokens_consumed=int(row["tokens_consumed"] or 0),
+        cursor_before=str(row["cursor_before"] or ""),
+        cursor_after=str(row["cursor_after"] or ""),
+        error_message=str(row["error_message"] or ""),
+        created_at=_iso(row["created_at"]) or "",
+        attempts=int(row.get("attempts") or 1),
+        requeue_reason=str(row.get("requeue_reason") or ""),
+        heartbeat_at=_iso(row.get("heartbeat_at")),
+        lease_token=str(row.get("lease_token") or ""),
     )
 
 
@@ -273,6 +486,58 @@ class IngestionJobTracker:
             return True
         return holder == token
 
+    async def claim_lock(
+        self, source_id: str, tenant_id: str, token: str, attempt_token: str, ttl_seconds: int
+    ) -> bool:
+        """Claim the lock queued under ``token`` (or a free one) as ``attempt_token``.
+
+        True when this run now holds it. A lock already rotated to another
+        attempt token -- the same job's message delivered twice, or another run
+        -- is not taken.
+        """
+        if self._redis is not None:
+            try:
+                result = await self._redis.eval(
+                    _CLAIM_LUA,
+                    1,
+                    self._lock_key(tenant_id, source_id),
+                    token,
+                    attempt_token,
+                    str(int(ttl_seconds * 1000)),
+                )
+            except Exception as exc:
+                raise SyncLockUnavailableError(
+                    f"the sync lock for source {source_id} is unavailable: {exc}"
+                ) from exc
+            return int(result) == 1
+        holder = self._locks.get(source_id)
+        if holder is None or holder == token:
+            self._locks[source_id] = attempt_token
+            return True
+        return False
+
+    async def lock_holder(self, source_id: str, tenant_id: str) -> str | None:
+        """The raw value of the Source's sync lock (None when free)."""
+        if self._redis is not None:
+            value = await self._redis.get(self._lock_key(tenant_id, source_id))
+            return None if value is None else _text(value)
+        return self._locks.get(source_id)
+
+    async def queue_lock(
+        self, source_id: str, tenant_id: str, job_id: str, *, ttl_seconds: int
+    ) -> bool:
+        """Take the free lock under the bare ``job_id`` (a requeued job waits on it)."""
+        if self._redis is not None:
+            return bool(
+                await self._redis.set(
+                    self._lock_key(tenant_id, source_id), job_id, nx=True, ex=ttl_seconds
+                )
+            )
+        if source_id in self._locks:
+            return False
+        self._locks[source_id] = job_id
+        return True
+
     async def renew_lock(
         self, source_id: str, tenant_id: str, token: str, ttl_seconds: int
     ) -> bool:
@@ -315,10 +580,8 @@ class IngestionJobTracker:
 
     async def running_job_id(self, source_id: str, tenant_id: str) -> str | None:
         """The job id holding the source's sync lock (a sync is running), or None."""
-        if self._redis is not None:
-            value = await self._redis.get(self._lock_key(tenant_id, source_id))
-            return None if value is None else _text(value)
-        return self._locks.get(source_id)
+        value = await self.lock_holder(source_id, tenant_id)
+        return None if value is None else lock_job_id(value)
 
     async def take_fence(self, source_id: str, tenant_id: str) -> int:
         """Issue this run's fencing token: bump and return ``source_configs.sync_fence``.
@@ -352,19 +615,24 @@ class IngestionJobTracker:
     async def hold(
         self, source_id: str, tenant_id: str, token: str, *, ttl_seconds: int
     ) -> SyncLease | None:
-        """Adopt the lock under ``token``, take a fence and keep the lock renewed.
+        """Claim the lock queued under ``token``, take a fence and keep the lock renewed.
 
-        Returns None when another run holds the lock. The caller must
-        :meth:`SyncLease.release` it (in a ``finally``).
+        The lock's value becomes this run's own attempt token (``token#nonce``),
+        so another delivery of the same queued task cannot hold it alongside
+        this run (SYNC-ORPHAN). Returns None when another run holds the lock.
+        The caller must :meth:`SyncLease.release` it (in a ``finally``).
         """
-        if not await self.adopt_lock(source_id, tenant_id, token, ttl_seconds):
+        attempt_token = new_attempt_token(token)
+        if not await self.claim_lock(source_id, tenant_id, token, attempt_token, ttl_seconds):
             return None
         try:
             fence = await self.take_fence(source_id, tenant_id)
         except BaseException:
-            await self.release_lock(source_id, tenant_id, token)
+            await self.release_lock(source_id, tenant_id, attempt_token)
             raise
-        lease = SyncLease(self, source_id, tenant_id, token, fence, ttl_seconds)
+        lease = SyncLease(
+            self, source_id, tenant_id, attempt_token, fence, ttl_seconds, job_id=token
+        )
         lease.start()
         return lease
 
@@ -419,8 +687,32 @@ class IngestionJobTracker:
         *,
         job_id: str,
         triggered_by: str = "scheduler",
+        lease_token: str | None = None,
+        max_attempts: int | None = None,
+        inherit_attempts: bool = True,
     ) -> IngestionJob:
-        """Create a new ingestion job record."""
+        """Create a new ingestion job record -- or, with ``lease_token``, claim it.
+
+        A sync run passes the attempt token it holds the Source's lock under
+        (SYNC-ORPHAN). The job row is then claimed for this run: created on its
+        first run, resumed (with its checkpointed counters) when the job was
+        requeued after its worker died or its message was redelivered, and left
+        alone when it already finished (the returned job is not ``running``; the
+        caller must not run it). Other jobs of the Source still marked active
+        are dead -- this run holds the lock -- and are superseded; a scheduled
+        run continues their attempt count (``inherit_attempts``), so a Source
+        whose syncs keep killing their worker is given up on after
+        ``max_attempts``: the returned job is then ``failed`` with the reason.
+        """
+        if lease_token is not None:
+            return await self._claim_job(
+                source_config,
+                job_id=job_id,
+                triggered_by=triggered_by,
+                lease_token=lease_token,
+                max_attempts=max_attempts,
+                inherit_attempts=inherit_attempts,
+            )
         cursor_before = source_config.cursor_value or ""
         job = IngestionJob(
             job_id=job_id,
@@ -440,6 +732,273 @@ class IngestionJobTracker:
 
         return job
 
+    async def _claim_job(
+        self,
+        source_config: SourceConfig,
+        *,
+        job_id: str,
+        triggered_by: str,
+        lease_token: str,
+        max_attempts: int | None,
+        inherit_attempts: bool,
+    ) -> IngestionJob:
+        if self._db is not None:
+            return await self._claim_job_db(
+                source_config,
+                job_id=job_id,
+                triggered_by=triggered_by,
+                lease_token=lease_token,
+                max_attempts=max_attempts,
+                inherit_attempts=inherit_attempts,
+            )
+        now = datetime.now(UTC).isoformat()
+        existing = self._jobs.get(job_id)
+        others = [
+            {"id": j.job_id, "attempts": j.attempts}
+            for j in self._jobs.values()
+            if j.job_id != job_id
+            and j.source_id == source_config.source_id
+            and j.tenant_id == source_config.tenant_id
+            and j.status in ACTIVE_JOB_STATUSES
+            and j.lease_token
+        ]
+        plan = plan_job_claim(
+            existing=None if existing is None else _job_claim_row(existing),
+            others=others,
+            job_id=job_id,
+            max_attempts=max_attempts,
+            inherit_attempts=inherit_attempts,
+        )
+        if plan.action == "finished":
+            assert existing is not None
+            return existing
+        for other_id in plan.superseded:
+            other = self._jobs[other_id]
+            self._jobs[other_id] = dataclasses.replace(
+                other,
+                status="failed",
+                completed_at=now,
+                docs_failed=max(other.docs_failed, 1),
+                error_message=superseded_message(job_id),
+            )
+        base = existing or IngestionJob(
+            job_id=job_id,
+            source_id=source_config.source_id,
+            tenant_id=source_config.tenant_id,
+            status="running",
+            sync_mode=source_config.sync_mode,
+            triggered_by=triggered_by,
+            started_at=now,
+            cursor_before=source_config.cursor_value or "",
+            created_at=now,
+        )
+        job = dataclasses.replace(
+            base,
+            status="failed" if plan.exhausted else "running",
+            attempts=plan.attempts,
+            requeue_reason=plan.reason,
+            lease_token=lease_token,
+            heartbeat_at=now,
+            started_at=base.started_at or now,
+            completed_at=now if plan.exhausted else None,
+            error_message=plan.error,
+            docs_failed=max(base.docs_failed, 1) if plan.exhausted else base.docs_failed,
+        )
+        self._jobs[job_id] = job
+        return job
+
+    async def _claim_job_db(
+        self,
+        source_config: SourceConfig,
+        *,
+        job_id: str,
+        triggered_by: str,
+        lease_token: str,
+        max_attempts: int | None,
+        inherit_attempts: bool,
+    ) -> IngestionJob:
+        from sqlalchemy import text
+
+        tenant_id = source_config.tenant_id
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        text(
+                            f"SELECT {_JOB_COLUMNS}, lease_token FROM ingestion_jobs "
+                            "WHERE id = :id AND tenant_id = :tid FOR UPDATE"
+                        ),
+                        {"id": job_id, "tid": tenant_id},
+                    )
+                ).mappings().first()
+                others = (
+                    await session.execute(
+                        text(
+                            "SELECT id, attempts FROM ingestion_jobs "
+                            "WHERE tenant_id = :tid AND source_id = :sid "
+                            "AND status IN ('pending', 'running') "
+                            "AND lease_token IS NOT NULL AND id <> :id FOR UPDATE"
+                        ),
+                        {"tid": tenant_id, "sid": source_config.source_id, "id": job_id},
+                    )
+                ).mappings().all()
+                plan = plan_job_claim(
+                    existing=None if row is None else dict(row),
+                    others=[dict(o) for o in others],
+                    job_id=job_id,
+                    max_attempts=max_attempts,
+                    inherit_attempts=inherit_attempts,
+                )
+                if plan.action == "finished":
+                    assert row is not None
+                    return _job_from_row(row)
+                if plan.superseded:
+                    await session.execute(
+                        text(
+                            "UPDATE ingestion_jobs SET status = 'failed', completed_at = NOW(), "
+                            "docs_failed = GREATEST(docs_failed, 1), error_message = :msg "
+                            "WHERE tenant_id = :tid AND id = ANY(:ids) "
+                            "AND status IN ('pending', 'running')"
+                        ),
+                        {
+                            "tid": tenant_id,
+                            "ids": list(plan.superseded),
+                            "msg": superseded_message(job_id),
+                        },
+                    )
+                status = "failed" if plan.exhausted else "running"
+                if row is None:
+                    await session.execute(
+                        text("""
+                            INSERT INTO ingestion_jobs
+                              (id, source_id, tenant_id, status, sync_mode, triggered_by,
+                               cursor_before, started_at, created_at, attempts, lease_token,
+                               heartbeat_at, requeue_reason, error_message, docs_failed,
+                               completed_at)
+                            VALUES
+                              (:id, :source_id, :tenant_id, :status, :sync_mode, :triggered_by,
+                               :cursor_before, NOW(), NOW(), :attempts, :lease_token,
+                               NOW(), :reason, :error, :failed,
+                               CASE WHEN :exhausted THEN NOW() END)
+                            ON CONFLICT (id) DO NOTHING
+                        """),
+                        {
+                            "id": job_id,
+                            "source_id": source_config.source_id,
+                            "tenant_id": tenant_id,
+                            "status": status,
+                            "sync_mode": source_config.sync_mode,
+                            "triggered_by": triggered_by,
+                            "cursor_before": source_config.cursor_value or "",
+                            "attempts": plan.attempts,
+                            "lease_token": lease_token,
+                            "reason": plan.reason,
+                            "error": plan.error,
+                            "failed": 1 if plan.exhausted else 0,
+                            "exhausted": plan.exhausted,
+                        },
+                    )
+                else:
+                    await session.execute(
+                        text("""
+                            UPDATE ingestion_jobs
+                               SET status = :status,
+                                   attempts = :attempts,
+                                   lease_token = :lease_token,
+                                   heartbeat_at = NOW(),
+                                   requeue_reason = :reason,
+                                   error_message = :error,
+                                   started_at = COALESCE(started_at, NOW()),
+                                   completed_at = CASE WHEN :exhausted THEN NOW() END,
+                                   docs_failed = CASE WHEN :exhausted
+                                                 THEN GREATEST(docs_failed, 1)
+                                                 ELSE docs_failed END
+                             WHERE id = :id AND tenant_id = :tid
+                        """),
+                        {
+                            "status": status,
+                            "attempts": plan.attempts,
+                            "lease_token": lease_token,
+                            "reason": plan.reason,
+                            "error": plan.error,
+                            "exhausted": plan.exhausted,
+                            "id": job_id,
+                            "tid": tenant_id,
+                        },
+                    )
+        except Exception as e:
+            _log.error("ingestion_job_claim_error job=%s: %s", job_id, e)
+            raise IngestionPersistenceError(
+                f"ingestion job {job_id} could not be recorded ({_db_error(e)})"
+            ) from e
+        now = datetime.now(UTC).isoformat()
+        if row is not None:
+            job = _job_from_row(row)
+        else:
+            job = IngestionJob(
+                job_id=job_id,
+                source_id=source_config.source_id,
+                tenant_id=tenant_id,
+                status="running",
+                sync_mode=source_config.sync_mode,
+                triggered_by=triggered_by,
+                started_at=now,
+                cursor_before=source_config.cursor_value or "",
+                created_at=now,
+            )
+        job.status = status
+        job.attempts = plan.attempts
+        job.requeue_reason = plan.reason
+        job.lease_token = lease_token
+        job.heartbeat_at = now
+        job.error_message = plan.error
+        if plan.exhausted:
+            job.completed_at = now
+            job.docs_failed = max(job.docs_failed, 1)
+        else:
+            job.completed_at = None
+        self._jobs[job_id] = job
+        return job
+
+    async def heartbeat_job(self, job: IngestionJob) -> bool:
+        """Record that the run owning ``job`` is alive (SYNC-ORPHAN).
+
+        False when the job row is no longer this run's: orphan recovery requeued
+        it (judged its worker dead) or it was finished elsewhere.
+        """
+        if not job.lease_token:
+            return True
+        if self._db is None:
+            current = self._jobs.get(job.job_id)
+            if (
+                current is None
+                or current.lease_token != job.lease_token
+                or current.status != "running"
+            ):
+                return False
+            current.heartbeat_at = datetime.now(UTC).isoformat()
+            return True
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, job.tenant_id),
+        ):
+            result = await session.execute(
+                text(
+                    "UPDATE ingestion_jobs SET heartbeat_at = NOW() "
+                    "WHERE id = :id AND tenant_id = :tid AND lease_token = :lt "
+                    "AND status = 'running'"
+                ),
+                {"id": job.job_id, "tid": job.tenant_id, "lt": job.lease_token},
+            )
+        return bool(getattr(result, "rowcount", 1))
+
     async def update_cursor(
         self,
         job: IngestionJob,
@@ -457,12 +1016,18 @@ class IngestionJobTracker:
         while the Source still carries that fence; otherwise a newer run owns the
         Source and :class:`SyncLockLostError` is raised — nothing is written.
         """
-        if fence is not None and self._db is None:
+        if self._db is None:
             current = self._fences.get(source_config.source_id)
-            if current is not None and current != fence:
+            if fence is not None and current is not None and current != fence:
                 raise SyncLockLostError(
                     f"cursor of source {source_config.source_id} not committed: a newer "
                     "sync holds its lock"
+                )
+            record = self._jobs.get(job.job_id)
+            if job.lease_token and record is not None and record.lease_token != job.lease_token:
+                raise SyncLockLostError(
+                    f"cursor of source {source_config.source_id} not committed: job "
+                    f"{job.job_id} was requeued to another run"
                 )
         if self._db is not None:
             await self._persist_cursor_update(
@@ -471,6 +1036,7 @@ class IngestionJobTracker:
                 new_cursor,
                 job.job_id,
                 fence=fence,
+                job=job if job.lease_token else None,
             )
         job.cursor_after = new_cursor
         source_config.cursor_value = new_cursor
@@ -513,6 +1079,16 @@ class IngestionJobTracker:
         failures without an error make the job ``partial`` — or ``failed`` when
         nothing was synced — with a message saying how many failed.
         """
+        if self._db is None and job.lease_token:
+            record = self._jobs.get(job.job_id)
+            if record is not None and (
+                record.lease_token != job.lease_token or record.status not in ACTIVE_JOB_STATUSES
+            ):
+                _log.warning(
+                    "ingestion_job_result_not_recorded job=%s: the job was taken over",
+                    job.job_id,
+                )
+                return
         synced = job.docs_indexed + job.docs_skipped
         if error:
             job.docs_failed = max(job.docs_failed, 1)
@@ -589,47 +1165,15 @@ class IngestionJobTracker:
         ):
             row = (
                 await session.execute(
-                    text("""
-                        SELECT id, source_id, tenant_id, status, sync_mode, triggered_by,
-                               started_at, completed_at, docs_discovered, docs_indexed,
-                               docs_skipped, docs_failed, chunks_created, bytes_processed,
-                               tokens_consumed, cursor_before, cursor_after, error_message,
-                               created_at
-                          FROM ingestion_jobs
-                         WHERE source_id = :source_id AND tenant_id = :tenant_id
-                         ORDER BY created_at DESC
-                         LIMIT 1
-                    """),
+                    text(
+                        f"SELECT {_JOB_COLUMNS} FROM ingestion_jobs "
+                        "WHERE source_id = :source_id AND tenant_id = :tenant_id "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
                     {"source_id": source_id, "tenant_id": tenant_id},
                 )
             ).mappings().first()
-        if row is None:
-            return None
-
-        def _ts(value: Any) -> str | None:
-            return value.isoformat() if value is not None else None
-
-        return IngestionJob(
-            job_id=str(row["id"]),
-            source_id=str(row["source_id"]),
-            tenant_id=str(row["tenant_id"]),
-            status=str(row["status"]),
-            sync_mode=str(row["sync_mode"]),
-            triggered_by=str(row["triggered_by"] or ""),
-            started_at=_ts(row["started_at"]),
-            completed_at=_ts(row["completed_at"]),
-            docs_discovered=int(row["docs_discovered"] or 0),
-            docs_indexed=int(row["docs_indexed"] or 0),
-            docs_skipped=int(row["docs_skipped"] or 0),
-            docs_failed=int(row["docs_failed"] or 0),
-            chunks_created=int(row["chunks_created"] or 0),
-            bytes_processed=int(row["bytes_processed"] or 0),
-            tokens_consumed=int(row["tokens_consumed"] or 0),
-            cursor_before=str(row["cursor_before"] or ""),
-            cursor_after=str(row["cursor_after"] or ""),
-            error_message=str(row["error_message"] or ""),
-            created_at=_ts(row["created_at"]) or "",
-        )
+        return None if row is None else _job_from_row(row)
 
     async def list_jobs(
         self, source_id: str, tenant_id: str, *, limit: int = 20
@@ -639,15 +1183,16 @@ class IngestionJobTracker:
         Syncs run in Celery workers, so this process's in-memory job map only
         knows jobs it ran itself; with a DB the table is the history.
         """
-        import dataclasses
-
         if self._db is None:
             jobs = [
                 j for j in self._jobs.values()
                 if j.source_id == source_id and j.tenant_id == tenant_id
             ]
             jobs.sort(key=lambda j: j.created_at, reverse=True)
-            return [dataclasses.asdict(j) for j in jobs[:limit]]
+            out_mem = [dataclasses.asdict(j) for j in jobs[:limit]]
+            for item in out_mem:
+                item.pop("lease_token", None)  # internal: the run's lock value
+            return out_mem
         from sqlalchemy import text
 
         async with (
@@ -662,7 +1207,8 @@ class IngestionJobTracker:
                         "triggered_by, started_at, completed_at, docs_discovered, "
                         "docs_indexed, docs_skipped, docs_failed, chunks_created, "
                         "bytes_processed, tokens_consumed, cursor_before, cursor_after, "
-                        "error_message, created_at FROM ingestion_jobs "
+                        "error_message, created_at, attempts, requeue_reason, heartbeat_at "
+                        "FROM ingestion_jobs "
                         "WHERE source_id = :sid AND tenant_id = :tid "
                         "ORDER BY created_at DESC LIMIT :lim"
                     ),
@@ -672,7 +1218,7 @@ class IngestionJobTracker:
         out: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            for key in ("started_at", "completed_at", "created_at"):
+            for key in ("started_at", "completed_at", "created_at", "heartbeat_at"):
                 value = item.get(key)
                 item[key] = value.isoformat() if isinstance(value, datetime) else value
             out.append(item)
@@ -732,7 +1278,15 @@ class IngestionJobTracker:
         job_id: str,
         *,
         fence: int | None = None,
+        job: IngestionJob | None = None,
     ) -> None:
+        """Commit the cursor (fenced) and record it on the job.
+
+        With ``job`` (a leased run, SYNC-ORPHAN) the job row also checkpoints its
+        counters with the cursor -- a run requeued after its worker died resumes
+        from both -- and is heart-beaten; the write applies only while the row is
+        still this run's, else nothing is committed (SyncLockLostError).
+        """
         try:
             from sqlalchemy import text
 
@@ -759,14 +1313,51 @@ class IngestionJobTracker:
                         f"cursor of source {source_id} not committed: a newer sync holds "
                         "its lock (or the source was deleted)"
                     )
-                await session.execute(
-                    text("""
-                        UPDATE ingestion_jobs
-                           SET cursor_after = :cursor
-                         WHERE id = :job_id AND tenant_id = :tenant_id
-                    """),
-                    {"cursor": cursor, "job_id": job_id, "tenant_id": tenant_id},
-                )
+                if job is None:
+                    await session.execute(
+                        text("""
+                            UPDATE ingestion_jobs
+                               SET cursor_after = :cursor
+                             WHERE id = :job_id AND tenant_id = :tenant_id
+                        """),
+                        {"cursor": cursor, "job_id": job_id, "tenant_id": tenant_id},
+                    )
+                else:
+                    checkpoint = await session.execute(
+                        text("""
+                            UPDATE ingestion_jobs
+                               SET cursor_after = :cursor,
+                                   docs_discovered = :discovered,
+                                   docs_indexed = :indexed,
+                                   docs_skipped = :skipped,
+                                   docs_failed = :failed,
+                                   chunks_created = :chunks,
+                                   tokens_consumed = :tokens,
+                                   bytes_processed = :bytes,
+                                   heartbeat_at = NOW()
+                             WHERE id = :job_id AND tenant_id = :tenant_id
+                               AND lease_token = :lease_token AND status = 'running'
+                        """),
+                        {
+                            "cursor": cursor,
+                            "discovered": job.docs_discovered,
+                            "indexed": job.docs_indexed,
+                            "skipped": job.docs_skipped,
+                            "failed": job.docs_failed,
+                            "chunks": job.chunks_created,
+                            "tokens": job.tokens_consumed,
+                            "bytes": job.bytes_processed,
+                            "job_id": job_id,
+                            "tenant_id": tenant_id,
+                            "lease_token": job.lease_token,
+                        },
+                    )
+                    if getattr(checkpoint, "rowcount", 1) == 0:
+                        # Raised inside the transaction: the cursor is rolled back too.
+                        raise SyncLockLostError(
+                            f"cursor of source {source_id} not committed: job {job_id} was "
+                            "requeued to another run"
+                        )
         except SyncLockLostError:
             raise
         except Exception as e:
@@ -785,7 +1376,7 @@ class IngestionJobTracker:
                 session.begin(),
                 sqlalchemy_rls_context(session, job.tenant_id),
             ):
-                await session.execute(
+                result = await session.execute(
                     text("""
                         UPDATE ingestion_jobs
                            SET status = :status,
@@ -800,8 +1391,16 @@ class IngestionJobTracker:
                                error_message = :error,
                                cursor_after = :cursor
                          WHERE id = :job_id AND tenant_id = :tenant_id
-                    """),
+                    """ + (
+                        # A leased run records its result only while the job is
+                        # still its own (SYNC-ORPHAN): a run whose job was requeued
+                        # -- or already finished -- must not overwrite it.
+                        " AND lease_token = :lease_token AND status IN ('pending', 'running')"
+                        if job.lease_token
+                        else ""
+                    )),
                     {
+                        **({"lease_token": job.lease_token} if job.lease_token else {}),
                         "status": job.status,
                         "indexed": job.docs_indexed,
                         "skipped": job.docs_skipped,
@@ -818,6 +1417,13 @@ class IngestionJobTracker:
                         "tenant_id": job.tenant_id,
                     },
                 )
+                if job.lease_token and getattr(result, "rowcount", 1) == 0:
+                    _log.warning(
+                        "ingestion_job_result_not_recorded job=%s status=%s: the job was "
+                        "requeued to another run or already finished",
+                        job.job_id,
+                        job.status,
+                    )
         except Exception as e:
             _log.error("ingestion_job_complete_persist_error job=%s: %s", job.job_id, e)
             raise IngestionPersistenceError(
@@ -852,9 +1458,10 @@ class IngestionJobTracker:
             cutoff = datetime.now(UTC).timestamp() - older_than_seconds
             for job in self._jobs.values():
                 started = job.started_at or job.created_at
+                beat = job.heartbeat_at if job.lease_token else None
                 if job.status in ("running", "pending") and started and (
                     datetime.fromisoformat(started).timestamp() < cutoff
-                ):
+                ) and (beat is None or datetime.fromisoformat(beat).timestamp() < cutoff):
                     job.status = "failed"
                     job.error_message = _orphan_reason(older_than_seconds)
                     job.completed_at = datetime.now(UTC).isoformat()
@@ -878,6 +1485,12 @@ class IngestionJobTracker:
                      WHERE status IN ('running', 'pending')
                        AND COALESCE(started_at, created_at)
                            < NOW() - make_interval(secs => :age)
+                       -- A leased run that still heart-beats is alive, however
+                       -- long it runs (SYNC-ORPHAN); dead leased runs are
+                       -- recovered within minutes by recover_orphaned_syncs and
+                       -- only reach this backstop when that recovery is off.
+                       AND (lease_token IS NULL OR heartbeat_at IS NULL
+                            OR heartbeat_at < NOW() - make_interval(secs => :age))
                  RETURNING id, tenant_id, source_id
                 """),
                 {"reason": _orphan_reason(older_than_seconds), "age": older_than_seconds},
@@ -889,6 +1502,233 @@ class IngestionJobTracker:
                 job.status = "failed"
                 job.error_message = _orphan_reason(older_than_seconds)
         return rows
+
+    # ── Worker-loss recovery (SYNC-ORPHAN) ────────────────────────────────────
+    #
+    # A leased sync run heart-beats its job row (``heartbeat_at``) every time it
+    # renews the Source's lock. ``recover_orphaned_syncs`` (app.ingestion.
+    # orphan_recovery) scans for active rows whose heartbeat went stale, checks
+    # the lock, and requeues or gives up on each with a compare-and-set on the
+    # row's lease token: a run that is in fact alive keeps its row.
+
+    async def find_orphan_candidates(
+        self, *, stale_seconds: float, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Active leased jobs whose heartbeat is older than ``stale_seconds``.
+
+        Cross-tenant beat scan -> the maintenance role. Stalest first, bounded.
+        """
+        if self._db is None and self._system_db is None:
+            now = datetime.now(UTC).timestamp()
+            found: list[dict[str, Any]] = []
+            for job in self._jobs.values():
+                if job.status not in ACTIVE_JOB_STATUSES or not job.lease_token:
+                    continue
+                beat = job.heartbeat_at or job.started_at or job.created_at
+                age = now - datetime.fromisoformat(beat).timestamp() if beat else 1e9
+                if age >= stale_seconds:
+                    found.append(_orphan_candidate(job, age))
+            found.sort(key=lambda r: -float(r["heartbeat_age_s"]))
+            return found[:limit]
+        from sqlalchemy import text
+
+        async with (
+            self._system_factory()() as session,
+            session.begin(),
+            system_session(session),
+        ):
+            rows = (
+                await session.execute(
+                    text("""
+                        SELECT id, tenant_id, source_id, status, triggered_by, attempts,
+                               lease_token, cursor_after, requeue_reason,
+                               EXTRACT(EPOCH FROM (NOW() - heartbeat_at)) AS heartbeat_age_s
+                          FROM ingestion_jobs
+                         WHERE status IN ('pending', 'running')
+                           AND lease_token IS NOT NULL
+                           AND heartbeat_at < NOW() - make_interval(secs => :stale)
+                         ORDER BY heartbeat_at ASC
+                         LIMIT :lim
+                    """),
+                    {"stale": float(stale_seconds), "lim": limit},
+                )
+            ).mappings().all()
+        return [
+            {
+                **dict(r),
+                "id": str(r["id"]),
+                "attempts": int(r["attempts"] or 1),
+                "cursor_after": str(r["cursor_after"] or ""),
+                "heartbeat_age_s": float(r["heartbeat_age_s"] or 0.0),
+            }
+            for r in rows
+        ]
+
+    async def requeue_orphan(
+        self, candidate: dict[str, Any], *, stale_seconds: float, reason: str
+    ) -> int | None:
+        """Hand an orphaned job to a new run: ``pending``, one more attempt.
+
+        Compare-and-set on the lease token and attempt count read by the scan
+        and on the heartbeat still being stale: a run that heart-beat (or was
+        claimed) since keeps the row. The row's lease token becomes the bare job
+        id -- the token the requeued task's lock waits under. Returns the new
+        attempt number, or None when the row changed.
+        """
+        job_id, tenant_id = str(candidate["id"]), str(candidate["tenant_id"])
+        if self._db is None:
+            job = self._jobs.get(job_id)
+            if job is None or not self._mem_still_orphaned(job, candidate, stale_seconds):
+                return None
+            now = datetime.now(UTC).isoformat()
+            self._jobs[job_id] = dataclasses.replace(
+                job,
+                status="pending",
+                attempts=job.attempts + 1,
+                lease_token=job_id,
+                heartbeat_at=now,
+                requeue_reason=reason,
+                error_message="",
+            )
+            return job.attempts + 1
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            attempts = (
+                await session.execute(
+                    text("""
+                        UPDATE ingestion_jobs
+                           SET status = 'pending',
+                               attempts = attempts + 1,
+                               lease_token = :job_id,
+                               heartbeat_at = NOW(),
+                               requeue_reason = :reason,
+                               error_message = ''
+                         WHERE id = :job_id AND tenant_id = :tid
+                           AND status IN ('pending', 'running')
+                           AND lease_token = :lease_token AND attempts = :attempts
+                           AND heartbeat_at < NOW() - make_interval(secs => :stale)
+                     RETURNING attempts
+                    """),
+                    {
+                        "job_id": job_id,
+                        "tid": tenant_id,
+                        "reason": reason[:2048],
+                        "lease_token": str(candidate["lease_token"]),
+                        "attempts": int(candidate["attempts"]),
+                        "stale": float(stale_seconds),
+                    },
+                )
+            ).scalar_one_or_none()
+        return None if attempts is None else int(attempts)
+
+    async def give_up_orphan(
+        self, candidate: dict[str, Any], *, stale_seconds: float, message: str
+    ) -> bool:
+        """Fail an orphaned job whose attempts are spent (same compare-and-set)."""
+        job_id, tenant_id = str(candidate["id"]), str(candidate["tenant_id"])
+        if self._db is None:
+            job = self._jobs.get(job_id)
+            if job is None or not self._mem_still_orphaned(job, candidate, stale_seconds):
+                return False
+            self._jobs[job_id] = dataclasses.replace(
+                job,
+                status="failed",
+                completed_at=datetime.now(UTC).isoformat(),
+                docs_failed=max(job.docs_failed, 1),
+                error_message=message[:2048],
+            )
+            return True
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            failed = (
+                await session.execute(
+                    text("""
+                        UPDATE ingestion_jobs
+                           SET status = 'failed',
+                               completed_at = NOW(),
+                               docs_failed = GREATEST(docs_failed, 1),
+                               error_message = :message
+                         WHERE id = :job_id AND tenant_id = :tid
+                           AND status IN ('pending', 'running')
+                           AND lease_token = :lease_token AND attempts = :attempts
+                           AND heartbeat_at < NOW() - make_interval(secs => :stale)
+                     RETURNING id
+                    """),
+                    {
+                        "job_id": job_id,
+                        "tid": tenant_id,
+                        "message": message[:2048],
+                        "lease_token": str(candidate["lease_token"]),
+                        "attempts": int(candidate["attempts"]),
+                        "stale": float(stale_seconds),
+                    },
+                )
+            ).scalar_one_or_none()
+        return failed is not None
+
+    async def abandon_requeued_job(
+        self, job_id: str, tenant_id: str, *, status: str, message: str
+    ) -> bool:
+        """Close a requeued job its run will not execute (Source disabled / parked).
+
+        Only a row still waiting for that run (``pending`` under the bare job id)
+        is closed; anything a run already claimed is left to it.
+        """
+        if self._db is None:
+            job = self._jobs.get(job_id)
+            if job is None or job.status != "pending" or job.lease_token != job_id:
+                return False
+            self._jobs[job_id] = dataclasses.replace(
+                job,
+                status=status,
+                completed_at=datetime.now(UTC).isoformat(),
+                error_message=message[:2048],
+            )
+            return True
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            closed = (
+                await session.execute(
+                    text(
+                        "UPDATE ingestion_jobs SET status = :status, completed_at = NOW(), "
+                        "error_message = :message "
+                        "WHERE id = :id AND tenant_id = :tid AND status = 'pending' "
+                        "AND lease_token = :id RETURNING id"
+                    ),
+                    {"status": status, "message": message[:2048], "id": job_id, "tid": tenant_id},
+                )
+            ).scalar_one_or_none()
+        return closed is not None
+
+    @staticmethod
+    def _mem_still_orphaned(
+        job: IngestionJob, candidate: dict[str, Any], stale_seconds: float
+    ) -> bool:
+        if job.status not in ACTIVE_JOB_STATUSES:
+            return False
+        if job.lease_token != candidate["lease_token"] or job.attempts != candidate["attempts"]:
+            return False
+        beat = job.heartbeat_at or job.started_at or job.created_at
+        if not beat:
+            return True
+        return datetime.now(UTC).timestamp() - datetime.fromisoformat(beat).timestamp() >= (
+            stale_seconds
+        )
 
     async def load_config(self, source_id: str, tenant_id: str) -> SourceConfig | None:
         """Load a SourceConfig from DB or in-memory store. Returns None if not found."""

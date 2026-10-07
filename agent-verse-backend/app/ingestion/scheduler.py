@@ -20,7 +20,7 @@ import contextlib
 import hashlib
 import logging
 import random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from celery import shared_task  # type: ignore[import-not-found]
 
@@ -74,6 +74,7 @@ def sync_source_task(
     triggered_by: str = "scheduler",
     job_id: str | None = None,
     reindex: bool = False,
+    resume: bool = False,
 ) -> dict:
     """Celery task: synchronise a single source through the full 13-stage pipeline.
 
@@ -83,6 +84,8 @@ def sync_source_task(
       - Manual trigger (API POST /sources/{id}/sync)
       - Reindex (API POST /sources/{id}/reindex, ``reindex=True``): the source's
         indexed documents are deleted and it is re-synced from the start.
+      - Orphan recovery (``resume=True``, SYNC-ORPHAN): job ``job_id`` lost its
+        worker and runs again, resuming from its checkpoint.
     """
     return _run_task_loop(
         _sync_source_async(
@@ -92,6 +95,7 @@ def sync_source_task(
             triggered_by=triggered_by,
             job_id=job_id,
             reindex=reindex,
+            resume=resume,
         )
     )
 
@@ -492,12 +496,14 @@ async def _sync_source_async(
     triggered_by: str,
     job_id: str | None = None,
     reindex: bool = False,
+    resume: bool = False,
 ) -> dict:
     """Async body of sync_source_task.
 
     ``job_id`` is set by ``POST /sources/{id}/sync``, which already took the
     source's lock (its token is the job id) so it can answer "already running";
     the task adopts that lock instead of acquiring it, and releases it at the end.
+    Orphan recovery queues a dead run's job the same way (``resume=True``).
     """
     from app.ingestion.connector_registry import load_all_connectors
 
@@ -535,6 +541,7 @@ async def _sync_source_async(
             triggered_by=triggered_by,
             job_id=job_id,
             reindex=reindex,
+            resume=resume,
         )
     finally:
         await lease.release()
@@ -761,8 +768,14 @@ async def _sync_locked(
     triggered_by: str,
     job_id: str | None,
     reindex: bool,
+    resume: bool = False,
 ) -> dict:
-    """The sync itself, run while ``lease`` holds the Source's lock (released by the caller)."""
+    """The sync itself, run while ``lease`` holds the Source's lock (released by the caller).
+
+    The run's job id is the lock's job part (``lease.job_id``): the queued job
+    id of a manual / reindex / requeued run, the scheduler's own lock token
+    otherwise -- so ``POST /sources/{id}/sync/cancel`` finds every run.
+    """
     from app.ingestion.connector_registry import get_connector
     from app.ingestion.job_tracker import IngestionPersistenceError, SyncLockLostError
 
@@ -776,6 +789,11 @@ async def _sync_locked(
         return {"error": "source_not_found"}
 
     if not config.enabled:
+        if resume and job_id:
+            await tracker.abandon_requeued_job(
+                job_id, tenant_id, status="cancelled",
+                message="the source was disabled before its requeued sync could run",
+            )
         return {"skipped": True, "reason": "source_disabled"}
 
     # ── Configuration health (L-02) ──────────────────────────────────────────
@@ -796,6 +814,11 @@ async def _sync_locked(
                 reason,
             )
             await source_store.mark_needs_configuration(source_id, tenant_id, reason=reason)
+        if resume and job_id:
+            await tracker.abandon_requeued_job(
+                job_id, tenant_id, status="failed",
+                message=f"requeued sync not run: the source needs configuration ({reason})",
+            )
         return {"skipped": True, "reason": "needs_configuration", "detail": reason}
 
     # ── Backoff check (LAW-09) ───────────────────────────────────────────────
@@ -803,7 +826,8 @@ async def _sync_locked(
     # sync / reindex (the API already answered "queued" with this job id) runs
     # now: it used to be skipped without a job record, so the UI waited on a job
     # that never existed (P1b-5).
-    operator_run = triggered_by in _OPERATOR_TRIGGERS and job_id is not None
+    # A requeued run (SYNC-ORPHAN) already waited out its own backoff countdown.
+    operator_run = (triggered_by in _OPERATOR_TRIGGERS and job_id is not None) or resume
     if not operator_run and config.consecutive_failures and config.consecutive_failures > 0:
         backoff = _backoff_seconds(config.consecutive_failures)
         import time
@@ -824,8 +848,6 @@ async def _sync_locked(
                 return {"skipped": True, "reason": "backoff", "retry_in_seconds": backoff - elapsed}
 
     # ── Get connector ────────────────────────────────────────────────────────
-    import uuid as _uuid
-
     try:
         connector_cls = get_connector(config.source_type)
     except (KeyError, RuntimeError) as exc:
@@ -836,23 +858,57 @@ async def _sync_locked(
 
         message = connector_error_message(exc)
         failed_job = await tracker.create_job(
-            config, job_id=job_id or str(_uuid.uuid4()), triggered_by=triggered_by
+            config,
+            job_id=job_id or lease.job_id,
+            triggered_by=triggered_by,
+            lease_token=lease.token,
         )
+        # (A job that already finished keeps its result: completion is fenced.)
         await tracker.complete_job(failed_job, error=message)
         await source_store.mark_synced(source_id, tenant_id, docs_indexed=0, chunks=0, failed=1)
         return {"error": message}
 
     connector = connector_cls()
 
-    # ── Create job record ────────────────────────────────────────────────────
-
+    # ── Claim the job record (SYNC-ORPHAN) ───────────────────────────────────
+    # Created on a first run; resumed -- checkpointed counters and all -- when
+    # the job was requeued after its worker died; never re-run once finished.
+    # A scheduled run continues the attempt count of a dead job it supersedes.
     job = await tracker.create_job(
         config,
-        job_id=job_id or str(_uuid.uuid4()),
+        job_id=job_id or lease.job_id,
         triggered_by=triggered_by,
+        lease_token=lease.token,
+        max_attempts=_sync_max_attempts(),
+        inherit_attempts=triggered_by not in _OPERATOR_TRIGGERS,
     )
+    if job.status != "running":
+        if job.lease_token == lease.token:
+            # Its worker was lost on every attempt: failed with the reason; the
+            # Source's failure counter backs off the next scheduled sync.
+            _log.error(
+                "ingestion_sync_gave_up source=%s job=%s attempts=%s: %s",
+                source_id, job.job_id, job.attempts, job.error_message,
+            )
+            await source_store.mark_synced(
+                source_id, tenant_id, docs_indexed=0, chunks=0, failed=1
+            )
+            return {
+                "job_id": job.job_id,
+                "error": "attempts_exhausted",
+                "detail": job.error_message,
+            }
+        _log.info("source=%s job=%s already %s — not run again", source_id, job.job_id, job.status)
+        return {"skipped": True, "reason": "job_already_finished", "job_id": job.job_id}
+    if job.attempts > 1:
+        _log.warning(
+            "ingestion_sync_resumed source=%s job=%s attempt=%d cursor=%r reason=%s",
+            source_id, job.job_id, job.attempts, config.cursor_value, job.requeue_reason,
+        )
+    lease.attach_heartbeat(lambda: tracker.heartbeat_job(job))
 
-    docs_indexed = docs_failed = docs_skipped = 0
+    # Resumed runs start from the job's checkpointed tallies (zero on a first run).
+    docs_indexed, docs_skipped, docs_failed = job.docs_indexed, job.docs_skipped, job.docs_failed
     cancelled = False
     # Documents indexed this run whose open DLQ entries are now stale (P1b-4).
     indexed_ids: list[str] = []
@@ -888,15 +944,16 @@ async def _sync_locked(
         cursor = config.cursor_value or None
         new_cursor = cursor
 
-        async def _ingest_one(raw_doc: Any) -> tuple[bool, bool]:
-            """Ingest one document: ``(advance_cursor, acknowledge)``.
+        async def _ingest_one(raw_doc: Any) -> _DocOutcome:
+            """Ingest one document: whether the cursor / acknowledgement may move past it.
 
             Runs concurrently with other documents of this sync (bounded by
-            INGESTION_SYNC_DOC_CONCURRENCY). It only tallies and dead-letters;
+            INGESTION_SYNC_DOC_CONCURRENCY). It only dead-letters; the tallies,
             the cursor and the connector acknowledgements move in delta order
-            (see ``_advance``), never past a document still being ingested.
+            (see ``_advance``), never past a document still being ingested -- so
+            a checkpoint's counters describe exactly the documents its cursor
+            passed, and a run resumed from it counts each document once.
             """
-            nonlocal docs_indexed, docs_skipped, docs_failed
             try:
                 _note_move(moves, raw_doc)
                 result = await pipeline.ingest(raw_doc, config)
@@ -905,47 +962,42 @@ async def _sync_locked(
                 # booleans — the old attributes raised AttributeError on the first
                 # document, killing every scheduled sync.
                 # Tokens/chunks feed ingestion_jobs → GET /ingestion/cost.
-                job.tokens_consumed += int(getattr(result, "tokens_consumed", 0) or 0)
-                job.chunks_created += int(getattr(result, "chunks_created", 0) or 0)
+                tokens = int(getattr(result, "tokens_consumed", 0) or 0)
+                chunks = int(getattr(result, "chunks_created", 0) or 0)
                 if result.status == "indexed":
-                    docs_indexed += 1
                     indexed_ids.append(str(raw_doc.doc_id))
                     if len(indexed_ids) >= _RESOLVE_BATCH:
                         await _resolve_indexed()
-                    handled = True
-                elif result.status == "skipped":
-                    docs_skipped += 1
-                    handled = True
-                else:
-                    docs_failed += 1
-                    _log.warning(
-                        "pipeline failed: source=%s doc=%s error=%s",
-                        source_id,
-                        raw_doc.doc_id,
-                        getattr(result, "error", None) or getattr(result, "skip_reason", ""),
-                    )
-                    # DLQ (LAW-17)
-                    handled = await tracker.add_to_dlq(
-                        source_id=source_id,
-                        tenant_id=tenant_id,
-                        doc_id=raw_doc.doc_id,
-                        error=getattr(result, "error", None)
-                        or getattr(result, "skip_reason", "")
-                        or "pipeline_failure",
-                        raw_doc=raw_doc,
-                        job_id=job.job_id,
-                    )
+                    return _DocOutcome(True, True, "indexed", tokens, chunks)
+                if result.status == "skipped":
+                    return _DocOutcome(True, True, "skipped", tokens, chunks)
+                _log.warning(
+                    "pipeline failed: source=%s doc=%s error=%s",
+                    source_id,
+                    raw_doc.doc_id,
+                    getattr(result, "error", None) or getattr(result, "skip_reason", ""),
+                )
+                # DLQ (LAW-17)
+                handled = await tracker.add_to_dlq(
+                    source_id=source_id,
+                    tenant_id=tenant_id,
+                    doc_id=raw_doc.doc_id,
+                    error=getattr(result, "error", None)
+                    or getattr(result, "skip_reason", "")
+                    or "pipeline_failure",
+                    raw_doc=raw_doc,
+                    job_id=job.job_id,
+                )
                 # DEF-4: indexed / skipped / durably DLQ'd — a broker-offset
                 # connector (Kafka) may now commit this message, never before.
                 # A failed DLQ write leaves it unacknowledged (redelivered).
-                return True, bool(handled)
+                return _DocOutcome(True, bool(handled), "failed", tokens, chunks)
 
             except (SyncLockLostError, IngestionPersistenceError):
                 # NF-12: a failed cursor commit stops the run; it is not a
                 # document failure (that path used to swallow it into the DLQ).
                 raise
             except Exception as doc_exc:
-                docs_failed += 1
                 _log.exception(
                     "unhandled error processing doc in source=%s: %s", source_id, doc_exc
                 )
@@ -960,10 +1012,27 @@ async def _sync_locked(
                     job_id=job.job_id,
                 )
                 # Only a durable DLQ entry lets the message be committed.
-                return False, bool(dlq_written)
+                return _DocOutcome(False, bool(dlq_written), "failed", 0, 0)
+
+        def _tally(outcome: _DocOutcome) -> None:
+            nonlocal docs_indexed, docs_skipped, docs_failed
+            job.tokens_consumed += outcome.tokens
+            job.chunks_created += outcome.chunks
+            if outcome.status == "indexed":
+                docs_indexed += 1
+            elif outcome.status == "skipped":
+                docs_skipped += 1
+            else:
+                docs_failed += 1
+
+        def _sync_tallies() -> None:
+            job.docs_indexed = docs_indexed
+            job.docs_skipped = docs_skipped
+            job.docs_failed = docs_failed
+            job.docs_discovered = docs_indexed + docs_skipped + docs_failed
 
         # Documents in delta order: (raw_doc, its next cursor, its ingestion).
-        window: collections.deque[tuple[Any, Any, asyncio.Future[tuple[bool, bool]]]] = (
+        window: collections.deque[tuple[Any, Any, asyncio.Future[_DocOutcome]]] = (
             collections.deque()
         )
         doc_limit = _sync_doc_concurrency()
@@ -985,15 +1054,18 @@ async def _sync_locked(
             nonlocal new_cursor, advanced
             while window and (drain or window[0][2].done()):
                 raw_doc, next_cursor, fut = window[0]
-                advance, ack = await fut  # a lost lock / failed commit raises here
+                outcome = await fut  # a lost lock / failed commit raises here
                 window.popleft()
-                if advance:
+                _tally(outcome)
+                if outcome.advance:
                     new_cursor = next_cursor
-                if ack:
+                if outcome.ack:
                     await _acknowledge(connector, raw_doc)
                 advanced += 1
-                # Commit cursor every 100 docs (LAW-14 atomicity), fenced (TG-12).
-                if advance and advanced % 100 == 0:
+                # Commit cursor every 100 docs (LAW-14 atomicity), fenced (TG-12);
+                # the job checkpoints its tallies with it (SYNC-ORPHAN).
+                if outcome.advance and advanced % 100 == 0:
+                    _sync_tallies()
                     await tracker.update_cursor(job, new_cursor or "", config, fence=lease.fence)
 
         # DEF-4: close the stream as soon as the loop ends (break, error or
@@ -1032,6 +1104,10 @@ async def _sync_locked(
             for _doc, _next, fut in window:
                 fut.cancel()
             await asyncio.gather(*(fut for _d, _n, fut in window), return_exceptions=True)
+            # Documents that did finish are still reported on the failed job.
+            for _doc, _next, fut in window:
+                if fut.done() and not fut.cancelled() and fut.exception() is None:
+                    _tally(fut.result())
             window.clear()
             raise
 
@@ -1047,15 +1123,12 @@ async def _sync_locked(
         if not cancelled and isinstance(completed, str) and completed:
             new_cursor = completed
         lease.check()
-        await tracker.update_cursor(job, new_cursor or "", config, fence=lease.fence)
         # Sync the loop's tallies onto the job before completing it — complete_job
         # records the job's own counters. This path previously called an API that
         # does not exist (job_id=/docs_*/status= kwargs), raising TypeError on
         # every run.
-        job.docs_indexed = docs_indexed
-        job.docs_skipped = docs_skipped
-        job.docs_failed = docs_failed
-        job.docs_discovered = docs_indexed + docs_skipped + docs_failed
+        _sync_tallies()
+        await tracker.update_cursor(job, new_cursor or "", config, fence=lease.fence)
         await tracker.complete_job(
             job, cancelled=cancelled, notices=_move_notices(moves) + sweep["notices"]
         )
@@ -1142,6 +1215,26 @@ async def _sync_locked(
 
 # Syncs an operator asked for (POST /sources/{id}/sync or /reindex): never backed off.
 _OPERATOR_TRIGGERS = frozenset({"manual", "reindex"})
+
+
+class _DocOutcome(NamedTuple):
+    """One document's result in a sync: cursor / ack permission and its tallies."""
+
+    advance: bool
+    ack: bool
+    status: str  # indexed | skipped | failed
+    tokens: int
+    chunks: int
+
+
+def _sync_max_attempts() -> int:
+    """Runs a sync job gets before a lost worker fails it (SYNC-ORPHAN)."""
+    from app.core.config import get_settings
+
+    try:
+        return max(1, int(get_settings().ingestion_sync_max_attempts))
+    except (AttributeError, TypeError, ValueError):
+        return 3
 
 # Indexed document ids are matched against open DLQ entries in batches this big.
 _RESOLVE_BATCH = 200
@@ -1282,6 +1375,49 @@ async def _reap_stale_jobs_async(*, tracker: object | None = None) -> dict:
             row["id"], row["tenant_id"], row["source_id"],
         )
     return {"reaped": len(reaped), "older_than_seconds": age}
+
+
+@shared_task(name="ingestion.recover_orphaned_syncs", bind=True, max_retries=0)
+def recover_orphaned_syncs_task(self) -> dict:
+    """Celery beat: requeue syncs whose worker died, within minutes (SYNC-ORPHAN).
+
+    Runs on the ``maintenance`` queue (its own worker pool), so it still runs
+    when the ingestion workers are the ones that were lost.
+    """
+    return _run_task_loop(_recover_orphaned_syncs_async())
+
+
+async def _recover_orphaned_syncs_async(
+    *, tracker: Any = None, source_store: Any = None
+) -> dict:
+    from app.ingestion.orphan_recovery import recover_orphaned_syncs, recovery_settings
+
+    settings = recovery_settings()
+    if not settings.enabled:
+        return {"skipped": True, "reason": "disabled"}
+    owned_redis = None
+    if tracker is None:
+        from app.db.session import get_session_factory, get_system_session_factory
+        from app.ingestion.job_tracker import IngestionJobTracker
+        from app.ingestion.source_store import SourceConfigStore
+
+        owned_redis = _reconcile_redis()
+        if owned_redis is None:
+            # The lock that proves a run alive lives in the shared Redis: without
+            # it nothing can tell a dead run from a live one in another process.
+            return {"skipped": True, "reason": "no_shared_lock"}
+        db_factory = get_session_factory()
+        tracker = IngestionJobTracker(
+            db=db_factory, system_db=get_system_session_factory(), redis=owned_redis
+        )
+        source_store = SourceConfigStore(db=db_factory)
+    try:
+        report = await recover_orphaned_syncs(
+            tracker, source_store=source_store, settings=settings
+        )
+    finally:
+        await _close(owned_redis)
+    return report.as_dict()
 
 
 @shared_task(name="ingestion.dispatch_due_sources", bind=True)

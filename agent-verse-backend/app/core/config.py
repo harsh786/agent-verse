@@ -419,6 +419,16 @@ class Settings(BaseSettings):
     # TTL of a running sync's per-Source lock (TG-12). The worker renews it every
     # third of the TTL; a worker that dies frees its Source within one TTL.
     ingestion_sync_lock_ttl_seconds: int = 300
+    # SYNC-ORPHAN (app/ingestion/orphan_recovery.py): a sync whose worker died
+    # (its job heartbeat older than the stale window AND its Source lock
+    # expired) is requeued as the same job, resuming from the last checkpoint,
+    # with an exponential backoff countdown; after max_attempts runs it is
+    # failed with the reason. Recovery bound ~= max(lock TTL, stale) + 60 s.
+    ingestion_sync_orphan_recovery_enabled: bool = True
+    ingestion_sync_heartbeat_stale_seconds: int = Field(default=300, ge=1)
+    ingestion_sync_max_attempts: int = Field(default=3, ge=1, le=20)
+    ingestion_sync_requeue_backoff_seconds: int = Field(default=30, ge=0)
+    ingestion_sync_requeue_backoff_max_seconds: int = Field(default=600, ge=0)
     # Documents ONE connector sync ingests at once (fetch, parse / OCR, embed,
     # index). The cursor and connector acknowledgements still advance in source
     # order, only past documents that finished. 1 = one document at a time.
@@ -678,8 +688,9 @@ class Settings(BaseSettings):
     # (no DNS-rebinding window). A driver that resolves hosts outside Python and
     # cannot be pinned (confluent-kafka / librdkafka) is refused while this is on.
     ingestion_egress_strict_pinning: bool = True
-    # Ingestion jobs still running/pending after this long are reaped as failed
-    # (orphaned by a lost worker). Must exceed the source lock TTL (3600s).
+    # Backstop: ingestion jobs still running/pending after this long, with no
+    # heartbeat for as long, are reaped as failed (legacy rows without a lease,
+    # or SYNC-ORPHAN recovery switched off). Must exceed the queued lock TTL (3600s).
     ingestion_stale_job_seconds: int = 7200
     # Upstream-deletion reconciliation (KB-44): a Source whose connector can list
     # what exists upstream (S3/MinIO, GCS, Azure Blob) has the documents deleted

@@ -251,6 +251,16 @@ class IngestionJob:
     error_message: str = ""
     created_at: str = ""
 
+    # ── Worker-loss recovery (SYNC-ORPHAN) ────────────────────────────────────
+    # Runs of this job started so far (a run whose worker died is requeued as
+    # the same job, resuming from the checkpointed cursor), why it was last
+    # requeued, and the last heartbeat of the worker running it.
+    attempts: int = 1
+    requeue_reason: str = ""
+    heartbeat_at: str | None = None
+    # The sync lock value of the run that owns the job (internal, never served).
+    lease_token: str = ""
+
 
 @dataclass
 class PipelineResult:

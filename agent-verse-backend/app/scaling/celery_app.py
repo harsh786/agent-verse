@@ -169,6 +169,8 @@ celery_app.conf.update(
         "app.scaling.tasks.detect_stuck_goals": {"queue": "maintenance"},
         "app.scaling.tasks.reap_stale_goal_runners": {"queue": "maintenance"},
         "app.scaling.dead_worker_tasks.restore_dead_worker_messages": {"queue": "maintenance"},
+        # SYNC-ORPHAN recovery: maintenance pool, not the (possibly lost) ingestion one.
+        "ingestion.recover_orphaned_syncs": {"queue": "maintenance"},
         "app.scaling.a2a_tasks.reconcile_a2a_tasks": {"queue": "maintenance"},
         "app.scaling.a2a_tasks.deliver_a2a_callback": {"queue": "maintenance"},
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
@@ -387,7 +389,16 @@ celery_app.conf.update(
             "schedule": 300.0,
             "options": {"queue": "ingestion"},
         },
-        # Fail jobs a lost worker left "running" (older than the lock TTL).
+        # SYNC-ORPHAN: a sync whose worker died (stale job heartbeat + expired
+        # Source lock) is requeued from its checkpoint within ~6 min. On the
+        # maintenance pool: it must run when the ingestion workers are lost.
+        "ingestion-recover-orphaned-syncs": {
+            "task": "ingestion.recover_orphaned_syncs",
+            "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
+        # Backstop: fail jobs a lost worker left "running" with no heartbeat for
+        # ingestion_stale_job_seconds (legacy rows; recovery switched off).
         "ingestion-reap-stale-jobs": {
             "task": "ingestion.reap_stale_jobs",
             "schedule": 600.0,
