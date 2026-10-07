@@ -27,10 +27,17 @@ multicast never) when the embedder is built AND at every connect (SSRF-pinned
 client). Its credential is the one saved with the entry (vault-encrypted), else
 the provider's env key.
 
+Requested width: an entry may carry ``output_dimensions`` (models that can
+shorten their vectors, e.g. OpenAI ``text-embedding-3-*`` or Gemini
+``gemini-embedding-001``). It is sent as ``dimensions`` on every OpenAI-compatible
+``/embeddings`` request (``output_dimensionality`` on the native Gemini API), so
+such a model can be matched to the index width on purpose.
+
 Dimension safety: a model's width is the one a probe MEASURED ("Test
-connection" or first use, persisted with the registry entry), else the catalog /
-declared width. A known width that differs from the index's ``EMBEDDING_DIM`` is
-refused up front. An unknown width is checked on the first response by
+connection" or first use, persisted with the registry entry), else the width it
+is asked for (``output_dimensions``), else the catalog / declared width. A
+known width that differs from the index's ``EMBEDDING_DIM`` is refused up front.
+An unknown width is checked on the first response by
 :class:`DimensionCheckedEmbedder`: a mismatch raises
 :class:`app.rag.store.EmbeddingDimensionError` (no vector is ever returned to be
 written), a match is recorded so the next selection knows it.
@@ -78,6 +85,7 @@ __all__ = [
     "embedding_dimension_status",
     "embedding_model_dimension",
     "record_embedding_dimension",
+    "registry_output_dimensions",
     "select_registry_embedder",
     "select_registry_endpoint_embedder",
 ]
@@ -112,9 +120,13 @@ def _secret(settings: Any, attr: str, env: str) -> str:
 # ── Endpoint construction ────────────────────────────────────────────────────
 
 
-def build_endpoint_embedder(provider: str, model_id: str, settings: Any) -> Any:
+def build_endpoint_embedder(
+    provider: str, model_id: str, settings: Any, *, dimensions: int | None = None
+) -> Any:
     """An embedder producing *model_id* vectors on *provider*'s endpoint.
 
+    *dimensions*: the output width to request (``dimensions`` on OpenAI-compatible
+    endpoints, ``output_dimensionality`` on Gemini); ``None`` = native width.
     Raises :class:`EndpointNotConfiguredError` when this deployment has no
     credentials / endpoint for *provider* (not servable here).
     """
@@ -124,26 +136,30 @@ def build_endpoint_embedder(provider: str, model_id: str, settings: Any) -> Any:
         if not key:
             raise EndpointNotConfiguredError("NVIDIA_API_KEY is not set")
         base = _setting(settings, "nvidia_base_url") or "https://integrate.api.nvidia.com/v1"
-        return _openai_compatible(key, base, model_id)
+        return _openai_compatible(key, base, model_id, dimensions=dimensions)
     if p == "onprem":
         base = _setting(settings, "onprem_embedding_base_url")
         if not (getattr(settings, "onprem_enabled", False) and base):
             raise EndpointNotConfiguredError(
                 "no on-prem embedding endpoint (ONPREM_ENABLED + ONPREM_EMBEDDING_BASE_URL)"
             )
-        return _openai_compatible(_setting(settings, "onprem_api_key") or "EMPTY", base, model_id)
+        return _openai_compatible(
+            _setting(settings, "onprem_api_key") or "EMPTY", base, model_id, dimensions=dimensions
+        )
     if p == "openai":
         key = _secret(settings, "openai_api_key", "OPENAI_API_KEY")
         if not key:
             raise EndpointNotConfiguredError("OPENAI_API_KEY is not set")
-        return _openai_compatible(key, os.getenv("OPENAI_BASE_URL") or None, model_id)
+        return _openai_compatible(
+            key, os.getenv("OPENAI_BASE_URL") or None, model_id, dimensions=dimensions
+        )
     if p == "gemini":
         key = _secret(settings, "google_api_key", "GOOGLE_API_KEY")
         if not key:
             raise EndpointNotConfiguredError("GOOGLE_API_KEY is not set")
         from app.providers.gemini_provider import GeminiProvider
 
-        return GeminiProvider(api_key=key, embed_model=model_id)
+        return GeminiProvider(api_key=key, embed_model=model_id, embed_dimensions=dimensions)
     if p == "voyage":
         key = _secret(settings, "voyage_api_key", "VOYAGE_API_KEY")
         if not key:
@@ -164,7 +180,12 @@ def build_endpoint_embedder(provider: str, model_id: str, settings: Any) -> Any:
 
 
 def _openai_compatible(
-    api_key: str, base_url: str | None, model_id: str, *, http_client: Any = None
+    api_key: str,
+    base_url: str | None,
+    model_id: str,
+    *,
+    http_client: Any = None,
+    dimensions: int | None = None,
 ) -> Any:
     from app.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -174,7 +195,17 @@ def _openai_compatible(
         default_model=model_id,
         embed_model=model_id,
         http_client=http_client,
+        embed_dimensions=dimensions,
     )
+
+
+def _positive_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def registry_output_dimensions(model: Any) -> int | None:
+    """The output width the registry entry *model* asks for (``output_dimensions``)."""
+    return _positive_int((getattr(model, "extra", None) or {}).get("output_dimensions"))
 
 
 def _registry_base_url(model: Any) -> str:
@@ -183,8 +214,14 @@ def _registry_base_url(model: Any) -> str:
     return normalize_base_url(str(getattr(model, "base_url", "") or ""))
 
 
-def build_registry_model_embedder(model: Any, settings: Any) -> Any:
+def build_registry_model_embedder(
+    model: Any, settings: Any, *, dimensions: int | None = None
+) -> Any:
     """An embedder for ONE registry entry.
+
+    The requested output width is *dimensions* when given (a same-model
+    failover endpoint must produce the primary's width), else the entry's own
+    ``output_dimensions``; it is sent as ``dimensions`` on ``/embeddings``.
 
     An entry with its own ``base_url`` is embedded at that OpenAI-compatible
     endpoint (``POST {base_url}/embeddings``): the URL is re-checked against the
@@ -197,7 +234,10 @@ def build_registry_model_embedder(model: Any, settings: Any) -> Any:
     base = _registry_base_url(model)
     provider = str(getattr(model, "provider", "") or "")
     model_id = str(getattr(model, "model_id", "") or "")
+    out_dims = _positive_int(dimensions) or registry_output_dimensions(model)
     if not base:
+        if out_dims:
+            return build_endpoint_embedder(provider, model_id, settings, dimensions=out_dims)
         return build_endpoint_embedder(provider, model_id, settings)
     from app.ai_router.model_endpoints import (
         check_model_endpoint,
@@ -213,34 +253,48 @@ def build_registry_model_embedder(model: Any, settings: Any) -> Any:
         checked,
         model_id,
         http_client=endpoint_http_client(timeout=sdk_client_options()["timeout"]),
+        dimensions=out_dims,
     )
 
 
 # ── Dimensions ───────────────────────────────────────────────────────────────
 
 
-def _recorded_dimension(provider: str, model_id: str) -> int | None:
-    """The width a probe measured for the registry entry provider/model_id."""
+def _registry_extra_int(provider: str, model_id: str, key: str) -> int | None:
+    """A positive int field of the registry entry provider/model_id's ``extra``."""
     try:
         from app.ai_router.registry import model_registry
 
         entry = model_registry.get_configured(provider, model_id)
     except Exception:  # pragma: no cover - never block selection
         return None
-    dims = (getattr(entry, "extra", None) or {}).get("dimensions") if entry else None
-    return dims if isinstance(dims, int) and not isinstance(dims, bool) and dims > 0 else None
+    return _positive_int((getattr(entry, "extra", None) or {}).get(key)) if entry else None
+
+
+def _recorded_dimension(provider: str, model_id: str) -> int | None:
+    """The width a probe measured for the registry entry provider/model_id."""
+    return _registry_extra_int(provider, model_id, "dimensions")
 
 
 def embedding_model_dimension(provider: str, model_id: str, settings: Any = None) -> int | None:
     """Output width of *model_id*: the width a probe MEASURED for this registry
-    entry ("Test connection" / first use), then the catalog / known table, then
-    the width the deployment declares for its own NVIDIA / on-prem model, else
-    ``None``."""
+    entry ("Test connection" / first use), then the width the entry REQUESTS
+    (``output_dimensions``, sent as ``dimensions``), then the catalog / known
+    table, then the width the deployment declares for its own NVIDIA / on-prem
+    model, else ``None``.
+
+    A measurement wins over the request: an endpoint that ignores
+    ``dimensions`` returns its native width, and that is what would be written.
+    (Saving a new ``output_dimensions`` drops a measurement taken at another
+    width, so a stale one never shadows the request.)"""
     from app.ai_router.model_catalog import catalog_embedding_dimension
 
     recorded = _recorded_dimension(provider, model_id)
     if recorded:
         return recorded
+    requested = _registry_extra_int(provider, model_id, "output_dimensions")
+    if requested:
+        return requested
     known = catalog_embedding_dimension(model_id)
     if known:
         return known
@@ -698,6 +752,9 @@ def _build_choice(
     providers_seen: set[str] = set()
     not_configured: list[str] = []
     same_model = [m for m in models if m.model_id == choice.model_id]
+    # Every endpoint of the model must produce the same width: the primary's
+    # requested width (if any) is requested from each of them.
+    primary_out_dims = registry_output_dimensions(primary)
     # The chosen entry first, then the other endpoints of the same model in
     # registry order.
     for m in [primary, *[m for m in same_model if m is not primary]]:
@@ -709,7 +766,7 @@ def _build_choice(
         seen.add(identity)
         label = _endpoint_label(prov, base)
         try:
-            embedder = build_registry_model_embedder(m, settings)
+            embedder = build_registry_model_embedder(m, settings, dimensions=primary_out_dims)
         except EndpointNotConfiguredError as exc:
             not_configured.append(f"{prov}: {exc}")
             continue
@@ -735,7 +792,9 @@ def _build_choice(
         endpoints.append((label, embedder))
         providers.append(prov)
 
-    dedicated = _dedicated_endpoint(settings, choice.model_id, providers_seen, seen)
+    dedicated = _dedicated_endpoint(
+        settings, choice.model_id, providers_seen, seen, dimensions=primary_out_dims
+    )
     if dedicated is not None:
         endpoints.append(dedicated)
         providers.append("dedicated")
@@ -777,7 +836,12 @@ def _build_choice(
 
 
 def _dedicated_endpoint(
-    settings: Any, model_id: str, providers_seen: set[str], urls_seen: set[str]
+    settings: Any,
+    model_id: str,
+    providers_seen: set[str],
+    urls_seen: set[str],
+    *,
+    dimensions: int | None = None,
 ) -> tuple[str, Any] | None:
     """The dedicated ``EMBEDDING_BASE_URL`` endpoint when it serves *model_id*
     and is not already one of the registry endpoints."""
@@ -797,7 +861,7 @@ def _dedicated_endpoint(
         or "sk-noauth"
     )
     try:
-        return ("dedicated", _openai_compatible(key, base, model_id))
+        return ("dedicated", _openai_compatible(key, base, model_id, dimensions=dimensions))
     except Exception as exc:
         logger.error(
             "embedder_provider_failed",

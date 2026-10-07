@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  KeyRound,
   CircleCheck,
   Download,
   Info,
@@ -30,6 +31,13 @@ import {
 } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { CatalogImportDialog } from './CatalogImportDialog';
+import {
+  API_KEY_REJECTED_HINT,
+  MAX_OUTPUT_DIMENSIONS,
+  isApiKeyFailure,
+  looksLikeChatModel,
+  parseOutputDimensions,
+} from './modelFormHelpers';
 
 const CAPABILITIES = [
   { key: 'text_generation', label: 'Reasoning', hint: 'Planning, execution, verification' },
@@ -60,6 +68,18 @@ interface FormState {
   supports_vision: boolean;
   /** Not editable in the form; carried over when editing so an upsert keeps it. */
   supports_structured_output?: boolean;
+  /**
+   * Write-only endpoint credential typed by the operator. Lives in component
+   * state only (never localStorage), is sent on Save / Test connection and is
+   * cleared when the dialog closes. The saved key is never shown.
+   */
+  api_key: string;
+  /** The entry already has a saved (vault-encrypted) key — display only. */
+  has_api_key: boolean;
+  /** Remove the saved key on Save. */
+  clear_api_key: boolean;
+  /** Embedding models: the vector width to request; empty = native width. */
+  output_dimensions: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -73,6 +93,10 @@ const EMPTY_FORM: FormState = {
   quality_score: '0.5',
   supports_tools: true,
   supports_vision: false,
+  api_key: '',
+  has_api_key: false,
+  clear_api_key: false,
+  output_dimensions: '',
 };
 
 const formFromModel = (m: ConfiguredModel): FormState => ({
@@ -87,6 +111,10 @@ const formFromModel = (m: ConfiguredModel): FormState => ({
   supports_tools: !!m.supports_tools,
   supports_vision: !!m.supports_vision,
   supports_structured_output: m.supports_structured_output,
+  api_key: '',
+  has_api_key: !!m.has_api_key,
+  clear_api_key: false,
+  output_dimensions: m.output_dimensions ? String(m.output_dimensions) : '',
 });
 
 const keyOf = (m: ConfiguredModel) => m.key || `${m.provider}/${m.model_id}`;
@@ -101,7 +129,8 @@ const endpointHost = (url: string) => {
 };
 
 /** The fields a connection test depends on — a result is only shown while they are unchanged. */
-const testSignature = (f: FormState) => `${f.provider}\n${f.model_id.trim()}\n${f.base_url.trim()}`;
+const testSignature = (f: FormState) =>
+  [f.provider, f.model_id.trim(), f.base_url.trim(), f.api_key, f.output_dimensions.trim()].join('\n');
 
 type TestOutcome =
   | { sig: string; kind: 'result'; result: ModelEndpointTestResult }
@@ -167,6 +196,8 @@ export function ModelRegistryPage() {
   const upsert = useMutation({
     mutationFn: () => {
       const baseUrl = form.base_url.trim();
+      const apiKeyTyped = form.api_key.trim();
+      const embedding = form.capabilities.includes('embedding');
       return modelsApi.upsertConfigured({
         model_id: form.model_id.trim(),
         display_name: form.display_name.trim() || undefined,
@@ -181,6 +212,10 @@ export function ModelRegistryPage() {
           ? { supports_structured_output: form.supports_structured_output }
           : {}),
         ...(baseUrl ? { base_url: baseUrl } : {}),
+        ...(apiKeyTyped
+          ? { api_key: apiKeyTyped }
+          : form.clear_api_key ? { clear_api_key: true } : {}),
+        ...(embedding ? { output_dimensions: parseOutputDimensions(form.output_dimensions) } : {}),
       }, key);
     },
     onSuccess: () => {
@@ -197,6 +232,10 @@ export function ModelRegistryPage() {
         model_id: f.model_id.trim(),
         base_url: f.base_url.trim(),
         capabilities: f.capabilities,
+        ...(f.api_key.trim() ? { api_key: f.api_key.trim() } : {}),
+        ...(f.capabilities.includes('embedding')
+          ? { output_dimensions: parseOutputDimensions(f.output_dimensions) }
+          : {}),
       }, key),
     onSuccess: (result, { sig }) => setTestOutcome({ sig, kind: 'result', result }),
     onError: (e: Error, { sig }) =>
@@ -268,6 +307,10 @@ export function ModelRegistryPage() {
 
   const groups = data?.capabilities ?? [];
   const groupFor = (cap: string) => groups.find((g) => g.capability === cap);
+  // The vector index width (EMBEDDING_DIM), as reported on the embedding rows.
+  const indexDimension = groupFor('embedding')?.models.find((m) => m.index_dimension)?.index_dimension;
+  const outputDims = parseOutputDimensions(form.output_dimensions);
+  const embeddingSelected = form.capabilities.includes('embedding');
 
   const move = (group: CapabilityGroup, from: number, to: number) => {
     const current = drafts[group.capability] ?? group.models.map(keyOf);
@@ -458,6 +501,21 @@ export function ModelRegistryPage() {
                                   No API key
                                 </span>
                               )}
+                              {m.has_api_key ? (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                  title="This model has its own API key saved (encrypted; never shown)"
+                                >
+                                  <KeyRound className="h-3 w-3" /> Key saved
+                                </span>
+                              ) : m.provider_ready && (
+                                <span
+                                  className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
+                                  title="No key saved with this model: the provider's key configured on the server is used"
+                                >
+                                  Provider key
+                                </span>
+                              )}
                               {m.source === 'env' && (
                                 <span
                                   className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground"
@@ -472,6 +530,7 @@ export function ModelRegistryPage() {
                               {m.cost_per_1k_input === 0 && ' (self-hosted / free)'}
                               {m.supports_tools && ' · tools'}
                               {m.supports_vision && ' · vision'}
+                              {m.output_dimensions ? ` · ${m.output_dimensions}-d requested` : ''}
                               {m.base_url && (
                                 <>
                                   {' · '}
@@ -667,6 +726,57 @@ export function ModelRegistryPage() {
                   Base URL of an OpenAI-compatible server (vLLM, Ollama /v1, on-prem). Leave empty to
                   use the provider's configured API.
                 </p>
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label htmlFor="mr-api-key" className="block text-xs font-medium text-muted-foreground">
+                    API key
+                  </label>
+                  {form.has_api_key && !form.clear_api_key && (
+                    <span className="flex items-center gap-2">
+                      <span
+                        data-testid="api-key-saved"
+                        className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+                      >
+                        <KeyRound className="h-3 w-3" /> Key saved
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setField('clear_api_key', true)}
+                        className="text-xs text-destructive hover:underline"
+                      >
+                        Remove key
+                      </button>
+                    </span>
+                  )}
+                  {form.has_api_key && form.clear_api_key && (
+                    <span className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                      The saved key is removed on Save.
+                      <button
+                        type="button"
+                        onClick={() => setField('clear_api_key', false)}
+                        className="text-primary hover:underline"
+                      >
+                        Undo
+                      </button>
+                    </span>
+                  )}
+                </div>
+                <input
+                  id="mr-api-key"
+                  type="password"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  value={form.api_key}
+                  onChange={(e) => setField('api_key', e.target.value)}
+                  placeholder="Leave empty to keep the saved key / use the provider's configured key"
+                  aria-describedby="mr-api-key-help"
+                  className={INPUT_CLS}
+                />
+                <p id="mr-api-key-help" className="mt-1 text-xs text-muted-foreground">
+                  Sent as the Bearer key to this model's endpoint. Stored encrypted on the server and
+                  never shown again.
+                </p>
                 <div className="mt-2">
                   <button
                     type="button"
@@ -746,7 +856,57 @@ export function ModelRegistryPage() {
                     </button>
                   ))}
                 </div>
+                {embeddingSelected && looksLikeChatModel(form.model_id) && (
+                  <p
+                    data-testid="chat-model-hint"
+                    className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400"
+                  >
+                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      This looks like a chat model; embedding models are usually named
+                      …-embedding-… (e.g. <span className="font-mono">gemini-embedding-001</span>,{' '}
+                      <span className="font-mono">text-embedding-3-small</span>).
+                    </span>
+                  </p>
+                )}
               </div>
+              {embeddingSelected && (
+                <div>
+                  <label htmlFor="mr-output-dims" className="mb-1 block text-xs font-medium text-muted-foreground">
+                    Output dimensions (optional)
+                  </label>
+                  <input
+                    id="mr-output-dims"
+                    type="number"
+                    min="1"
+                    max={MAX_OUTPUT_DIMENSIONS}
+                    step="1"
+                    value={form.output_dimensions}
+                    onChange={(e) => setField('output_dimensions', e.target.value)}
+                    placeholder="Native width"
+                    aria-describedby="mr-output-dims-help"
+                    className={INPUT_CLS}
+                  />
+                  <p id="mr-output-dims-help" className="mt-1 text-xs text-muted-foreground">
+                    Vector width to request (sent as <span className="font-mono">dimensions</span>) from
+                    models that can shorten their vectors, e.g. gemini-embedding-001 (768 / 1536 / 3072)
+                    or text-embedding-3-*. It must equal the vector index width
+                    {indexDimension ? <> (<strong>{indexDimension}</strong>, EMBEDDING_DIM)</> : ' (EMBEDDING_DIM)'}.
+                  </p>
+                  {Number.isNaN(outputDims) && (
+                    <p className="mt-1 text-xs text-destructive">
+                      Enter a whole number from 1 to {MAX_OUTPUT_DIMENSIONS}.
+                    </p>
+                  )}
+                  {!!outputDims && !!indexDimension && outputDims !== indexDimension && (
+                    <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+                      <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      {outputDims}-d does not match the {indexDimension}-d vector index: the model
+                      will be refused for embeddings.
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={form.supports_tools}
@@ -773,6 +933,10 @@ export function ModelRegistryPage() {
                 onClick={() => {
                   if (!form.model_id.trim() || form.capabilities.length === 0) {
                     setFormError('Model ID and at least one capability are required.');
+                    return;
+                  }
+                  if (embeddingSelected && Number.isNaN(outputDims)) {
+                    setFormError(`Output dimensions must be a whole number from 1 to ${MAX_OUTPUT_DIMENSIONS}.`);
                     return;
                   }
                   upsert.mutate();
@@ -805,7 +969,14 @@ function TestOutcomeBlock({ outcome, modelId }: { outcome: TestOutcome; modelId:
         className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-destructive dark:border-red-800 dark:bg-red-900/20"
       >
         <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-        <span className="min-w-0 break-words">Connection failed: {message}</span>
+        {isApiKeyFailure(message) ? (
+          <span className="min-w-0 space-y-1 break-words">
+            <span className="block font-medium">{API_KEY_REJECTED_HINT}</span>
+            <span className="block opacity-80">Connection failed: {message}</span>
+          </span>
+        ) : (
+          <span className="min-w-0 break-words">Connection failed: {message}</span>
+        )}
       </div>
     );
   }
@@ -824,6 +995,37 @@ function TestOutcomeBlock({ outcome, modelId }: { outcome: TestOutcome; modelId:
         Connected · {Math.round(r.latency_ms)} ms · {r.probe}
       </p>
       {r.detail && <p className="break-words">{r.detail}</p>}
+      {r.probe === 'embedding' && !!r.dimensions && (
+        <p data-testid="endpoint-test-dimensions">
+          Vector width {r.dimensions}-d
+          {r.requested_dimensions ? ` (requested ${r.requested_dimensions})` : ''}
+          {r.index_dimension ? ` · vector index ${r.index_dimension}-d (EMBEDDING_DIM)` : ''}
+        </p>
+      )}
+      {r.dimensions_ignored && (
+        <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span className="min-w-0 break-words">
+            The endpoint ignored the requested output dimensions: asked for{' '}
+            {r.requested_dimensions}, got {r.dimensions}.
+          </span>
+        </p>
+      )}
+      {r.dimension_mismatch && (
+        <p
+          role="alert"
+          data-testid="endpoint-test-dimension-mismatch"
+          className="flex items-start gap-1.5 font-medium text-amber-700 dark:text-amber-400"
+        >
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span className="min-w-0 break-words">
+            Dimension mismatch: the model returns {r.dimensions}-d vectors but the vector index is{' '}
+            {r.index_dimension}-d, so it will be refused for embeddings. Set Output dimensions to{' '}
+            {r.index_dimension} if the model supports it, or set EMBEDDING_DIM={r.dimensions} and
+            re-embed existing collections.
+          </span>
+        </p>
+      )}
       {r.model_listed === false && (
         <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
           <TriangleAlert className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />

@@ -25,6 +25,7 @@ class GeminiProvider:
         default_model: str = "gemini-2.5-pro",
         embed_model: str = "gemini-embedding-001",
         request_timeout_ms: int = 30_000,
+        embed_dimensions: int | None = None,
     ) -> None:
         try:
             import google.genai as genai
@@ -38,6 +39,11 @@ class GeminiProvider:
         )
         self._default_model = default_model
         self._embed_model = embed_model
+        # Requested output width (``output_dimensionality``, 128..3072 for
+        # gemini-embedding-001); None = the model's native width.
+        self._embed_dimensions = (
+            embed_dimensions if embed_dimensions and embed_dimensions > 0 else None
+        )
 
     @staticmethod
     def _structured(request: CompletionRequest) -> bool:
@@ -226,10 +232,14 @@ class GeminiProvider:
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         task_type = "RETRIEVAL_QUERY" if request.input_type == "query" else "RETRIEVAL_DOCUMENT"
+        config: dict[str, Any] = {"task_type": task_type}
+        dimensions = getattr(self, "_embed_dimensions", None)
+        if dimensions:
+            config["output_dimensionality"] = dimensions
         response = await self._client.aio.models.embed_content(
             model=self._embed_model,
             contents=request.texts,  # type: ignore[arg-type]
-            config=self._types.EmbedContentConfig(task_type=task_type),
+            config=self._types.EmbedContentConfig(**config),
         )
         embeddings = [
             list(getattr(item, "values", None) or [])

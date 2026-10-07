@@ -569,7 +569,7 @@ describe('ModelRegistryPage — model endpoints (base_url)', () => {
     expect(headersOf(init as RequestInit)['X-Admin-Key']).toBe('admin-secret');
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       provider: 'onprem', model_id: 'gpt-oss-20b', base_url: ENDPOINT,
-      capabilities: ['text_generation', 'embedding'],
+      capabilities: ['text_generation', 'embedding'], output_dimensions: null,
     });
 
     // Editing the URL invalidates the shown result.
@@ -671,5 +671,261 @@ describe('ModelRegistryPage — model endpoints (base_url)', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(await within(dialog).findByRole('button', { name: /Show xAI models/i }));
     expect(within(dialog).getByText('http://10.0.0.5:8000/v1')).toHaveAttribute('title', 'http://10.0.0.5:8000/v1');
+  });
+});
+
+describe('ModelRegistryPage — per-model API key and embedding dimensions', () => {
+  const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/openai';
+  const GEMINI_ROW = model({
+    provider: 'gemini', model_id: 'gemini-embedding-001', capabilities: ['embedding'], rank: 1,
+    base_url: GEMINI_BASE, has_api_key: true, output_dimensions: 1536,
+    dimensions: 1536, index_dimension: 1536, dimension_mismatch: false,
+  });
+  const PROVIDER_KEY_ROW = model({
+    provider: 'voyage', model_id: 'voyage-3.5', capabilities: ['embedding'], rank: 2,
+    has_api_key: false, index_dimension: 1536,
+  });
+  const KEY_REGISTRY = {
+    total: 2,
+    capabilities: [{
+      capability: 'embedding', selected_model_id: 'gemini-embedding-001', fallback_model_ids: [],
+      order_mode: 'preference', preference: ['gemini/gemini-embedding-001'],
+      models: [GEMINI_ROW, PROVIDER_KEY_ROW],
+    }],
+  };
+  const EMBED_OK = {
+    ok: true, latency_ms: 120, probe: 'embedding', model_listed: true, served_models: [],
+    detail: '1536-dimension embedding', error: null, dimensions: 1536, index_dimension: 1536,
+    dimension_mismatch: false, requested_dimensions: 1536, dimensions_ignored: false,
+  };
+  const postedModels = (spy: ReturnType<typeof mockFetch>) =>
+    spy.mock.calls
+      .filter(([u, i]) => String(u).endsWith('/models/configured') && (i as RequestInit)?.method === 'POST')
+      .map(([, i]) => JSON.parse((i as RequestInit).body as string));
+  const testBodies = (spy: ReturnType<typeof mockFetch>) =>
+    spy.mock.calls
+      .filter(([u]) => String(u).includes('/models/configured/test-endpoint'))
+      .map(([, i]) => JSON.parse((i as RequestInit).body as string));
+
+  async function openEdit(id = 'gemini-embedding-001') {
+    await screen.findByText(id);
+    await userEvent.click(screen.getByRole('button', { name: `Edit ${id}` }));
+    return screen.getByRole('dialog');
+  }
+
+  async function openAdd() {
+    await screen.findByText('gemini-embedding-001');
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+    return screen.getByRole('dialog');
+  }
+
+  test('rows show "Key saved" for a model with its own key and "Provider key" otherwise', async () => {
+    mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY });
+    renderPage();
+    const gemini = (await screen.findByText('gemini-embedding-001')).closest('li') as HTMLElement;
+    expect(within(gemini).getByText('Key saved')).toBeInTheDocument();
+    expect(within(gemini).queryByText('Provider key')).not.toBeInTheDocument();
+    expect(within(gemini).getByText(/1536-d requested/)).toBeInTheDocument();
+    const voyage = screen.getByText('voyage-3.5').closest('li') as HTMLElement;
+    expect(within(voyage).getByText('Provider key')).toBeInTheDocument();
+    expect(within(voyage).queryByText('Key saved')).not.toBeInTheDocument();
+  });
+
+  test('the typed key is sent on Test connection and on Save, never stored, and cleared after save', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY, testBody: EMBED_OK });
+    renderPage();
+    const dialog = await openEdit('voyage-3.5');
+    const keyInput = within(dialog).getByLabelText('API key');
+    expect(keyInput).toHaveAttribute('type', 'password');
+    expect(keyInput).toHaveValue('');
+    expect(keyInput).toHaveAttribute(
+      'placeholder', "Leave empty to keep the saved key / use the provider's configured key",
+    );
+    expect(within(dialog).queryByTestId('api-key-saved')).not.toBeInTheDocument();
+
+    await userEvent.type(within(dialog).getByLabelText(/Endpoint URL/i), GEMINI_BASE);
+    await userEvent.type(keyInput, 'sk-test-typed');
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    await within(dialog).findByTestId('endpoint-test-result');
+    expect(testBodies(spy)[0]).toMatchObject({ api_key: 'sk-test-typed', model_id: 'voyage-3.5' });
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0]).toMatchObject({ api_key: 'sk-test-typed' });
+    expect(postedModels(spy)[0]).not.toHaveProperty('clear_api_key');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(JSON.stringify({ ...localStorage })).not.toContain('sk-test-typed');
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain('sk-test-typed');
+
+    // Re-opening the dialog starts with an empty key field.
+    const again = await openEdit('voyage-3.5');
+    expect(within(again).getByLabelText('API key')).toHaveValue('');
+  });
+
+  test('an empty key field sends no api_key (the saved / provider key is kept)', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY, testBody: EMBED_OK });
+    renderPage();
+    const dialog = await openEdit();
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    await within(dialog).findByTestId('endpoint-test-result');
+    expect(testBodies(spy)[0]).not.toHaveProperty('api_key');
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0]).not.toHaveProperty('api_key');
+    expect(postedModels(spy)[0]).not.toHaveProperty('clear_api_key');
+  });
+
+  test('a saved key shows "Key saved" (never the key); Remove key sends clear_api_key', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY });
+    renderPage();
+    const dialog = await openEdit();
+    expect(within(dialog).getByTestId('api-key-saved')).toHaveTextContent('Key saved');
+    expect(within(dialog).getByLabelText('API key')).toHaveValue('');
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
+    expect(within(dialog).getByText(/saved key is removed on Save/i)).toBeInTheDocument();
+    // Undo restores it, then remove again.
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Undo' }));
+    expect(within(dialog).getByTestId('api-key-saved')).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0]).toMatchObject({ clear_api_key: true, model_id: 'gemini-embedding-001' });
+    expect(postedModels(spy)[0]).not.toHaveProperty('api_key');
+  });
+
+  test('Output dimensions is shown only for Embeddings, pre-filled, and sent on save and test', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY, testBody: EMBED_OK });
+    renderPage();
+    const dialog = await openEdit();
+    const dims = within(dialog).getByLabelText(/Output dimensions/i);
+    expect(dims).toHaveValue(1536);
+    expect(within(dialog).getByText(/must equal the vector index width/i)).toHaveTextContent('1536');
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    const result = await within(dialog).findByTestId('endpoint-test-result');
+    expect(testBodies(spy)[0]).toMatchObject({ output_dimensions: 1536 });
+    expect(within(result).getByTestId('endpoint-test-dimensions')).toHaveTextContent(
+      'Vector width 1536-d (requested 1536) · vector index 1536-d (EMBEDDING_DIM)',
+    );
+    expect(within(result).queryByTestId('endpoint-test-dimension-mismatch')).not.toBeInTheDocument();
+
+    await userEvent.clear(dims);
+    await userEvent.type(dims, '768');
+    expect(within(dialog).getByText(/768-d does not match the 1536-d vector index/i)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0]).toMatchObject({ output_dimensions: 768 });
+
+    // Not an embedding model: no field, nothing sent.
+    const add = await openAdd();
+    expect(within(add).queryByLabelText(/Output dimensions/i)).not.toBeInTheDocument();
+    await userEvent.type(within(add).getByLabelText(/Model ID/i), 'chat-model');
+    await userEvent.click(within(add).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(2));
+    expect(postedModels(spy)[1]).not.toHaveProperty('output_dimensions');
+  });
+
+  test('an empty Output dimensions field sends null (native width); an invalid one blocks Save', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY });
+    renderPage();
+    const dialog = await openEdit();
+    const dims = within(dialog).getByLabelText(/Output dimensions/i);
+    await userEvent.clear(dims);
+    await userEvent.type(dims, '9000');
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/whole number from 1 to 8192/);
+    expect(postedModels(spy)).toHaveLength(0);
+
+    await userEvent.clear(dims);
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+    expect(postedModels(spy)[0].output_dimensions).toBeNull();
+  });
+
+  test('the test result shows a clear dimension mismatch warning', async () => {
+    mockFetch({
+      access: TENANT_ADMIN, registry: KEY_REGISTRY,
+      testBody: {
+        ...EMBED_OK, detail: '3072-dimension embedding', dimensions: 3072, requested_dimensions: null,
+        dimension_mismatch: true,
+      },
+    });
+    renderPage();
+    const dialog = await openEdit();
+    await userEvent.clear(within(dialog).getByLabelText(/Output dimensions/i));
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    const warning = await within(dialog).findByTestId('endpoint-test-dimension-mismatch');
+    expect(warning).toHaveTextContent(
+      'Dimension mismatch: the model returns 3072-d vectors but the vector index is 1536-d',
+    );
+    expect(warning).toHaveTextContent('Set Output dimensions to 1536');
+    expect(warning).toHaveTextContent('EMBEDDING_DIM=3072');
+  });
+
+  test('the test result warns when the endpoint ignored the requested dimensions', async () => {
+    mockFetch({
+      access: TENANT_ADMIN, registry: KEY_REGISTRY,
+      testBody: { ...EMBED_OK, dimensions: 3072, dimensions_ignored: true, dimension_mismatch: true },
+    });
+    renderPage();
+    const dialog = await openEdit();
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    expect(await within(dialog).findByTestId('endpoint-test-result')).toHaveTextContent(
+      'The endpoint ignored the requested output dimensions: asked for 1536, got 3072.',
+    );
+  });
+
+  test('a chat-looking model id with Embeddings selected shows a non-blocking hint', async () => {
+    const spy = mockFetch({ access: TENANT_ADMIN, registry: KEY_REGISTRY });
+    renderPage();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText(/Model ID/i), 'gemini-2.5-flash');
+    expect(within(dialog).queryByTestId('chat-model-hint')).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Embeddings' }));
+    expect(within(dialog).getByTestId('chat-model-hint')).toHaveTextContent(
+      'This looks like a chat model; embedding models are usually named …-embedding-…',
+    );
+    // Not blocking: Save still posts.
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(postedModels(spy)).toHaveLength(1));
+
+    const dialog2 = await openAdd();
+    await userEvent.type(within(dialog2).getByLabelText(/Model ID/i), 'gemini-embedding-001');
+    await userEvent.click(within(dialog2).getByRole('button', { name: 'Embeddings' }));
+    expect(within(dialog2).queryByTestId('chat-model-hint')).not.toBeInTheDocument();
+  });
+
+  test.each([
+    ['HTTP 400: { "error": { "code": 400, "message": "Please pass a valid API key", "status": "INVALID_ARGUMENT" } }'],
+    ['HTTP 401: Unauthorized'],
+    ['HTTP 403: {"error":"forbidden"}'],
+  ])('an API-key rejection (%s) explains how to fix it', async (error) => {
+    mockFetch({
+      access: TENANT_ADMIN, registry: KEY_REGISTRY,
+      testBody: { ...EMBED_OK, ok: false, error, detail: '' },
+    });
+    renderPage();
+    const dialog = await openEdit();
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    const failed = await within(dialog).findByTestId('endpoint-test-result');
+    expect(failed).toHaveTextContent(
+      "The provider rejected the API key (or none was sent). Add a key above, or set the provider's key on the server.",
+    );
+    expect(failed).toHaveTextContent(`Connection failed: ${error}`);
+  });
+
+  test('other failures keep the plain error text', async () => {
+    mockFetch({
+      access: TENANT_ADMIN, registry: KEY_REGISTRY,
+      testBody: { ...EMBED_OK, ok: false, error: 'HTTP 400: model not found', detail: '' },
+    });
+    renderPage();
+    const dialog = await openEdit();
+    await userEvent.click(within(dialog).getByRole('button', { name: /Test connection/i }));
+    const failed = await within(dialog).findByTestId('endpoint-test-result');
+    expect(failed).toHaveTextContent('Connection failed: HTTP 400: model not found');
+    expect(failed).not.toHaveTextContent(/rejected the API key/);
   });
 });

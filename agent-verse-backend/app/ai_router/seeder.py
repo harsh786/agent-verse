@@ -136,7 +136,8 @@ def _override_extra(e: dict[str, Any], *, from_env: bool, origin: str) -> dict[s
 
     Carries the endpoint credential as the vault CIPHERTEXT only (decrypted at
     call time by ``app.ai_router.model_endpoints.endpoint_api_key``), the
-    embedding width measured by a probe and the thinking-model setting.
+    embedding width measured by a probe, the requested embedding output width
+    (``output_dimensions``) and the thinking-model setting.
     """
     extra: dict[str, Any] = {"source": "env" if from_env else "override", "origin": origin}
     secret = str(e.get("api_key_encrypted") or "").strip()
@@ -145,6 +146,9 @@ def _override_extra(e: dict[str, Any], *, from_env: bool, origin: str) -> dict[s
     dims = e.get("dimensions")
     if isinstance(dims, int) and not isinstance(dims, bool) and dims > 0:
         extra["dimensions"] = dims
+    out_dims = e.get("output_dimensions")
+    if isinstance(out_dims, int) and not isinstance(out_dims, bool) and out_dims > 0:
+        extra["output_dimensions"] = out_dims
     # Thinking-model control; absent (entries saved before it existed) = auto.
     thinking = str(e.get("thinking") or "").strip().lower()
     if thinking in ("auto", "off", "on"):

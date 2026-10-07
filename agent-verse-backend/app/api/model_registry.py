@@ -492,6 +492,9 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         # Whether the entry carries its own (vault-encrypted) endpoint credential.
         # Neither the key nor its ciphertext is ever returned.
         "has_api_key": bool((m.extra or {}).get("api_key_encrypted")),
+        # Embedding models: the output width requested from the model (sent as
+        # ``dimensions``), or None for its native width.
+        "output_dimensions": (m.extra or {}).get("output_dimensions"),
         # Thinking-model control: "auto" (default, also for entries saved before
         # the setting existed), "off" or "on"; budget used with "on".
         "thinking": (m.extra or {}).get("thinking") or "auto",
@@ -954,8 +957,8 @@ def _probe_thinking_settings(
 async def test_model_endpoint(request: Request) -> dict[str, Any]:
     """Check that a model's own endpoint answers (platform admin).
 
-    Body ``{provider, model_id, base_url, capabilities, api_key?, thinking?,
-    thinking_budget_tokens?}``. Lists the server's models (``GET
+    Body ``{provider, model_id, base_url, capabilities, api_key?,
+    output_dimensions?, thinking?, thinking_budget_tokens?}``. Lists the server's models (``GET
     {base_url}/models``), then makes a real call for the capability: a short
     chat completion (reasoning / vision / OCR), an embedding (``POST
     {base_url}/embeddings``) for an embedding model, or a rerank.
@@ -972,6 +975,9 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     provider's env key. An embedding probe reports the measured width against
     the index (``dimensions`` / ``dimension_mismatch``) and records it, so the
     embedder refuses a model whose width does not fit before it writes a vector.
+    It sends ``dimensions`` = ``output_dimensions`` (the body's when given, else
+    the saved entry's at this endpoint) and reports ``requested_dimensions``
+    plus ``dimensions_ignored`` when the endpoint answered another width.
     Connections are SSRF-pinned (the host is re-checked at connect time).
     """
     _require_tenant(request)
@@ -1020,6 +1026,18 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
         except ModelEndpointError as exc:
             raise HTTPException(400, str(exc)) from exc
     mode, budget = _probe_thinking_settings(body, provider, model_id, base)
+    requested_dims: int | None = None
+    if probe == "embedding":
+        if "output_dimensions" in body:
+            requested_dims = _parse_output_dimensions(body.get("output_dimensions"))
+        else:
+            saved_entry = model_registry.get_configured(provider, model_id)
+            if saved_entry is not None and (
+                str(getattr(saved_entry, "base_url", "") or "").rstrip("/") == base
+            ):
+                from app.providers.registry_embedder import registry_output_dimensions
+
+                requested_dims = registry_output_dimensions(saved_entry)
     headers = {"Authorization": f"Bearer {api_key}"}
     result: dict[str, Any] = {
         "ok": False,
@@ -1043,7 +1061,8 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
                         if isinstance(m, dict) and m.get("id")
                     ]
                     result["served_models"] = ids[:50]
-                    result["model_listed"] = model_id in ids
+                    # Gemini's OpenAI-compatible listing names "models/<id>".
+                    result["model_listed"] = model_id in ids or f"models/{model_id}" in ids
             except (httpx.HTTPError, ValueError):
                 pass  # not every server lists models; the real call decides
 
@@ -1061,9 +1080,11 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
                 result.update(chat_result)
                 return result
             if probe == "embedding":
+                embed_body: dict[str, Any] = {"model": model_id, "input": ["ping"]}
+                if requested_dims is not None:
+                    embed_body["dimensions"] = requested_dims
                 resp = await client.post(
-                    f"{base}/embeddings", json={"model": model_id, "input": ["ping"]},
-                    headers=headers,
+                    f"{base}/embeddings", json=embed_body, headers=headers
                 )
             else:
                 url = base if base.endswith("/rerank") else f"{base}/rerank"
@@ -1085,6 +1106,13 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
             dims = len(vec)
             result["detail"] = f"{dims}-dimension embedding"
             result.update(_dimension_report(request, dims))
+            result["requested_dimensions"] = requested_dims
+            result["dimensions_ignored"] = bool(requested_dims and dims != requested_dims)
+            if result["dimensions_ignored"]:
+                result["detail"] += (
+                    f" (asked for {requested_dims}: the endpoint ignored the "
+                    "dimensions parameter)"
+                )
             from app.providers.registry_embedder import record_embedding_dimension
 
             record_embedding_dimension(model_id, base, dims)
@@ -1099,6 +1127,44 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     except ValueError as exc:  # also SSRFError raised at connect time
         result["error"] = f"refused or invalid response: {str(exc)[:200]}"
     return result
+
+
+_MAX_OUTPUT_DIMENSIONS = 8192
+
+
+def _parse_output_dimensions(raw: Any) -> int | None:
+    """``output_dimensions`` as typed: a positive int <= 8192, ``None`` when
+    empty (null / "" / 0 = the model's native width), else 400."""
+    if raw is None or raw == "" or raw == 0:
+        return None
+    invalid = HTTPException(400, "output_dimensions must be a positive integer")
+    if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+        raise invalid
+    try:
+        value = int(raw) if isinstance(raw, float) else int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise invalid from exc
+    if value <= 0 or value > _MAX_OUTPUT_DIMENSIONS:
+        raise HTTPException(
+            400, f"output_dimensions must be in 1..{_MAX_OUTPUT_DIMENSIONS}"
+        )
+    return value
+
+
+def _output_dimensions_field(
+    body: dict[str, Any], existing: dict[str, Any], *, embedding: bool
+) -> int | None:
+    """The ``output_dimensions`` to store: the body's when given (null / 0 =
+    clear), else the saved one (an edit from an older client keeps it). Only an
+    embedding model has one; 400 when another model is given one."""
+    if "output_dimensions" in body:
+        value = _parse_output_dimensions(body.get("output_dimensions"))
+        if value is not None and not embedding:
+            raise HTTPException(400, "output_dimensions applies to embedding models only")
+        return value
+    saved = existing.get("output_dimensions")
+    ok = isinstance(saved, int) and not isinstance(saved, bool) and saved > 0
+    return saved if ok and embedding else None
 
 
 def _thinking_fields(body: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
@@ -1149,7 +1215,9 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
     Body: ``provider``, ``model_id``, ``capabilities`` (required), optional
     ``display_name``, costs, ``supports_*``, ``quality_score``, ``is_available``,
     ``base_url`` (the model's own OpenAI-compatible server), ``api_key`` /
-    ``clear_api_key``, and the thinking-model control ``thinking`` ("auto" —
+    ``clear_api_key``, ``output_dimensions`` (embedding models: the vector width
+    to request, sent as ``dimensions``; 1..8192, null / 0 = native width; left
+    out = keep the saved one), and the thinking-model control ``thinking`` ("auto" —
     default: retry an empty, reasoning-only reply once with thinking off —
     "off": always send thinking off, "on": keep thinking) with an optional
     ``thinking_budget_tokens`` (reasoning tokens added to the budget with "on").
@@ -1209,12 +1277,21 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
             raise HTTPException(503, str(exc)) from exc
     elif not body.get("clear_api_key") and existing.get("api_key_encrypted"):
         endpoint["api_key_encrypted"] = existing["api_key_encrypted"]
-    if ModelCapability.EMBEDDING.value in valid_caps:
+    embedding = ModelCapability.EMBEDDING.value in valid_caps
+    out_dims = _output_dimensions_field(body, existing, embedding=embedding)
+    if out_dims is not None:
+        endpoint["output_dimensions"] = out_dims
+    if embedding:
         # The width measured by "Test connection" (or a previous save at the
         # same endpoint): the embedder's dimension-safety check reads it.
         dims = store.probed_dimension(model_id, base_url or None)
         if dims is None and str(existing.get("base_url") or "") == base_url:
             dims = existing.get("dimensions")
+        # With a requested width, only a measurement OF that width is kept: one
+        # taken before (at the native or another width) is stale, and the first
+        # embedding call measures again.
+        if out_dims is not None and dims != out_dims:
+            dims = None
         if isinstance(dims, int) and dims > 0:
             endpoint["dimensions"] = dims
     store.upsert(endpoint)

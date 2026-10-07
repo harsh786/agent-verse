@@ -361,6 +361,7 @@ class OpenAICompatibleProvider:
         http_client: Any | None = None,
         thinking: str | None = None,
         thinking_budget_tokens: int | None = None,
+        embed_dimensions: int | None = None,
     ) -> None:
         try:
             import openai
@@ -395,6 +396,16 @@ class OpenAICompatibleProvider:
         # Embedding model is tracked separately from the chat model: a chat
         # default like "gpt-5.2" must never be sent to the embeddings endpoint.
         self._embed_model_name = embed_model
+        # Requested output width of embed_model (OpenAI ``dimensions``; e.g. a
+        # Gemini / text-embedding-3 model shortened to the vector index width).
+        # Sent only for embed_model, never for another model a caller names.
+        self._embed_dimensions = (
+            embed_dimensions
+            if isinstance(embed_dimensions, int)
+            and not isinstance(embed_dimensions, bool)
+            and embed_dimensions > 0
+            else None
+        )
         self._vision = supports_vision_flag
         # Thinking-model default for models the Model Registry sets nothing for:
         # "auto" (None), "off" or "on" (see ``_thinking_settings``).
@@ -1152,28 +1163,32 @@ class OpenAICompatibleProvider:
         """
         return requested or self._embed_model_name or "text-embedding-3-small"
 
-    def _embed_kwargs(self, input_type: str) -> dict[str, Any]:
-        """Vendor extensions for /embeddings.
+    def _embed_kwargs(self, input_type: str, model: str | None = None) -> dict[str, Any]:
+        """Optional /embeddings fields.
+
+        ``dimensions``: the requested output width of the configured embed_model
+        (only for that model, only when set).
 
         NVIDIA's retrieval embedders are asymmetric: ``input_type`` selects the
         query vs passage encoder (``nv-embedqa-*`` rejects requests without it).
         The OpenAI API has no such field, so it is only sent to NVIDIA endpoints.
         """
-        if "nvidia.com" not in self._base_url:
-            return {}
-        return {
-            "extra_body": {
+        kwargs: dict[str, Any] = {}
+        if self._embed_dimensions and (model is None or model == self._embed_model_name):
+            kwargs["dimensions"] = self._embed_dimensions
+        if "nvidia.com" in self._base_url:
+            kwargs["extra_body"] = {
                 "input_type": "query" if input_type == "query" else "passage",
                 "truncate": "END",
             }
-        }
+        return kwargs
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         model = self._embed_model(request.model)
         response = await self._client.embeddings.create(
             model=model,
             input=request.texts,
-            **self._embed_kwargs(request.input_type),
+            **self._embed_kwargs(request.input_type, model),
         )
         data = sorted(response.data, key=lambda e: getattr(e, "index", 0))
         return EmbedResponse(
@@ -1200,7 +1215,7 @@ class OpenAICompatibleProvider:
             response = await self._client.embeddings.create(
                 model=model,
                 input=batch,
-                **self._embed_kwargs("document"),
+                **self._embed_kwargs("document", model),
             )
             # Sort by index to preserve input order (OpenAI may reorder)
             sorted_data = sorted(response.data, key=lambda e: e.index)
