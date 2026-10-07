@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Download, Loader2, XCircle } from 'lucide-react';
 import { modelsApi, type CatalogProvider } from '@/lib/api/client';
+import { Badge } from './Badge';
+import { PANEL_CLASSES, TEXT_TONE } from './badgeStyles';
+import { Modal } from './Modal';
 
 interface Props {
   adminKey: string;
@@ -82,13 +85,7 @@ export function CatalogImportDialog({ adminKey, canModify, onClose, onImported }
   const hasSelection = Object.values(selection).some((v) => v.length > 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="catalog-import-title"
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl bg-card shadow-xl"
-      >
+    <Modal labelledBy="catalog-import-title" onClose={onClose} widthClass="max-w-2xl">
         <div className="border-b border-border px-6 py-4">
           <h3 id="catalog-import-title" className="text-lg font-semibold">Import from model catalog</h3>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -132,13 +129,9 @@ export function CatalogImportDialog({ adminKey, canModify, onClose, onImported }
                     </span>
                   </button>
                   {p.ready ? (
-                    <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold text-white">
-                      Ready
-                    </span>
+                    <Badge tone="solid-success">Ready</Badge>
                   ) : (
-                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
-                      No key — set {p.env_hint}
-                    </span>
+                    <Badge tone="warning">No key — set {p.env_hint}</Badge>
                   )}
                 </div>
                 {open && (
@@ -168,9 +161,7 @@ export function CatalogImportDialog({ adminKey, canModify, onClose, onImported }
                           {m.capabilities.join(', ')} · ${m.cost_per_1k_input.toFixed(5)}/1k in
                         </span>
                         {m.already_configured && (
-                          <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-                            configured
-                          </span>
+                          <Badge tone="neutral">configured</Badge>
                         )}
                       </li>
                     ))}
@@ -179,16 +170,16 @@ export function CatalogImportDialog({ adminKey, canModify, onClose, onImported }
               </div>
             );
           })}
-          {result && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">{result}</p>}
+          {result && <p role="status" className={`text-sm ${TEXT_TONE.success}`}>{result}</p>}
           {error && (
-            <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-destructive dark:border-red-800 dark:bg-red-900/20">
+            <div role="alert" className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${PANEL_CLASSES.danger}`}>
               <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /> {error}
             </div>
           )}
         </div>
 
         <div className="flex justify-end gap-3 border-t border-border px-6 py-4">
-          <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-accent">
+          <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring">
             Close
           </button>
           <button
@@ -209,7 +200,6 @@ export function CatalogImportDialog({ adminKey, canModify, onClose, onImported }
             Import selected
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

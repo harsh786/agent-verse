@@ -40637,7 +40637,7 @@
     },
     "/models/configured/test-endpoint": {
       "post": {
-        "description": "Check that a model's own endpoint answers (platform admin).\n\nBody ``{provider, model_id, base_url, capabilities, api_key?,\noutput_dimensions?, thinking?, thinking_budget_tokens?}``. Lists the server's models (``GET\n{base_url}/models``), then makes a real call for the capability: a short\nchat completion (reasoning / vision / OCR), an embedding (``POST\n{base_url}/embeddings``) for an embedding model, or a rerank.\n``ok: false`` (HTTP 200) carries the error; 400 = URL refused.\n\nA chat probe also reports ``thinking``: whether the model is a thinking\nmodel (reasoning tokens / text observed), whether the endpoint accepts the\nthinking-off switch and whether the model answers with thinking off, plus a\nrecommendation for the ``thinking`` setting (see ``_probe_chat``). The mode\nprobed is the body's ``thinking``, else the saved entry's, else \"auto\".\n\nThe credential is ``api_key`` when given (used for this call only, never\nstored or echoed), else the one saved with the registry entry, else the\nprovider's env key. An embedding probe reports the measured width against\nthe index (``dimensions`` / ``dimension_mismatch``) and records it, so the\nembedder refuses a model whose width does not fit before it writes a vector.\nIt sends ``dimensions`` = ``output_dimensions`` (the body's when given, else\nthe saved entry's at this endpoint) and reports ``requested_dimensions``\nplus ``dimensions_ignored`` when the endpoint answered another width.\nConnections are SSRF-pinned (the host is re-checked at connect time).",
+        "description": "Check that a model's own endpoint answers (platform admin).\n\nBody ``{provider, model_id, base_url, capabilities, api_key?,\noutput_dimensions?, thinking?, thinking_budget_tokens?}``. Lists the server's models (``GET\n{base_url}/models``), then makes one REAL call per capability the model is\nregistered for (``checks``, see ``app.api.model_registry_probes``): a short\nchat completion (reasoning), a chat completion with a tiny PNG asking what it\nshows (vision / OCR), an embedding (``POST {base_url}/embeddings``) and a\nrerank of two documents (``POST {base_url}/rerank``). The top-level fields\ndescribe the primary probe (``probe``); ``ok`` is true only when every check\npassed. ``ok: false`` (HTTP 200) carries ``error`` and ``error_kind`` (auth /\nmodel_not_served / unreachable / unsupported / refused / thinking_budget /\ninvalid_response / http_error); 400 = URL refused.\n\nA chat probe also reports ``thinking``: whether the model is a thinking\nmodel (reasoning tokens / text observed), whether the endpoint accepts the\nthinking-off switch and whether the model answers with thinking off, plus a\nrecommendation for the ``thinking`` setting (see ``_probe_chat``). The mode\nprobed is the body's ``thinking``, else the saved entry's, else \"auto\".\n\nThe credential is ``api_key`` when given (used for this call only, never\nstored or echoed), else the one saved with the registry entry, else the\nprovider's env key. An embedding probe reports the measured width against\nthe index (``dimensions`` / ``dimension_mismatch``) and records it, so the\nembedder refuses a model whose width does not fit before it writes a vector.\nIt sends ``dimensions`` = ``output_dimensions`` (the body's when given, else\nthe saved entry's at this endpoint) and reports ``requested_dimensions``\nplus ``dimensions_ignored`` when the endpoint answered another width.\nConnections are SSRF-pinned (the host is re-checked at connect time).",
         "operationId": "test_model_endpoint_models_configured_test_endpoint_post",
         "responses": {
           "200": {
@@ -40890,6 +40890,30 @@
           }
         },
         "summary": "Set Preference",
+        "tags": [
+          "model-registry"
+        ]
+      }
+    },
+    "/models/resolution": {
+      "get": {
+        "description": "What each capability (reasoning, embeddings, vision, OCR, rerank) and each\nagent role resolves to right now, with the source of the choice (tenant\nrouting policy / registry order / registry cheapest / deployment profile /\nenvironment pin / provider default) and the failover chain. Read-only; see\n``app.api.model_registry_resolution``.",
+        "operationId": "model_resolution_models_resolution_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Model Resolution Models Resolution Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Model Resolution",
         "tags": [
           "model-registry"
         ]

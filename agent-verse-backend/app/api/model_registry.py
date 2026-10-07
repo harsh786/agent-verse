@@ -706,6 +706,19 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
     return {"capabilities": groups, "total": len(model_registry.list_configured())}
 
 
+@router.get("/resolution")
+async def model_resolution(request: Request) -> dict[str, Any]:
+    """What each capability (reasoning, embeddings, vision, OCR, rerank) and each
+    agent role resolves to right now, with the source of the choice (tenant
+    routing policy / registry order / registry cheapest / deployment profile /
+    environment pin / provider default) and the failover chain. Read-only; see
+    ``app.api.model_registry_resolution``."""
+    tenant = _require_tenant(request)
+    from app.api.model_registry_resolution import build_resolution
+
+    return build_resolution(request, tenant.tenant_id)
+
+
 # ── Catalog (reference models per provider) ──────────────────────────────────
 
 
@@ -1030,10 +1043,15 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
 
     Body ``{provider, model_id, base_url, capabilities, api_key?,
     output_dimensions?, thinking?, thinking_budget_tokens?}``. Lists the server's models (``GET
-    {base_url}/models``), then makes a real call for the capability: a short
-    chat completion (reasoning / vision / OCR), an embedding (``POST
-    {base_url}/embeddings``) for an embedding model, or a rerank.
-    ``ok: false`` (HTTP 200) carries the error; 400 = URL refused.
+    {base_url}/models``), then makes one REAL call per capability the model is
+    registered for (``checks``, see ``app.api.model_registry_probes``): a short
+    chat completion (reasoning), a chat completion with a tiny PNG asking what it
+    shows (vision / OCR), an embedding (``POST {base_url}/embeddings``) and a
+    rerank of two documents (``POST {base_url}/rerank``). The top-level fields
+    describe the primary probe (``probe``); ``ok`` is true only when every check
+    passed. ``ok: false`` (HTTP 200) carries ``error`` and ``error_kind`` (auth /
+    model_not_served / unreachable / unsupported / refused / thinking_budget /
+    invalid_response / http_error); 400 = URL refused.
 
     A chat probe also reports ``thinking``: whether the model is a thinking
     model (reasoning tokens / text observed), whether the endpoint accepts the
@@ -1063,6 +1081,7 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
         endpoint_http_client,
         onprem_extra_body,
     )
+    from app.api import model_registry_probes as probes
 
     body = await request.json()
     body = body if isinstance(body, dict) else {}
@@ -1073,14 +1092,8 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     if not model_id or not base:
         raise HTTPException(400, "model_id and base_url are required")
 
-    chat = bool(caps & _CHAT_CAPABILITIES)
-    probe = (
-        "embedding"
-        if _is_embedding_only(caps)
-        else "rerank"
-        if ModelCapability.RERANK.value in caps and not chat
-        else "chat"
-    )
+    plan = _probe_plan(caps)
+    probe = plan[0][0]
     from app.ai_router.selection import _ensure_seeded
 
     _ensure_seeded(model_registry)
@@ -1098,7 +1111,7 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
             raise HTTPException(400, str(exc)) from exc
     mode, budget = _probe_thinking_settings(body, provider, model_id, base)
     requested_dims: int | None = None
-    if probe == "embedding":
+    if any(kind == "embedding" for kind, _ in plan):
         if "output_dimensions" in body:
             requested_dims = _parse_output_dimensions(body.get("output_dimensions"))
         else:
@@ -1118,7 +1131,11 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
         "served_models": [],
         "detail": "",
         "error": None,
+        "error_kind": None,
+        "checks": [],
     }
+    off_by_default = bool(onprem_extra_body(provider))
+    checks: list[dict[str, Any]] = []
     start = time.monotonic()
     try:
         # Redirects are never followed and every connect re-checks the host.
@@ -1137,67 +1154,161 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
             except (httpx.HTTPError, ValueError):
                 pass  # not every server lists models; the real call decides
 
-            if probe == "chat":
-                chat_result = await _probe_chat(
-                    client,
-                    base=base,
-                    headers=headers,
-                    model_id=model_id,
-                    mode=mode,
-                    budget=budget,
-                    off_by_default=bool(onprem_extra_body(provider)),
-                )
-                result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
-                result.update(chat_result)
-                return result
-            if probe == "embedding":
-                embed_body: dict[str, Any] = {"model": model_id, "input": ["ping"]}
-                if requested_dims is not None:
-                    embed_body["dimensions"] = requested_dims
-                resp = await client.post(
-                    f"{base}/embeddings", json=embed_body, headers=headers
-                )
-            else:
-                url = base if base.endswith("/rerank") else f"{base}/rerank"
-                resp = await client.post(
-                    url,
-                    json={"model": model_id, "query": "ping", "documents": ["ping", "pong"]},
-                    headers=headers,
-                )
+            for kind, kind_caps in plan:
+                if checks and checks[-1]["error_kind"] in ("unreachable", "refused"):
+                    # The same endpoint will not answer the next probe either:
+                    # report it instead of waiting out another timeout.
+                    skipped = probes.check_result(kind, kind_caps)
+                    skipped["error"] = f"skipped: {checks[-1]['error']}"
+                    skipped["error_kind"] = checks[-1]["error_kind"]
+                    checks.append(skipped)
+                    continue
+                check_start = time.monotonic()
+                try:
+                    if kind == "chat":
+                        check = probes.check_result("chat", kind_caps)
+                        chat_result = await _probe_chat(
+                            client,
+                            base=base,
+                            headers=headers,
+                            model_id=model_id,
+                            mode=mode,
+                            budget=budget,
+                            off_by_default=off_by_default,
+                        )
+                        check.update(chat_result)
+                        check["latency_ms"] = round((time.monotonic() - check_start) * 1000, 1)
+                        check["error_kind"] = probes.error_kind(check.get("error"))
+                    elif kind == "vision":
+                        check = await probes.probe_vision(
+                            client,
+                            base=base,
+                            headers=headers,
+                            model_id=model_id,
+                            capabilities=kind_caps,
+                            mode=mode,
+                            budget=budget,
+                            off_by_default=off_by_default,
+                        )
+                    elif kind == "embedding":
+                        check = await _probe_embedding(
+                            request, client, base=base, headers=headers, model_id=model_id,
+                            requested_dims=requested_dims, capabilities=kind_caps,
+                        )
+                    else:
+                        check = await probes.probe_rerank(
+                            client, base=base, headers=headers, model_id=model_id,
+                            capabilities=kind_caps,
+                        )
+                except (httpx.HTTPError, ModelEndpointError, ValueError) as exc:
+                    check = probes.check_result(kind, kind_caps)
+                    check["latency_ms"] = round((time.monotonic() - check_start) * 1000, 1)
+                    check["error"], check["error_kind"] = probes.exception_error(exc)
+                checks.append(check)
+    except (httpx.HTTPError, ModelEndpointError, ValueError) as exc:
+        # The pinned client refused the resolved address before any probe ran.
+        result["error"], result["error_kind"] = probes.exception_error(exc)
         result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
-        if resp.status_code >= 400:
-            result["error"] = f"HTTP {resp.status_code}: {resp.text[:300]}"
-            return result
-        data = resp.json()
-        if probe == "embedding":
-            vec = ((data.get("data") or [{}])[0]).get("embedding") or []
-            if not isinstance(vec, list) or not vec:
-                result["error"] = "the endpoint returned no embedding"
-                return result
-            dims = len(vec)
-            result["detail"] = f"{dims}-dimension embedding"
-            result.update(_dimension_report(request, dims))
-            result["requested_dimensions"] = requested_dims
-            result["dimensions_ignored"] = bool(requested_dims and dims != requested_dims)
-            if result["dimensions_ignored"]:
-                result["detail"] += (
-                    f" (asked for {requested_dims}: the endpoint ignored the "
-                    "dimensions parameter)"
-                )
-            from app.providers.registry_embedder import record_embedding_dimension
-
-            record_embedding_dimension(model_id, base, dims)
-        else:
-            result["detail"] = f"{len(data.get('results') or [])} documents scored"
-        result["ok"] = True
-    except httpx.HTTPError as exc:
-        result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
-        result["error"] = f"{type(exc).__name__}: {str(exc)[:300] or 'connection failed'}"
-    except ModelEndpointError as exc:  # the pinned client refused the resolved address
-        result["error"] = str(exc)[:300]
-    except ValueError as exc:  # also SSRFError raised at connect time
-        result["error"] = f"refused or invalid response: {str(exc)[:200]}"
+        return result
+    result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+    result["checks"] = checks
+    # The top level describes the primary probe (older clients read only it);
+    # ``ok`` is true only when EVERY capability probe passed.
+    primary = checks[0]
+    for k, v in primary.items():
+        if k not in ("capabilities", "latency_ms"):
+            result[k] = v
+    result["probe"] = probe
+    result["ok"] = all(c["ok"] for c in checks)
+    failed = next((c for c in checks if not c["ok"]), None)
+    if failed is not None and failed is not primary:
+        result["error"] = f"{failed['probe']}: {failed['error']}"
+        result["error_kind"] = failed["error_kind"]
     return result
+
+
+# Text capabilities answered by a plain chat completion; vision / OCR get the
+# image probe instead.
+_TEXT_PROBE_CAPABILITIES = frozenset(
+    {
+        ModelCapability.TEXT_GENERATION.value,
+        ModelCapability.STRUCTURED_OUTPUT.value,
+        ModelCapability.TOOL_USE.value,
+        ModelCapability.LLM_JUDGE.value,
+    }
+)
+_VISION_PROBE_CAPABILITIES = frozenset(
+    {
+        ModelCapability.VISION.value,
+        ModelCapability.OCR.value,
+        ModelCapability.VIDEO_UNDERSTANDING.value,
+    }
+)
+
+
+def _probe_plan(caps: set[str]) -> list[tuple[str, list[str]]]:
+    """The probes Test connection runs for *caps*, primary first:
+    ``[(probe, capabilities it covers)]``. No capability = a chat probe."""
+    plan: list[tuple[str, list[str]]] = []
+    text = sorted(caps & _TEXT_PROBE_CAPABILITIES)
+    vision = sorted(caps & _VISION_PROBE_CAPABILITIES)
+    if text:
+        plan.append(("chat", text))
+    if vision:
+        plan.append(("vision", vision))
+    if ModelCapability.EMBEDDING.value in caps:
+        plan.append(("embedding", [ModelCapability.EMBEDDING.value]))
+    if ModelCapability.RERANK.value in caps:
+        plan.append(("rerank", [ModelCapability.RERANK.value]))
+    return plan or [("chat", [ModelCapability.TEXT_GENERATION.value])]
+
+
+async def _probe_embedding(
+    request: Request,
+    client: Any,
+    *,
+    base: str,
+    headers: dict[str, str],
+    model_id: str,
+    requested_dims: int | None,
+    capabilities: list[str],
+) -> dict[str, Any]:
+    """``POST {base}/embeddings`` once; report and record the measured width."""
+    import time
+
+    from app.api import model_registry_probes as probes
+
+    out = probes.check_result("embedding", capabilities)
+    embed_body: dict[str, Any] = {"model": model_id, "input": ["ping"]}
+    if requested_dims is not None:
+        embed_body["dimensions"] = requested_dims
+    start = time.monotonic()
+    resp = await client.post(f"{base}/embeddings", json=embed_body, headers=headers)
+    out["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+    if resp.status_code >= 400:
+        out["error"] = f"HTTP {resp.status_code}: {resp.text[:300]}"
+        out["error_kind"] = probes.error_kind(out["error"])
+        return out
+    data = resp.json()
+    vec = ((data.get("data") or [{}])[0]).get("embedding") or []
+    if not isinstance(vec, list) or not vec:
+        out["error"] = "the endpoint returned no embedding"
+        out["error_kind"] = "invalid_response"
+        return out
+    dims = len(vec)
+    out["detail"] = f"{dims}-dimension embedding"
+    out.update(_dimension_report(request, dims))
+    out["requested_dimensions"] = requested_dims
+    out["dimensions_ignored"] = bool(requested_dims and dims != requested_dims)
+    if out["dimensions_ignored"]:
+        out["detail"] += (
+            f" (asked for {requested_dims}: the endpoint ignored the dimensions parameter)"
+        )
+    from app.providers.registry_embedder import record_embedding_dimension
+
+    record_embedding_dimension(model_id, base, dims)
+    out["ok"] = True
+    return out
 
 
 _MAX_OUTPUT_DIMENSIONS = 8192

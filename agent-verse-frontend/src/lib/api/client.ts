@@ -951,6 +951,10 @@ export interface ConfiguredModel {
   index_dimension?: number | null;
   dimension_mismatch?: boolean;
   dimension_reason?: string;
+  /** Embedding models: a knowledge collection of this width can be bound to it. */
+  collection_compatible?: boolean;
+  collection_chunk_table?: string | null;
+  collection_reason?: string;
   /**
    * Thinking-model control: "auto" (default — an empty, reasoning-only reply is
    * retried once with thinking off), "off" (always answer without reasoning),
@@ -1047,11 +1051,61 @@ export interface ThinkingProbe {
   recommendation: string | null;
 }
 
+/**
+ * Why a probe failed, classified by the backend: the key was rejected, the
+ * endpoint does not serve the model, it cannot be reached, it does not support
+ * the capability, the URL is refused, a thinking model ran out of budget, or a
+ * 2xx answer lacked the expected payload.
+ */
+export type ProbeErrorKind =
+  | 'auth'
+  | 'model_not_served'
+  | 'unreachable'
+  | 'unsupported'
+  | 'refused'
+  | 'thinking_budget'
+  | 'invalid_response'
+  | 'http_error';
+
+export type ProbeKind = 'chat' | 'vision' | 'embedding' | 'rerank';
+
+/** One capability probe of Test connection (one real call). */
+export interface ModelProbeCheck {
+  probe: ProbeKind;
+  /** The registry capabilities this probe covers (e.g. ["ocr", "vision"]). */
+  capabilities: string[];
+  ok: boolean;
+  latency_ms: number;
+  detail: string;
+  error: string | null;
+  error_kind: ProbeErrorKind | null;
+  /** chat */
+  thinking?: ThinkingProbe;
+  /** vision: the model's answer about the probe image, and whether it read the word. */
+  reply?: string;
+  expected_text?: string;
+  text_matched?: boolean | null;
+  /** rerank: scores, best first; whether the relevant document ranked first. */
+  scores?: { index: number; score: number; document: string }[];
+  relevant_first?: boolean;
+  /** embedding */
+  dimensions?: number | null;
+  index_dimension?: number | null;
+  dimension_mismatch?: boolean;
+  requested_dimensions?: number | null;
+  dimensions_ignored?: boolean;
+}
+
 /** `ok: false` still arrives as HTTP 200 with `error` set; a refused URL is a 400. */
 export interface ModelEndpointTestResult {
   ok: boolean;
   latency_ms: number;
-  probe: 'chat' | 'embedding' | 'rerank';
+  /** The primary probe the top-level fields describe. */
+  probe: ProbeKind;
+  /** Absent on older backends. */
+  error_kind?: ProbeErrorKind | null;
+  /** One entry per capability probe (absent on older backends). */
+  checks?: ModelProbeCheck[];
   /** null when the server has no model listing to check against. */
   model_listed: boolean | null;
   served_models: string[];
@@ -1071,6 +1125,57 @@ export interface ModelEndpointTestResult {
   dimensions_ignored?: boolean;
 }
 
+/** GET /models/resolution — where a capability's / role's model comes from. */
+export type ResolutionSource =
+  | 'tenant_pin'
+  | 'registry_order'
+  | 'registry_cheapest'
+  | 'deployment_profile'
+  | 'env_pin'
+  | 'local_default'
+  | 'default'
+  | 'none';
+
+export interface ResolvedModelRef {
+  model_id: string;
+  provider: string | null;
+  /** false = nothing in this deployment serves it; null = not a registry model. */
+  servable: boolean | null;
+}
+
+export interface CapabilityResolution {
+  capability: 'reasoning' | 'embedding' | 'vision' | 'ocr' | 'rerank' | string;
+  label: string;
+  /** false = this capability's call sites do not follow the registry yet. */
+  routed: boolean;
+  model: ResolvedModelRef | null;
+  source: ResolutionSource | string;
+  source_label: string;
+  fallbacks: ResolvedModelRef[];
+  warning: string | null;
+  note: string | null;
+}
+
+export interface RoleResolution {
+  task_type: string;
+  label: string;
+  /** Every runtime role label decided by this task type (planner, answer_synthesis, …). */
+  roles: string[];
+  routed_by_goal_router: boolean;
+  model: ResolvedModelRef | null;
+  source: ResolutionSource | string;
+  source_label: string;
+  fallbacks: ResolvedModelRef[];
+  warning: string | null;
+}
+
+export interface ModelResolution {
+  capabilities: CapabilityResolution[];
+  roles: RoleResolution[];
+  warnings: string[];
+  sources?: Record<string, string>;
+}
+
 /** GET /models/plan-cap — would this model be clamped to the caller's plan tier? */
 export interface ModelPlanCap {
   model_id: string;
@@ -1087,6 +1192,8 @@ export const modelsApi = {
     request<ModelRegistryAccess>("/models/configured/access", {
       headers: _adminHeaders(adminKey),
     }),
+  /** What every capability and agent role resolves to now (read-only). */
+  resolution: () => request<ModelResolution>("/models/resolution"),
   listConfigured: (adminKey?: string) =>
     request<{ capabilities: CapabilityGroup[]; total: number }>("/models/configured", {
       headers: _adminHeaders(adminKey),

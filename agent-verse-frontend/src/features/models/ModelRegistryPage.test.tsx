@@ -149,7 +149,7 @@ describe('ModelRegistryPage', () => {
     renderPage();
     expect(await screen.findByRole('heading', { name: /Model Registry/i })).toBeInTheDocument();
     expect(await screen.findByText('cheap-llm')).toBeInTheDocument();
-    const reasoning = screen.getByRole('heading', { name: 'Reasoning' }).closest('div.rounded-2xl') as HTMLElement;
+    const reasoning = screen.getByRole('heading', { name: 'Reasoning' }).closest('section') as HTMLElement;
     const rows = within(reasoning).getAllByRole('listitem');
     expect(rows.map((r) => within(r).getByText(/-llm$/).textContent)).toEqual(['cheap-llm', 'pricey-llm', 'keyless-llm']);
     expect(within(rows[0]).getByText('Primary')).toBeInTheDocument();
@@ -300,7 +300,8 @@ describe('ModelRegistryPage', () => {
 
     // Save with empty model id → inline validation error, no POST yet.
     await userEvent.click(screen.getByRole('button', { name: /^Save$/i }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Model ID and at least one capability/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Model ID: Model ID is required/i);
+    expect(screen.getByLabelText(/Model ID/i)).toHaveAttribute('aria-invalid', 'true');
     expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'POST')).toBe(false);
 
     await userEvent.type(screen.getByPlaceholderText(/openai\/gpt-oss-20b/i), 'gpt-oss-20b');
@@ -320,6 +321,10 @@ describe('ModelRegistryPage', () => {
     await screen.findByText('pricey-llm');
     await unlockWithAdminKey();
     await userEvent.click(screen.getByRole('button', { name: /Remove pricey-llm/i }));
+    // Nothing is deleted until the confirmation is accepted.
+    const confirm = await screen.findByRole('alertdialog', { name: /Remove pricey-llm\?/i });
+    expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'DELETE')).toBe(false);
+    await userEvent.click(within(confirm).getByRole('button', { name: /^Remove$/ }));
     await waitFor(() =>
       expect(findCall(spy, (u, i) => u.includes('/models/configured/nvidia/pricey-llm') && i.method === 'DELETE')).toBeDefined(),
     );
@@ -342,15 +347,20 @@ describe('ModelRegistryPage', () => {
     );
     renderPage();
     expect(await screen.findByText(/Failed to load the model registry/i)).toBeInTheDocument();
+    // Nothing is known, so no "No model yet" empty states are claimed; Retry is offered.
+    expect(screen.queryByText(/yet — add one/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
-  test('empty capability groups render a no-model hint', async () => {
+  test('empty capability groups render a per-capability empty state', async () => {
     mockFetch({ registry: { total: 0, capabilities: [] } });
     renderPage();
     await waitFor(() =>
-      expect(screen.getAllByText(/No model configured for/i)).toHaveLength(5),
+      expect(screen.getAllByText(/yet — add one/i)).toHaveLength(5),
     );
-    expect(screen.getByText(/No model configured for embeddings/i)).toBeInTheDocument();
+    expect(screen.getByTestId('empty-embedding')).toHaveTextContent('No embedding model yet — add one');
+    expect(screen.getByTestId('empty-ocr')).toHaveTextContent('No OCR model yet — add one');
+    expect(screen.getByTestId('empty-rerank')).toHaveTextContent('No reranker yet — add one');
   });
 
   test('does not fetch the registry when no api key is present', async () => {
@@ -358,7 +368,7 @@ describe('ModelRegistryPage', () => {
     const spy = mockFetch();
     renderPage();
     await waitFor(() =>
-      expect(screen.getAllByText(/No model configured for/i)).toHaveLength(5),
+      expect(screen.getAllByText(/yet — add one/i)).toHaveLength(5),
     );
     expect(spy.mock.calls.some(([u]) => String(u).includes('/models/configured'))).toBe(false);
   });
@@ -569,7 +579,7 @@ describe('ModelRegistryPage — model endpoints (base_url)', () => {
     expect(headersOf(init as RequestInit)['X-Admin-Key']).toBe('admin-secret');
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       provider: 'onprem', model_id: 'gpt-oss-20b', base_url: ENDPOINT,
-      capabilities: ['text_generation', 'embedding'], output_dimensions: null,
+      capabilities: ['text_generation', 'embedding'], output_dimensions: null, thinking: 'auto',
     });
 
     // Editing the URL invalidates the shown result.
