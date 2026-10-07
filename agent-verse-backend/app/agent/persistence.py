@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from app.agent.fanout_ledger import FanoutParked
 from app.observability.logging import get_logger
 from app.reliability.goal_lifecycle import GoalCancelledError
 
@@ -833,6 +834,19 @@ class GoalPersistenceEngine:
                     }
                 )
                 logger.info("persistent_goal_stopped", goal_id=goal_id, reason=reason)
+                raise
+            except FanoutParked:
+                # The attempt parked waiting for its sub-goals (a01-F006-05): not a
+                # failure and nothing to retry — the runner releases the slot and
+                # the last sub-goal re-queues the goal.
+                await self._write_attempt_end(
+                    attempt_id=_db_attempt_id,
+                    tenant_id=tenant_id,
+                    succeeded=False,
+                    failure_reason="waiting_children",
+                    iterations=attempt.iterations_used,
+                    cost_usd=attempt.cost_usd,
+                )
                 raise
             except Exception as exc:
                 attempt.failure_reason = str(exc)[:200]

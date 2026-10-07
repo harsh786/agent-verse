@@ -136,9 +136,14 @@ _tracer = trace.get_tracer(__name__)
 # Poison-pill sentinel — placed on a subscriber queue to signal end-of-stream.
 _SENTINEL: dict[str, Any] | None = None
 _TERMINAL_STATUSES = {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED}
-# Recovery never re-runs these: terminal, or parked waiting for a human
-# (a suspended goal is relaunched by resume_goal, not by restart recovery).
-_NOT_RECOVERABLE_STATUSES = {*_TERMINAL_STATUSES, GoalStatus.WAITING_HUMAN}
+# Recovery never re-runs these: terminal, parked waiting for a human (a
+# suspended goal is relaunched by resume_goal, not by restart recovery) or parked
+# waiting for its sub-goals (re-queued by the last one, a01-F006-05).
+_NOT_RECOVERABLE_STATUSES = {
+    *_TERMINAL_STATUSES,
+    GoalStatus.WAITING_HUMAN,
+    GoalStatus.WAITING_CHILDREN,
+}
 
 
 def _agent_grants_enforced() -> bool:
@@ -614,6 +619,8 @@ GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
     "supervisor_max_parallel",
     # POST /goals workflow_mode=debate: the in-graph debate's round count.
     "debate_rounds",
+    # Default per-child timeout of a supervisor / goal-tree fan-out (a01-F006-05).
+    "subgoal_timeout_seconds",
 )
 
 
@@ -1416,7 +1423,7 @@ class GoalService:
                             ")::json "
                             "WHERE id = :g AND tenant_id = :t "
                             "AND status NOT IN ('complete', 'failed', 'cancelled', "
-                            "'waiting_human') "
+                            "'waiting_human', 'waiting_children') "
                             "AND execution_context::jsonb -> CAST(:key AS text) "
                             "->> 'replica' = :old "
                             "RETURNING id"
@@ -3399,6 +3406,10 @@ class GoalService:
             # goal back to EXECUTING so status reporting matches reality.
             if record.status == GoalStatus.WAITING_HUMAN:
                 record.status = GoalStatus.EXECUTING
+        elif etype == "goal_waiting_children":
+            # A fan-out parent released its worker while its sub-goals run.
+            if record.status not in _TERMINAL_STATUSES:
+                record.status = GoalStatus.WAITING_CHILDREN
         # Decrement the per-tenant concurrent-goal counter for every terminal event.
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
             from app.tenancy.limits import decrement_concurrent_goals
@@ -5032,7 +5043,68 @@ class GoalService:
             ),
             "terminal_reason": terminal_reason_code(record.status.value, record.error_message),
             **_downgrade_fields(record.execution_context),
+            **await self._fanout_fields(goal_id, tenant_ctx),
         }
+
+    async def _fanout_fields(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+        """The goal's parent (a sub-goal) and its sub-goals (a fan-out parent).
+
+        Sub-goals are real goals (a01-F007-01): each is readable / cancellable on
+        its own, and the parent lists them with their live status. Bounded; an
+        unreadable store degrades to no lineage (logged), never fails the read.
+        """
+        out: dict[str, Any] = {"parent_goal_id": None, "sub_goals": []}
+        if self._db is None:
+            return out
+        try:
+            from sqlalchemy import text as _sql
+
+            from app.agent.fanout_ledger import FANOUT_KIND_KEY, FANOUT_TASK_KEY
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                parent = (
+                    await session.execute(
+                        _sql("SELECT parent_goal_id FROM goals WHERE id = :g AND tenant_id = :t"),
+                        {"g": goal_id, "t": tenant_ctx.tenant_id},
+                    )
+                ).scalar()
+                rows = (
+                    await session.execute(
+                        _sql(
+                            "SELECT id, status, goal_text, "
+                            "execution_context::jsonb ->> CAST(:task AS text), "
+                            "execution_context::jsonb ->> CAST(:kind AS text) "
+                            "FROM goals WHERE tenant_id = :t AND parent_goal_id = :g "
+                            "ORDER BY created_at LIMIT 64"
+                        ),
+                        {
+                            "g": goal_id,
+                            "t": tenant_ctx.tenant_id,
+                            "task": FANOUT_TASK_KEY,
+                            "kind": FANOUT_KIND_KEY,
+                        },
+                    )
+                ).all()
+        except Exception as exc:
+            _svc_logger.warning("goal_lineage_read_failed", goal_id=goal_id, error=str(exc)[:200])
+            return out
+        out["parent_goal_id"] = str(parent) if isinstance(parent, str) and parent else None
+        out["sub_goals"] = [
+            {
+                "goal_id": str(r[0]),
+                "status": str(r[1]),
+                "goal": str(r[2] or "")[:200],
+                "task_key": r[3],
+                "kind": r[4],
+            }
+            for r in rows
+        ]
+        return out
 
     async def get_pattern_selection(
         self, goal_id: str, tenant_ctx: TenantContext
@@ -5187,7 +5259,8 @@ class GoalService:
                           COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
                           COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
                           COUNT(*) FILTER (
-                            WHERE status IN ('planning','executing','waiting_human')
+                            WHERE status IN ('planning','executing','waiting_human',
+                                             'waiting_children')
                           ) AS active,
                           COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
                           COUNT(*) FILTER (
@@ -5627,7 +5700,73 @@ class GoalService:
         record.status = GoalStatus.CANCELLED
         cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
         await self._dispatch_event(goal_id, cancelled_event, tenant_ctx=tenant_ctx)
-        return {"goal_id": goal_id, "status": GoalStatus.CANCELLED.value}
+        # a01-F006-05: a fan-out parent's sub-goals stop with it; a cancelled
+        # sub-goal re-queues its parked parent when it was the last one running.
+        children = await self._cancel_sub_goals(goal_id, tenant_ctx)
+        await self._wake_parked_parent(goal_id, tenant_ctx)
+        result: dict[str, Any] = {"goal_id": goal_id, "status": GoalStatus.CANCELLED.value}
+        if children:
+            result["cancelled_sub_goals"] = children
+        return result
+
+    async def _cancel_sub_goals(self, goal_id: str, tenant_ctx: TenantContext) -> list[str]:
+        """Cancel the goal's sub-goals that are still running (best effort, logged)."""
+        if self._db is None:
+            return []
+        from app.services.fanout_continuation import active_child_ids
+
+        try:
+            child_ids = await active_child_ids(
+                self._db, tenant_id=tenant_ctx.tenant_id, parent_goal_id=goal_id
+            )
+        except Exception as exc:
+            _svc_logger.warning("sub_goal_lookup_failed", goal_id=goal_id, error=str(exc)[:200])
+            return []
+        cancelled: list[str] = []
+        for child_id in child_ids:
+            try:
+                await self.cancel_goal(child_id, tenant_ctx)
+                cancelled.append(child_id)
+            except Exception as exc:
+                _svc_logger.warning(
+                    "sub_goal_cancel_failed", goal_id=child_id, error=str(exc)[:200]
+                )
+        return cancelled
+
+    async def _wake_parked_parent(self, child_goal_id: str, tenant_ctx: TenantContext) -> None:
+        """Re-queue the goal's parked parent if this sub-goal was its last one running."""
+        if self._db is None or self._task_queue is None:
+            return  # parents park only on workers (the fan-out sweeper is the backstop)
+        from app.services.fanout_continuation import wake_parent_of
+
+        queue = self._task_queue
+
+        def _enqueue(goal: dict[str, Any]) -> None:
+            queue.enqueue_goal(
+                goal_id=goal["goal_id"],
+                tenant_id=goal["tenant_id"],
+                goal_text=goal["goal_text"],
+                priority=goal["priority"],
+                dry_run=goal["dry_run"],
+                agent_id=goal["agent_id"] or None,
+                connector_ids=list(goal.get("connector_ids") or []),
+                workflow_mode=goal["workflow_mode"],
+                goal_template="",
+                plan=goal["plan"],
+                **_subgoal_queue_kwargs(goal["execution_context"]),
+            )
+
+        try:
+            await wake_parent_of(
+                self._db,
+                tenant_id=tenant_ctx.tenant_id,
+                child_goal_id=child_goal_id,
+                enqueue=_enqueue,
+            )
+        except Exception as exc:
+            _svc_logger.warning(
+                "parked_parent_wake_failed", goal_id=child_goal_id, error=str(exc)[:200]
+            )
 
     async def pause_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Pause a running goal at its next step boundary — from any replica.

@@ -68,10 +68,13 @@ PLAN_QUEUE_MAP = {
 }
 
 # ── Supervisor sub-goal queues (CORE-09) ───────────────────────────────────────
-# A worker-run supervisor parent holds its Celery slot while it waits for its
-# sub-goals. Sub-goals used to share the parent's goals.{plan} queue, so a pool
-# whose slots were all held by waiting parents never ran their children (the
-# parent starved, or deadlocked, its own sub-goals). Sub-goals therefore go to
+# A worker-run supervisor / goal-tree parent no longer holds its Celery slot
+# while its sub-goals run: it parks in ``waiting_children`` and the last sub-goal
+# re-queues it (a01-F006-05). The separate pool is kept so sub-goals never queue
+# behind ordinary goals. Historically the parent held its slot, and sub-goals
+# used to share the parent's goals.{plan} queue, so a pool whose slots were
+# all held by waiting parents never ran their children (the parent starved, or
+# deadlocked, its own sub-goals). Sub-goals therefore go to
 # their own per-plan queue family, consumed ONLY by a dedicated sub-goal worker
 # pool (the ``subgoal-worker`` service / deployment). The main goal worker must
 # never consume these queues (tests/scaling/test_worker_queue_coverage.py). A

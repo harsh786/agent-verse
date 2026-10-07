@@ -11,11 +11,20 @@ already started and reuses what already finished.
 Every write is awaited. ``plan`` raises when the decomposition cannot be made
 durable, so the caller can refuse to fan out (fail closed) instead of
 launching children it could not account for after a crash.
+
+Continuations (a01-F006-05 / a01-F007-01): on a worker, a parent no longer waits
+for its children in its Celery slot. It dispatches them as real goals (each
+with a per-child ``timeout_s`` / ``deadline_at``), parks in ``waiting_children``
+and is re-queued when the last child is terminal. On re-entry
+:func:`reconcile_children` folds every finished child's outcome (read from its
+``goals`` row and persisted events) into the ledger, so the parent continues
+from the durable state instead of streaming events.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +33,50 @@ from typing import Any
 MAX_LEDGER_ENTRIES = 64
 
 TERMINAL_STATUSES = frozenset({"complete", "failed"})
+# A child GOAL's terminal statuses (goals.status).
+TERMINAL_GOAL_STATUSES = frozenset({"complete", "failed", "cancelled"})
+
+# goals.execution_context key of a parked parent: which fan-out it waits on.
+FANOUT_WAIT_KEY = "_fanout_wait"
+# execution_context key a fanned-out child carries: the fan-out kind that made it.
+FANOUT_KIND_KEY = "_fanout_kind"
+
+# Child timeouts are bounded below so a bad value never cancels every child at once.
+MIN_CHILD_TIMEOUT_S = 30.0
+_FALLBACK_CHILD_TIMEOUT_S = 1800.0
+
+# Events a child's outcome is read from (persisted goal_events), bounded.
+_CHILD_EVENT_TYPES = ("step_complete", "goal_complete", "goal_failed", "goal_cancelled",
+                      "worker_failed")
+_CHILD_EVENT_LIMIT = 500
+
+
+class FanoutParked(Exception):  # noqa: N818 - a control-flow signal, not an error
+    """A fan-out parent ended its run waiting for its sub-goals (not a failure).
+
+    Raised only where a wrapper would otherwise treat the parked state as a failed
+    attempt (the persistence engine); carries the parked ``AgentState``.
+    """
+
+    def __init__(self, state: Any) -> None:
+        super().__init__("fan-out parent parked waiting for its sub-goals")
+        self.state = state
+
+
+@dataclass
+class ChildGoalState:
+    """A dispatched child's ``goals`` row as the parent sees it."""
+
+    status: str
+    error_message: str = ""
+
+    @property
+    def terminal(self) -> bool:
+        return self.status in TERMINAL_GOAL_STATUSES
+
+
+# (child goal status, child error_message, child events) -> (status, result, error)
+OutcomeFn = Callable[[str, str, list[dict[str, Any]]], tuple[str, str, str]]
 
 
 @dataclass
@@ -133,8 +186,28 @@ class FanoutLedger:
                 )
         return await self.load()
 
-    async def mark_dispatched(self, task_key: str, child_goal_id: str) -> None:
-        await self._update(task_key, child_goal_id=child_goal_id, status="dispatched")
+    async def mark_dispatched(
+        self, task_key: str, child_goal_id: str, *, timeout_s: float | None = None
+    ) -> None:
+        """Record the child's goal id; with ``timeout_s`` also its deadline (sweeper)."""
+        if timeout_s is None:
+            await self._update(task_key, child_goal_id=child_goal_id, status="dispatched")
+            return
+        from sqlalchemy import text
+
+        async with self._session() as session:
+            await session.execute(
+                text(
+                    "UPDATE goal_fanout_ledger SET child_goal_id = :child, "
+                    "status = 'dispatched', timeout_s = CAST(:secs AS integer), "
+                    "deadline_at = now() + make_interval(secs => CAST(:secs AS integer)), "
+                    "updated_at = now() "
+                    "WHERE tenant_id = :tid AND parent_goal_id = :pid AND kind = :kind "
+                    "AND task_key = :key"
+                ),
+                {**self._keys(), "key": task_key, "child": child_goal_id,
+                 "secs": int(timeout_s)},
+            )
 
     async def mark_finished(
         self, task_key: str, *, status: str, result: str = "", error: str = ""
@@ -154,6 +227,56 @@ class FanoutLedger:
                 ),
                 {**self._keys(), "key": task_key, **values},
             )
+
+    async def child_goal_states(self) -> dict[str, ChildGoalState]:
+        """task_key -> the dispatched child's goals row (status, error), this tenant only."""
+        from sqlalchemy import text
+
+        async with self._session() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT l.task_key, g.status, g.error_message "
+                        "FROM goal_fanout_ledger l "
+                        "JOIN goals g ON g.id = l.child_goal_id AND g.tenant_id = l.tenant_id "
+                        "WHERE l.tenant_id = :tid AND l.parent_goal_id = :pid "
+                        "AND l.kind = :kind AND l.child_goal_id IS NOT NULL "
+                        "LIMIT :lim"
+                    ),
+                    {**self._keys(), "lim": MAX_LEDGER_ENTRIES},
+                )
+            ).all()
+        return {
+            str(r[0]): ChildGoalState(status=str(r[1]), error_message=str(r[2] or ""))
+            for r in rows
+        }
+
+    async def child_events(self, child_goal_id: str) -> list[dict[str, Any]]:
+        """The child's outcome-relevant persisted events, in sequence order (bounded)."""
+        from sqlalchemy import text
+
+        from app.guardrails_v2.output_screening import redact_legacy_event
+
+        async with self._session() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT payload FROM goal_events "
+                        "WHERE tenant_id = :tid AND goal_id = :gid "
+                        "AND event_type = ANY(CAST(:types AS text[])) "
+                        "ORDER BY sequence LIMIT :lim"
+                    ),
+                    {"tid": self._tenant_id, "gid": child_goal_id,
+                     "types": list(_CHILD_EVENT_TYPES), "lim": _CHILD_EVENT_LIMIT},
+                )
+            ).all()
+        out: list[dict[str, Any]] = []
+        for (payload,) in rows:
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if isinstance(payload, dict):
+                out.append(redact_legacy_event(dict(payload)))
+        return out
 
     async def find_child_goal(self, task_key: str) -> str | None:
         """A sub-goal row already created for *task_key* (by a crashed earlier run).
@@ -199,3 +322,99 @@ def ledger_for(
     return FanoutLedger(
         session_factory, tenant_id=tenant_id, parent_goal_id=str(parent_goal_id), kind=kind
     )
+
+
+def goal_child_timeout_default(context: Any, graph_default: Any) -> float | None:
+    """A goal's default per-child timeout: its ``subgoal_timeout_seconds``, else the
+    graph's (the parent's effective goal timeout, set by the worker), else None."""
+    requested = context.get("subgoal_timeout_seconds") if isinstance(context, dict) else None
+    for value in (requested, graph_default):
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            return float(value)
+    return None
+
+
+def child_timeout_seconds(
+    *, requested: Any = None, default: Any = None, tenant_ctx: Any = None
+) -> float:
+    """A fan-out child's timeout (replaces the fixed 300 s in-slot wait).
+
+    ``requested`` (the plan's per-task ``timeout_seconds``) wins, then ``default``
+    (the goal's ``subgoal_timeout_seconds`` or the parent's effective goal timeout:
+    the agent's ``timeout_seconds`` capped by the plan), else the tenant plan's goal
+    timeout. Always within [``MIN_CHILD_TIMEOUT_S``, plan goal timeout].
+    """
+    cap = _FALLBACK_CHILD_TIMEOUT_S
+    plan = getattr(tenant_ctx, "plan", None)
+    if plan is not None:
+        from app.tenancy.context import PLAN_LIMITS
+
+        limits = PLAN_LIMITS.get(plan)
+        if limits is not None:
+            cap = float(limits.goal_timeout_seconds)
+
+    def _num(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return None
+        try:
+            number = float(value)
+        except ValueError:
+            return None
+        return number if number > 0 else None
+
+    chosen = _num(requested) or _num(default) or cap
+    return max(MIN_CHILD_TIMEOUT_S, min(cap, chosen))
+
+
+async def reconcile_children(
+    ledger: Any,
+    entries: list[LedgerEntry],
+    outcome: OutcomeFn,
+) -> list[LedgerEntry]:
+    """Fold every dispatched child that reached a terminal goal status into the ledger.
+
+    Returns the entries finished by THIS call (in plan order). A dispatched child
+    whose goals row is gone (erased) is failed rather than waited on forever.
+    """
+    pending = [e for e in entries if not e.finished and e.child_goal_id]
+    if not pending:
+        return []
+    states: dict[str, ChildGoalState] = await ledger.child_goal_states()
+    finished: list[LedgerEntry] = []
+    for entry in pending:
+        state = states.get(entry.task_key)
+        if state is None:
+            status, result, error = "failed", "", "sub-goal row no longer exists"
+        elif not state.terminal:
+            continue
+        else:
+            events = await ledger.child_events(str(entry.child_goal_id))
+            status, result, error = outcome(state.status, state.error_message, events)
+        await ledger.mark_finished(
+            entry.task_key, status=status, result=result, error=error[:2000]
+        )
+        entry.status, entry.result, entry.error = status, result, error
+        finished.append(entry)
+    return finished
+
+
+def _bridged(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return event
+    merged = dict(payload)
+    for key, value in event.items():
+        if key != "payload":
+            merged.setdefault(key, value)
+    return merged
+
+
+def failure_reason(goal_status: str, error_message: str, events: list[dict[str, Any]]) -> str:
+    """Why a child that did not complete ended (its row's error, else its last event)."""
+    if error_message.strip():
+        return error_message.strip()
+    for raw in reversed(events):
+        evt = _bridged(raw)
+        if evt.get("type") in ("goal_failed", "goal_cancelled", "worker_failed"):
+            return str(evt.get("reason") or evt.get("type"))
+    return f"sub-goal {goal_status}"

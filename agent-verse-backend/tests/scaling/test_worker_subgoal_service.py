@@ -96,3 +96,54 @@ async def test_worker_initial_context_carries_marker_and_debate_consensus() -> N
         ctx = await tasks._subgoal_context("g1", "t1")
 
     assert ctx == {SUBGOAL_MARKER: "parent-1", "debate_consensus": "plan B"}
+
+
+@pytest.mark.asyncio
+async def test_fanout_child_spends_its_parents_budget_and_parent_resumes_its_fanout() -> None:
+    """a01-F007-01: a real-goal child is charged to its parent (the validated
+    goals.parent_goal_id column, never a context value); a re-queued parent gets
+    its fan-out wait record back."""
+    from unittest.mock import MagicMock, patch
+
+    from app.agent.fanout_ledger import FANOUT_KIND_KEY, FANOUT_WAIT_KEY
+    from app.agent.supervisor import SUBGOAL_MARKER
+
+    rows = {
+        "child": {
+            SUBGOAL_MARKER: "parent-1",
+            FANOUT_KIND_KEY: "goal_tree",
+            "_budget_goal_id": "someone-elses-goal",  # never trusted
+        },
+        "parent": {FANOUT_WAIT_KEY: {"kind": "goal_tree", "plan": "free"}},
+    }
+
+    class _Session:
+        async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+            sql = str(stmt)
+            value: Any = (
+                ("parent-1" if params["g"] == "child" else None)
+                if "parent_goal_id" in sql
+                else rows[params["g"]]
+            )
+            return MagicMock(scalar=MagicMock(return_value=value))
+
+    class _Ctx:
+        async def __aenter__(self) -> Any:
+            return _Session()
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    with (
+        patch("app.db.session.get_session_factory", return_value=lambda: _Ctx()),
+        patch("app.db.rls.sqlalchemy_rls_context", return_value=_Ctx()),
+    ):
+        child = await tasks._subgoal_context("child", "t1")
+        parent = await tasks._subgoal_context("parent", "t1")
+
+    assert child == {
+        SUBGOAL_MARKER: "parent-1",
+        FANOUT_KIND_KEY: "goal_tree",
+        "_budget_goal_id": "parent-1",
+    }
+    assert parent == {FANOUT_WAIT_KEY: {"kind": "goal_tree", "plan": "free"}}

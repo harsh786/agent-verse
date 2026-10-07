@@ -177,7 +177,7 @@ async def change_tenant_plan(
 # session factory with ``row_security = off``; under FORCE RLS a tenant session
 # would count zero rows.
 
-_ACTIVE_STATUSES = ("planning", "executing", "verifying", "waiting_human")
+_ACTIVE_STATUSES = ("planning", "executing", "verifying", "waiting_human", "waiting_children")
 _SUCCESS_STATUSES = ("complete", "completed")
 
 

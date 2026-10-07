@@ -1,9 +1,15 @@
 """a01-F006-05 (related): a sub-goal the supervisor gave up on is cancelled.
 
-The parent waits on each sub-goal under ``asyncio.timeout`` (300 s by default).
-On a timeout it marked the sub-task failed and synthesized without it, but the
+In-slot mode (in-process runs without a durable ledger): the parent waits on
+each sub-goal under ``asyncio.timeout`` — that child's timeout (the plan's /
+agent's, no longer a fixed 300 s; ``timeout_per_subtask`` overrides it here). On
+a timeout it marked the sub-task failed and synthesized without it, but the
 sub-goal itself kept running on the sub-goal pool — spending the tenant's budget
 and running tools whose results nobody would read. It is now cancelled.
+
+On a worker the parent no longer waits at all (continuation mode): the fan-out
+sweeper cancels an overdue child instead
+(tests/services/test_fanout_continuation_pg.py).
 """
 
 from __future__ import annotations
@@ -72,3 +78,20 @@ async def test_a_failed_cancel_never_breaks_the_parent() -> None:
         planner_provider=_planner(), goal_service=svc, timeout_per_subtask=0.05
     ).run(goal="g", tenant_ctx=T)
     assert {t.goal: t.status for t in result.tasks} == {"fast": "complete", "slow": "failed"}
+
+
+async def test_default_wait_follows_the_childs_timeout_not_a_fixed_300s() -> None:
+    from app.tenancy.context import PLAN_LIMITS
+
+    sup = SupervisorAgent(planner_provider=_planner(), goal_service=_GoalService(hang=set()))
+    plan_cap = float(PLAN_LIMITS[PlanTier.ENTERPRISE].goal_timeout_seconds)
+    from app.agent.supervisor import SubAgentTask
+
+    assert sup._task_timeout(SubAgentTask(goal="g"), T) == plan_cap
+    assert sup._task_timeout(SubAgentTask(goal="g", timeout_s=120), T) == 120
+    agent_bound = SupervisorAgent(
+        planner_provider=_planner(),
+        goal_service=_GoalService(hang=set()),
+        child_timeout_seconds=900,
+    )
+    assert agent_bound._task_timeout(SubAgentTask(goal="g"), T) == 900

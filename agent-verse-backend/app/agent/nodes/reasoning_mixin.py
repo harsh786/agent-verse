@@ -9,7 +9,7 @@ from app.agent.prompts import (
     CHAIN_OF_THOUGHT_SYSTEM,
     REFLECTION_SYSTEM,
 )
-from app.agent.state import AgentState, StepStatus
+from app.agent.state import AgentState, GoalStatus, StepStatus
 from app.providers.base import CompletionRequest, Message
 from app.providers.circuit_breaker import complete_with_failover
 
@@ -469,6 +469,19 @@ class ReasoningMixin:
             with contextlib.suppress(Exception):
                 await emit({"type": "pattern_decision", **decision})
 
+    def _fanout_continuations_enabled(self) -> bool:
+        """Whether a fan-out parent parks instead of waiting in its slot (worker runs)."""
+        return bool(getattr(self, "_fanout_continuations", False))
+
+    async def _park_for_children(self, agent_state: AgentState, kind: str, count: int) -> None:
+        """End this run waiting for sub-goals: the runner releases the worker slot."""
+        agent_state.status = GoalStatus.WAITING_CHILDREN
+        agent_state.context["fanout_parked"] = kind
+        emit = getattr(self, "_emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit({"type": "goal_waiting_children", "pattern": kind, "children": count})
+
     async def _node_supervisor_check(self, state: GraphState) -> dict[str, Any]:
         """Supervisor node — runs the real SupervisorAgent decomposition pattern.
 
@@ -505,29 +518,39 @@ class ReasoningMixin:
                 if isinstance(_width, int) and not isinstance(_width, bool)
                 else {}
             )
+            from app.agent.fanout_ledger import goal_child_timeout_default, ledger_for
+
+            _parent_id = getattr(agent_state, "goal_id", None)
+            # CORE-31: decomposition + child ids durable in Postgres, so a
+            # redelivered parent re-attaches instead of re-dispatching.
+            _ledger = ledger_for(
+                getattr(self, "_db_session_factory", None),
+                tenant_id=getattr(tenant_ctx, "tenant_id", None),
+                parent_goal_id=_parent_id,
+                kind="supervisor",
+            )
             supervisor = SupervisorAgent(
                 planner_provider=self._charging(self._planner, "supervisor", agent_state),
                 goal_service=goal_service,
                 agent_router=getattr(self, "_agent_router", None),
+                # a01-F006-05: on a worker the parent parks (waiting_children) and
+                # is re-queued by its last sub-goal instead of holding its slot.
+                continuation=_ledger is not None and self._fanout_continuations_enabled(),
+                child_timeout_seconds=goal_child_timeout_default(
+                    agent_state.context, getattr(self, "_subgoal_timeout_s", None)
+                ),
                 **_width_kw,
             )
-            from app.agent.fanout_ledger import ledger_for
-
-            _parent_id = getattr(agent_state, "goal_id", None)
             result = await supervisor.run(
                 goal=agent_state.goal,
                 tenant_ctx=tenant_ctx,
                 event_callback=getattr(self, "_event_callback", None),
                 parent_goal_id=_parent_id,
-                # CORE-31: decomposition + child ids durable in Postgres, so a
-                # redelivered parent re-attaches instead of re-dispatching.
-                ledger=ledger_for(
-                    getattr(self, "_db_session_factory", None),
-                    tenant_id=getattr(tenant_ctx, "tenant_id", None),
-                    parent_goal_id=_parent_id,
-                    kind="supervisor",
-                ),
+                ledger=_ledger,
             )
+            if getattr(result, "parked", False):
+                await self._park_for_children(agent_state, "supervisor", len(result.tasks))
+                return {"agent_state": agent_state}
             agent_state.context["supervisor_applied"] = True
             synthesized = getattr(result, "synthesized_result", "") or ""
             if synthesized:
