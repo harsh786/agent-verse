@@ -23,11 +23,20 @@ import { ApiError, apiFetch, llmErrorMessage } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { RagStrategySelect } from './RagStrategySelect';
+import { CollectionEmbedderSelect } from './CollectionEmbedderSelect';
+import {
+  DEFAULT_EMBEDDER_KEY, embedderChoices, embedderLabel, useCollectionEmbedders, type EmbedderOption,
+} from './collectionEmbedders';
 import { DEFAULT_RAG_STRATEGY } from './ragStrategies';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface Collection { collection_id: string; name: string; doc_count?: number; embedder?: string; embedding_dim?: number | null; created_at?: string; }
+interface Collection {
+  collection_id: string; name: string; doc_count?: number; embedder?: string; embedding_dim?: number | null; created_at?: string;
+  /** Per-collection embedder binding (GET /knowledge/collections). */
+  embedding_model?: string | null; embedding_provider?: string | null; embedding_model_key?: string;
+  embedding_binding?: 'explicit' | 'derived' | 'default'; chunk_table?: string | null;
+}
 interface SearchResult { doc_id?: string; chunk_id?: string; content: string; score: number; source_url?: string; metadata?: Record<string, unknown>; }
 interface CollectionStats {
   collection_id: string; name: string; doc_count: number; chunk_count: number;
@@ -74,10 +83,28 @@ function reembedErrorMessage(e: unknown): string {
   return 'Re-embed could not be started.';
 }
 
-/** Re-embed a collection with the deployment's current embedder, with job progress. */
-function ReembedControl({ collectionId }: { collectionId: string }) {
+/** The option a collection is bound to (its model key), else the default. */
+function currentEmbedderKey(collection: Collection | undefined, options: EmbedderOption[]): string {
+  const key = collection?.embedding_model_key;
+  if (key && options.some((o) => o.key === key && o.source !== 'default')) return key;
+  const byModel = options.find((o) => o.source !== 'default' && collection?.embedding_model && o.model === collection.embedding_model);
+  return byModel?.key ?? DEFAULT_EMBEDDER_KEY;
+}
+
+/**
+ * Re-embed a collection, with job progress. With embedding models to choose
+ * from, the target defaults to the collection's own model; picking another one
+ * moves the collection to it (re-embedded into that width's chunk table and
+ * re-bound when the job completes).
+ */
+function ReembedControl({ collectionId, collection, options = [] }: {
+  collectionId: string; collection?: Collection; options?: EmbedderOption[];
+}) {
   const qc = useQueryClient();
   const [watching, setWatching] = useState(false);
+  const [target, setTarget] = useState<string | null>(null);
+  const targetKey = target ?? currentEmbedderKey(collection, options);
+  const targetOption = options.find((o) => o.key === targetKey);
   const { data: progress } = useQuery<ReembedProgress>({
     queryKey: ['collection-reembed', collectionId],
     queryFn: () => apiFetch(`/knowledge/collections/${collectionId}/re-embed`, undefined, { silenceServerErrorToast: true }),
@@ -88,10 +115,16 @@ function ReembedControl({ collectionId }: { collectionId: string }) {
     },
   });
   const mutation = useMutation({
-    mutationFn: () => apiFetch<{ job_id: string }>(`/knowledge/collections/${collectionId}/re-embed`, { method: 'POST' }),
+    mutationFn: () => apiFetch<{ job_id: string }>(
+      `/knowledge/collections/${collectionId}/re-embed`,
+      options.length > 0
+        ? { method: 'POST', body: JSON.stringify({ embedding_model: targetKey }) }
+        : { method: 'POST' },
+    ),
     onSuccess: () => {
       setWatching(true);
       void qc.invalidateQueries({ queryKey: ['collection-reembed', collectionId] });
+      void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
       toast({ kind: 'success', message: 'Re-embed queued.' });
     },
     onError: (e) => {
@@ -113,7 +146,8 @@ function ReembedControl({ collectionId }: { collectionId: string }) {
         estimate = `\n\n${stats.chunk_count} chunks — estimated embedding cost $${cost.toFixed(4)}, reserved against your budget.`;
       }
     } catch { /* estimate unavailable: still ask */ }
-    if (window.confirm(`Re-embed every chunk with the current embedding model?${estimate}`)) mutation.mutate();
+    const model = targetOption ? embedderLabel(targetOption) : 'the current embedding model';
+    if (window.confirm(`Re-embed every chunk with ${model}?${estimate}`)) mutation.mutate();
   };
   let label: string | null = null;
   if (watching && progress) {
@@ -122,8 +156,19 @@ function ReembedControl({ collectionId }: { collectionId: string }) {
     else if (progress.status === 'completed') label = `Re-embedded ${progress.processed ?? 0} chunks${progress.dimension ? ` (${progress.dimension}-d)` : ''}`;
     else if (progress.status === 'failed') label = `Re-embed failed: ${progress.error ?? 'unknown error'}`;
   }
+  const choosable = options.length > 1;
   return (
     <div className="flex items-center gap-2 min-w-0">
+      {choosable && (
+        <select data-testid={`reembed-model-${collectionId}`} value={targetKey} disabled={busy}
+          aria-label="Embedding model to re-embed with"
+          onChange={(e) => setTarget(e.target.value)}
+          className="max-w-[9rem] text-[11px] px-1 py-0.5 border border-border rounded bg-background">
+          {options.map((o) => (
+            <option key={o.key} value={o.key} disabled={!o.available} title={o.reason || undefined}>{embedderLabel(o)}</option>
+          ))}
+        </select>
+      )}
       <button data-testid={`reembed-collection-${collectionId}`} onClick={() => { void start(); }} disabled={busy}
         title="Re-embed every chunk with the current embedding model"
         className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 disabled:opacity-50">
@@ -145,6 +190,9 @@ function CollectionsTab() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newEmbedder, setNewEmbedder] = useState<string>(DEFAULT_EMBEDDER_KEY);
+  const { data: embedderData } = useCollectionEmbedders();
+  const embedderOptions = embedderChoices(embedderData);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleteCollectionId, setDeleteCollectionId] = useState<string | null>(null);
 
@@ -159,11 +207,22 @@ function CollectionsTab() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => apiFetch('/knowledge/collections', { method: 'POST', body: JSON.stringify({ name: newName }) }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['knowledge-collections'] }); setShowCreate(false); setNewName(''); toast({ kind: 'success', message: 'Collection created.' }); },
+    // The default embedder is the server's default: no embedding_model is sent.
+    mutationFn: () => apiFetch('/knowledge/collections', {
+      method: 'POST',
+      body: JSON.stringify(newEmbedder === DEFAULT_EMBEDDER_KEY
+        ? { name: newName }
+        : { name: newName, embedding_model: newEmbedder }),
+    }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
+      setShowCreate(false); setNewName(''); setNewEmbedder(DEFAULT_EMBEDDER_KEY);
+      toast({ kind: 'success', message: 'Collection created.' });
+    },
     onError: (e) => toast({
       kind: 'error',
-      // A 429 here is the plan's collection limit (RATE-01), not a transient error.
+      // A 429 here is the plan's collection limit (RATE-01), not a transient error;
+      // a 422 names the embedding model problem (not configured / no chunk table).
       message: e instanceof ApiError && e.status === 429
         ? `Plan limit reached: ${e.message} Upgrade your plan or delete a collection.`
         : e instanceof ApiError ? e.message : String(e),
@@ -206,14 +265,16 @@ function CollectionsTab() {
                 className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background" />
             </div>
             <div>
-              <span className="block text-xs text-muted-foreground mb-1">Embedder</span>
-              {/* Every collection is embedded with the deployment's embedder; the
-                  card shows which one once the collection exists (USR-3). */}
-              <p className="px-3 py-2 text-sm text-muted-foreground">Deployment embedder</p>
+              <label htmlFor="collection-embedder" className="block text-xs text-muted-foreground mb-1">Embedding model</label>
+              {/* The collection is bound to this model and its width for good:
+                  every document and query is embedded with it (re-embed to change). */}
+              <CollectionEmbedderSelect value={newEmbedder} onChange={setNewEmbedder} options={embedderOptions} />
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => createMutation.mutate()} disabled={!newName.trim() || createMutation.isPending}
+            <button onClick={() => createMutation.mutate()}
+              disabled={!newName.trim() || createMutation.isPending
+                || embedderOptions.some((o) => o.key === newEmbedder && !o.available)}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50">
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </button>
@@ -237,7 +298,9 @@ function CollectionsTab() {
                     <p className="font-semibold truncate">{c.name}</p>
                     <p className="text-xs text-muted-foreground font-mono mt-0.5">{c.collection_id.slice(0, 16)}…</p>
                   </div>
-                  <span className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded shrink-0">{c.embedder || 'unknown'}{c.embedding_dim ? ` · ${c.embedding_dim}d` : ''}</span>
+                  <span data-testid={`collection-embedder-${c.collection_id}`}
+                    title={c.chunk_table ? `Embedded with ${c.embedding_model_key ?? c.embedder}; stored in ${c.chunk_table}` : undefined}
+                    className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded shrink-0">{c.embedder || 'unknown'}{c.embedding_dim ? ` · ${c.embedding_dim}d` : ''}</span>
                 </div>
                 <div className="flex items-center gap-3 text-sm">
                   <span className="flex items-center gap-1 text-muted-foreground"><FileText className="h-3.5 w-3.5" /> {c.doc_count ?? 0} docs</span>
@@ -266,7 +329,7 @@ function CollectionsTab() {
                   <ChevronRight className={`h-3.5 w-3.5 transition-transform ${expanded === c.collection_id ? 'rotate-90' : ''}`} />
                   {expanded === c.collection_id ? 'Hide stats' : 'View stats'}
                 </button>
-                <ReembedControl collectionId={c.collection_id} />
+                <ReembedControl collectionId={c.collection_id} collection={c} options={embedderOptions} />
                 <button data-testid={`delete-collection-${c.collection_id}`} onClick={() => setDeleteCollectionId(c.collection_id)}
                   className="p-1.5 text-muted-foreground hover:text-red-500 rounded">
                   <Trash2 className="h-3.5 w-3.5" />

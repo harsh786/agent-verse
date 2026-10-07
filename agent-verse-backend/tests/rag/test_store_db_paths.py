@@ -1017,7 +1017,10 @@ class TestIngestDocumentDbBranches:
         with a set comprehension over the whole list on each ingest.
         """
         row = (2048, 0)
-        db = _ScriptedDB(_Result(rows=[row]), _Result(), _Result())
+        # First read: the collection's embedder binding (per-collection embedders);
+        # unbound -> the caller's (default) embedder.
+        binding = ("c1", "a", "", 0, "unknown", 2048, None, None)
+        db = _ScriptedDB(_Result(rows=[binding]), _Result(rows=[row]), _Result(), _Result())
         store = KnowledgeStore(db_session_factory=db)
         from app.rag.store import _CollectionStore
 

@@ -863,6 +863,22 @@ class IngestionPipeline:
             )
         return enriched
 
+    async def _collection_embedder(self, config: SourceConfig) -> Any:
+        """The embedder bound to the Source's collection (``self._embedder`` = the
+        default), so a connector sync embeds with the collection's own model."""
+        from app.rag.store import KnowledgeStore
+
+        if not isinstance(self._kb, KnowledgeStore) or not config.collection_id:
+            return self._embedder
+        from app.tenancy.context import PlanTier, TenantContext
+
+        tenant_ctx = TenantContext(
+            tenant_id=config.tenant_id, plan=PlanTier.FREE, api_key_id="connector-sync"
+        )
+        return await self._kb.embedder_for_collection(
+            config.collection_id, tenant_ctx=tenant_ctx, default=self._embedder
+        )
+
     async def _embed(self, enriched_chunks: list[dict], config: SourceConfig) -> list[dict]:
         """Embed all chunks, returning chunks with 'embedding' field added."""
         texts = [c["text"] for c in enriched_chunks]
@@ -873,10 +889,11 @@ class IngestionPipeline:
             from app.providers.base import embed_texts
             from app.providers.embedder_factory import embedder_model_name
 
-            model = embedder_model_name(self._embedder)
+            embedder = await self._collection_embedder(config)
+            model = embedder_model_name(embedder)
 
             async def _one_batch(batch: list[str]) -> list[list[float]]:
-                return await embed_texts(batch, provider=self._embedder)
+                return await embed_texts(batch, provider=embedder)
 
             # KB-40: bounded batches, each reserved against the tenant's budget
             # (the worker's / API's registered controller) and metered. A

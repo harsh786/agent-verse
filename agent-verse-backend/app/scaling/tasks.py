@@ -3757,11 +3757,17 @@ def run_goal(
             # Wire KnowledgeStore so RAG context is retrieved before planning.
             # Without this, the rag_retrieval node is a no-op in the worker.
             _knowledge_store_worker = None
+            # Per-collection embedders: a collection's queries are embedded with
+            # the model it is bound to (the worker's embedder is the default).
+            from app.rag.collection_embedders import CollectionEmbedders as _CollEmb
+
+            _worker_collection_embedders = _CollEmb(lambda: _embedder_for_graph)
             try:
                 from app.rag.store import KnowledgeStore as _KnowledgeStore  # correct path
 
                 if db_factory is not None:
                     _knowledge_store_worker = _KnowledgeStore(db_session_factory=db_factory)
+                    _knowledge_store_worker.collection_embedders = _worker_collection_embedders
             except Exception as _ks_exc:
                 logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
 
@@ -3822,6 +3828,7 @@ def run_goal(
                 RetrievalDependencies(
                     session_factory=db_factory,
                     embedder=_embedder_for_graph,
+                    collection_embedders=_worker_collection_embedders,
                     llm_resolver=_resolve_worker_retrieval_llm,
                     graph_capability=_build_worker_graph_capability(db_factory),
                     search_capability=worker_web_search,
@@ -9783,8 +9790,13 @@ async def re_embed_collection_async(
     collection_id: str,
     model_key: str | None = None,
     job_id: str | None = None,
+    target: dict[str, Any] | None = None,
 ) -> dict:
-    """Re-embed every chunk of a collection with the deployment's embedder (KB-25).
+    """Re-embed every chunk of a collection and bind it to the embedder used (KB-25).
+
+    ``target`` (``{"provider", "model", "dimension"}``, validated by the API) is
+    the embedding model to move the collection to (per-collection embedders,
+    ``app.rag.collection_embedders``); without it the deployment default is used.
 
     The embedder is built here from :func:`resolve_embedder` — the ONE embedder
     queries are embedded with. (This used the global ``embedding_router``, whose
@@ -9820,13 +9832,39 @@ async def re_embed_collection_async(
     try:
         resolution = resolve_embedder(wire_registry_store=True)
         from app.observability.traced_provider import traced_embedder
+        from app.rag.collection_embedders import CollectionEmbedders, EmbeddingBinding
 
         # Traced: re-embedding vectors emit gen_ai.embeddings spans (a01-F024-01).
-        embedder = traced_embedder(resolution.embedder)
+        default_embedder = traced_embedder(resolution.embedder)
+        bind_provider: str | None
+        bind_model: str | None
+        expected_dim: int | None = None
+        if target and target.get("model"):
+            binding = EmbeddingBinding(
+                provider=str(target.get("provider") or "") or None,
+                model=str(target["model"]),
+                dimension=int(target["dimension"]) if target.get("dimension") else None,
+            )
+            resolver = CollectionEmbedders(
+                lambda: default_embedder, resolution=lambda: resolution
+            )
+            embedder = resolver.resolve(binding, default=default_embedder)
+            resolved_key = binding.key
+            bind_provider, bind_model = binding.provider, binding.model
+            # Only an explicit binding's width is a measured one (a default whose
+            # width is not known carries the EMBEDDING_DIM guess).
+            expected_dim = binding.dimension if binding.explicit else None
+        else:
+            embedder = default_embedder
+            if embedder is None:
+                raise reembed.ReembedError(f"no embedding provider: {resolution.reason()}")
+            resolved_key = f"{resolution.provider}/{resolution.model}"
+            # Bound explicitly only when the default's width is really known.
+            bind_provider = (resolution.provider or "default") if resolution.dimension else None
+            bind_model = resolution.model or None
         if embedder is None:
             raise reembed.ReembedError(f"no embedding provider: {resolution.reason()}")
-        resolved_key = f"{resolution.provider}/{resolution.model}"
-        if model_key and model_key not in (resolved_key, resolution.model):
+        if model_key and not target and model_key not in (resolved_key, resolution.model):
             raise reembed.ReembedError(
                 f"requested model {model_key!r} is not the configured embedder "
                 f"({resolved_key}); re-embedding with it would not match query vectors"
@@ -9867,6 +9905,9 @@ async def re_embed_collection_async(
             tenant_id=tenant_id,
             collection_id=collection_id,
             progress=progress,
+            bind_provider=bind_provider,
+            bind_model=bind_model,
+            expected_dim=expected_dim,
         )
         await progress.update(
             status="completed",
@@ -9929,13 +9970,16 @@ def re_embed_collection(
     collection_id: str,
     model_key: str | None = None,
     job_id: str | None = None,
+    target: dict[str, Any] | None = None,
 ) -> dict:
     """Celery entry point for :func:`re_embed_collection_async`.
 
     A failed re-embed fails the task (it used to return an error dict that
     Celery recorded as a success).
     """
-    result = _run_async(re_embed_collection_async(tenant_id, collection_id, model_key, job_id))
+    result = _run_async(
+        re_embed_collection_async(tenant_id, collection_id, model_key, job_id, target)
+    )
     if "error" in result:
         raise RuntimeError(f"re-embed of collection {collection_id} failed: {result['error']}")
     return cast("dict[Any, Any]", result)

@@ -4,8 +4,10 @@ Every collection used to report ``"voyage"``: the label was the client's
 ``embedder_type`` (default ``"voyage"``) and the stored row fell back to
 ``"voyage"`` too, while the vectors came from whatever embedder the deployment
 runs (here a local sentence-transformers model). The collection API now reports
-the deployment's real embedder and its output dimension, and a request naming a
-different embedder is refused (per-collection embedders are not supported).
+the deployment's real embedder and its output dimension. A request naming an
+embedder that is not configured is refused rather than stored as a label that
+does not match the vectors (configured registry models CAN be bound per
+collection: tests/api/test_collection_embedder_binding_api.py).
 """
 
 from __future__ import annotations

@@ -110,11 +110,20 @@ _EMBEDDING_DIM = 768
 class CreateCollectionRequest(BaseModel):
     name: str
     description: str = ""
-    # Not a selector: every collection is embedded with the deployment's embedder
-    # (USR-3). Kept for compatibility — empty / "default" / "auto" or a name of
-    # that embedder is accepted; naming any other embedder is refused (422)
-    # instead of being stored as a label that does not match the vectors.
+    # The embedding model the collection is bound to (app.rag.collection_embedders):
+    # a key from GET /knowledge/embedders ("provider/model_id"), a model id, or
+    # "default" / omitted = the deployment's default embedder. Its width selects
+    # the chunk table; every ingest, re-embed and query of the collection embeds
+    # with it. An unconfigured model or a width with no chunk table is a 422.
+    embedding_model: str | None = None
+    # Legacy alias of ``embedding_model`` (also accepts a provider / vendor name).
     embedder_type: str | None = None
+
+
+class ReembedCollectionRequest(BaseModel):
+    # The model to re-embed with (and bind the collection to), as for
+    # CreateCollectionRequest.embedding_model. Omitted = the deployment default.
+    embedding_model: str | None = None
 
 
 class IngestRequest(BaseModel):
@@ -767,6 +776,96 @@ def _embedder_hint_matches(hint: str, name: str, provider: str) -> bool:
     )
 
 
+def _collection_embedders(request: Request) -> Any:
+    """The app's per-collection embedder resolver (built on first use)."""
+    from app.rag.collection_embedders import CollectionEmbedders
+
+    state = request.app.state
+    resolver = getattr(state, "collection_embedders", None)
+    if resolver is None:
+        resolver = CollectionEmbedders(
+            lambda: getattr(state, "embedder", None),
+            resolution=lambda: getattr(state, "embedder_resolution", None),
+            settings=getattr(state, "settings", None),
+        )
+        state.collection_embedders = resolver
+    store = getattr(state, "knowledge_store", None)
+    if store is not None and getattr(store, "collection_embedders", None) is None:
+        store.collection_embedders = resolver
+    return resolver
+
+
+async def _collection_embedder_or_http(
+    request: Request,
+    collection_id: str,
+    tenant_ctx: TenantContext,
+    *,
+    collection: KnowledgeCollection | None = None,
+) -> Any:
+    """The embedder bound to ``collection_id`` (``app.state.embedder`` serves a
+    default-bound one). 422 when the collection's width cannot be served by the
+    default, 503 when its bound model is not available on this deployment. An
+    unknown collection resolves to the default (the route answers 404)."""
+    from app.rag.collection_embedders import CollectionEmbedderUnavailableError
+
+    resolver = _collection_embedders(request)
+    default = getattr(request.app.state, "embedder", None)
+    try:
+        return await resolver.for_collection(
+            _knowledge_store(request),
+            collection_id,
+            tenant_ctx=tenant_ctx,
+            default=default,
+            collection=collection,
+        )
+    except EmbeddingDimensionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except CollectionEmbedderUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _collection_embedding_row(collection: KnowledgeCollection) -> dict[str, Any]:
+    """The embedder a collection is bound to, for API rows."""
+    from app.rag.collection_embedders import EmbeddingBinding
+
+    binding = EmbeddingBinding.of(collection)
+    dim = collection.embedding_dim
+    return {
+        "embedder": collection.embedder or "unknown",
+        "embedding_dim": dim,
+        "embedding_provider": collection.embedding_provider,
+        "embedding_model": collection.embedding_model,
+        "embedding_model_key": binding.key,
+        "embedding_binding": "explicit"
+        if binding.explicit
+        else ("derived" if binding.model else "default"),
+        "chunk_table": f"knowledge_chunks_{dim}" if dim else None,
+    }
+
+
+@router.get("/embedders")
+async def list_collection_embedders(request: Request) -> dict[str, Any]:
+    """Embedding models a new collection can be bound to, with their widths.
+
+    ``default`` is the deployment's selected default embedder (what a collection
+    gets when ``embedding_model`` is omitted; memory and caches embed with it).
+    Every configured Model Registry embedding model is listed with its width and
+    chunk table; ``available: false`` carries why it cannot embed a collection
+    (no chunk table for its width, unknown width, no credentials).
+    """
+    from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
+
+    _require_tenant(request)
+    resolver = _collection_embedders(request)
+    options = resolver.options()
+    _name, default_dim, _provider = resolver.default_identity()
+    return {
+        "embedders": [option.as_dict() for option in options],
+        "default_dimension": default_dim,
+        "supported_dimensions": list(SUPPORTED_EMBEDDING_DIMENSIONS),
+    }
+
+
 @router.get("/collections")
 async def list_collections(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -778,11 +877,26 @@ async def list_collections(request: Request) -> list[dict[str, Any]]:
             "name": c.name,
             "description": c.description,
             "document_count": c.document_count,
-            "embedder": c.embedder or "unknown",
-            "embedding_dim": c.embedding_dim,
+            **_collection_embedding_row(c),
         }
         for c in collections
     ]
+
+
+async def _binding_for_new_collection_or_http(request: Request, requested: str | None) -> Any:
+    """The validated binding for ``requested`` (see CreateCollectionRequest)."""
+    from app.rag.collection_embedders import (
+        CollectionEmbedderUnavailableError,
+        UnknownEmbedderError,
+    )
+
+    resolver = _collection_embedders(request)
+    try:
+        return await resolver.binding_for_new_collection(requested)
+    except (UnknownEmbedderError, EmbeddingDimensionError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except CollectionEmbedderUnavailableError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/collections", status_code=status.HTTP_201_CREATED)
@@ -790,30 +904,29 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
     embedder_name, embedder_dim, embedder_provider = _active_embedder_identity(request, store)
-    if body.embedder_type is not None and not _embedder_hint_matches(
-        body.embedder_type, embedder_name, embedder_provider
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"embedder_type {body.embedder_type!r} is not available: this deployment "
-                f"embeds every collection with {embedder_name!r}"
-                + (f" ({embedder_dim}-dimensional)" if embedder_dim else "")
-                + "; omit embedder_type or use 'default'"
-            ),
+    requested = body.embedding_model
+    if requested is None and body.embedder_type is not None:
+        # Legacy alias: a hint naming the default embedder keeps meaning "default".
+        requested = (
+            "default"
+            if _embedder_hint_matches(body.embedder_type, embedder_name, embedder_provider)
+            else body.embedder_type
         )
+    binding = await _binding_for_new_collection_or_http(request, requested)
     collection = KnowledgeCollection(
         name=body.name,
         description=body.description,
-        embedder=embedder_name,
-        embedding_dim=embedder_dim,
+        embedder=binding.model or embedder_name,
+        embedding_dim=binding.dimension or embedder_dim,
+        embedding_provider=binding.provider,
+        embedding_model=binding.model,
     )
     try:
         cid = await store.create_collection_async(collection, tenant_ctx=tenant_ctx)
     except PlanLimitExceededError:
         raise  # 429 via the PlatformError handler (RATE-01), not "unavailable"
     except EmbeddingDimensionError as exc:
-        # The active embedder's width has no chunk table: a clear client-facing
+        # The embedder's width has no chunk table: a clear client-facing
         # configuration error, not "persistence unavailable".
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -836,8 +949,7 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
         "name": body.name,
         "description": body.description,
         "document_count": 0,
-        "embedder": collection.embedder,
-        "embedding_dim": collection.embedding_dim,
+        **_collection_embedding_row(collection),
     }
 
 
@@ -1007,7 +1119,9 @@ async def ingest_document(request: Request, body: IngestRequest) -> dict[str, An
         )
 
     chunks: list[Chunk] = []
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(
+        request, body.collection_id, tenant_ctx, collection=collection
+    )
     embeddings = await _embed_texts_or_http(
         [text_chunk.content for text_chunk in chunks_text],
         embedder,
@@ -1231,7 +1345,7 @@ async def ingest_file(
 
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(request, collection_id, tenant)
 
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
@@ -1711,7 +1825,7 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
     """
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(request, body.collection_id, tenant)
     settings = get_settings()
 
     try:
@@ -1928,6 +2042,11 @@ async def _ingest_repo_background(
     communicate_task: asyncio.Task[Any] | None = None
     lease_owner = _uuid.uuid4().hex
     try:
+        # Embedded with the collection's own model (``embedder`` = the default).
+        if isinstance(store, KnowledgeStore):
+            embedder = await store.embedder_for_collection(
+                collection_id, tenant_ctx=tenant_ctx, default=embedder
+            )
         if curl_resolve is None:
             repository_source = resolve_repository_source(repo_url)
             repo_url = repository_source.url
@@ -2202,7 +2321,7 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
     """Ingest an OpenAPI spec — creates a chunk per endpoint."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(request, body.collection_id, tenant)
 
     try:
         import json as _json
@@ -2597,7 +2716,8 @@ async def _index_url_document(
     if not pieces:
         raise HTTPException(422, "No content extracted from URL")
     embeddings = await _embed_texts_or_http(
-        [c for _, c, _, _ in pieces], getattr(request.app.state, "embedder", None),
+        [c for _, c, _, _ in pieces],
+        await _collection_embedder_or_http(request, collection_id, tenant),
         request=request,
     )
     chunk_ids = _stable_chunk_ids(document_id, [c for _, c, _, _ in pieces])
@@ -2898,7 +3018,7 @@ async def ingest_pdf(
     """Ingest a PDF file into a knowledge collection with page-level citation metadata."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(request, collection_id, tenant)
 
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded.pdf"
@@ -2925,7 +3045,7 @@ async def ingest_docx(
     """Ingest a DOCX file into a knowledge collection."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(request, collection_id, tenant)
 
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded.docx"
@@ -3473,7 +3593,7 @@ async def ingest_from_rpa_url(
     """
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
-    embedder = getattr(request.app.state, "embedder", None)
+    embedder = await _collection_embedder_or_http(request, body.collection_id, tenant_ctx)
 
     if not body.urls:
         raise HTTPException(status_code=400, detail="urls list must not be empty")
@@ -3686,6 +3806,12 @@ async def ingest_document_into_collection(
         from app.ingestion.orchestrator import IngestionOrchestrator
         from app.rag.indexing import RAGIndexingConfig
 
+        # The orchestrator gets the DEFAULT embedder and embeds a collection bound
+        # to another model with that model itself; resolving it here refuses an
+        # unservable binding up front (422 / 503).
+        bound_embedder = await _collection_embedder_or_http(
+            request, collection_id, tenant_ctx, collection=col
+        )
         embedder = getattr(request.app.state, "embedder", None)
         indexing_dependencies: dict[RAGStrategy, IndexingDependency] = {}
         if body.indexing_strategies:
@@ -3694,7 +3820,7 @@ async def ingest_document_into_collection(
                 tenant_ctx,
                 body.indexing_strategies,
             )
-            if embedder is None:
+            if bound_embedder is None:
                 raise HTTPException(
                     status_code=503,
                     detail="RAG indexing embedder is unavailable",
@@ -4071,9 +4197,17 @@ def _runtime_redis(request: Request) -> Any:
 async def re_embed_collection_route(
     collection_id: str,
     request: Request,
+    body: ReembedCollectionRequest | None = None,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Re-embed a collection with the deployment's configured embedder (admin, KB-25).
+    """Re-embed a collection and bind it to the embedder used (admin, KB-25).
+
+    ``embedding_model`` (a key from ``GET /knowledge/embedders`` or a model id)
+    moves the collection to that model: its chunks are re-embedded into the
+    chunk table of the model's width (``knowledge_chunks_<dim>``) and the
+    collection is re-bound in the same final transaction, so ingestion and
+    queries switch to the new model at once. Omitted = the deployment default
+    embedder. 422 for an unconfigured model or a width with no chunk table.
 
     Enqueues the ``re_embed_collection`` maintenance task; progress is read with
     ``GET /knowledge/collections/{id}/re-embed`` and completion is published on
@@ -4084,6 +4218,15 @@ async def re_embed_collection_route(
 
     tenant = _require_tenant(request)
     store = await _owned_collection_or_404(request, collection_id, tenant)
+    target: dict[str, Any] | None = None
+    requested = body.embedding_model if body is not None else None
+    if requested is not None and requested.strip():
+        binding = await _binding_for_new_collection_or_http(request, requested)
+        target = {
+            "provider": binding.provider,
+            "model": binding.model,
+            "dimension": binding.dimension,
+        }
     redis = _runtime_redis(request)
     if redis is None:
         raise HTTPException(status_code=503, detail="Re-embedding requires Redis")
@@ -4109,6 +4252,7 @@ async def re_embed_collection_route(
                 "tenant_id": tenant.tenant_id,
                 "collection_id": collection_id,
                 "job_id": job_id,
+                **({"target": target} if target is not None else {}),
             },
             queue="maintenance",
         )
@@ -4139,6 +4283,10 @@ async def re_embed_collection_route(
         "collection_id": collection_id,
         "chunk_count": chunk_count,
         "estimated_cost_usd": estimated_cost,
+        "target_embedding_model": (
+            f"{target['provider']}/{target['model']}" if target and target["provider"] else None
+        ),
+        "target_embedding_dim": target["dimension"] if target else None,
     }
 
 

@@ -55,6 +55,13 @@ def build_worker_knowledge_services(db_factory: Any) -> tuple[Any, Any]:
         # Collections this worker writes first record the real model (USR-3).
         embedder_name=embedder_model_name(resolution.embedder) or None,
     )
+    # Per-collection embedders: every collection this worker ingests into is
+    # embedded with the model it is bound to; the resolved one is the default.
+    from app.rag.collection_embedders import CollectionEmbedders
+
+    store.collection_embedders = CollectionEmbedders(
+        lambda: resolution.embedder, resolution=lambda: resolution
+    )
     # Indexed documents invalidate answers the API replicas cached from the
     # tenant's old knowledge (shared Redis generation).
     store.add_change_listener(bump_knowledge_generation)

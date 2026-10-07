@@ -2012,6 +2012,9 @@ def create_app(
                 or getattr(getattr(app.state, "embedder_resolution", None), "dimension", None),
                 embedder_name=embedder_model_name(_active_embedder) or None,
             )
+            _knowledge_store_db.collection_embedders = getattr(
+                app.state, "collection_embedders", None
+            )
             _collab_store_db = CollaborationStore(db_session_factory=db_factory)
 
             await _audit_log_db.sync_from_db()
@@ -2297,6 +2300,7 @@ def create_app(
                 RetrievalDependencies(
                     session_factory=db_factory,
                     embedder=app.state.embedder,
+                    collection_embedders=getattr(app.state, "collection_embedders", None),
                     llm_resolver=_resolve_retrieval_llm,
                     graph_capability=_graph_capability,
                     search_capability=_web_search_capability,
@@ -3127,6 +3131,17 @@ def create_app(
     if getattr(app.state, "embedder", None) is None:
         app.state.embedder = _embedder
     app.state.embedder_resolution = _embedder_resolution
+    # Per-collection embedders: each knowledge collection is embedded (ingest,
+    # re-embed, query) with the model it is bound to; app.state.embedder is the
+    # default (read live, so a late-bound / reloaded default is the current one).
+    from app.rag.collection_embedders import CollectionEmbedders
+
+    app.state.collection_embedders = CollectionEmbedders(
+        lambda: getattr(app.state, "embedder", None),
+        resolution=lambda: getattr(app.state, "embedder_resolution", None),
+        settings=settings,
+    )
+    _knowledge_store.collection_embedders = app.state.collection_embedders
     # The ingestion pipeline embeds documents with the SAME provider retrieval
     # embeds queries with. It used to get the chat LLM (_app_provider) — a
     # different model/space, so document and query vectors were incomparable

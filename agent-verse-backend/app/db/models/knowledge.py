@@ -48,6 +48,11 @@ class KnowledgeCollection(Base):
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedder: Mapped[str] = mapped_column(Text, nullable=False, default="voyage-4-large")
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=768)
+    # The bound embedding model (app.rag.collection_embedders): provider set = an
+    # explicit binding; NULL provider = derived from ``embedder`` by migration
+    # c5e7a9b1d3f6; NULL model = unbound (the deployment default embedder).
+    embedding_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, default=512)
     chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False, default=64)
     language: Mapped[str] = mapped_column(Text, nullable=False, default="en")

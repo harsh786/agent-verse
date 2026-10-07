@@ -70,6 +70,19 @@ def _batch_embedding_model(records: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _row_value(row: Any, index: int) -> Any:
+    """``row[index]``, or None when the row has fewer columns."""
+    try:
+        return row[index]
+    except (IndexError, KeyError, TypeError):
+        return None
+
+
+def _row_text(row: Any, index: int) -> str | None:
+    value = _row_value(row, index)
+    return str(value) if value else None
+
+
 def _chunk_table(dimension: int) -> str:
     if dimension not in SUPPORTED_EMBEDDING_DIMENSIONS:
         raise EmbeddingDimensionError(
@@ -319,6 +332,36 @@ class KnowledgeStore:
         # The active embedder's model name (USR-3): what new collections are
         # labelled with instead of a hardcoded "voyage".
         self._embedder_name = (embedder_name or "").strip() or None
+        # Resolves each collection's bound embedder (app.rag.collection_embedders);
+        # None = the process-wide resolver (registry + the caller's default).
+        self.collection_embedders: Any = None
+
+    def _embedders(self) -> Any:
+        if self.collection_embedders is None:
+            from app.rag.collection_embedders import CollectionEmbedders
+
+            self.collection_embedders = CollectionEmbedders()
+        return self.collection_embedders
+
+    async def embedder_for_collection(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+        default: Any = None,
+        collection: KnowledgeCollection | None = None,
+    ) -> Any:
+        """The embedder bound to ``collection_id`` (``default`` serves default-bound ones).
+
+        Every path that embeds FOR a collection (ingestion, re-embedding, query
+        embedding) goes through this, so a collection's vectors and its queries
+        always come from the collection's own model. Raises
+        ``CollectionEmbedderUnavailableError`` / ``EmbeddingDimensionError`` when
+        the bound model cannot be served here.
+        """
+        return await self._embedders().for_collection(
+            self, collection_id, tenant_ctx=tenant_ctx, default=default, collection=collection
+        )
 
     def add_change_listener(self, listener: Any) -> None:
         """Register ``async listener(tenant_id)`` for knowledge changes."""
@@ -411,7 +454,12 @@ class KnowledgeStore:
         # that can never be written. Unknown → the configured embedding_dim.
         # Existing collections are untouched (and an empty one still adopts the
         # real width on its first write, see _persist_chunks).
-        if self._embedding_dim:
+        # A collection bound to an embedder at creation (app.rag.collection_embedders)
+        # is sized to THAT model's width.
+        if collection.embedding_dim:
+            dim = int(collection.embedding_dim)
+            _chunk_table(dim)  # raises EmbeddingDimensionError when unsupported
+        elif self._embedding_dim:
             dim = int(self._embedding_dim)
             _chunk_table(dim)  # raises EmbeddingDimensionError when unsupported
         else:
@@ -441,8 +489,10 @@ class KnowledgeStore:
                 await session.execute(
                     text(
                         "INSERT INTO knowledge_collections "
-                        "(id, tenant_id, name, description, embedder, embedding_dim) "
-                        "SELECT :id, :tid, :name, :description, :embedder, :dim "
+                        "(id, tenant_id, name, description, embedder, embedding_dim, "
+                        "embedding_provider, embedding_model) "
+                        "SELECT :id, :tid, :name, :description, :embedder, :dim, "
+                        ":provider, :model "
                         "FROM tenants WHERE id = :tid AND is_active IS TRUE "
                         "RETURNING id"
                     ),
@@ -453,6 +503,8 @@ class KnowledgeStore:
                         "description": collection.description,
                         "embedder": collection.embedder,
                         "dim": dim,
+                        "provider": collection.embedding_provider,
+                        "model": collection.embedding_model,
                     },
                 )
             ).scalar_one_or_none()
@@ -492,7 +544,8 @@ class KnowledgeStore:
                     text(
                         "SELECT collection.id, collection.name, collection.description, "
                         "collection.document_count, collection.embedder, "
-                        "collection.embedding_dim "
+                        "collection.embedding_dim, collection.embedding_provider, "
+                        "collection.embedding_model "
                         "FROM knowledge_collections AS collection "
                         "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
                         "WHERE collection.id = :id AND collection.tenant_id = :tid "
@@ -510,6 +563,8 @@ class KnowledgeStore:
             document_count=int(row[3] or 0),
             embedder=str(row[4] or _UNKNOWN_EMBEDDER),
             embedding_dim=int(row[5]) if row[5] is not None else None,
+            embedding_provider=_row_text(row, 6),
+            embedding_model=_row_text(row, 7),
         )
 
     async def get_collection_embedding_dim(
@@ -582,7 +637,8 @@ class KnowledgeStore:
                     text(
                         "SELECT collection.id, collection.name, collection.description, "
                         "collection.document_count, collection.embedder, "
-                        "collection.embedding_dim "
+                        "collection.embedding_dim, collection.embedding_provider, "
+                        "collection.embedding_model "
                         "FROM knowledge_collections AS collection "
                         "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
                         "WHERE collection.tenant_id = :tid AND collection.is_active IS TRUE "
@@ -599,6 +655,8 @@ class KnowledgeStore:
                 document_count=int(row[3] or 0),
                 embedder=str(row[4] or _UNKNOWN_EMBEDDER),
                 embedding_dim=int(row[5]) if row[5] is not None else None,
+                embedding_provider=_row_text(row, 6),
+                embedding_model=_row_text(row, 7),
             )
             for row in rows
         ]
@@ -2441,6 +2499,15 @@ class KnowledgeStore:
             return []
 
         query_embedding: list[float] = []
+        # The query is embedded with the COLLECTION's embedder (its vectors'
+        # model); ``embedder`` only serves a default-bound collection.
+        try:
+            embedder = await self.embedder_for_collection(
+                collection_id, tenant_ctx=ctx, default=embedder
+            )
+        except Exception as exc:
+            _log.warning("retrieve_collection_embedder_unavailable: %s", exc)
+            embedder = None
         if embedder is not None:
             try:
                 from app.providers.base import embed_texts
@@ -2657,6 +2724,10 @@ class KnowledgeStore:
         """Embed and transactionally persist one canonical retrieval chunk."""
         chunk_id = _uuid.uuid4().hex
         embedding: list[float] = []
+        # Embedded with the collection's own model (``embedder`` = the default).
+        embedder = await self.embedder_for_collection(
+            collection_id, tenant_ctx=tenant_ctx, default=embedder
+        )
         if self._db is not None and embedder is None:
             raise EmbeddingProviderUnavailableError("Embedding provider is unavailable")
         if embedder is not None:
@@ -3389,7 +3460,8 @@ class KnowledgeStore:
             collection_row = (
                 await session.execute(
                     text(
-                        "SELECT embedding_dim, chunk_count "
+                        "SELECT embedding_dim, chunk_count, embedding_provider, "
+                        "embedding_model "
                         "FROM knowledge_collections "
                         "WHERE id = :id AND tenant_id = :tid AND is_active IS TRUE "
                         "FOR UPDATE"
@@ -3401,16 +3473,26 @@ class KnowledgeStore:
                 raise KeyError(f"Collection {collection_id} not found for tenant {tenant_id}")
             stored_dimension = int(collection_row[0])
             chunk_count = int(collection_row[1])
-            if chunk_count and stored_dimension != dimension:
+            # An explicit binding (app.rag.collection_embedders) fixes the width
+            # even before the first write: an empty collection bound to a model
+            # never silently adopts another model's width.
+            bound_model = (
+                str(_row_value(collection_row, 3) or "") if _row_value(collection_row, 2) else ""
+            )
+            if (chunk_count or bound_model) and stored_dimension != dimension:
+                bound = f" (bound to {bound_model})" if bound_model else ""
                 raise EmbeddingDimensionError(
                     f"Collection {collection_id} uses {stored_dimension}-dimensional "
-                    f"embeddings but the active embedder produces {dimension}-dimensional "
+                    f"embeddings{bound} but the embedder produced {dimension}-dimensional "
                     "vectors; re-embed the collection or use a new one"
                 )
             # The first write fixes what the collection holds: its vector width
             # and (USR-3) the model those vectors came from — the label set at
-            # create time may predate the embedder that actually wrote them.
-            batch_model = _batch_embedding_model(records) or self._embedder_name
+            # create time may predate the embedder that actually wrote them. A
+            # bound collection keeps its binding's label.
+            batch_model = (
+                None if bound_model else _batch_embedding_model(records) or self._embedder_name
+            )
             if not chunk_count and batch_model:
                 await session.execute(
                     text(

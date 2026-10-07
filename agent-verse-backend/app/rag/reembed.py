@@ -8,9 +8,12 @@ collection's — which is exactly what changing embedders usually means.
 
 This module holds the job:
 
-* The embedder is the ONE deployment embedder (``resolve_embedder()``), the same
-  model queries are embedded with — re-embedding with anything else would leave
-  document and query vectors in different spaces.
+* The embedder is the one the collection is (re-)bound to: the deployment
+  default, or the model named by the re-embed request
+  (``app.rag.collection_embedders``). The final transaction re-binds the
+  collection (``embedding_provider`` / ``embedding_model`` / ``embedding_dim``)
+  together with the table flip, so queries and ingestion switch to the new model
+  exactly when its vectors become the ones served.
 * Same dimension: vectors are rewritten in place, batch by batch.
 * New dimension: rows are copied, batch by batch, into ``knowledge_chunks_<new>``
   (same ids, every other column carried over). The collection keeps serving from
@@ -181,6 +184,9 @@ async def re_embed_collection(
     collection_id: str,
     progress: ReembedProgress | None = None,
     batch_size: int = BATCH_SIZE,
+    bind_provider: str | None = None,
+    bind_model: str | None = None,
+    expected_dim: int | None = None,
 ) -> dict[str, Any]:
     """Re-embed every chunk of one collection with ``embed``.
 
@@ -242,6 +248,7 @@ async def re_embed_collection(
             vectors = await _embed_checked(embed, [str(row[1] or "") for row in rows])
             if new_dim is None:
                 new_dim = len(vectors[0])
+                _check_expected(model_key, new_dim, expected_dim)
                 if new_dim not in SUPPORTED_EMBEDDING_DIMENSIONS:
                     raise ReembedError(
                         f"model {model_key} produces {new_dim}-dim vectors; supported "
@@ -270,6 +277,7 @@ async def re_embed_collection(
         # An empty collection still has to move to the embedder's width, or the
         # next ingest into it would be refused.
         new_dim = len((await _embed_checked(embed, ["dimension probe"]))[0])
+        _check_expected(model_key, new_dim, expected_dim)
         if new_dim not in SUPPORTED_EMBEDDING_DIMENSIONS:
             raise ReembedError(f"model {model_key} produces unsupported {new_dim}-dim vectors")
         new_table = _chunk_table(new_dim)
@@ -303,15 +311,26 @@ async def re_embed_collection(
                 tenant_id=tenant_id,
                 collection_id=collection_id,
             )
-        if count or new_table != old_table:
+        if count or new_table != old_table or bind_model:
             # Record the model (and width) the vectors were actually produced
-            # with, so ReembeddingPolicy.should_reembed comparisons are meaningful.
+            # with, so ReembeddingPolicy.should_reembed comparisons are meaningful,
+            # and bind the collection to it (queries / ingestion switch now).
             await session.execute(
                 text(
                     "UPDATE knowledge_collections SET embedder = :m, embedding_dim = :dim, "
+                    "embedding_provider = CASE WHEN CAST(:bm AS text) IS NULL "
+                    "THEN embedding_provider ELSE CAST(:bp AS text) END, "
+                    "embedding_model = COALESCE(CAST(:bm AS text), embedding_model), "
                     "updated_at = now() WHERE id = :cid AND tenant_id = :tid"
                 ),
-                {"m": model_key, "dim": final_dim, "cid": collection_id, "tid": tenant_id},
+                {
+                    "m": bind_model or model_key,
+                    "dim": final_dim,
+                    "bp": bind_provider,
+                    "bm": bind_model,
+                    "cid": collection_id,
+                    "tid": tenant_id,
+                },
             )
     return {
         "collection_id": collection_id,
@@ -320,6 +339,14 @@ async def re_embed_collection(
         "dimension": final_dim,
         "previous_dimension": old_dim,
     }
+
+
+def _check_expected(model_key: str, dimension: int, expected: int | None) -> None:
+    if expected and dimension != expected:
+        raise ReembedError(
+            f"model {model_key} produced {dimension}-dim vectors but the collection is being "
+            f"bound to it at {expected} dimensions; nothing was changed"
+        )
 
 
 async def _write_batch(

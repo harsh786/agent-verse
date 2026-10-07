@@ -175,7 +175,10 @@ async def _persist_ocr_to_kb(
     store = getattr(request.app.state, "knowledge_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="Knowledge store is unavailable")
-    embedder = getattr(request.app.state, "embedder", None)
+    from app.api.knowledge import _collection_embedder_or_http
+
+    # The collection's own embedder (app.state.embedder serves default-bound ones).
+    embedder = await _collection_embedder_or_http(request, collection_id, tenant_ctx)
 
     content = raw_text.strip()
     content_hash = hashlib.sha256(content.encode()).hexdigest()

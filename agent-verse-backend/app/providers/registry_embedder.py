@@ -326,10 +326,24 @@ def embedding_dimension_status(
 
 
 def _mismatch_reason(key: str, dims: int | None, target_dim: int | None) -> str:
+    """Why *key* cannot be the DEFAULT embedder (it may still embed collections)."""
+    from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
+
+    base = (
+        f"{key} produces {dims}-d vectors but the default embedding width is "
+        f"{target_dim}-d (EMBEDDING_DIM), so it cannot be the default embedder "
+        "(memory and default-bound collections use that width; making it the default "
+        f"needs a re-index: EMBEDDING_DIM={dims} and re-embedding those collections)"
+    )
+    if dims in SUPPORTED_EMBEDDING_DIMENSIONS:
+        return (
+            f"{base}; a knowledge collection can still be bound to it "
+            f"(knowledge_chunks_{dims}): create the collection with embedding_model={key}, "
+            "or move one with POST /knowledge/collections/{id}/re-embed"
+        )
     return (
-        f"{key} produces {dims}-d vectors but the vector index is {target_dim}-d "
-        f"(EMBEDDING_DIM); switching to it needs a re-index: set EMBEDDING_DIM={dims} "
-        "and re-embed existing collections (POST /knowledge/collections/{id}/re-embed)"
+        f"{base}, and there is no {dims}-d chunk table for collections (supported: "
+        f"{', '.join(str(d) for d in SUPPORTED_EMBEDDING_DIMENSIONS)})"
     )
 
 
@@ -418,10 +432,10 @@ class DimensionCheckedEmbedder:
         if self._expected and width != self._expected:
             self._refusal = (
                 f"embedding model {self.model_id} returned {width}-d vectors but the vector "
-                f"index is {self._expected}-d (EMBEDDING_DIM); refusing to mix vector widths. "
-                f"Set EMBEDDING_DIM={width} and re-embed existing collections "
-                "(POST /knowledge/collections/{id}/re-embed), or choose a model of the "
-                "index width"
+                f"index is {self._expected}-d (the default EMBEDDING_DIM, or the width of the "
+                "collection bound to it); refusing to mix vector widths. Re-embed the "
+                "collection (POST /knowledge/collections/{id}/re-embed) or bind a model of "
+                "that width"
             )
             logger.error(
                 "embedding_dimension_refused",

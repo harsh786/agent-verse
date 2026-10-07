@@ -106,11 +106,15 @@ def _count_failure(op: str) -> None:
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two float vectors. Returns 0.0 for zero vectors."""
+    """Cosine similarity between two float vectors. Returns 0.0 for zero vectors.
+
+    Vectors of different widths come from different embedders (per-collection
+    embedders, or a changed default) and live in different spaces: they never
+    match (0.0). They used to be truncated to the shorter width and compared,
+    which could serve an answer cached under another model's vector.
+    """
     if len(a) != len(b):
-        # Truncate to shorter — happens when provider changes embedding dimensions
-        n = min(len(a), len(b))
-        a, b = a[:n], b[:n]
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     mag_a = math.sqrt(sum(x * x for x in a))
     mag_b = math.sqrt(sum(x * x for x in b))

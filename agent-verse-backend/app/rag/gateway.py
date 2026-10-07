@@ -268,11 +268,22 @@ class _BudgetedEmbedder:
         self._guard = guard
 
     def _model(self, request: Any) -> str:
+        from app.providers.embedder_factory import embedder_model_name
+
         return str(
             getattr(request, "model", "")
+            or embedder_model_name(self._embedder)
             or getattr(self._embedder, "_default_model", "")
             or "embedding"
         )
+
+    def _cache_key(self, model: str) -> str:
+        # Per-collection embedders: two models (or one model at two widths) can
+        # embed the same text — never serve one's cached vector for the other.
+        from app.providers.embedder_factory import embedder_dimension
+
+        dim = embedder_dimension(self._embedder)
+        return f"{model}@{dim}" if dim else model
 
     @staticmethod
     def _cache_enabled() -> bool:
@@ -294,7 +305,7 @@ class _BudgetedEmbedder:
         # Reserving here records the attempt and may raise budget_exhausted; the
         # cost win is preserved by recording 0 actual tokens (no provider call).
         if texts and _cache_on:
-            hits, misses = await _EMBED_CACHE.get_batch(model, texts)
+            hits, misses = await _EMBED_CACHE.get_batch(self._cache_key(model), texts)
             if not misses:
                 from app.providers.base import EmbedResponse
 
@@ -320,8 +331,23 @@ class _BudgetedEmbedder:
         embs = getattr(response, "embeddings", None)
         if _cache_on and texts and embs and len(embs) == len(texts):
             for text_item, emb in zip(texts, embs, strict=False):
-                await _EMBED_CACHE.set(model, text_item, emb)
+                await _EMBED_CACHE.set(self._cache_key(model), text_item, emb)
         return response
+
+
+class _UnavailableEmbedder:
+    """Stands in for a collection embedder that cannot be served: says why."""
+
+    def __init__(self, strategy: str, reason: str) -> None:
+        self._strategy = strategy
+        self._reason = reason
+
+    async def embed(self, request: Any) -> Any:
+        from app.rag.engine import RetrievalStrategyExecutionError
+
+        raise RetrievalStrategyExecutionError(
+            self._strategy, f"collection embedder unavailable: {self._reason}"
+        )
 
 
 class _BudgetedProvider:
@@ -737,6 +763,10 @@ class RetrievalDependencies:
     collection_authorizer: CollectionAuthorizer
     strategy_capabilities: Mapping[RAGStrategy, RetrievalStrategyCapability]
     embedder: object | None = None
+    # Per-collection embedders (app.rag.collection_embedders.CollectionEmbedders):
+    # every query is embedded with the model the collection is bound to.
+    # None = every collection is embedded with ``embedder``.
+    collection_embedders: object | None = None
     llm_resolver: LLMResolver | None = None
     graph_capability: GraphCapabilityAdapter | None = None
     search_capability: SafeWebSearchCapability | None = None
@@ -2436,11 +2466,13 @@ class RetrievalGateway:
             tenant_context=tenant_context,
             strategy=strategy,
         )
+        base_embedder = await self._collection_embedder(
+            runner, tenant_context, collection_id, strategy
+        )
         runtime_embedder = (
-            _BudgetedEmbedder(self.dependencies.embedder, cost_guard)
-            if self.dependencies.cost_controller is not None
-            and self.dependencies.embedder is not None
-            else self.dependencies.embedder
+            _BudgetedEmbedder(base_embedder, cost_guard)
+            if self.dependencies.cost_controller is not None and base_embedder is not None
+            else base_embedder
         )
         runtime_llm = (
             ResolvedLLM(
@@ -2629,6 +2661,45 @@ class RetrievalGateway:
             tenant_context,
             self.dependencies.statement_timeout_ms,
         )
+
+    async def _collection_embedder(
+        self,
+        runner: _TenantSessionRunner | None,
+        tenant_context: TenantContext,
+        collection_id: str,
+        strategy: RAGStrategy,
+    ) -> Any:
+        """The embedder bound to ``collection_id`` (queries must use its vectors' model).
+
+        A binding this deployment cannot serve yields an embedder that fails
+        with the reason, so lexical strategies still run and semantic ones say
+        why they cannot.
+        """
+        resolver: Any = self.dependencies.collection_embedders
+        default = self.dependencies.embedder
+        if resolver is None or runner is None:
+            return default
+        from app.rag.collection_embedders import (
+            CollectionEmbedderUnavailableError,
+            load_collection_binding,
+        )
+        from app.rag.store import EmbeddingDimensionError
+
+        async def operation(session: AsyncSession) -> Any:
+            return await load_collection_binding(
+                session, tenant_id=tenant_context.tenant_id, collection_id=collection_id
+            )
+
+        binding = await runner.run(operation)
+        try:
+            return resolver.resolve(binding, default=default)
+        except (CollectionEmbedderUnavailableError, EmbeddingDimensionError) as exc:
+            logger.warning(
+                "rag_collection_embedder_unavailable",
+                collection_id=collection_id,
+                error=str(exc)[:300],
+            )
+            return _UnavailableEmbedder(strategy.value, str(exc))
 
     async def _authorize_collection(
         self,

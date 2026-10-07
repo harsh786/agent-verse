@@ -1788,6 +1788,17 @@
             ],
             "title": "Embedder Type"
           },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -6973,6 +6984,23 @@
           }
         },
         "title": "RedTeamRequest",
+        "type": "object"
+      },
+      "ReembedCollectionRequest": {
+        "properties": {
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          }
+        },
+        "title": "ReembedCollectionRequest",
         "type": "object"
       },
       "RegisterConnectorRequest": {
@@ -37131,7 +37159,7 @@
         ]
       },
       "post": {
-        "description": "Re-embed a collection with the deployment's configured embedder (admin, KB-25).\n\nEnqueues the ``re_embed_collection`` maintenance task; progress is read with\n``GET /knowledge/collections/{id}/re-embed`` and completion is published on\n``knowledge.updated``. One run per collection at a time (409 while one is\nqueued or running). Needs Redis for the lock and progress \u2014 503 without it.",
+        "description": "Re-embed a collection and bind it to the embedder used (admin, KB-25).\n\n``embedding_model`` (a key from ``GET /knowledge/embedders`` or a model id)\nmoves the collection to that model: its chunks are re-embedded into the\nchunk table of the model's width (``knowledge_chunks_<dim>``) and the\ncollection is re-bound in the same final transaction, so ingestion and\nqueries switch to the new model at once. Omitted = the deployment default\nembedder. 422 for an unconfigured model or a width with no chunk table.\n\nEnqueues the ``re_embed_collection`` maintenance task; progress is read with\n``GET /knowledge/collections/{id}/re-embed`` and completion is published on\n``knowledge.updated``. One run per collection at a time (409 while one is\nqueued or running). Needs Redis for the lock and progress \u2014 503 without it.",
         "operationId": "re_embed_collection_route_knowledge_collections__collection_id__re_embed_post",
         "parameters": [
           {
@@ -37144,6 +37172,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ReembedCollectionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
@@ -37304,6 +37349,30 @@
           }
         },
         "summary": "Sync Collection",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
+    "/knowledge/embedders": {
+      "get": {
+        "description": "Embedding models a new collection can be bound to, with their widths.\n\n``default`` is the deployment's selected default embedder (what a collection\ngets when ``embedding_model`` is omitted; memory and caches embed with it).\nEvery configured Model Registry embedding model is listed with its width and\nchunk table; ``available: false`` carries why it cannot embed a collection\n(no chunk table for its width, unknown width, no credentials).",
+        "operationId": "list_collection_embedders_knowledge_embedders_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Collection Embedders Knowledge Embedders Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Collection Embedders",
         "tags": [
           "knowledge"
         ]

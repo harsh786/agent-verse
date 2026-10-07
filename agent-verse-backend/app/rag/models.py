@@ -19,6 +19,10 @@ class KnowledgeCollection:
     embedder: str = ""
     # Output width of that embedder; None while unknown.
     embedding_dim: int | None = None
+    # The bound embedding model (app.rag.collection_embedders.EmbeddingBinding):
+    # provider set = explicit binding; model None = the deployment default.
+    embedding_provider: str | None = None
+    embedding_model: str | None = None
 
 
 @dataclass

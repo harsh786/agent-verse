@@ -70,6 +70,22 @@ class IngestionOrchestrator:
         self._parser_registry = ParserRegistry()
         self._embedding_orchestrator: Any = None
 
+    async def _bound_embedder(self, collection_id: str, tenant_ctx: TenantContext) -> Any:
+        """The collection's own embedder when it is NOT the default, else None.
+
+        A collection bound to another model (app.rag.collection_embedders) is
+        embedded with exactly that model: no content-type routing (D-10) and no
+        model id override, which would put another model's vectors in it.
+        """
+        from app.rag.store import KnowledgeStore
+
+        if not isinstance(self._kb, KnowledgeStore):
+            return None
+        bound = await self._kb.embedder_for_collection(
+            collection_id, tenant_ctx=tenant_ctx, default=self._embedder
+        )
+        return None if bound is self._embedder else bound
+
     def _embedding_orch(self) -> Any:
         """Lazily build and cache the EmbeddingOrchestrator (avoids import cycles)."""
         if self._embedding_orchestrator is None:
@@ -77,6 +93,26 @@ class IngestionOrchestrator:
 
             self._embedding_orchestrator = EmbeddingOrchestrator()
         return self._embedding_orchestrator
+
+    async def _embed_bound(
+        self, texts: list[str], embedder: Any, tenant_ctx: TenantContext
+    ) -> list[list[float]]:
+        """Embed with a collection's bound embedder (its own model, metered)."""
+        from app.embedding.metering import embed_metered
+        from app.providers.base import embed_texts
+        from app.providers.embedder_factory import embedder_model_name
+
+        async def _one_batch(batch: list[str]) -> list[list[float]]:
+            return await embed_texts(batch, provider=embedder)
+
+        return await embed_metered(
+            texts,
+            _one_batch,
+            tenant_ctx=tenant_ctx,
+            model=embedder_model_name(embedder),
+            controller=self._cost_controller,
+            label="knowledge-ingest",
+        )
 
     def _filter_quality(self, chunks: list[str]) -> list[str]:
         """Filter out low-quality chunks using QualityChecker."""
@@ -284,13 +320,22 @@ class IngestionOrchestrator:
         if store_is_in_memory and not in_memory_only:
             raise RuntimeError("An in-memory knowledge store requires in_memory_only=True")
 
+        bound_embedder = await self._bound_embedder(collection_id, tenant_ctx)
+        if bound_embedder is not None:
+            from app.providers.embedder_factory import embedder_model_name
+
+            bound_model = embedder_model_name(bound_embedder)
+            metadata = dict(metadata or {})
+            metadata["embedding_model"] = bound_model
+            metadata["embedding_model_effective"] = bound_model
+
         document_id = uuid.uuid4().hex
         if self._rag_indexing_config is not None and self._rag_indexing_config.strategies:
             if in_memory_only:
                 raise ValueError("Indexed ingestion does not support in_memory_only")
             if not source_identity.strip():
                 raise ValueError("Indexed ingestion requires source_identity")
-            if self._embedder is None:
+            if self._embedder is None and bound_embedder is None:
                 raise RuntimeError("Configured RAG indexing requires LLM and embedding providers")
             from app.rag.indexing import RAGIndexingPipeline
 
@@ -310,7 +355,10 @@ class IngestionOrchestrator:
             effective_embedder = self._embedder
             effective_model = ""
             embedding_model_effective = "default"
-            if _emb_selection is not None:
+            if bound_embedder is not None:
+                effective_embedder = bound_embedder
+                embedding_model_effective = str(metadata["embedding_model_effective"])
+            elif _emb_selection is not None:
                 existing_dim: int | None = None
                 dim_lookup = getattr(self._kb, "get_collection_embedding_dim", None)
                 if dim_lookup is not None:
@@ -384,15 +432,18 @@ class IngestionOrchestrator:
         # fixed embedder and discarding the selection. embed_for_content threads the
         # chosen model id into the physical embed call, falling back safely to the
         # configured embedder as the provider.
-        routed = await self._embedding_orch().embed_for_content(
-            chunks_text,
-            content_type=detected,
-            tenant_ctx=tenant_ctx,
-            default_provider=self._embedder,
-            provider_resolver=self._embed_provider_resolver,
-            cost_controller=self._cost_controller,
-        )
-        embeddings = routed.embeddings
+        if bound_embedder is not None:
+            embeddings = await self._embed_bound(chunks_text, bound_embedder, tenant_ctx)
+        else:
+            routed = await self._embedding_orch().embed_for_content(
+                chunks_text,
+                content_type=detected,
+                tenant_ctx=tenant_ctx,
+                default_provider=self._embedder,
+                provider_resolver=self._embed_provider_resolver,
+                cost_controller=self._cost_controller,
+            )
+            embeddings = routed.embeddings
         if len(embeddings) != chunks_prepared:
             raise RuntimeError("Embedding provider returned an incomplete batch")
 

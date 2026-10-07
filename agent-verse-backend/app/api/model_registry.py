@@ -383,9 +383,10 @@ def _dimension_report(request: Request, dims: int | None) -> dict[str, Any]:
         "index_dimension": target,
         "dimension_mismatch": mismatch,
         "dimension_reason": (
-            f"the model returns {dims}-d vectors but the vector index is {target}-d "
-            f"(EMBEDDING_DIM): it will be refused for embeddings until EMBEDDING_DIM={dims} "
-            "and existing collections are re-embedded"
+            f"the model returns {dims}-d vectors but the default embedding width is "
+            f"{target}-d (EMBEDDING_DIM): it cannot be the default embedder (that needs "
+            f"EMBEDDING_DIM={dims} and a re-index), but a knowledge collection can be bound "
+            f"to it when a {dims}-d chunk table exists"
             if mismatch
             else ""
         ),
@@ -544,20 +545,41 @@ def _annotate_embedding_rows(request: Request, rows: list[dict[str, Any]]) -> No
         from app.core.config import get_settings
 
         settings = get_settings()
+    from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
+
     target = target_embedding_dim(settings)
     for row in rows:
         row.update(
             embedding_dimension_status(row["provider"], row["model_id"], target, settings)
         )
         row["index_dimension"] = target
+        # Per-collection embedders: a model whose width differs from the default
+        # (EMBEDDING_DIM) can still embed knowledge collections of its own width.
+        dims = row.get("dimensions")
+        compatible = dims in SUPPORTED_EMBEDDING_DIMENSIONS
+        row["collection_compatible"] = compatible
+        row["collection_chunk_table"] = f"knowledge_chunks_{dims}" if compatible else None
+        row["collection_reason"] = (
+            ""
+            if compatible
+            else (
+                "width unknown: run Test connection (or set output_dimensions)"
+                if dims is None
+                else f"no {dims}-d chunk table (supported: "
+                + ", ".join(str(d) for d in SUPPORTED_EMBEDDING_DIMENSIONS)
+                + ")"
+            )
+        )
 
 
 def _embedding_selected(rows: list[dict[str, Any]], active: dict[str, Any]) -> str | None:
     """The embedding model the listing presents as selected — never a refused one.
 
-    A row whose vector width does not fit the index (``dimension_mismatch``) is
-    refused for embeddings (the embedder skips it), so it is marked ``refused``
-    with the reason and is never ``selected``, even when it ranks first in the
+    A row whose vector width differs from the default width (``EMBEDDING_DIM``,
+    ``dimension_mismatch``) is refused as the DEFAULT embedder (the default one
+    skips it) — it can still embed knowledge collections of its own width
+    (``collection_compatible``). It is marked ``refused`` with the reason and
+    is never ``selected`` as the default, even when it ranks first in the
     preference order. ``selected`` is the model the process actually embeds
     with (``active_embedder``) when that is known; otherwise the first eligible
     row that is not refused. Each row also gets ``selected: bool``.
