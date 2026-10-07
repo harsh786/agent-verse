@@ -253,6 +253,15 @@ async def test_model(request: Request) -> dict[str, Any]:
     provider = body.get("provider", "")
     model_id = body.get("model_id", "")
 
+    # An embedding model is tested with an EMBEDDING (a chat ping proves
+    # nothing about /v1/embeddings), on the endpoint it is configured with.
+    from app.ai_router.selection import _ensure_seeded
+
+    _ensure_seeded(model_registry)
+    configured = model_registry.get_configured(provider, model_id)
+    if configured is not None and _is_embedding_only(configured.capabilities):
+        return await _probe_configured_embedder(request, configured)
+
     model = model_registry.get_model(provider, model_id)
     if model is None:
         from fastapi import HTTPException
@@ -324,6 +333,100 @@ async def test_model(request: Request) -> dict[str, Any]:
         return {"status": "error", "error": str(exc), "model": model_id}
 
 
+# Capabilities answered by a chat completion; a model with none of them (and
+# EMBEDDING) is probed with an embedding instead.
+_CHAT_CAPABILITIES = frozenset(
+    {
+        ModelCapability.TEXT_GENERATION.value,
+        ModelCapability.STRUCTURED_OUTPUT.value,
+        ModelCapability.TOOL_USE.value,
+        ModelCapability.VISION.value,
+        ModelCapability.OCR.value,
+        ModelCapability.LLM_JUDGE.value,
+        ModelCapability.VIDEO_UNDERSTANDING.value,
+    }
+)
+
+
+def _is_embedding_only(capabilities: Any) -> bool:
+    caps = {str(getattr(c, "value", c)) for c in capabilities or []}
+    return ModelCapability.EMBEDDING.value in caps and not (caps & _CHAT_CAPABILITIES)
+
+
+def _settings_of(request: Request) -> Any:
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    return settings
+
+
+def _dimension_report(request: Request, dims: int | None) -> dict[str, Any]:
+    """``{dimensions, index_dimension, dimension_mismatch, dimension_reason}``."""
+    from app.providers.embedder_factory import target_embedding_dim
+
+    target = target_embedding_dim(_settings_of(request))
+    mismatch = bool(dims and target and dims != target)
+    return {
+        "dimensions": dims,
+        "index_dimension": target,
+        "dimension_mismatch": mismatch,
+        "dimension_reason": (
+            f"the model returns {dims}-d vectors but the vector index is {target}-d "
+            f"(EMBEDDING_DIM): it will be refused for embeddings until EMBEDDING_DIM={dims} "
+            "and existing collections are re-embedded"
+            if mismatch
+            else ""
+        ),
+    }
+
+
+async def _probe_configured_embedder(request: Request, model: Any) -> dict[str, Any]:
+    """POST /models/test for an embedding model: one real embedding call on the
+    endpoint the model is configured with (its own base_url, else its provider);
+    the measured width is recorded for dimension safety."""
+    import contextlib
+    import time
+
+    from app.providers.base import EmbedRequest
+    from app.providers.registry_embedder import (
+        build_registry_model_embedder,
+        record_embedding_dimension,
+    )
+
+    start = time.monotonic()
+    embedder: Any = None
+    try:
+        embedder = build_registry_model_embedder(model, _settings_of(request))
+        resp = await embedder.embed(EmbedRequest(texts=["ping"], model=model.model_id))
+        vec = resp.embeddings[0] if resp.embeddings else []
+    except Exception as exc:
+        return {
+            "status": "error",
+            "probe": "embedding",
+            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            "model": model.model_id,
+        }
+    finally:
+        close = getattr(embedder, "aclose", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                await close()
+    latency_ms = (time.monotonic() - start) * 1000
+    dims = len(vec) or None
+    if dims:
+        record_embedding_dimension(model.model_id, getattr(model, "base_url", None), dims)
+    return {
+        "status": "ok" if dims else "error",
+        "probe": "embedding",
+        "latency_ms": round(latency_ms, 1),
+        "model": model.model_id,
+        **({} if dims else {"error": "the endpoint returned no embedding"}),
+        **_dimension_report(request, dims),
+    }
+
+
 # ── Configured registry (the models selection actually picks from) ─────────────
 
 # Capability → the task used to compute which model is currently SELECTED (the
@@ -339,9 +442,11 @@ _CAPABILITY_SELECT_TASK = {
 
 _CAPABILITY_NOTES = {
     ModelCapability.EMBEDDING: (
-        "Embeddings use the first eligible model in this order when its provider is "
-        "configured and its vector width matches the index (EMBEDDING_DIM); otherwise "
-        "the deployment's configured embedding endpoint is used. Failover happens only "
+        "Embeddings use the first eligible model in this order, at its own endpoint URL "
+        "when it has one (else on its provider), when its vector width matches the index "
+        "(EMBEDDING_DIM; measured by Test connection or on first use); otherwise the "
+        "deployment's configured embedding endpoint is used, and only without one an "
+        "added model with its own endpoint URL. Failover happens only "
         "between endpoints serving that SAME model id (e.g. NVIDIA then on-prem), "
         "never to another model: vectors of different models are not comparable, so "
         "changing the embedding model needs a re-index."
@@ -374,6 +479,9 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         "source": (m.extra or {}).get("source", "env"),
         "origin": (m.extra or {}).get("origin", ""),
         "base_url": getattr(m, "base_url", None),
+        # Whether the entry carries its own (vault-encrypted) endpoint credential.
+        # Neither the key nor its ciphertext is ever returned.
+        "has_api_key": bool((m.extra or {}).get("api_key_encrypted")),
         "rank": rank,
     }
 
@@ -394,6 +502,21 @@ def _annotate_embedding_rows(request: Request, rows: list[dict[str, Any]]) -> No
             embedding_dimension_status(row["provider"], row["model_id"], target, settings)
         )
         row["index_dimension"] = target
+
+
+def _active_embedder_status(request: Request) -> dict[str, Any]:
+    """The embedder this process embeds with, and why a registry model was refused."""
+    resolution = getattr(request.app.state, "embedder_resolution", None)
+    if resolution is None:
+        return {"status": "unknown"}
+    return {
+        "status": resolution.status,
+        "source": resolution.source,
+        "provider": resolution.provider or None,
+        "model": resolution.model or None,
+        "dimension": resolution.dimension,
+        "registry_refusal": resolution.registry_refusal or None,
+    }
 
 
 @router.get("/configured/access")
@@ -453,6 +576,7 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
             group["failover_providers"] = [
                 r["provider"] for r in rows if r["model_id"] == selected and r["provider_ready"]
             ]
+            group["active_embedder"] = _active_embedder_status(request)
         if cap in _CAPABILITY_NOTES:
             group["note"] = _CAPABILITY_NOTES[cap]
         groups.append(group)
@@ -629,10 +753,18 @@ _PROBE_TIMEOUT_S = 30.0
 async def test_model_endpoint(request: Request) -> dict[str, Any]:
     """Check that a model's own endpoint answers (platform admin).
 
-    Body ``{provider, model_id, base_url, capabilities}``. Lists the server's
-    models (``GET {base_url}/models``), then makes one real call for the
-    capability: a short chat completion (reasoning / vision / OCR), an embedding,
-    or a rerank. ``ok: false`` (HTTP 200) carries the error; 400 = URL refused.
+    Body ``{provider, model_id, base_url, capabilities, api_key?}``. Lists the
+    server's models (``GET {base_url}/models``), then makes one real call for the
+    capability: a short chat completion (reasoning / vision / OCR), an embedding
+    (``POST {base_url}/embeddings``) for an embedding model, or a rerank.
+    ``ok: false`` (HTTP 200) carries the error; 400 = URL refused.
+
+    The credential is ``api_key`` when given (used for this call only, never
+    stored or echoed), else the one saved with the registry entry, else the
+    provider's env key. An embedding probe reports the measured width against
+    the index (``dimensions`` / ``dimension_mismatch``) and records it, so the
+    embedder refuses a model whose width does not fit before it writes a vector.
+    Connections are SSRF-pinned (the host is re-checked at connect time).
     """
     _require_tenant(request)
     _require_platform_admin(request)
@@ -640,7 +772,12 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
 
     import httpx
 
-    from app.ai_router.model_endpoints import endpoint_api_key, onprem_extra_body
+    from app.ai_router.model_endpoints import (
+        ModelEndpointError,
+        endpoint_api_key,
+        endpoint_http_client,
+        onprem_extra_body,
+    )
 
     body = await request.json()
     body = body if isinstance(body, dict) else {}
@@ -651,8 +788,30 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     if not model_id or not base:
         raise HTTPException(400, "model_id and base_url are required")
 
-    probe = "rerank" if caps == {"rerank"} else "embedding" if caps == {"embedding"} else "chat"
-    headers = {"Authorization": f"Bearer {endpoint_api_key(provider)}"}
+    chat = bool(caps & _CHAT_CAPABILITIES)
+    probe = (
+        "embedding"
+        if _is_embedding_only(caps)
+        else "rerank"
+        if ModelCapability.RERANK.value in caps and not chat
+        else "chat"
+    )
+    typed_key = str(body.get("api_key", "") or "").strip()
+    if typed_key:
+        api_key = typed_key
+    else:
+        from app.ai_router.selection import _ensure_seeded
+
+        _ensure_seeded(model_registry)
+        saved = model_registry.get_configured(provider, model_id)
+        same_endpoint = saved is not None and (
+            str(getattr(saved, "base_url", "") or "").rstrip("/") == base
+        )
+        try:
+            api_key = endpoint_api_key(provider, saved if same_endpoint else None)
+        except ModelEndpointError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    headers = {"Authorization": f"Bearer {api_key}"}
     result: dict[str, Any] = {
         "ok": False,
         "latency_ms": 0.0,
@@ -664,8 +823,8 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     }
     start = time.monotonic()
     try:
-        # follow_redirects=False: a redirect must not walk the probe elsewhere.
-        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S, follow_redirects=False) as client:
+        # Redirects are never followed and every connect re-checks the host.
+        async with endpoint_http_client(timeout=_PROBE_TIMEOUT_S) as client:
             try:
                 listed = await client.get(f"{base}/models", headers=headers)
                 if listed.status_code == 200:
@@ -710,15 +869,25 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
             result["detail"] = f"replied: {text[:80]!r}" if text else "empty reply"
         elif probe == "embedding":
             vec = ((data.get("data") or [{}])[0]).get("embedding") or []
-            result["detail"] = f"{len(vec)}-dimension embedding"
+            if not isinstance(vec, list) or not vec:
+                result["error"] = "the endpoint returned no embedding"
+                return result
+            dims = len(vec)
+            result["detail"] = f"{dims}-dimension embedding"
+            result.update(_dimension_report(request, dims))
+            from app.providers.registry_embedder import record_embedding_dimension
+
+            record_embedding_dimension(model_id, base, dims)
         else:
             result["detail"] = f"{len(data.get('results') or [])} documents scored"
         result["ok"] = True
     except httpx.HTTPError as exc:
         result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
         result["error"] = f"{type(exc).__name__}: {str(exc)[:300] or 'connection failed'}"
-    except ValueError as exc:
-        result["error"] = f"invalid response: {str(exc)[:200]}"
+    except ModelEndpointError as exc:  # the pinned client refused the resolved address
+        result["error"] = str(exc)[:300]
+    except ValueError as exc:  # also SSRFError raised at connect time
+        result["error"] = f"refused or invalid response: {str(exc)[:200]}"
     return result
 
 
@@ -767,6 +936,28 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
     store = get_model_registry_store()
     if store is None:
         raise HTTPException(503, "model registry store unavailable")
+    existing = store.get(provider, model_id) or {}
+    # The endpoint credential: encrypted by the credential vault, never stored
+    # (or returned) in plaintext. Omitted = keep the saved one (an edit of the
+    # price must not drop it); ``clear_api_key`` removes it.
+    api_key = str(body.get("api_key", "") or "").strip()
+    if api_key:
+        from app.ai_router.model_endpoints import ModelEndpointError, encrypt_endpoint_api_key
+
+        try:
+            endpoint["api_key_encrypted"] = encrypt_endpoint_api_key(api_key)
+        except ModelEndpointError as exc:
+            raise HTTPException(503, str(exc)) from exc
+    elif not body.get("clear_api_key") and existing.get("api_key_encrypted"):
+        endpoint["api_key_encrypted"] = existing["api_key_encrypted"]
+    if ModelCapability.EMBEDDING.value in valid_caps:
+        # The width measured by "Test connection" (or a previous save at the
+        # same endpoint): the embedder's dimension-safety check reads it.
+        dims = store.probed_dimension(model_id, base_url or None)
+        if dims is None and str(existing.get("base_url") or "") == base_url:
+            dims = existing.get("dimensions")
+        if isinstance(dims, int) and dims > 0:
+            endpoint["dimensions"] = dims
     store.upsert(endpoint)
     seed_registry_from_config()  # reload env + overrides so it takes effect now
     return {"status": "saved", "model_id": model_id}

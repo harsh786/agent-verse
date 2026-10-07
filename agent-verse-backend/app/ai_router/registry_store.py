@@ -49,7 +49,15 @@ _FIELDS = (
     # Optional OpenAI-compatible server for this model (vLLM / Ollama / on-prem),
     # e.g. http://192.168.63.104:30080/v1 — see app.ai_router.model_endpoints.
     "base_url",
+    # The endpoint's credential, encrypted by the credential vault
+    # (app.providers.vault) — never stored or returned in plaintext.
+    "api_key_encrypted",
+    # An embedding model's REAL output width, probed by "Test connection" or on
+    # first use (app.providers.registry_embedder) — the dimension-safety input.
+    "dimensions",
 )
+# Embedding widths probed before the model was saved: {"model_id|base_url": dims}.
+_PROBED_DIMS_KEY = "model_registry:probed_dimensions"
 
 
 class ModelRegistryStore:
@@ -124,6 +132,63 @@ class ModelRegistryStore:
         if added or overwrite:
             self._save(items)
         return added
+
+    def get(self, provider: str, model_id: str) -> dict[str, Any] | None:
+        """The persisted override for provider/model_id, or ``None``."""
+        for e in self.list():
+            if (e.get("provider"), e.get("model_id")) == (provider, model_id):
+                return e
+        return None
+
+    # ── Probed embedding dimensions ───────────────────────────────────────────
+
+    @staticmethod
+    def _probe_key(model_id: str, base_url: str | None) -> str:
+        return f"{model_id}|{(base_url or '').strip().rstrip('/')}"
+
+    def probed_dimension(self, model_id: str, base_url: str | None) -> int | None:
+        """The width a probe measured for *model_id* at *base_url*, or ``None``."""
+        try:
+            raw = self._redis.get(_PROBED_DIMS_KEY)
+            data = json.loads(raw) if raw else {}
+        except Exception as exc:
+            logger.warning("model_registry_probed_dims_read_failed error=%s", str(exc)[:120])
+            return None
+        value = data.get(self._probe_key(model_id, base_url)) if isinstance(data, dict) else None
+        return value if isinstance(value, int) and value > 0 else None
+
+    def record_dimension(self, model_id: str, base_url: str | None, dimensions: int) -> bool:
+        """Remember a measured embedding width for *model_id* at *base_url*.
+
+        Kept in the probe map (a model tested before it is saved picks it up on
+        save) and written onto every saved override of that model at that
+        endpoint. Returns True when an override changed (the shared version is
+        bumped, so every replica / worker re-seeds with the new width).
+        """
+        if not isinstance(dimensions, int) or dimensions <= 0:
+            return False
+        try:
+            raw = self._redis.get(_PROBED_DIMS_KEY)
+            data = json.loads(raw) if raw else {}
+            data = data if isinstance(data, dict) else {}
+            data[self._probe_key(model_id, base_url)] = dimensions
+            self._redis.set(_PROBED_DIMS_KEY, json.dumps(data))
+        except Exception as exc:
+            logger.warning("model_registry_probed_dims_write_failed error=%s", str(exc)[:120])
+        wanted = (base_url or "").strip().rstrip("/")
+        items = self.list()
+        changed = False
+        for e in items:
+            if e.get("model_id") != model_id:
+                continue
+            if (str(e.get("base_url") or "").strip().rstrip("/")) != wanted:
+                continue
+            if e.get("dimensions") != dimensions:
+                e["dimensions"] = dimensions
+                changed = True
+        if changed:
+            self._save(items)
+        return changed
 
     # ── Per-capability preference order (deployment-wide) ─────────────────────
     # Bumps the shared version too, so every replica / worker re-reads it.

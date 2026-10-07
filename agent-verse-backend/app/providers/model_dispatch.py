@@ -169,7 +169,10 @@ class ModelDispatchProvider:
             onprem_extra_body,
         )
 
-        key = f"url:{endpoint.provider}|{endpoint.base_url}"
+        # The saved credential (ciphertext) is part of the key: re-entering it
+        # in the registry builds a new client instead of reusing the old one.
+        secret = str((getattr(endpoint, "extra", None) or {}).get("api_key_encrypted") or "")
+        key = f"url:{endpoint.provider}|{endpoint.base_url}|{hash(secret) if secret else ''}"
         with self._lock:
             if key in self._adapters:
                 return self._adapters[key]
@@ -179,7 +182,7 @@ class ModelDispatchProvider:
 
             base = check_model_endpoint(str(endpoint.base_url))
             adapter = OpenAICompatibleProvider(
-                api_key=endpoint_api_key(endpoint.provider),
+                api_key=endpoint_api_key(endpoint.provider, endpoint),
                 base_url=base,
                 default_model=endpoint.model_id,
                 embed_model=endpoint.model_id,

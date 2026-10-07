@@ -165,8 +165,14 @@ class TracedProvider:
 def unwrap_provider(provider: Any) -> Any:
     """The provider inside any TracedProvider wrapping (``provider`` itself otherwise)."""
     seen = 0
-    while isinstance(provider, TracedProvider) and seen < 8:
-        provider = provider._inner
+    while seen < 8:
+        if isinstance(provider, TracedProvider):
+            provider = provider._inner
+        elif getattr(type(provider), "_agentverse_embedder_proxy", False):
+            # RegistryReloadingEmbedder: the embedder it currently serves.
+            provider = provider.current
+        else:
+            break
         seen += 1
     return provider
 

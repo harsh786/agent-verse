@@ -16,6 +16,37 @@ width. So:
   the SAME model id (e.g. a Qwen3-Embedding model on the on-prem vLLM and on
   another OpenAI-compatible endpoint). It never switches to another model: if
   every endpoint of the model fails, the call fails.
+
+A registry entry with its OWN endpoint (``base_url``, e.g. a vLLM server at
+``http://192.168.63.104:30082/v1``) is embedded THERE, over the OpenAI-compatible
+``/v1/embeddings`` API, not on the provider's env endpoint, exactly like the
+chat roles' per-model dispatch (``app.providers.model_dispatch``). The URL passes
+the model-endpoint egress policy (``app.ai_router.model_endpoints``: private
+networks per ``ALLOW_PRIVATE_NETWORK_ACCESS``; metadata / link-local / 0.0.0.0 /
+multicast never) when the embedder is built AND at every connect (SSRF-pinned
+client). Its credential is the one saved with the entry (vault-encrypted), else
+the provider's env key.
+
+Dimension safety: a model's width is the one a probe MEASURED ("Test
+connection" or first use, persisted with the registry entry), else the catalog /
+declared width. A known width that differs from the index's ``EMBEDDING_DIM`` is
+refused up front. An unknown width is checked on the first response by
+:class:`DimensionCheckedEmbedder`: a mismatch raises
+:class:`app.rag.store.EmbeddingDimensionError` (no vector is ever returned to be
+written), a match is recorded so the next selection knows it.
+
+Selection precedence (consistent with the reasoning roles, see
+``app.ai_router.role_preference``: explicit operator order > env > cheapest
+configured):
+
+1. the saved embedding preference order: its first eligible model, on its own
+   ``base_url`` when it has one;
+2. the env-configured embedder (``app.providers.embedder_factory``:
+   ``EMBEDDING_BASE_URL`` / NVIDIA / on-prem, Voyage, OpenAI, Gemini,
+   sentence-transformers);
+3. only when the env configures no embedder at all: the first operator-added
+   registry embedding model that names its own ``base_url``
+   (:func:`select_registry_endpoint_embedder`).
 """
 
 from __future__ import annotations
@@ -38,13 +69,17 @@ from app.providers.base import (
 logger = get_logger(__name__)
 
 __all__ = [
+    "DimensionCheckedEmbedder",
     "EndpointNotConfiguredError",
     "RegistryEmbedderChoice",
     "SameModelFailoverEmbedder",
     "build_endpoint_embedder",
+    "build_registry_model_embedder",
     "embedding_dimension_status",
     "embedding_model_dimension",
+    "record_embedding_dimension",
     "select_registry_embedder",
+    "select_registry_endpoint_embedder",
 ]
 
 _T = TypeVar("_T")
@@ -128,22 +163,84 @@ def build_endpoint_embedder(provider: str, model_id: str, settings: Any) -> Any:
     raise EndpointNotConfiguredError(f"no embedding endpoint is known for provider {provider!r}")
 
 
-def _openai_compatible(api_key: str, base_url: str | None, model_id: str) -> Any:
+def _openai_compatible(
+    api_key: str, base_url: str | None, model_id: str, *, http_client: Any = None
+) -> Any:
     from app.providers.openai_compatible import OpenAICompatibleProvider
 
     return OpenAICompatibleProvider(
-        api_key=api_key, base_url=base_url, default_model=model_id, embed_model=model_id
+        api_key=api_key,
+        base_url=base_url,
+        default_model=model_id,
+        embed_model=model_id,
+        http_client=http_client,
+    )
+
+
+def _registry_base_url(model: Any) -> str:
+    from app.ai_router.model_endpoints import normalize_base_url
+
+    return normalize_base_url(str(getattr(model, "base_url", "") or ""))
+
+
+def build_registry_model_embedder(model: Any, settings: Any) -> Any:
+    """An embedder for ONE registry entry.
+
+    An entry with its own ``base_url`` is embedded at that OpenAI-compatible
+    endpoint (``POST {base_url}/embeddings``): the URL is re-checked against the
+    model-endpoint egress policy (raises
+    :class:`app.ai_router.model_endpoints.ModelEndpointError` when refused), the
+    connection is SSRF-pinned, and the credential is the entry's own
+    (vault-decrypted) else the provider's env key. Any other entry is built on
+    its provider's env endpoint (:func:`build_endpoint_embedder`).
+    """
+    base = _registry_base_url(model)
+    provider = str(getattr(model, "provider", "") or "")
+    model_id = str(getattr(model, "model_id", "") or "")
+    if not base:
+        return build_endpoint_embedder(provider, model_id, settings)
+    from app.ai_router.model_endpoints import (
+        check_model_endpoint,
+        endpoint_api_key,
+        endpoint_http_client,
+    )
+    from app.providers.sdk_options import sdk_client_options
+
+    checked = check_model_endpoint(base)
+    api_key = endpoint_api_key(provider, model)
+    return _openai_compatible(
+        api_key,
+        checked,
+        model_id,
+        http_client=endpoint_http_client(timeout=sdk_client_options()["timeout"]),
     )
 
 
 # ── Dimensions ───────────────────────────────────────────────────────────────
 
 
+def _recorded_dimension(provider: str, model_id: str) -> int | None:
+    """The width a probe measured for the registry entry provider/model_id."""
+    try:
+        from app.ai_router.registry import model_registry
+
+        entry = model_registry.get_configured(provider, model_id)
+    except Exception:  # pragma: no cover - never block selection
+        return None
+    dims = (getattr(entry, "extra", None) or {}).get("dimensions") if entry else None
+    return dims if isinstance(dims, int) and not isinstance(dims, bool) and dims > 0 else None
+
+
 def embedding_model_dimension(provider: str, model_id: str, settings: Any = None) -> int | None:
-    """Output width of *model_id* (catalog / known table first, then the width
-    the deployment declares for its own NVIDIA / on-prem model), else ``None``."""
+    """Output width of *model_id*: the width a probe MEASURED for this registry
+    entry ("Test connection" / first use), then the catalog / known table, then
+    the width the deployment declares for its own NVIDIA / on-prem model, else
+    ``None``."""
     from app.ai_router.model_catalog import catalog_embedding_dimension
 
+    recorded = _recorded_dimension(provider, model_id)
+    if recorded:
+        return recorded
     known = catalog_embedding_dimension(model_id)
     if known:
         return known
@@ -177,8 +274,143 @@ def embedding_dimension_status(
 def _mismatch_reason(key: str, dims: int | None, target_dim: int | None) -> str:
     return (
         f"{key} produces {dims}-d vectors but the vector index is {target_dim}-d "
-        "(EMBEDDING_DIM); switching to it needs a re-index"
+        f"(EMBEDDING_DIM); switching to it needs a re-index: set EMBEDDING_DIM={dims} "
+        "and re-embed existing collections (POST /knowledge/collections/{id}/re-embed)"
     )
+
+
+def record_embedding_dimension(model_id: str, base_url: str | None, dimensions: int) -> None:
+    """Persist a measured width for *model_id* at *base_url* (best effort).
+
+    Written to the shared registry store, so every replica / worker re-seeds
+    with it; the in-process registry entry is updated at once.
+    """
+    try:
+        from app.ai_router.registry import model_registry
+        from app.ai_router.registry_store import get_model_registry_store
+
+        wanted = (base_url or "").strip().rstrip("/")
+        for m in model_registry.list_configured():
+            if m.model_id == model_id and _registry_base_url(m) == wanted:
+                m.extra = {**(m.extra or {}), "dimensions": dimensions}
+        store = get_model_registry_store()
+        if store is not None:
+            store.record_dimension(model_id, base_url, dimensions)
+    except Exception as exc:  # never fail an embed on bookkeeping
+        logger.warning("embedding_dimension_record_failed", model=model_id, error=str(exc)[:200])
+
+
+# ── First-use dimension check ────────────────────────────────────────────────
+
+
+def _dimension_error(message: str) -> Exception:
+    from app.rag.store import EmbeddingDimensionError
+
+    return EmbeddingDimensionError(message)
+
+
+class DimensionCheckedEmbedder:
+    """Refuses vectors whose width differs from what the index expects.
+
+    Wraps the registry-chosen embedder. *expected* is the vector index width
+    (``EMBEDDING_DIM``), or ``None`` when there is none to hold it to. Every
+    response is checked (one ``len`` per vector); the first one also records the
+    model's measured width (:func:`record_embedding_dimension`) when it was not
+    known. A mismatch raises :class:`app.rag.store.EmbeddingDimensionError`:
+    the mismatched vectors are never returned, so they can never be written next
+    to vectors of another width, and every later call is refused too.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        model_id: str,
+        expected: int | None,
+        base_url: str | None = None,
+        known: int | None = None,
+    ) -> None:
+        self._inner = inner
+        self.model_id = model_id
+        # Read by embedder_model_name(): every chunk records this model (LAW-08).
+        self._embed_model_name = model_id
+        self._expected = expected
+        self._probe_base_url = base_url
+        self._measured: int | None = known
+        self._recorded = known is not None
+        self._refusal = ""
+
+    @property
+    def embedding_dim(self) -> int | None:
+        """The measured width (``None`` until known); read by embedder_dimension()."""
+        return self._measured
+
+    @property
+    def refusal(self) -> str:
+        return self._refusal
+
+    def _check(self, vectors: Sequence[Sequence[float]]) -> None:
+        if self._refusal:
+            raise _dimension_error(self._refusal)
+        if not vectors:
+            return
+        widths = {len(v) for v in vectors}
+        if len(widths) != 1:
+            raise _dimension_error(
+                f"embedding model {self.model_id} returned vectors of mixed widths "
+                f"{sorted(widths)}"
+            )
+        width = widths.pop()
+        if self._expected and width != self._expected:
+            self._refusal = (
+                f"embedding model {self.model_id} returned {width}-d vectors but the vector "
+                f"index is {self._expected}-d (EMBEDDING_DIM); refusing to mix vector widths. "
+                f"Set EMBEDDING_DIM={width} and re-embed existing collections "
+                "(POST /knowledge/collections/{id}/re-embed), or choose a model of the "
+                "index width"
+            )
+            logger.error(
+                "embedding_dimension_refused",
+                model=self.model_id,
+                dimension=width,
+                expected=self._expected,
+            )
+            raise _dimension_error(self._refusal)
+        if self._measured is None:
+            self._measured = width
+        if not self._recorded:
+            self._recorded = True
+            record_embedding_dimension(self.model_id, self._probe_base_url, width)
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        self._check([])
+        response: EmbedResponse = await self._inner.embed(request)
+        self._check(response.embeddings)
+        return response
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self._check([])
+        if not texts:
+            return []
+        batch = getattr(self._inner, "embed_batch", None)
+        if callable(batch):
+            vectors: list[list[float]] = await batch(texts)
+        else:
+            resp = await self._inner.embed(EmbedRequest(texts=texts, model=self.model_id))
+            vectors = list(resp.embeddings)
+        self._check(vectors)
+        return vectors
+
+    async def aclose(self) -> None:
+        close = getattr(self._inner, "aclose", None)
+        if callable(close):
+            await close()
+
+    def __getattr__(self, name: str) -> Any:
+        # Everything else (complete, supports_*, endpoint_labels) is the wrapped one's.
+        if name == "_inner":  # pragma: no cover - only while unpickling
+            raise AttributeError(name)
+        return getattr(self._inner, name)
 
 
 # ── Same-model failover ──────────────────────────────────────────────────────
@@ -383,10 +615,11 @@ def select_registry_embedder(
 
     Returns ``None`` when no embedding preference order is saved (the env order
     applies unchanged). Otherwise the first ELIGIBLE model of that order is used
-    when servable here: its provider has credentials / an endpoint and its known
-    width equals *target_dim*. Every configured endpoint serving that SAME model
-    id (registry order; plus the dedicated ``EMBEDDING_BASE_URL`` endpoint when
-    it serves it) becomes a failover target. A refused model yields a choice with
+    when servable here: it names its own endpoint (``base_url``) or its provider
+    has credentials / an endpoint, and its width (measured, else known) equals
+    *target_dim*. Every configured endpoint serving that SAME model id (registry
+    order; plus the dedicated ``EMBEDDING_BASE_URL`` endpoint when it serves it)
+    becomes a failover target. A refused model yields a choice with
     ``embedder=None`` and a ``refusal`` reason.
     """
     from app.ai_router.models import ModelCapability, TaskType
@@ -400,43 +633,112 @@ def select_registry_embedder(
     if not preference:
         return None
 
-    choice = RegistryEmbedderChoice()
     ranked = [m for m in models if model_key(m) in set(preference)]
     if not ranked:
         return _refuse(
-            choice, "no model of the saved embedding preference order is eligible here"
+            RegistryEmbedderChoice(),
+            "no model of the saved embedding preference order is eligible here",
         )
-    primary = ranked[0]
+    return _build_choice(ranked[0], models, settings, target_dim=target_dim)
+
+
+def select_registry_endpoint_embedder(
+    settings: Any, *, target_dim: int | None, registry: Any = None
+) -> RegistryEmbedderChoice | None:
+    """Precedence step 3: the deployment configures NO embedder in env, but the
+    operator registered an embedding model with its own ``base_url``.
+
+    The first such model in registry execution order (cheapest first, as for
+    the reasoning roles' last resort) is used, with the same dimension safety
+    as a preferred model. ``None`` when the registry has no such model.
+    """
+    from app.ai_router.models import TaskType
+    from app.ai_router.registry import model_registry
+    from app.ai_router.selection import ordered_configured_models
+
+    reg = registry or model_registry
+    models = ordered_configured_models(TaskType.EMBEDDING, registry=reg)
+    with_endpoint = [
+        m
+        for m in models
+        if _registry_base_url(m) and (m.extra or {}).get("source") == "override"
+    ]
+    if not with_endpoint:
+        return None
+    return _build_choice(with_endpoint[0], models, settings, target_dim=target_dim)
+
+
+def _endpoint_label(provider: str, base_url: str) -> str:
+    """``provider`` for an env endpoint, ``provider@host:port`` for a model's own."""
+    if not base_url:
+        return provider
+    from urllib.parse import urlparse
+
+    return f"{provider}@{urlparse(base_url).netloc or base_url}"
+
+
+def _build_choice(
+    primary: Any, models: list[Any], settings: Any, *, target_dim: int | None
+) -> RegistryEmbedderChoice:
+    """The embedder for registry model *primary* (and its same-model endpoints)."""
+    from app.ai_router.model_endpoints import ModelEndpointError
+    from app.ai_router.selection import model_key
+
+    choice = RegistryEmbedderChoice()
     choice.model_id = str(primary.model_id)
     choice.provider = _norm(str(primary.provider))
 
-    dims = embedding_model_dimension(choice.provider, choice.model_id, settings)
+    dims = embedding_model_dimension(str(primary.provider), choice.model_id, settings)
     if dims and target_dim and dims != target_dim:
         return _refuse(choice, _mismatch_reason(model_key(primary), dims, target_dim))
 
     endpoints: list[tuple[str, Any]] = []
+    providers: list[str] = []
+    seen: set[str] = set()  # endpoint identities: a base URL, else the provider
     providers_seen: set[str] = set()
     not_configured: list[str] = []
     same_model = [m for m in models if m.model_id == choice.model_id]
-    # The preferred entry first, then the other endpoints of the same model in
+    # The chosen entry first, then the other endpoints of the same model in
     # registry order.
     for m in [primary, *[m for m in same_model if m is not primary]]:
         prov = _norm(str(m.provider))
-        if prov in providers_seen:
+        base = _registry_base_url(m)
+        identity = base or f"provider:{prov}"
+        if identity in seen:
             continue
-        providers_seen.add(prov)
+        seen.add(identity)
+        label = _endpoint_label(prov, base)
         try:
-            endpoints.append((prov, build_endpoint_embedder(prov, choice.model_id, settings)))
+            embedder = build_registry_model_embedder(m, settings)
         except EndpointNotConfiguredError as exc:
             not_configured.append(f"{prov}: {exc}")
+            continue
+        except ModelEndpointError as exc:  # refused by the egress policy / credential
+            reason = str(exc)[:300]
+            choice.errors.append((f"registry:{label}", reason))
+            logger.error("embedder_provider_failed", provider=f"registry:{label}", reason=reason)
+            continue
         except Exception as exc:
             reason = f"{type(exc).__name__}: {str(exc)[:300]}"
-            choice.errors.append((f"registry:{prov}", reason))
-            logger.error("embedder_provider_failed", provider=f"registry:{prov}", reason=reason)
+            choice.errors.append((f"registry:{label}", reason))
+            logger.error("embedder_provider_failed", provider=f"registry:{label}", reason=reason)
+            continue
+        # A provider endpoint that is the same server as a model's own URL
+        # (e.g. ONPREM_EMBEDDING_BASE_URL) is one endpoint, not two.
+        served_at = str(getattr(embedder, "_base_url", "") or "").strip().rstrip("/")
+        if not base and served_at:
+            if served_at in seen:
+                continue
+            seen.add(served_at)
+        if not base:
+            providers_seen.add(prov)
+        endpoints.append((label, embedder))
+        providers.append(prov)
 
-    dedicated = _dedicated_endpoint(settings, choice.model_id, providers_seen)
+    dedicated = _dedicated_endpoint(settings, choice.model_id, providers_seen, seen)
     if dedicated is not None:
         endpoints.append(dedicated)
+        providers.append("dedicated")
 
     if not endpoints:
         detail = "; ".join(not_configured + [f"{p}: {r}" for p, r in choice.errors])
@@ -446,15 +748,24 @@ def select_registry_embedder(
             + (f" ({detail})" if detail else ""),
         )
 
-    choice.provider = endpoints[0][0]
+    # The provider NAME only (never a URL): it is shown on the public /health.
+    choice.provider = providers[0]
     choice.endpoints = [label for label, _ in endpoints]
     choice.dimension = dims
+    inner: Any
     if len(endpoints) == 1:
-        choice.embedder = endpoints[0][1]
+        inner = endpoints[0][1]
     else:
-        choice.embedder = SameModelFailoverEmbedder(
+        inner = SameModelFailoverEmbedder(
             choice.model_id, endpoints, timeout_s=_failover_timeout(settings)
         )
+    choice.embedder = DimensionCheckedEmbedder(
+        inner,
+        model_id=choice.model_id,
+        expected=target_dim or dims,
+        base_url=_registry_base_url(primary) or None,
+        known=dims,
+    )
     logger.info(
         "embedder_registry_selected",
         model=choice.model_id,
@@ -466,7 +777,7 @@ def select_registry_embedder(
 
 
 def _dedicated_endpoint(
-    settings: Any, model_id: str, providers_seen: set[str]
+    settings: Any, model_id: str, providers_seen: set[str], urls_seen: set[str]
 ) -> tuple[str, Any] | None:
     """The dedicated ``EMBEDDING_BASE_URL`` endpoint when it serves *model_id*
     and is not already one of the registry endpoints."""
@@ -475,6 +786,8 @@ def _dedicated_endpoint(
     base = _setting(settings, "embedding_base_url") or os.getenv("EMBEDDING_BASE_URL", "")
     model = _setting(settings, "embedding_model") or os.getenv("EMBEDDING_MODEL", "")
     if not base or model != model_id:
+        return None
+    if base.strip().rstrip("/") in urls_seen:
         return None
     if (provider_for_endpoint_url(base) or "") in providers_seen:
         return None

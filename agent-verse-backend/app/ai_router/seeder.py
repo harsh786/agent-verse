@@ -15,6 +15,7 @@ a second model is configured for the same capability.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from app.ai_router.models import ModelCapability, ModelEndpoint
 from app.ai_router.registry import ModelRegistry, model_registry
@@ -130,6 +131,23 @@ def _register(registry: ModelRegistry, model_id: str, capabilities: list[ModelCa
     )
 
 
+def _override_extra(e: dict[str, Any], *, from_env: bool, origin: str) -> dict[str, Any]:
+    """``ModelEndpoint.extra`` of a persisted override.
+
+    Carries the endpoint credential as the vault CIPHERTEXT only (decrypted at
+    call time by ``app.ai_router.model_endpoints.endpoint_api_key``) and the
+    embedding width measured by a probe.
+    """
+    extra: dict[str, Any] = {"source": "env" if from_env else "override", "origin": origin}
+    secret = str(e.get("api_key_encrypted") or "").strip()
+    if secret:
+        extra["api_key_encrypted"] = secret
+    dims = e.get("dimensions")
+    if isinstance(dims, int) and not isinstance(dims, bool) and dims > 0:
+        extra["dimensions"] = dims
+    return extra
+
+
 def _load_overrides(reg: ModelRegistry) -> None:
     """Register user-added/overridden models from the persistent store."""
     try:
@@ -165,7 +183,7 @@ def _load_overrides(reg: ModelRegistry) -> None:
                     quality_score=float(e.get("quality_score", 0.7) or 0.7),
                     is_available=bool(e.get("is_available", True)),
                     base_url=str(e.get("base_url") or "").strip() or None,
-                    extra={"source": "env" if from_env else "override", "origin": origin},
+                    extra=_override_extra(e, from_env=from_env, origin=origin),
                 )
             )
     except Exception as exc:  # pragma: no cover - defensive

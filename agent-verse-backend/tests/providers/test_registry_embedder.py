@@ -24,6 +24,7 @@ from app.core.config import Settings
 from app.providers.base import EmbedRequest, EmbedResponse
 from app.providers.embedder_factory import resolve_embedder
 from app.providers.registry_embedder import (
+    DimensionCheckedEmbedder,
     SameModelFailoverEmbedder,
     embedding_dimension_status,
     embedding_model_dimension,
@@ -152,9 +153,13 @@ def test_saved_order_builds_the_preferred_models_provider() -> None:
     assert resolution.provider == "nvidia"
     assert resolution.model == "nvidia/nemotron-3-embed-1b"
     assert resolution.dimension == 2048
-    assert isinstance(resolution.embedder, OpenAICompatibleProvider)
+    # The registry embedder is width-checked on every response.
+    assert isinstance(resolution.embedder, DimensionCheckedEmbedder)
     assert resolution.embedder._embed_model_name == "nvidia/nemotron-3-embed-1b"
-    assert "nvidia.com" in resolution.embedder._base_url
+    inner = resolution.embedder._inner
+    assert isinstance(inner, OpenAICompatibleProvider)
+    assert inner._embed_model_name == "nvidia/nemotron-3-embed-1b"
+    assert "nvidia.com" in inner._base_url
 
 
 def test_dimension_mismatch_is_refused_with_a_reason_and_env_order_applies() -> None:
@@ -203,7 +208,8 @@ def test_endpoints_of_the_same_model_become_the_failover_chain() -> None:
     ):
         resolution = resolve_embedder(_settings(embedding_dim=1024))
     assert resolution.source == "registry"
-    assert isinstance(resolution.embedder, SameModelFailoverEmbedder)
+    assert isinstance(resolution.embedder, DimensionCheckedEmbedder)
+    assert isinstance(resolution.embedder._inner, SameModelFailoverEmbedder)
     assert resolution.endpoints == ["onprem", "nvidia"]
     assert built == [("onprem", _QWEN), ("nvidia", _QWEN)]
     assert resolution.model == _QWEN
