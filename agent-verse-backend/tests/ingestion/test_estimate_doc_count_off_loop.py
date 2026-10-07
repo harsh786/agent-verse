@@ -51,7 +51,7 @@ async def test_estimate_doc_count_async_does_not_block_the_loop() -> None:
             await asyncio.sleep(0.01)
             lags.append(loop.time() - start - 0.01)
 
-    with patch("boto3.client", return_value=s3):
+    with patch("boto3.Session", return_value=MagicMock(client=MagicMock(return_value=s3))):
         probe = asyncio.create_task(_probe())
         await asyncio.sleep(0)
         count = await S3Connector().estimate_doc_count_async(_config())

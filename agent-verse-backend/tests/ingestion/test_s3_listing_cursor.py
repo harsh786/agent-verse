@@ -196,7 +196,9 @@ async def test_session_token_and_virtual_addressing_reach_boto3() -> None:
     await _run(fake, None, endpoint_url="http://example.com:9000", addressing_style="virtual",
                credentials={"access_key_id": "AK", "secret_access_key": "SK",
                             "session_token": "TOKEN"})
-    assert fake.session_kwargs[0]["aws_session_token"] == "TOKEN"
+    # Explicit keys go to the client itself (never the session's ambient chain).
+    assert fake.client_kwargs[0]["aws_session_token"] == "TOKEN"
+    assert fake.client_kwargs[0]["region_name"] == "us-east-1"
     assert fake.session_kwargs[0]["region_name"] == "us-east-1"
     cfg = fake.client_kwargs[0]["config"]
     assert cfg.s3 == {"addressing_style": "virtual"}
@@ -222,8 +224,8 @@ async def test_flat_ui_credentials_are_used() -> None:
     fake = FakeS3()
     fake.put("a", b"1")
     await _run(fake, None, access_key_id="AK", secret_access_key="SK")
-    assert fake.session_kwargs[0]["aws_access_key_id"] == "AK"
-    assert fake.session_kwargs[0]["aws_secret_access_key"] == "SK"
+    assert fake.client_kwargs[0]["aws_access_key_id"] == "AK"
+    assert fake.client_kwargs[0]["aws_secret_access_key"] == "SK"
 
 
 @pytest.mark.asyncio

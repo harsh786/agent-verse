@@ -136,6 +136,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       name: {{ include "agentverse.secretName" . }}
       key: GOOGLE_API_KEY
       optional: true
+- name: NVIDIA_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: NVIDIA_API_KEY
+      optional: true
+- name: EMBEDDING_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: EMBEDDING_API_KEY
+      optional: true
 - name: SMTP_USER
   valueFrom:
     secretKeyRef:

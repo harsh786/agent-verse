@@ -15,10 +15,12 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    refuse_undecryptable_secrets,
     stable_doc_id,
 )
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import run_blocking
+from app.net.aws_clients import keys_from_config, resolve_region, tenant_client
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -33,6 +35,20 @@ class KinesisConnector(BaseConnector):
     source_type = "kinesis"
     supports_streaming = True
 
+    @staticmethod
+    def _client(boto3: Any, config: SourceConfig) -> Any:
+        """A Kinesis client signed with the source's own keys (UNSIGNED without).
+
+        Never botocore's ambient chain / the instance metadata service: with
+        ``aws_access_key_id=None`` boto3 used to sign with the platform pod's
+        identity (see :mod:`app.net.aws_clients`).
+        """
+        refuse_undecryptable_secrets(config)
+        cc = config.connection_config
+        return tenant_client(
+            boto3, "kinesis", region=cc.get("region"), keys=keys_from_config(cc)
+        )
+
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
@@ -44,12 +60,7 @@ class KinesisConnector(BaseConnector):
             stream = cc.get("stream_name", "")
 
             def _describe() -> Any:
-                session = boto3.Session(
-                    aws_access_key_id=cc.get("access_key_id"),
-                    aws_secret_access_key=cc.get("secret_access_key"),
-                    region_name=cc.get("region", "us-east-1"),
-                )
-                return session.client("kinesis").describe_stream_summary(StreamName=stream)
+                return self._client(boto3, config).describe_stream_summary(StreamName=stream)
 
             resp = await run_blocking(_describe)
             shards = resp["StreamDescriptionSummary"]["OpenShardCount"]
@@ -79,20 +90,12 @@ class KinesisConnector(BaseConnector):
 
         cc = config.connection_config
         stream = cc.get("stream_name", "")
-        region = cc.get("region", "us-east-1")
+        region = resolve_region(cc.get("region"))
         batch_size = int(cc.get("batch_size", 500))
         cursor_map: dict = json.loads(cursor) if cursor else {}
 
-        def _client() -> Any:
-            session = boto3.Session(
-                aws_access_key_id=cc.get("access_key_id"),
-                aws_secret_access_key=cc.get("secret_access_key"),
-                region_name=region,
-            )
-            return session.client("kinesis")
-
         # boto3 is blocking: every call below runs on the SDK pool.
-        kinesis = await run_blocking(_client)
+        kinesis = await run_blocking(self._client, boto3, config)
 
         def _fetch_shard(shard_id: str, seq: str | None) -> list[dict]:
             if seq:

@@ -20,6 +20,26 @@ data:
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: {{ .Values.ingestion.internalSourceAllowlist | quote }}
   ALLOW_PRIVATE_NETWORK_ACCESS: {{ .Values.ingestion.allowPrivateNetworkAccess | quote }}
   INGESTION_SYNC_DOC_CONCURRENCY: {{ .Values.ingestion.syncDocConcurrency | quote }}
+  # BUG A defence in depth: botocore never asks the EC2 instance metadata service.
+  AWS_EC2_METADATA_DISABLED: "true"
+  # BUG B: the embedding provider (values: embedding.*; keys from agentverse-secrets).
+  {{- with .Values.embedding }}
+  {{- if .nvidiaEmbedModel }}
+  NVIDIA_EMBED_MODEL: {{ .nvidiaEmbedModel | quote }}
+  {{- end }}
+  {{- if .nvidiaEmbedDim }}
+  NVIDIA_EMBED_DIM: {{ .nvidiaEmbedDim | quote }}
+  {{- end }}
+  {{- if .baseUrl }}
+  EMBEDDING_BASE_URL: {{ .baseUrl | quote }}
+  {{- end }}
+  {{- if .model }}
+  EMBEDDING_MODEL: {{ .model | quote }}
+  {{- end }}
+  {{- if .dim }}
+  EMBEDDING_DIM: {{ .dim | quote }}
+  {{- end }}
+  {{- end }}
   # a06-F099-03: dead-worker message restore (values: celeryDeadWorkerRestore.*).
   CELERY_DEAD_WORKER_RESTORE_ENABLED: {{ .Values.celeryDeadWorkerRestore.enabled | quote }}
   CELERY_DEAD_WORKER_GRACE_SECONDS: {{ .Values.celeryDeadWorkerRestore.graceSeconds | quote }}

@@ -214,6 +214,12 @@ externalSecrets:
     masterEncryptionKey:
       remoteRef:
         key: agentverse/master-encryption-key
+    # BUG B: the embedding provider key (NVIDIA NIM; used with
+    # embedding.nvidiaEmbedModel). Optional; remove to skip. Also accepted (add an
+    # entry): embeddingApiKey, openaiApiKey, voyageApiKey, googleApiKey.
+    nvidiaApiKey:
+      remoteRef:
+        key: agentverse/nvidia-api-key
     # NF-16 (three roles, see the repo-root CLAUDE.md): database-url should be the
     # least-privilege app role; the BYPASSRLS maintenance role serves the
     # cross-tenant system jobs; the owner DSN + app role credentials let the
@@ -281,6 +287,19 @@ ocr:
   visionConcurrency: 4
   renderDpi: 300
   ompThreadLimit: 1
+
+# BUG B: the embedding provider (non-secret part), rendered into agentverse-config
+# for every app workload. NVIDIA hosted: nvidiaEmbedModel nvidia/nemotron-3-embed-1b
+# + the nvidia-api-key secret (dim 2048 = the pgvector column width). Any
+# OpenAI-compatible /v1/embeddings server: baseUrl + model (+ embedding-api-key).
+# Empty values are not rendered. Alternative without a redeploy: register an
+# embedding model with its own base URL + key in the Model Registry.
+embedding:
+  nvidiaEmbedModel: ""
+  nvidiaEmbedDim: ""
+  baseUrl: ""
+  model: ""
+  dim: ""
 
 # ── Non-secret config ─────────────────────────────────────────────────────────
 config:

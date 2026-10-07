@@ -143,6 +143,13 @@ class SourceConfig:
     created_at: str = ""
     updated_at: str = ""
 
+    # ── Load-time diagnostics (never persisted) ───────────────────────────────
+    # Dotted ``connection_config`` key paths whose stored secret is encrypted but
+    # could not be decrypted by THIS process (its vault key differs from the one
+    # that sealed it). Their values are blanked; connectors refuse to run on them
+    # instead of connecting anonymously / with an ambient identity.
+    undecryptable_secrets: list[str] = field(default_factory=list, compare=False)
+
 
 CONFIG_STATUS_OK = "ok"
 CONFIG_STATUS_NEEDS_CONFIGURATION = "needs_configuration"
