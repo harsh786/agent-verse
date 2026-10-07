@@ -10,7 +10,6 @@ from app.providers.base import CompletionResponse, EmbedResponse
 from app.rag.engine import (
     RetrievalPlanner,
     RetrievalStrategyExecutionError,
-    rerank_results,
     retrieve,
     retrieve_hyde,
     retrieve_multi_hop,
@@ -36,23 +35,6 @@ def test_retrieve_dispatcher_exists():
     assert callable(retrieve)
     assert callable(retrieve_hyde)
     assert callable(retrieve_multi_hop)
-    assert callable(rerank_results)
-
-
-@pytest.mark.asyncio
-async def test_rerank_results_returns_original_when_no_provider():
-    from app.rag.engine import RetrievalResult
-    results = [
-        RetrievalResult(
-            chunk_id=f"c{i}",
-            content=f"content {i}",
-            score=float(i) / 10,
-            source_metadata={},
-        )
-        for i in range(5)
-    ]
-    reranked = await rerank_results(results, "test query", provider=None)
-    assert len(reranked) == len(results)
 
 
 @pytest.mark.asyncio

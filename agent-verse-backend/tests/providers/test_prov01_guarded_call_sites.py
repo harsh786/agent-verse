@@ -160,35 +160,6 @@ async def test_budget_refusal_maps_to_429_with_a_stable_code() -> None:
 # ── representative call sites ─────────────────────────────────────────────────
 
 
-def _results(n: int = 3) -> list[Any]:
-    from app.rag.engine import RetrievalResult
-
-    return [
-        RetrievalResult(
-            chunk_id=f"c{i}", content=f"passage {i}", score=1.0 - i / 10, source_metadata={}
-        )
-        for i in range(n)
-    ]
-
-
-async def test_rag_rerank_charges_and_is_refused_without_budget(
-    controller: _Controller,
-) -> None:
-    from app.rag.engine import rerank_results
-
-    provider = _Provider("[0.1, 0.9, 0.5]")
-    with tenant_charge_scope(_CTX):
-        out = await rerank_results(_results(), "q", provider=provider)
-    assert [r.chunk_id for r in out][0] == "c1"
-    assert controller.recorded and controller.recorded[0][1] == "t-prov01"
-
-    controller.remaining = False
-    blocked = _Provider("[0.1, 0.9, 0.5]")
-    with tenant_charge_scope(_CTX):
-        await rerank_results(_results(), "q", provider=blocked)  # falls back to RRF order
-    assert blocked.calls == 0
-
-
 async def test_skill_test_endpoint_surfaces_budget_refusal(controller: _Controller) -> None:
     from app.agent.skill_selector import PLATFORM_SKILLS
     from app.api.skills import SkillTestRequest, run_skill_test

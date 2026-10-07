@@ -23,7 +23,6 @@ def test_simple_goal_gets_low_cost_models(orchestrator):
     assert assignment.verifier is not None
     assert assignment.judge is not None
     assert assignment.embedder is not None
-    assert assignment.reranker is not None
     assert assignment.classifier is not None
 
 

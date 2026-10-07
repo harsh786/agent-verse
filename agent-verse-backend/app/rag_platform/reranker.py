@@ -31,77 +31,6 @@ def build_reranker(name: str) -> RerankerProtocol:
     raise ValueError(f"Unknown reranker: {name}")
 
 
-class Reranker:
-    """Legacy LLM reranker retained for non-model-specific callers."""
-
-    def __init__(self) -> None:
-        self._provider: Any = None
-
-    def set_provider(self, provider: Any) -> None:
-        self._provider = provider
-
-    async def rerank(
-        self,
-        query: str,
-        documents: list[dict[str, Any]],
-        top_k: int = 5,
-    ) -> list[dict[str, Any]]:
-        if not documents:
-            return []
-        if self._provider is not None:
-            try:
-                return await self._llm_rerank(query, documents, top_k)
-            except Exception as exc:
-                _log.debug("LLM reranking failed, using score ordering: %s", exc)
-        return sorted(
-            documents,
-            key=lambda document: float(document.get("score", 0.0)),
-            reverse=True,
-        )[:top_k]
-
-    async def _llm_rerank(
-        self,
-        query: str,
-        documents: list[dict[str, Any]],
-        top_k: int,
-    ) -> list[dict[str, Any]]:
-        from app.providers.base import CompletionRequest, Message
-
-        document_list = "\n".join(
-            f"[{index + 1}] {document.get('content', '')[:200]}"
-            for index, document in enumerate(documents[:10])
-        )
-        prompt = (
-            "Rank these documents by relevance to the query. "
-            "Return only a JSON array of 1-indexed indices, most relevant first.\n\n"
-            f"Query: {query}\n\nDocuments:\n{document_list}"
-        )
-        from app.providers.guarded_completion import complete_decision
-
-        response = await complete_decision(
-            self._provider,
-            CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=100,
-            ),
-            role="rag_rerank",
-        )
-        indices = json.loads(response.content.strip())
-        reranked = [
-            documents[index - 1]
-            for index in indices[:top_k]
-            if isinstance(index, int) and 1 <= index <= len(documents)
-        ]
-        selected = {id(document) for document in reranked}
-        reranked.extend(
-            document
-            for document in documents
-            if id(document) not in selected and len(reranked) < top_k
-        )
-        return reranked[:top_k]
-
-
 class CitationVerifier:
     """Verifies that cited claims are supported by source documents."""
 
@@ -160,17 +89,14 @@ class CitationVerifier:
             return {"verified": True, "unsupported_claims": [], "confidence": 0.5}
 
 
-reranker = Reranker()
 citation_verifier = CitationVerifier()
 
 __all__ = [
     "CitationVerifier",
     "CrossEncoderDocumentReranker",
-    "Reranker",
     "RerankerInferenceError",
     "RerankerLoadError",
     "RerankerProtocol",
     "build_reranker",
     "citation_verifier",
-    "reranker",
 ]

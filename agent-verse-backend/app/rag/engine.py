@@ -29,9 +29,8 @@ import json
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +41,9 @@ from app.rag.bm25 import BM25CorpusScorer, BM25Hit
 from app.rag.duplicate_documents import collapse_duplicate_documents, document_identity
 from app.rag.lexical_query import analyze_query
 from app.rag.rerank_stage import apply_default_rerank
+
+if TYPE_CHECKING:
+    from app.rag.agentic.patterns.colbert import ColBERTPattern
 
 logger = get_logger(__name__)
 
@@ -1122,63 +1124,24 @@ class RetrievalPlanner:
         return "direct"
 
 
-async def rerank_results(
-    results: list[RetrievalResult],
-    query: str,
-    *,
-    provider: Any = None,
-    model: str = "",
-    top_k: int | None = None,
-) -> list[RetrievalResult]:
-    """Cross-encoder reranking of top retrieval results.
+def colbert_pattern_from_settings(settings: Any) -> ColBERTPattern:
+    """The ColBERT reranking pattern on the configured checkpoint
+    (``COLBERT_CHECKPOINT``) — it used to load the default checkpoint whatever
+    the setting said."""
+    from app.rag.agentic.patterns.colbert import (
+        DEFAULT_COLBERT_CHECKPOINT,
+        ColBERTLateInteractionReranker,
+        ColBERTPattern,
+    )
 
-    Uses an LLM to score each (query, passage) pair for relevance.
-    Falls back to the original RRF order when provider is None.
-    Scores top_k results (default: min(20, len(results))).
-    """
-    if not results or provider is None:
-        return results[:top_k] if top_k else results
-
-    candidates = results[: min(20, len(results))]
-    if not candidates:
-        return results[:top_k] if top_k else results
-
-    try:
-        import json as _json
-
-        from app.providers.base import CompletionRequest, Message
-
-        # Build a batch relevance scoring prompt
-        passages_text = "\n".join(f"[{i}] {r.content[:300]}" for i, r in enumerate(candidates))
-        prompt = (
-            f"Query: {query}\n\n"
-            f"Rate each passage for relevance to the query (0=irrelevant, 10=highly relevant).\n"
-            f"Return ONLY a JSON array of integers, one score per passage, e.g. [8, 3, 7, ...]:\n\n"
-            f"{passages_text}"
-        )
-        req = CompletionRequest(
-            messages=[Message(role="user", content=prompt)],
-            model=model,
-            max_tokens=100,
-        )
-        from app.providers.guarded_completion import complete_decision
-
-        resp = await complete_decision(
-            provider,
-            req,
-            role="rag_rerank",
-        )
-        scores = _json.loads(resp.content.strip())
-        if isinstance(scores, list) and len(scores) == len(candidates):
-            for i, r in enumerate(candidates):
-                with suppress(TypeError, ValueError, IndexError):
-                    r.score = float(scores[i]) / 10.0
-            candidates.sort(key=lambda r: r.score, reverse=True)
-    except Exception as exc:
-        logger.debug("rerank_failed_falling_back", error=str(exc)[:80])
-
-    final = candidates + [r for r in results if r not in candidates]
-    return final[:top_k] if top_k else final
+    checkpoint = str(getattr(settings, "colbert_checkpoint", "") or "").strip()
+    return ColBERTPattern(
+        alpha=0.5,
+        reranker=ColBERTLateInteractionReranker(
+            checkpoint=checkpoint or DEFAULT_COLBERT_CHECKPOINT
+        ),
+        owns_reranker=True,
+    )
 
 
 async def retrieve_hyde(
@@ -2036,9 +1999,7 @@ async def retrieve(
                     }
                     for r in base_results
                 ]
-                from app.rag.agentic.patterns.colbert import ColBERTPattern
-
-                colbert_pattern = ColBERTPattern(alpha=0.5)
+                colbert_pattern = colbert_pattern_from_settings(get_settings())
                 try:
                     reranked = await colbert_pattern.rerank_async(
                         query=query,

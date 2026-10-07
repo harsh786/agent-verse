@@ -25,7 +25,6 @@ _TIER_MODELS: dict[str, dict[str, str]] = {
         "verifier": "gpt-5.2",
         "judge": "gpt-5.2",
         "embedder": "text-embedding-3-large",
-        "reranker": "gpt-4o-mini",
         "classifier": "gpt-4o-mini",
     },
     "medium": {
@@ -34,7 +33,6 @@ _TIER_MODELS: dict[str, dict[str, str]] = {
         "verifier": "gpt-4o",
         "judge": "gpt-4o",
         "embedder": "text-embedding-3-small",
-        "reranker": "gpt-4o-mini",
         "classifier": "gpt-4o-mini",
     },
     "low": {
@@ -43,7 +41,6 @@ _TIER_MODELS: dict[str, dict[str, str]] = {
         "verifier": "gpt-4o-mini",
         "judge": "gpt-4o-mini",
         "embedder": "voyage-3-lite",
-        "reranker": "gpt-4o-mini",
         "classifier": "gpt-4o-mini",
     },
 }
@@ -239,7 +236,6 @@ _PROFILE_ROLE_FIELDS: dict[str, tuple[str, ...]] = {
     "classifier": ("execution_model", "fallback_model"),
     "judge": ("verification_model", "planning_model", "fallback_model"),
     "embedder": ("embedding_model",),
-    "reranker": (),
 }
 
 
@@ -292,7 +288,7 @@ def reference_model_within_cap(cap: str, role: str, vendor: str = "") -> str:
     candidates = {
         m
         for r, m in vendor_profile_models(vendor).items()
-        if r not in ("embedder", "reranker")
+        if r != "embedder"
         and _TIER_RANK[model_quality_tier(m)] <= _TIER_RANK[cap]
     }
     if not candidates:
@@ -307,7 +303,6 @@ class ModelRoleAssignment:
     verifier: str
     judge: str
     embedder: str
-    reranker: str
     classifier: str
     quality_tier: str = "medium"
     latency_class: str = "interactive"
@@ -372,7 +367,6 @@ class ModelOrchestrator:
             verifier=resolve("verifier", config.model_verifier),
             judge=configured or reference("judge"),
             embedder=reference("embedder"),
-            reranker=reference("reranker"),
             classifier=resolve("classifier", config.model_classifier),
             quality_tier=tier,
             latency_class=latency_class,

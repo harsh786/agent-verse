@@ -5,21 +5,6 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_reranker_returns_sorted_results():
-    from app.rag_platform.reranker import Reranker
-    r = Reranker()
-    docs = [
-        {"content": "Python is a language", "score": 0.7},
-        {"content": "The cat sat on the mat", "score": 0.3},
-        {"content": "Python pandas is a library", "score": 0.9},
-    ]
-    reranked = await r.rerank("Python programming", docs, top_k=2)
-    assert len(reranked) == 2
-    # Score-based fallback should put higher score first
-    assert reranked[0]["score"] >= reranked[1]["score"]
-
-
-@pytest.mark.asyncio
 async def test_citation_verifier_no_provider():
     from app.rag_platform.reranker import CitationVerifier
     v = CitationVerifier()  # No provider

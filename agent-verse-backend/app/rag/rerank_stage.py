@@ -15,7 +15,13 @@ Design guarantees:
   * **Config-gated** — off leaves the path byte-for-byte unchanged.
   * **Honest passthrough** — when the reranker dependency is missing or the
     backend errors, results are returned in their original order, never dropped.
-    ``auto`` degrades to ``score`` when the cross-encoder model is unavailable.
+  * **``auto`` follows the Model Registry** — it resolves the reranker
+    (:func:`app.ai_router.resolve.resolve_reranker`): the registry ``rerank``
+    models in preference order, then the env/settings hosted endpoint
+    (``RAG_HOSTED_RERANKER_URL``, ``ONPREM_RERANKER_URL``), then the local
+    cross-encoder (``RAG_CROSS_ENCODER_MODEL``), then score order flagged
+    ``rerank_degraded``. A hosted failure falls through to the next tier,
+    flagged ``rerank_degraded: <reason>`` on every result.
   * **Additive** — reordering only; never fabricates scores. When a strategy
     computes a genuine relevance score (cross-encoder / TF-IDF fallback) the new
     blended score is reflected onto the result and the raw score is preserved in
@@ -39,6 +45,7 @@ from app.observability.logging import get_logger
 from app.rag.rerank_budget import rerank_budget_seconds, rerank_limits
 
 if TYPE_CHECKING:
+    from app.ai_router.resolve import RerankerResolution
     from app.context.rerank_policy import RerankStrategy
     from app.rag.engine import RetrievalResult
 
@@ -87,6 +94,20 @@ def _resolve_strategy(name: str) -> RerankStrategy:
         return RerankStrategy.AUTO
 
 
+def _resolve_auto_reranker(settings: Any) -> RerankerResolution | None:
+    """The reranker ``auto`` resolves to, or None (the local tier) when the
+    resolver itself fails — loudly."""
+    try:
+        from app.ai_router.resolve import resolve_reranker
+
+        return resolve_reranker(settings)
+    except Exception as exc:
+        logger.warning(
+            "default_rerank_resolve_failed", error_type=type(exc).__name__, error=str(exc)[:200]
+        )
+        return None
+
+
 async def apply_default_rerank(
     results: list[RetrievalResult],
     *,
@@ -108,16 +129,20 @@ async def apply_default_rerank(
 
     strategy = _resolve_strategy(strategy_name)
     requested_auto = strategy is RerankStrategy.AUTO
-    # ONE budget for the whole stage (warm-up wait + queue + inference), capped by
-    # the retrieval deadline.
+    # ONE budget for the whole stage (warm-up wait + queue + inference, or the
+    # hosted call), capped by the retrieval deadline.
     stage_deadline = time.monotonic() + rerank_budget_seconds(settings)
+    resolution = _resolve_auto_reranker(settings) if requested_auto else None
     # RERANK-PRELOAD: the cross-encoder model is warmed in the background at
     # startup. Until it is loaded, a search waits for it only within a small
     # budget and then skips it honestly (marked on every result) — it used to
     # load the model inline (``auto`` even on the event loop) and so the first
     # search after a restart burned the whole retrieval deadline and 503'd.
     skipped_reason: str | None = None
-    if strategy in (RerankStrategy.AUTO, RerankStrategy.CROSS_ENCODER):
+    local_only = resolution is None or resolution.tier == "local"
+    if strategy is RerankStrategy.CROSS_ENCODER or (
+        strategy is RerankStrategy.AUTO and local_only
+    ):
         status = await _cross_encoder_status(settings)
         if status == "ready":
             if strategy is RerankStrategy.AUTO:
@@ -165,15 +190,17 @@ async def apply_default_rerank(
         chunk_dicts.append(chunk)
 
     try:
-        # Async strategies (blocking cross-encoder / HTTP hosted reranker) run via
-        # rerank_async; everything else on the synchronous path.
-        if strategy in (RerankStrategy.CROSS_ENCODER, RerankStrategy.HOSTED):
+        # Async strategies (blocking cross-encoder / HTTP hosted reranker / the
+        # resolved ``auto`` cascade) run via rerank_async; everything else on the
+        # synchronous path.
+        if strategy in (RerankStrategy.CROSS_ENCODER, RerankStrategy.HOSTED, RerankStrategy.AUTO):
             reranked = await policy.rerank_async(
                 chunk_dicts,
                 query=query,
                 strategy=strategy,
                 query_embedding=query_embedding,
                 budget_seconds=max(stage_deadline - time.monotonic(), 0.0),
+                resolution=resolution,
             )
         else:
             reranked = policy.rerank(chunk_dicts, query, query_embedding=query_embedding)

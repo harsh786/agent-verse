@@ -239,12 +239,16 @@ class Settings(BaseSettings):
     # --- RAG default-path reranking (WS-10) -----------------------------------
     # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on
     # explicit pattern branches). Uses the one RerankPolicy registry. ``auto``
-    # prefers the cross-encoder when its model is available and degrades to a
-    # deterministic score-sort otherwise; the stage is an honest passthrough when
-    # disabled or when the reranker backend is unavailable.
+    # resolves the reranker (app.ai_router.resolve.resolve_reranker): the Model
+    # Registry ``rerank`` preference order → the env/settings hosted endpoint
+    # (RAG_HOSTED_RERANKER_URL, ONPREM_RERANKER_URL) → the local cross-encoder →
+    # score order flagged ``rerank_degraded``. The stage is an honest passthrough
+    # when disabled or when the reranker backend is unavailable.
     rag_default_rerank_enabled: bool = True
     # score|rrf|diversity|cross_encoder|tfidf|hosted|auto (validated below)
     rag_default_rerank_strategy: str = "auto"
+    # The LOCAL cross-encoder tier (sentence-transformers model id or path).
+    rag_cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     # RERANK-PRELOAD: warm the cross-encoder in the background at API startup and
     # in each Celery worker process (only when the strategy above uses it). Until
     # it is warm a search waits at most ``rag_rerank_warmup_wait_seconds`` for it,

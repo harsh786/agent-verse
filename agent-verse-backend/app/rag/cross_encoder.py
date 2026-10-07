@@ -54,6 +54,8 @@ from app.rag_platform.reranker_contract import (
     RerankSkipped,
 )
 
+# Default of ``RAG_CROSS_ENCODER_MODEL`` (the local cross-encoder tier). The model
+# actually loaded is :func:`configured_cross_encoder_model`.
 _CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # Rerank strategies that run the local cross-encoder (``llm`` is served by it).
@@ -130,19 +132,36 @@ def configure_torch_threads(
         return _torch_threads_configured
 
 
+def configured_cross_encoder_model(settings: Any = None) -> str:
+    """The local cross-encoder model: ``RAG_CROSS_ENCODER_MODEL`` (default ms-marco).
+
+    Tolerates hand-built settings objects (a missing attribute takes the default).
+    """
+    if settings is None:
+        try:
+            from app.core.config import get_settings
+
+            settings = get_settings()
+        except Exception:  # pragma: no cover - settings always load in the app
+            return _CROSS_ENCODER_MODEL
+    value = str(getattr(settings, "rag_cross_encoder_model", "") or "").strip()
+    return value or _CROSS_ENCODER_MODEL
+
+
 def _load_cross_encoder() -> CrossEncoderBackend:
     limits = rerank_limits()
+    model_name = configured_cross_encoder_model()
     try:
         configure_torch_threads(limits.torch_threads, limits.torch_interop_threads)
         from sentence_transformers import CrossEncoder
 
         return cast(
             CrossEncoderBackend,
-            CrossEncoder(_CROSS_ENCODER_MODEL, max_length=limits.max_length),
+            CrossEncoder(model_name, max_length=limits.max_length),
         )
     except Exception as exc:
         raise RerankerLoadError(
-            f"Cross-encoder model could not be loaded: {_CROSS_ENCODER_MODEL}"
+            f"Cross-encoder model could not be loaded: {model_name}"
         ) from exc
 
 
@@ -513,23 +532,24 @@ def preload_default_cross_encoder(settings: Any = None) -> Future[None] | None:
         logger.info("cross_encoder_preload_skipped", reason="sentence_transformers_missing")
         return None
     started = time.monotonic()
+    model_name = configured_cross_encoder_model(settings)
     future = _get_default_reranker().start_warmup()
 
     def _report(done: Future[None]) -> None:
         exc = done.exception()
         elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         if exc is None:
-            logger.info("cross_encoder_warm", model=_CROSS_ENCODER_MODEL, load_ms=elapsed_ms)
+            logger.info("cross_encoder_warm", model=model_name, load_ms=elapsed_ms)
         else:
             logger.warning(
                 "cross_encoder_warmup_failed",
-                model=_CROSS_ENCODER_MODEL,
+                model=model_name,
                 error_type=type(exc).__name__,
                 error=str(exc)[:200],
             )
 
     future.add_done_callback(_report)
-    logger.info("cross_encoder_warmup_started", model=_CROSS_ENCODER_MODEL)
+    logger.info("cross_encoder_warmup_started", model=model_name)
     return future
 
 
@@ -555,6 +575,13 @@ def _tfidf_scores(query: str, documents: list[str]) -> list[float]:
             )
         )
     return values
+
+
+def local_cross_encoder_configured(settings: Any = None) -> bool:
+    """The local cross-encoder TIER exists: a model is configured and
+    sentence-transformers is installed (whether it is warm is a separate,
+    per-search question — :func:`ensure_default_cross_encoder_ready`)."""
+    return bool(configured_cross_encoder_model(settings)) and _sentence_transformers_installed()
 
 
 def is_cross_encoder_available(wait_seconds: float = 0.0) -> bool:

@@ -166,6 +166,7 @@ class ColBERTLateInteractionReranker(RerankerProtocol):
             raise ValueError("max_workers must be positive")
         if not checkpoint.strip():
             raise ValueError("ColBERT checkpoint cannot be empty")
+        self.checkpoint = checkpoint
         self._model_loader = model_loader or partial(_load_colbert_model, checkpoint)
         self._backend_thread_safe = backend_thread_safe
         self._model: RAGatouilleColBERTModel | None = None

@@ -14,6 +14,7 @@ a second model is configured for the same capability.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from typing import Any
 
@@ -107,11 +108,25 @@ def _reasoning_model_ids() -> list[str]:
     )
 
 
-def _register(registry: ModelRegistry, model_id: str, capabilities: list[ModelCapability]) -> None:
+def _register(
+    registry: ModelRegistry,
+    model_id: str,
+    capabilities: list[ModelCapability],
+    *,
+    provider: str | None = None,
+) -> None:
     if not model_id:
         return
     ci, co = registry.price_for(model_id)
-    provider = _provider_for_model(model_id)
+    provider = provider or _provider_for_model(model_id)
+    existing = registry.get_configured(provider, model_id)
+    if existing is not None:
+        # Merge, never replace: the same model seeded for another capability keeps
+        # its entry (and everything it supports); it only gains *capabilities*.
+        merged = list(existing.capabilities)
+        merged += [c for c in capabilities if c not in merged]
+        registry.register_configured(dataclasses.replace(existing, capabilities=merged))
+        return
     registry.register_configured(
         ModelEndpoint(
             provider=provider,
@@ -129,6 +144,36 @@ def _register(registry: ModelRegistry, model_id: str, capabilities: list[ModelCa
             extra={"source": "env"},
         )
     )
+
+
+def _reranker_models() -> list[tuple[str, str | None]]:
+    """``(model_id, provider)`` of every reranker the env / Settings configure.
+
+    The hosted endpoint's model when ``RAG_HOSTED_RERANKER_URL`` is set (env, or
+    Settings — ``create_app`` copies an on-prem reranker there), and the on-prem
+    reranker when ``ONPREM_RERANKER_URL`` is set. Provider None = inferred.
+    """
+    out: list[tuple[str, str | None]] = []
+    hosted_url = (os.getenv("RAG_HOSTED_RERANKER_URL", "") or "").strip()
+    hosted_model = (os.getenv("RAG_HOSTED_RERANKER_MODEL", "") or "").strip()
+    onprem_url = onprem_model = ""
+    try:
+        from app.core.config import get_settings
+
+        _s = get_settings()
+        hosted_url = hosted_url or str(_s.rag_hosted_reranker_url or "").strip()
+        if hosted_url and not hosted_model:
+            hosted_model = str(_s.rag_hosted_reranker_model or "").strip()
+        onprem_url = str(_s.onprem_reranker_url or "").strip()
+        onprem_model = str(_s.onprem_reranker_model or "").strip()
+    except Exception:  # pragma: no cover - never block seeding
+        pass
+    if onprem_url and onprem_model:
+        out.append((onprem_model, "onprem"))
+    if hosted_url and hosted_model and (hosted_model, "onprem") not in out:
+        provider = "onprem" if onprem_url and hosted_url == onprem_url else None
+        out.append((hosted_model, provider))
+    return out
 
 
 def _override_extra(e: dict[str, Any], *, from_env: bool, origin: str) -> dict[str, Any]:
@@ -230,10 +275,11 @@ def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
         _vision = configured_vision_model()
         if _vision:
             _register(reg, _vision, [_TG, _VI, _OC])
-        # Reranker (used from P4 onward) — only when a hosted reranker is set.
-        _rr = (os.getenv("RAG_HOSTED_RERANKER_MODEL", "") or "").strip()
-        if _rr and (os.getenv("RAG_HOSTED_RERANKER_URL", "") or "").strip():
-            _register(reg, _rr, [_RR])
+        # Rerankers the deployment is configured with: the hosted endpoint
+        # (RAG_HOSTED_RERANKER_URL/MODEL) and the on-prem reranker
+        # (ONPREM_RERANKER_URL/MODEL, e.g. a vLLM Qwen3-Reranker).
+        for _rr, _rr_provider in _reranker_models():
+            _register(reg, _rr, [_RR], provider=_rr_provider)
         # Overlay user-registered overrides from the persistent store (UI/API).
         # These win over env-seeded models with the same provider/model_id.
         _load_overrides(reg)

@@ -36,8 +36,13 @@ EMBEDDING_API_KEY=sk-noauth
 EMBEDDING_DIM=1024                        # collections must use a supported dim (768/1024/1536/3072)
 
 # ── Reranker ── Qwen3-Reranker-0.6B @ :30083 (Cohere-compatible /v1/rerank) ──
+# Preferred: add it in the Model Registry (capability "rerank", provider onprem,
+# base URL http://192.168.63.104:30083/v1) and put it first in the rerank
+# preference order — the default "auto" strategy then uses it. Order "auto"
+# resolves: registry rerank order → the env endpoint below → the local
+# cross-encoder (RAG_CROSS_ENCODER_MODEL) → score order flagged rerank_degraded.
 RAG_DEFAULT_RERANK_ENABLED=true
-RAG_DEFAULT_RERANK_STRATEGY=hosted
+RAG_DEFAULT_RERANK_STRATEGY=auto
 RAG_HOSTED_RERANKER_URL=http://192.168.63.104:30083/v1/rerank
 RAG_HOSTED_RERANKER_MODEL=Qwen/Qwen3-Reranker-0.6B
 RAG_HOSTED_RERANKER_API_KEY=sk-noauth

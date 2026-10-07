@@ -18,15 +18,19 @@ reads ``retrieval_result.confidence`` and gets nothing calibrated.
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import math
 import re
 from collections import Counter, defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.observability.logging import get_logger
 from app.rag.score_calibration import CalibrationMethod, calibrate_scores, retrieval_confidence
 from app.rag_platform.reranker_contract import RerankSkipped
+
+if TYPE_CHECKING:
+    from app.ai_router.resolve import RerankerResolution, Resolution
 
 logger = get_logger(__name__)
 
@@ -45,13 +49,15 @@ class RerankStrategy(enum.StrEnum):
     # There is no "llm" strategy (a04-F073-01): it was accepted and ran the
     # cross-encoder. An LLM reranker on the retrieval path would make tenant-
     # billed model calls per search; until one exists the name is refused.
-    # HOSTED calls a managed rerank API (Cohere/Voyage/Jina-compatible). It is an
-    # async strategy: on the sync path it degrades to SCORE; on rerank_async it
-    # calls the endpoint and falls back to the local path on any failure.
+    # HOSTED calls the rerank chain: the Model Registry rerank models (preference
+    # order), then the env/settings endpoints. Within the rerank budget; on any
+    # failure it degrades to TF-IDF, flagged. The sync path runs it too (off an
+    # event loop) — on an event-loop thread it cannot block, and says so.
     HOSTED = "hosted"
-    # AUTO uses the cross-encoder when the optional sentence-transformers lib +
-    # model are present, otherwise degrades to SCORE. SCORE stays the safe
-    # default; AUTO makes the choice explicit and records it (last_reason).
+    # AUTO resolves the reranker (app.ai_router.resolve.resolve_reranker): the
+    # registry/env hosted chain → the local cross-encoder → SCORE flagged
+    # ``last_degraded_reason``. The choice is recorded (last_reason,
+    # last_resolution).
     AUTO = "auto"
 
 
@@ -239,6 +245,9 @@ class RerankPolicy:
         # "busy", "budget_exceeded", "warming_up"): the chunks keep their
         # retrieval order. None otherwise.
         self.last_skipped_reason: str | None = None
+        # What ``auto`` resolved to (model + source) on the last call.
+        self.last_resolution: Resolution | None = None
+        self._auto_choice: RerankerResolution | None = None
 
     def rerank(
         self,
@@ -260,17 +269,17 @@ class RerankPolicy:
                     deduped.append(c)
             filtered = deduped
 
-        # 3. Resolve + apply strategy (AUTO chooses cross-encoder vs SCORE).
+        # 3. Resolve + apply strategy (AUTO: hosted chain → cross-encoder → SCORE).
+        self.last_degraded_reason = None
+        self.last_skipped_reason = None
         effective, reason = self._resolve_strategy()
         self.last_strategy_used = effective
         self.last_reason = reason
-        self.last_degraded_reason = None
-        self.last_skipped_reason = None
 
-        if effective == RerankStrategy.SCORE or effective == RerankStrategy.HOSTED:
-            # HOSTED is async-only (an HTTP call); on the sync path degrade to a
-            # deterministic score-sort. Use rerank_async for the real hosted call.
+        if effective == RerankStrategy.SCORE:
             filtered = sorted(filtered, key=lambda c: c.get("score", 0.0), reverse=True)
+        elif effective == RerankStrategy.HOSTED:
+            filtered = self._hosted_rerank_sync(filtered, query)
         elif effective == RerankStrategy.DIVERSITY:
             filtered = self._diversity_rerank(filtered, query_embedding=query_embedding)
         elif effective == RerankStrategy.RRF:
@@ -294,26 +303,67 @@ class RerankPolicy:
         # 5. Attach calibrated confidence (additive — never mutates `score`).
         return self._apply_calibration(filtered)
 
+    def _resolve_auto(self) -> RerankerResolution | None:
+        """The reranker ``auto`` uses (registry → env endpoint → local → degraded)."""
+        try:
+            from app.ai_router.resolve import resolve_reranker
+
+            choice = resolve_reranker()
+        except Exception as exc:  # never block retrieval on the resolver
+            logger.warning(
+                "rerank_resolve_failed", error_type=type(exc).__name__, error=str(exc)[:200]
+            )
+            choice = None
+        self._auto_choice = choice
+        self.last_resolution = choice.resolution if choice is not None else None
+        return choice
+
     def _resolve_strategy(self) -> tuple[RerankStrategy, str]:
         """Resolve the concrete strategy, recording why it was chosen.
 
-        Only AUTO is dynamic: it prefers the cross-encoder when the optional
-        sentence-transformers lib + model can actually be loaded, and otherwise
-        degrades to the safe SCORE default. Everything else is explicit.
+        Only AUTO is dynamic: the resolver's hosted chain (registry rerank models
+        in preference order, then the env/settings endpoint), else the local
+        cross-encoder when its model is loaded, else SCORE — flagged
+        (``last_degraded_reason``) when no reranker is configured at all.
+        Everything else is explicit.
         """
+        self._auto_choice = None
         if self._strategy is not RerankStrategy.AUTO:
             return self._strategy, f"explicit:{self._strategy.value}"
-        try:
-            from app.rag.cross_encoder import is_cross_encoder_available
-
-            available = is_cross_encoder_available()
-        except Exception:  # pragma: no cover - defensive import guard
-            available = False
-        if available:
+        choice = self._resolve_auto()
+        if choice is not None and choice.tier == "hosted":
+            return RerankStrategy.HOSTED, f"auto:{choice.resolution.source}"
+        if choice is not None and choice.tier == "degraded":
+            self._record_degraded("no_reranker_configured")
+            return RerankStrategy.SCORE, "auto:no_reranker_configured"
+        if self._cross_encoder_ready():
             return RerankStrategy.CROSS_ENCODER, "auto:cross_encoder_available"
         return (
             RerankStrategy.SCORE,
             "auto:cross_encoder_unavailable_fallback_score",
+        )
+
+    @staticmethod
+    def _cross_encoder_ready() -> bool:
+        try:
+            from app.rag.cross_encoder import is_cross_encoder_available
+
+            return is_cross_encoder_available()
+        except Exception:  # pragma: no cover - defensive import guard
+            return False
+
+    def _record_degraded(self, reason: str, exc: BaseException | None = None) -> None:
+        """Record, count and log that the requested reranker could not run."""
+        from app.observability.metrics import RERANK_DEGRADED_TOTAL
+
+        self.last_degraded_reason = reason
+        RERANK_DEGRADED_TOTAL.labels(reason=reason).inc()
+        logger.warning(
+            "rerank_degraded",
+            requested=self._strategy.value,
+            reason=reason,
+            error_type=type(exc).__name__ if exc is not None else None,
+            error=str(exc)[:200] if exc is not None else None,
         )
 
     def _apply_calibration(
@@ -512,7 +562,10 @@ class RerankPolicy:
         return scored
 
     def _skip_rerank(
-        self, chunks: list[dict[str, Any]], skip: RerankSkipped
+        self,
+        chunks: list[dict[str, Any]],
+        skip: RerankSkipped,
+        strategy: RerankStrategy = RerankStrategy.CROSS_ENCODER,
     ) -> list[dict[str, Any]]:
         """Keep the retrieval order because the cross-encoder was not run — visibly.
 
@@ -527,7 +580,7 @@ class RerankPolicy:
         RERANK_DEGRADED_TOTAL.labels(reason=skip.reason).inc()
         logger.info(
             "rerank_skipped",
-            strategy=RerankStrategy.CROSS_ENCODER.value,
+            strategy=strategy.value,
             reason=skip.reason,
             detail=skip.detail[:200],
             candidates=len(chunks),
@@ -592,11 +645,13 @@ class RerankPolicy:
         strategy: RerankStrategy | None = None,
         query_embedding: list[float] | None = None,
         budget_seconds: float | None = None,
+        resolution: RerankerResolution | None = None,
     ) -> list[dict[str, Any]]:
         """Async reranking — the cross-encoder runs on its bounded inference lane.
 
-        ``budget_seconds`` bounds the cross-encoder (None = the configured
-        budget, capped by the retrieval deadline).
+        ``budget_seconds`` bounds the cross-encoder AND the hosted chain (None =
+        the configured budget, capped by the retrieval deadline). For AUTO,
+        ``resolution`` is a reranker already resolved by the caller.
         """
         s = strategy or RerankStrategy.CROSS_ENCODER
 
@@ -620,55 +675,212 @@ class RerankPolicy:
             return self._diversity_rerank(chunks, query_embedding=query_embedding)
 
         if s == RerankStrategy.HOSTED:
-            return await self._hosted_rerank(chunks, query)
+            out = await self._hosted_rerank(chunks, query, budget_seconds=budget_seconds)
+            return out if out is not None else chunks
+
+        if s == RerankStrategy.AUTO:
+            return await self._auto_rerank_async(chunks, query, budget_seconds, resolution)
 
         return self.rerank(chunks, query=query)
 
-    async def _hosted_rerank(
+    async def _auto_rerank_async(
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
+        budget_seconds: float | None,
+        resolution: RerankerResolution | None,
+    ) -> list[dict[str, Any]]:
+        """AUTO: the hosted chain → the local cross-encoder → SCORE, one budget.
+
+        A hosted answer that does not come within the budget keeps the retrieval
+        order (``last_skipped_reason='budget_exceeded'``): there is no time left
+        for another tier. A hosted FAILURE falls through to the local tier (or
+        score order) with ``last_degraded_reason`` saying why.
+        """
+        import time
+
+        from app.rag.rerank_budget import rerank_budget_seconds
+
+        self.last_degraded_reason = None
+        self.last_skipped_reason = None
+        if resolution is not None:
+            self._auto_choice = resolution
+            self.last_resolution = resolution.resolution
+            choice: RerankerResolution | None = resolution
+        else:
+            choice = self._resolve_auto()
+        budget = rerank_budget_seconds() if budget_seconds is None else budget_seconds
+        deadline = time.monotonic() + max(budget, 0.0)
+
+        hosted_failure: str | None = None
+        if choice is not None and choice.tier == "hosted":
+            self.last_strategy_used = RerankStrategy.HOSTED
+            self.last_reason = f"auto:{choice.resolution.source}"
+            out = await self._hosted_rerank(
+                chunks,
+                query,
+                reranker=choice.reranker,
+                budget_seconds=max(deadline - time.monotonic(), 0.0),
+                fallback=None,
+            )
+            if out is not None:
+                return out
+            hosted_failure = self.last_degraded_reason
+            if not choice.local_available:
+                return self._score_order(chunks)
+
+        if choice is None or choice.tier == "local" or choice.local_available:
+            self.last_strategy_used = RerankStrategy.CROSS_ENCODER
+            self.last_reason = (
+                f"auto:{hosted_failure}_fallback_cross_encoder"
+                if hosted_failure
+                else "auto:cross_encoder"
+            )
+            out = await self._cross_encoder_rerank_async(
+                chunks, query, max(deadline - time.monotonic(), 0.0)
+            )
+            if hosted_failure and self.last_degraded_reason is None:
+                self.last_degraded_reason = hosted_failure
+            return out
+
+        self.last_reason = "auto:no_reranker_configured"
+        self._record_degraded("no_reranker_configured")
+        return self._score_order(chunks)
+
+    def _score_order(self, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.last_strategy_used = RerankStrategy.SCORE
+        return sorted(chunks, key=lambda c: c.get("score", 0.0), reverse=True)
+
+    def _hosted_rerank_sync(
         self, chunks: list[dict[str, Any]], query: str
     ) -> list[dict[str, Any]]:
-        """Rerank via the managed hosted reranker; honest fallback on any failure.
+        """HOSTED on the synchronous path, never silently replaced.
 
-        Reorders chunks by the endpoint's relevance score and reflects that score
-        (preserving the pre-rerank score). If the endpoint is unconfigured or
-        errors, degrades to the local TF-IDF/cross-encoder path — never drops
-        results.
+        Off an event loop the chain runs here (its own loop, within the rerank
+        budget). On an event-loop thread a blocking HTTP call would stall every
+        request on it, so the hosted call is NOT made and that is recorded
+        (``hosted_reranker_needs_async``): ``auto`` goes on to its next tier,
+        an explicit ``hosted`` degrades to TF-IDF — both flagged and counted.
+        """
+        from app.rag.cross_encoder import _on_event_loop_thread
+        from app.rag.rerank_budget import rerank_budget_seconds
+
+        choice = self._auto_choice
+        auto = self._strategy is RerankStrategy.AUTO and choice is not None
+        fallback = None if auto else "tfidf"
+        if _on_event_loop_thread():
+            if fallback == "tfidf":
+                return self._degrade_to_tfidf(chunks, query, "hosted_reranker_needs_async")
+            self._record_degraded("hosted_reranker_needs_async")
+            out: list[dict[str, Any]] | None = None
+        else:
+            out = asyncio.run(
+                self._hosted_rerank(
+                    chunks,
+                    query,
+                    reranker=choice.reranker if auto and choice is not None else None,
+                    budget_seconds=rerank_budget_seconds(),
+                    fallback=fallback,
+                )
+            )
+        if out is not None:
+            return out
+        # auto, hosted failed: the local tier, else score order (flagged).
+        failure = self.last_degraded_reason
+        if choice is not None and choice.local_available and self._cross_encoder_ready():
+            self.last_strategy_used = RerankStrategy.CROSS_ENCODER
+            self.last_reason = f"auto:{failure}_fallback_cross_encoder"
+            ranked = self._cross_encoder_rerank(chunks, query)
+            if self.last_degraded_reason is None:
+                self.last_degraded_reason = failure
+            return ranked
+        self.last_reason = f"auto:{failure}_fallback_score"
+        return self._score_order(chunks)
+
+    async def _hosted_rerank(
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
+        *,
+        reranker: Any = None,
+        budget_seconds: float | None = None,
+        fallback: str | None = "tfidf",
+    ) -> list[dict[str, Any]] | None:
+        """Rerank via the hosted chain within the rerank budget.
+
+        Reorders the top candidates (``RAG_RERANK_MAX_CANDIDATES``, like the
+        cross-encoder) by the endpoint's relevance score and reflects that score
+        (preserving the pre-rerank score). No answer within the budget keeps the
+        retrieval order (``last_skipped_reason='budget_exceeded'``). A failure
+        degrades to TF-IDF (``fallback='tfidf'``) or returns None with
+        ``last_degraded_reason`` set (``fallback=None``: the caller picks the
+        next tier) — never drops results.
         """
         if not chunks:
             return []
+        from app.rag.rerank_budget import rerank_budget_seconds
+
+        budget = rerank_budget_seconds() if budget_seconds is None else budget_seconds
+        head, tail = self._ce_candidate_window(chunks)
         try:
-            from app.core.config import get_settings
-            from app.rag_platform.hosted_reranker import HostedRerankerError
-            from app.rag_platform.registry_reranker import reranker_chain_from_settings
-
-            # Model Registry rerank models (preference order, each on its own
-            # provider's API), then the env endpoint; all failing → local path.
-            reranker = reranker_chain_from_settings(get_settings())
             if reranker is None:
-                return self._degrade_to_tfidf(chunks, query, "hosted_reranker_unconfigured")
-            documents = [str(c.get("content", "")) for c in chunks]
-            pairs = await reranker.rerank(query, documents)
-        except HostedRerankerError as exc:
-            return self._degrade_to_tfidf(chunks, query, "hosted_reranker_error", exc)
-        except Exception as exc:  # pragma: no cover - defensive
-            return self._degrade_to_tfidf(chunks, query, "hosted_reranker_error", exc)
+                from app.core.config import get_settings
+                from app.rag_platform.registry_reranker import reranker_chain_from_settings
 
-        if len(pairs) != len(chunks):
+                # Model Registry rerank models (preference order, each on its own
+                # provider's API or endpoint), then the env endpoints.
+                reranker = reranker_chain_from_settings(get_settings())
+            if reranker is None:
+                return self._hosted_failed(
+                    chunks, query, "hosted_reranker_unconfigured", None, fallback
+                )
+            if budget <= 0:
+                raise TimeoutError
+            pairs = await asyncio.wait_for(
+                reranker.rerank(query, self._ce_documents(head)), timeout=budget
+            )
+        except TimeoutError:
+            return self._skip_rerank(
+                chunks,
+                RerankSkipped(
+                    "budget_exceeded", "the hosted reranker did not answer within the budget"
+                ),
+                strategy=RerankStrategy.HOSTED,
+            )
+        except Exception as exc:
+            return self._hosted_failed(chunks, query, "hosted_reranker_error", exc, fallback)
+
+        if len(pairs) != len(head):
             # Endpoint returned a different count than sent → don't trust it.
-            return self._degrade_to_tfidf(chunks, query, "hosted_reranker_incomplete")
+            return self._hosted_failed(chunks, query, "hosted_reranker_incomplete", None, fallback)
+        model = str(getattr(reranker, "last_model", "") or "")
         reordered: list[dict[str, Any]] = []
         for original_index, score in pairs:
-            chunk = chunks[original_index]
+            chunk = head[original_index]
             reordered.append(
                 {
                     **chunk,
                     "score": float(score),
                     "pre_rerank_score": float(chunk.get("score", 0.0)),
                     "hosted_rerank_score": float(score),
-                    "hosted_rerank_model": reranker.last_model,
+                    "hosted_rerank_model": model,
                 }
             )
-        return reordered
+        self.last_strategy_used = RerankStrategy.HOSTED
+        return reordered + tail
+
+    def _hosted_failed(
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
+        reason: str,
+        exc: BaseException | None,
+        fallback: str | None,
+    ) -> list[dict[str, Any]] | None:
+        if fallback == "tfidf":
+            return self._degrade_to_tfidf(chunks, query, reason, exc)
+        self._record_degraded(reason, exc)
+        return None
 
     def _degrade_to_tfidf(
         self,

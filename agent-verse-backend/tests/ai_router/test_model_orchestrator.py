@@ -26,7 +26,7 @@ def _make_config(
     )
 
 
-def test_all_7_roles_assigned() -> None:
+def test_all_6_roles_assigned() -> None:
     orch = ModelOrchestrator()
     cfg = _make_config()
     assignment = orch.select_models(cfg)
@@ -35,7 +35,6 @@ def test_all_7_roles_assigned() -> None:
     assert assignment.verifier
     assert assignment.judge
     assert assignment.embedder
-    assert assignment.reranker
     assert assignment.classifier
 
 

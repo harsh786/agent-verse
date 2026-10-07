@@ -10,10 +10,12 @@ chain of rerank targets:
    (operator preference order, then cheapest) — each one sent to its OWN
    provider's rerank API (:class:`NvidiaReranker`, :class:`VoyageReranker`,
    :class:`CohereReranker`), or, for on-prem / custom / env-seeded models, to the
-   Cohere-compatible :class:`HostedReranker` shape against the configured
-   on-prem or ``RAG_HOSTED_RERANKER_URL`` endpoint;
-2. the env-configured :class:`HostedReranker` (unless step 1 already covers the
-   same endpoint + model);
+   Cohere-compatible :class:`HostedReranker` shape against the model's OWN
+   registry endpoint (``base_url``, e.g. ``http://host:30083/v1`` → ``/v1/rerank``)
+   or else the configured on-prem / ``RAG_HOSTED_RERANKER_URL`` endpoint;
+2. the env/settings endpoints — ``RAG_HOSTED_RERANKER_URL``/``MODEL``, then
+   ``ONPREM_RERANKER_URL``/``MODEL`` (unless step 1 already covers the same
+   endpoint + model);
 
 and :class:`FailoverReranker` tries them in turn. Any failure (HTTP error,
 timeout, malformed or incomplete payload) logs ``rerank_failover from=… to=…
@@ -353,6 +355,38 @@ def _onprem_endpoint(settings: Any, model: str) -> RerankTarget | None:
     )
 
 
+def _own_endpoint(m: Any, model: str, provider: str, settings: Any) -> RerankTarget | None:
+    """A registry model that names its OWN endpoint (Model Registry ``base_url``,
+    e.g. a vLLM Qwen3-Reranker at ``http://host:30083/v1``) is served there, with
+    its own saved credential — never at an unrelated env endpoint."""
+    from app.ai_router.model_endpoints import check_model_endpoint, endpoint_api_key
+
+    base = str(getattr(m, "base_url", "") or "").strip()
+    if not base:
+        return None
+    try:
+        base = check_model_endpoint(base)
+        api_key = endpoint_api_key(provider, m)
+    except Exception as exc:
+        logger.warning(
+            "rerank_model_endpoint_unusable model=%s error=%s", model, str(exc)[:160]
+        )
+        return None
+    url = base if base.rstrip("/").endswith("/rerank") else f"{base.rstrip('/')}/rerank"
+    return RerankTarget(
+        label=f"{provider or 'endpoint'}/{model}",
+        key=(url, model),
+        reranker=HostedReranker(
+            url=url,
+            api_key="" if api_key == "EMPTY" else api_key,
+            model=model,
+            timeout_seconds=_timeout(settings),
+            # check_model_endpoint above applied the model-endpoint egress policy.
+            allow_internal=True,
+        ),
+    )
+
+
 def _target_for_model(m: Any, settings: Any) -> RerankTarget | None:
     """Where a registry rerank model is served, or None when nothing can serve it."""
     from app.ai_router.model_catalog import provider_for_endpoint_url, provider_ready
@@ -364,11 +398,17 @@ def _target_for_model(m: Any, settings: Any) -> RerankTarget | None:
     source = (getattr(m, "extra", None) or {}).get("source")
     env_url = str(getattr(settings, "rag_hosted_reranker_url", "") or "").strip()
 
+    # A self-hosted / custom model with its own endpoint is called there. Native
+    # providers keep their own rerank API (their base_url is the chat endpoint).
+    if provider not in _NATIVE:
+        own = _own_endpoint(m, model, provider, settings)
+        if own is not None:
+            return own
     # Env-seeded: the deployment's own reranker, i.e. the env endpoint's model.
     if source == "env":
-        return _env_endpoint(settings, model) or (
-            _onprem_endpoint(settings, model) if provider == "onprem" else None
-        )
+        if provider == "onprem":
+            return _onprem_endpoint(settings, model) or _env_endpoint(settings, model)
+        return _env_endpoint(settings, model)
     endpoint_provider = provider_for_endpoint_url(env_url) if env_url else None
     if provider in _NATIVE:
         cls, key_name = _NATIVE[provider]
@@ -403,17 +443,12 @@ def _registry_models() -> list[Any]:
         return []
 
 
-def reranker_chain_from_settings(
+def registry_rerank_targets(
     settings: Any, *, models: Sequence[Any] | None = None
-) -> FailoverReranker | None:
-    """The ordered rerank chain, or None when nothing is configured.
-
-    *models* overrides the registry lookup (tests); by default the registry's
-    configured rerank models in execution order are used.
-    """
-    from app.rag_platform import hosted_reranker as _hosted
-
-    targets: list[RerankTarget] = []
+) -> list[tuple[Any, RerankTarget]]:
+    """``(registry model, target)`` for every configured rerank model that can be
+    served, in the registry's execution order (preference, then cheapest)."""
+    out: list[tuple[Any, RerankTarget]] = []
     seen: set[tuple[str, str]] = set()
     for m in models if models is not None else _registry_models():
         target = _target_for_model(m, settings)
@@ -425,12 +460,43 @@ def reranker_chain_from_settings(
             continue
         if target.key not in seen:
             seen.add(target.key)
-            targets.append(target)
+            out.append((m, target))
+    return out
 
+
+def env_rerank_targets(
+    settings: Any, *, exclude: set[tuple[str, str]] | None = None
+) -> list[RerankTarget]:
+    """The deployment's env/settings endpoints: ``RAG_HOSTED_RERANKER_URL``/``MODEL``,
+    then the on-prem reranker (``ONPREM_RERANKER_URL``/``MODEL``). Endpoints in
+    *exclude* (already served by a registry model) are not repeated."""
+    from app.rag_platform import hosted_reranker as _hosted
+
+    seen = set(exclude or ())
+    targets: list[RerankTarget] = []
     env = _hosted.hosted_reranker_from_settings(settings)
     if env is not None:
         url = str(getattr(env, "_url", "") or "")
         model = str(getattr(env, "_model", "") or "")
         if (url, model) not in seen:
+            seen.add((url, model))
             targets.append(RerankTarget(label=f"endpoint/{model}", key=(url, model), reranker=env))
+    onprem_model = str(getattr(settings, "onprem_reranker_model", "") or "").strip()
+    onprem = _onprem_endpoint(settings, onprem_model)
+    if onprem is not None and onprem.key not in seen:
+        targets.append(onprem)
+    return targets
+
+
+def reranker_chain_from_settings(
+    settings: Any, *, models: Sequence[Any] | None = None
+) -> FailoverReranker | None:
+    """The ordered rerank chain, or None when nothing is configured.
+
+    Registry rerank models first (execution order), then the env/settings
+    endpoints. *models* overrides the registry lookup (tests); by default the
+    registry's configured rerank models in execution order are used.
+    """
+    registry = [target for _m, target in registry_rerank_targets(settings, models=models)]
+    targets = registry + env_rerank_targets(settings, exclude={t.key for t in registry})
     return FailoverReranker(targets) if targets else None
