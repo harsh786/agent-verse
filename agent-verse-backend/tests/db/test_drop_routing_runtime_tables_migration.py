@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+REVISION = "b3e7d1f9a5c2"
 PREVIOUS = "a8d2f6c4e1b9"
 TABLES = ("routing_decisions", "routing_outcomes")
 ALLOW_ENV = "AGENTVERSE_ALLOW_ORPHAN_TABLE_DROP"
@@ -145,7 +146,7 @@ def _state(url: str) -> dict[str, Any]:
 
 
 def test_head_drops_tables_and_downgrade_restores_them(db_url: str) -> None:
-    _ok(_alembic(db_url, "upgrade", "head"))
+    _ok(_alembic(db_url, "upgrade", REVISION))
     assert _state(db_url)["rels"] == {}, "routing tables must not exist at head"
 
     _ok(_alembic(db_url, "downgrade", PREVIOUS))
@@ -179,12 +180,12 @@ def test_head_drops_tables_and_downgrade_restores_them(db_url: str) -> None:
         assert restored["widths"][("routing_outcomes", column)] == 64
 
     # Empty tables: the drop goes through without the override.
-    _ok(_alembic(db_url, "upgrade", "head"))
+    _ok(_alembic(db_url, "upgrade", REVISION))
     assert _state(db_url)["rels"] == {}
 
 
 def test_non_empty_table_blocks_drop_unless_explicitly_allowed(db_url: str) -> None:
-    _ok(_alembic(db_url, "upgrade", "head"))
+    _ok(_alembic(db_url, "upgrade", REVISION))
     _ok(_alembic(db_url, "downgrade", PREVIOUS))
 
     # A NOSUPERUSER / NOBYPASSRLS owner of the tables runs the migration: FORCE RLS
@@ -210,7 +211,7 @@ def test_non_empty_table_blocks_drop_unless_explicitly_allowed(db_url: str) -> N
         .render_as_string(hide_password=False)
     )
 
-    refused = _alembic(migrator_url, "upgrade", "head")
+    refused = _alembic(migrator_url, "upgrade", REVISION)
     assert refused.returncode != 0
     assert "Refusing to drop orphaned tables that still hold data" in refused.stderr
     assert "routing_decisions (1 rows)" in refused.stderr
@@ -221,7 +222,7 @@ def test_non_empty_table_blocks_drop_unless_explicitly_allowed(db_url: str) -> N
         "a refused drop must leave both tables (and their FORCE RLS) in place"
     )
 
-    _ok(_alembic(migrator_url, "upgrade", "head", allow=True))
+    _ok(_alembic(migrator_url, "upgrade", REVISION, allow=True))
     dropped = _state(db_url)
     assert dropped["rels"] == {}
     assert dropped["version"] != PREVIOUS
