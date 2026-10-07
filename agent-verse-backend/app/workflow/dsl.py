@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trigger DSL
@@ -99,12 +99,61 @@ class InputDefinition(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _duration_ms(value: Any) -> Any:
+    """``"10s"`` / ``"500ms"`` / ``"2m"`` / bare number (ms) -> int milliseconds."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int | float):
+        return int(value)
+    text = str(value).strip().lower()
+    units = (("ms", 1), ("s", 1000), ("m", 60_000), ("h", 3_600_000))
+    for suffix, factor in units:
+        if text.endswith(suffix):
+            try:
+                return int(float(text[: -len(suffix)]) * factor)
+            except ValueError:
+                return value
+    try:
+        return int(float(text))
+    except ValueError:
+        return value
+
+
 class RetryConfig(BaseModel):
+    """A step's retry policy (applied by the compiler, see ``retry_policy``).
+
+    Only retryable failures (timeouts, transport errors, 5xx / unavailable,
+    rate limits) are retried; authorization denials, refused operations and
+    validation errors stop after one attempt. Each attempt gets the step's full
+    ``timeout``. ``max_delay_ms`` caps one wait (0 = no cap); ``jitter``
+    randomises it (``full`` / ``equal``; ``true`` means ``full``).
+    """
+
     max_attempts: int = 1
     backoff: Literal["fixed", "linear", "exponential"] = "exponential"
     base_delay_ms: int = 500
+    max_delay_ms: int = Field(
+        default=30_000, validation_alias=AliasChoices("max_delay_ms", "max_delay")
+    )
+    jitter: Literal["none", "full", "equal"] = "none"
     retry_on: list[str] = Field(default_factory=list)
     fail_on: list[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("max_delay_ms", "base_delay_ms", mode="before")
+    @classmethod
+    def _parse_delay(cls, value: Any) -> Any:
+        return _duration_ms(value)
+
+    @field_validator("jitter", mode="before")
+    @classmethod
+    def _parse_jitter(cls, value: Any) -> Any:
+        if value is True:
+            return "full"
+        if value in (False, None, ""):
+            return "none"
+        return value
 
 
 class RAGConfig(BaseModel):

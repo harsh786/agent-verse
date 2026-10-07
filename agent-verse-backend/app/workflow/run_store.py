@@ -128,6 +128,7 @@ class WorkflowRunStore(Protocol):
         cost_usd: float | None = None,
         tokens_used: int | None = None,
         only_from: Collection[str] | None = None,
+        error_detail: dict[str, Any] | None = None,
     ) -> bool: ...
 
     async def get_workflow_id(self, run_id: str, tenant_id: str | None = None) -> str: ...
@@ -156,6 +157,18 @@ class WorkflowRunStore(Protocol):
         output: Any = None,
         error: str | None = None,
         cost_usd: float | None = None,
+        attempts: int | None = None,
+        attempt_log: list[dict[str, Any]] | None = None,
+    ) -> bool: ...
+
+    async def record_step_attempt(
+        self,
+        *,
+        run_id: str,
+        tenant_id: str,
+        step_id: str,
+        attempts: int,
+        attempt_log: list[dict[str, Any]],
     ) -> bool: ...
 
     async def list_step_results(
@@ -406,8 +419,13 @@ class PostgresWorkflowRunStore:
         cost_usd: float | None = None,
         tokens_used: int | None = None,
         only_from: Collection[str] | None = None,
+        error_detail: dict[str, Any] | None = None,
     ) -> bool:
         """Set a run's status (and optional result fields). True if it changed.
+
+        ``error_detail``: the failing step's final error, classification
+        (``error_kind`` / ``retryable``), attempt count, error id and why it
+        stopped trying.
 
         * A terminal status (complete / failed / cancelled / timed_out) is
           FINAL: a later write never replaces it (a late resume, failure or
@@ -444,6 +462,9 @@ class PostgresWorkflowRunStore:
         if error_step_id is not None:
             sets.append("error_step_id = :error_step_id")
             params["error_step_id"] = error_step_id
+        if error_detail is not None:
+            sets.append("error_detail = CAST(:error_detail AS jsonb)")
+            params["error_detail"] = json.dumps(error_detail, default=str)
         if outputs is not None:
             sets.append("outputs = CAST(:outputs AS jsonb)")
             params["outputs"] = json.dumps(outputs)
@@ -770,8 +791,14 @@ class PostgresWorkflowRunStore:
         error: str | None = None,
         cost_usd: float | None = None,
         state_delta: dict[str, Any] | None = None,
+        attempts: int | None = None,
+        attempt_log: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Finish the latest attempt row of a step.
+
+        ``attempts`` / ``attempt_log``: how many times the step's retry policy
+        ran it in this execution, and each failed attempt's error,
+        classification and backoff.
 
         ``state_delta`` (WF-34) is the non-output state the step returned (vars,
         foreach progress, cost/tokens); a resumed run replays it for a skipped
@@ -790,6 +817,8 @@ class PostgresWorkflowRunStore:
                     " status = :status, output = CAST(:output AS jsonb), error = :error, "
                     " state_delta = COALESCE(CAST(:state_delta AS jsonb), state_delta), "
                     " cost_usd = COALESCE(:cost_usd, cost_usd), completed_at = NOW(), "
+                    " attempts = COALESCE(:attempts, attempts), "
+                    " attempt_log = COALESCE(CAST(:attempt_log AS jsonb), attempt_log), "
                     " duration_ms = CAST(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000 AS int) "
                     "WHERE tenant_id = CAST(:tid AS uuid) AND id = ("
                     "  SELECT id FROM workflow_step_results "
@@ -803,6 +832,8 @@ class PostgresWorkflowRunStore:
                     "error": error,
                     "cost_usd": cost_usd,
                     "state_delta": json.dumps(state_delta, default=str) if state_delta else None,
+                    "attempts": attempts,
+                    "attempt_log": json.dumps(attempt_log, default=str) if attempt_log else None,
                     "run_id": run_id,
                     "step_id": step_id,
                     "tid": tenant_id,
@@ -819,6 +850,42 @@ class PostgresWorkflowRunStore:
                     step_id=step_id,
                     note=note_of(error=(error or "")[:300]),
                 )
+            await session.commit()
+            return bool(result.rowcount)
+
+    async def record_step_attempt(
+        self,
+        *,
+        run_id: str,
+        tenant_id: str,
+        step_id: str,
+        attempts: int,
+        attempt_log: list[dict[str, Any]],
+    ) -> bool:
+        """Record a failed attempt of a step that is still running (it will be
+        retried), so the steps API and the run stream show the retry live."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            result = await session.execute(
+                sa_text(
+                    "UPDATE workflow_step_results SET attempts = :attempts, "
+                    " attempt_log = CAST(:attempt_log AS jsonb) "
+                    "WHERE tenant_id = CAST(:tid AS uuid) AND status = 'running' AND id = ("
+                    "  SELECT id FROM workflow_step_results "
+                    "  WHERE run_id = CAST(:run_id AS uuid) AND step_id = :step_id "
+                    "  AND tenant_id = CAST(:tid AS uuid) "
+                    "  ORDER BY attempt_number DESC, started_at DESC LIMIT 1)"
+                ),
+                {
+                    "attempts": attempts,
+                    "attempt_log": json.dumps(attempt_log, default=str),
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "tid": tenant_id,
+                },
+            )
             await session.commit()
             return bool(result.rowcount)
 
@@ -1833,6 +1900,7 @@ class PostgresWorkflowRunStore:
             "outputs": _as_obj(row["outputs"]) or {},
             "error": row["error"],
             "error_step_id": row.get("error_step_id"),
+            "error_detail": _as_obj(row.get("error_detail")),
             "started_at": _iso(row["started_at"]),
             "finished_at": _iso(row["completed_at"]),
             "duration_ms": _duration_ms(row["started_at"], row["completed_at"]),
@@ -1863,4 +1931,7 @@ class PostgresWorkflowRunStore:
             "duration_ms": float(row["duration_ms"]) if row["duration_ms"] is not None else None,
             "state_delta": _as_obj(row.get("state_delta")),
             "attempt_number": row.get("attempt_number"),
+            # Executions of the step by its retry policy (legacy rows: 1).
+            "attempts": int(row.get("attempts") or 1),
+            "attempt_log": _as_obj(row.get("attempt_log")) or [],
         }

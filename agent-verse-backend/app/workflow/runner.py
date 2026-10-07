@@ -360,6 +360,7 @@ class WorkflowRunner:
             "completed_branch": None,
             "error": None,
             "error_step_id": None,
+            "error_detail": None,
             "hitl_request_id": None,
             "hitl_action": None,
             "hitl_note": None,
@@ -645,8 +646,14 @@ class WorkflowRunner:
         state: Any,
         definition: WorkflowDefinition | None,
     ) -> None:
-        """Mark the run FAILED with the failing step's error and id."""
+        """Mark the run FAILED with the failing step's error and id.
+
+        An aborting step also tags its exception with ``workflow_step_failure``
+        (classification, attempts, error id, why it stopped) — recorded as the
+        run's ``error_detail``.
+        """
         error, error_step_id = await self._failure_details(run_id, tenant_id, exc)
+        detail = getattr(exc, "workflow_step_failure", None)
         if self._run_store is not None:
             await self._run_store.update_status(
                 run_id,
@@ -654,6 +661,7 @@ class WorkflowRunner:
                 tenant_id=tenant_id,
                 error=error,
                 error_step_id=error_step_id,
+                **({"error_detail": detail} if isinstance(detail, dict) else {}),
             )
         self._fire_callback(WorkflowRunStatus.FAILED, {**state, "error": error}, definition)
 
@@ -666,7 +674,7 @@ class WorkflowRunner:
         the failed step row supplies the step (and the error, when the exception
         has no message) — a failed run must never show an empty error.
         """
-        error = str(exc)
+        error = str(getattr(exc, "workflow_run_error", None) or exc)
         step_id = getattr(exc, "workflow_step_id", None)
         if step_id is None or not error:
             row_error, row_step = await self._failed_step(run_id, tenant_id)
@@ -714,6 +722,9 @@ class WorkflowRunner:
         _fs = final_state if isinstance(final_state, dict) else {}
         error = _fs.get("error")
         error_step_id = _fs.get("error_step_id")
+        error_detail = _fs.get("error_detail")
+        if status not in (WorkflowRunStatus.FAILED, WorkflowRunStatus.PAUSED):
+            error_detail = None
         if status in (WorkflowRunStatus.FAILED, WorkflowRunStatus.PAUSED) and not error:
             # A failed/paused run must name its failing step: fall back to the
             # failed step row when the state carries no error.
@@ -731,6 +742,7 @@ class WorkflowRunner:
             # in state but never writes them to the run row itself.
             cost_usd=_fs.get("cost_usd"),
             tokens_used=_fs.get("tokens_used"),
+            **({"error_detail": error_detail} if isinstance(error_detail, dict) else {}),
         )
         # Status is persisted first; the callback is handed off afterwards and
         # can never delay or fail the run's completion.

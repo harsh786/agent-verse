@@ -42,12 +42,41 @@ def _step_event(step: dict[str, Any], status: str) -> dict[str, Any]:
         "step_type": step.get("step_type"),
         "status": status,
     }
-    if status == "failed" and step.get("error"):
+    if status in ("failed", "skipped") and step.get("error"):
         event["error"] = step["error"]
     output = step.get("output")
     if status == "complete" and isinstance(output, dict):
         event["output_keys"] = sorted(output)
+    attempts = int(step.get("attempts") or 1)
+    if attempts > 1 or status in ("failed", "skipped"):
+        event["attempts"] = attempts
+    log = step.get("attempt_log") or []
+    if status in ("failed", "skipped") and log and isinstance(log[-1], dict):
+        last = log[-1]
+        event["error_kind"] = last.get("error_kind")
+        event["retryable"] = last.get("retryable")
+        if last.get("error_id"):
+            event["error_id"] = last["error_id"]
     return event
+
+
+def _retry_event(step: dict[str, Any]) -> dict[str, Any]:
+    """A running step's attempt failed and will be retried."""
+    log = step.get("attempt_log") or []
+    last = log[-1] if log and isinstance(log[-1], dict) else {}
+    return {
+        "event": "step_retrying",
+        "step_id": step.get("step_id"),
+        "step_type": step.get("step_type"),
+        "status": "running",
+        "attempt": last.get("attempt") or int(step.get("attempts") or 1),
+        "attempts": int(step.get("attempts") or 1),
+        "error": last.get("error"),
+        "error_kind": last.get("error_kind"),
+        "retryable": last.get("retryable"),
+        "error_id": last.get("error_id"),
+        "retry_in_ms": last.get("retry_in_ms"),
+    }
 
 
 def _terminal_event(run: dict[str, Any]) -> dict[str, Any]:
@@ -61,6 +90,7 @@ def _terminal_event(run: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "error": run.get("error"),
         "error_step_id": run.get("error_step_id"),
+        **({"error_detail": run["error_detail"]} if run.get("error_detail") else {}),
     }
 
 
@@ -1058,7 +1088,10 @@ class WorkflowService:
 
         Polls the run row and its step rows and emits what changed:
         ``step_started`` / ``step_completed`` / ``step_failed`` / ``step_skipped``
-        / ``step_status``, ``run_status`` on every run-status change,
+        / ``step_status`` (with ``attempts`` and, for a failed / skipped step, the
+        final ``error_kind`` / ``retryable`` / ``error_id``), ``step_retrying``
+        when an attempt failed and the step will retry, ``run_status`` on every
+        run-status change,
         ``run_waiting`` when it waits for a human or timer, ``heartbeat`` when
         quiet, and ends only on a terminal status with ``run_completed`` /
         ``run_failed`` / ``run_cancelled`` (or ``stream_timeout`` after
@@ -1078,16 +1111,23 @@ class WorkflowService:
 
         started = last_emit = time.monotonic()
         seen_steps: dict[str, str] = {}
+        seen_attempts: dict[str, int] = {}
         last_status: str | None = None
         while True:
             events: list[dict[str, Any]] = []
             for step in await self.list_step_results(tenant_id, run_id):
                 key = f"{step.get('step_id')}@{step.get('started_at') or ''}"
                 status = str(step.get("status") or "")
-                if seen_steps.get(key) == status:
-                    continue
-                seen_steps[key] = status
-                events.append(_step_event(step, status))
+                attempts = int(step.get("attempts") or 1)
+                if seen_steps.get(key) != status:
+                    seen_steps[key] = status
+                    if status != "running":
+                        seen_attempts[key] = attempts
+                    events.append(_step_event(step, status))
+                if status == "running" and attempts > seen_attempts.get(key, 1):
+                    # A failed attempt was recorded and the step will retry.
+                    seen_attempts[key] = attempts
+                    events.append(_retry_event(step))
 
             status = str(run.get("status") or "")
             if status != last_status:

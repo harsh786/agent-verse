@@ -50,6 +50,10 @@ class StepResultResponse(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     duration_ms: float | None = None
+    # Times the step's retry policy ran it, and each failed attempt's error,
+    # classification (error_kind / retryable), error id and backoff.
+    attempts: int = 1
+    attempt_log: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -64,6 +68,9 @@ class RunDetailResponse(BaseModel):
     outputs: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     error_step_id: str | None = None  # the step whose failure stopped the run
+    # The failing step's final error, error_kind, retryable, attempts,
+    # max_attempts, error_id and reason (non_retryable | retries_exhausted).
+    error_detail: dict[str, Any] | None = None
     started_at: str | None = None
     finished_at: str | None = None
     duration_ms: float | None = None
@@ -279,6 +286,8 @@ async def stream_run(run_id: str, request: Request) -> StreamingResponse:
 
     Emits events:
       data: {"event": "step_started" | "step_completed" | "step_failed" | ..., "step_id": ...}
+      data: {"event": "step_retrying", "step_id": ..., "attempt": N, "error": ...,
+             "error_kind": ..., "retry_in_ms": ...}       (a failed attempt, retried)
       data: {"event": "run_status", "status": "..."}          (every status change)
       data: {"event": "run_waiting", "status": "waiting_hitl"} (waiting on a human/timer)
       data: {"event": "heartbeat"}                             (while quiet)
