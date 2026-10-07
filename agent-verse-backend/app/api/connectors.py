@@ -34,6 +34,7 @@ from app.net.ssrf_guard import (
 )
 from app.providers.vault import (
     ConnectorSecretUnavailableError,
+    ConnectorSecretUndecryptableError,
     connector_secret_ref,
     is_connector_secret_ref,
     resolve_connector_secret_ref,
@@ -1217,10 +1218,16 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     for key, value in (cfg.auth_config or {}).items():
         if isinstance(value, str) and is_connector_secret_ref(value):
             plain: str | None = None
+            undecryptable = ""
             try:
                 plain = await resolve_connector_secret_ref_for_tenant(
                     value, store=secret_store, tenant_ctx=tenant
                 )
+            except ConnectorSecretUndecryptableError as exc:
+                # Stored, but this process cannot open it (vault key mismatch):
+                # "re-enter it" would not help — say why instead.
+                undecryptable = str(exc)
+                plain = None
             except Exception:
                 plain = None
             if not plain:
@@ -1230,7 +1237,12 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
                     "server_id": server_id,
                     "reachable": False,
                     "status": "failed",
-                    "error": f"Stored credential '{key}' could not be resolved; re-enter it.",
+                    "error": (
+                        f"Stored credential '{key}' could not be resolved: it is stored but "
+                        f"cannot be decrypted here: {undecryptable}"
+                        if undecryptable
+                        else f"Stored credential '{key}' could not be resolved; re-enter it."
+                    ),
                     "latency_ms": round((time.time() - started) * 1000),
                 }
             resolved_auth_config[key] = plain

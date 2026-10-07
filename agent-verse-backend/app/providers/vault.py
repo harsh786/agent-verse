@@ -61,6 +61,20 @@ class ConnectorSecretUnavailableError(LookupError):
     """
 
 
+class ConnectorSecretNotFoundError(ConnectorSecretUnavailableError):
+    """Nothing is stored under the reference for this tenant (re-entering it helps)."""
+
+
+class ConnectorSecretUndecryptableError(ConnectorSecretUnavailableError):
+    """A secret IS stored but this process cannot decrypt it.
+
+    Typically this process runs with another ``VAULT_MASTER_KEY`` than the one
+    that sealed the value (a worker configured differently from the API). The
+    message says which, by key fingerprint; re-entering the credential does not
+    help while the keys differ.
+    """
+
+
 def _get_master_key() -> str:
     """Return the vault master key from the environment.
 
@@ -119,7 +133,7 @@ def resolve_connector_secret_ref(
     """Resolve a connector secret reference; raises when it cannot be resolved."""
     if store is not None and ref in store:
         return store[ref]
-    raise ConnectorSecretUnavailableError(f"connector secret {ref!r} could not be resolved")
+    raise ConnectorSecretNotFoundError(f"connector secret {ref!r} could not be resolved")
 
 
 def _connector_secret_ref_parts(ref: str) -> tuple[str, str]:
@@ -245,9 +259,7 @@ async def resolve_connector_secret_ref_for_tenant(
         if inspect.isawaitable(result):
             result = await result
         if result is None:
-            raise ConnectorSecretUnavailableError(
-                f"connector secret {ref!r} could not be resolved"
-            )
+            raise ConnectorSecretNotFoundError(f"connector secret {ref!r} could not be resolved")
         return str(result)
     return resolve_connector_secret_ref(ref, store=store)
 

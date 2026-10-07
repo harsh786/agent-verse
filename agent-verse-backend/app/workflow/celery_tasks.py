@@ -114,38 +114,24 @@ def _build_worker_runner() -> Any:
     except Exception as _ks_exc:
         _log.warning("worker_runner_knowledge_store_unavailable", error=str(_ks_exc)[:120])
     # Wire a real MCP client so workflow tool steps dispatch actual connectors
-    # (Telegram, Slack, HTTP tools, …) instead of returning a mock. Mirrors the
-    # goal worker's MCP wiring; the FastAPI lifespan never runs in a Celery worker.
+    # (Telegram, Slack, Gmail, HTTP tools, …) instead of returning a mock. The
+    # FastAPI lifespan never runs in a Celery worker. The SAME builder as the
+    # goal worker's credential path (durable secret store + DB-backed OAuth
+    # manager): this worker's own copy lacked the OAuth manager, so OAuth
+    # connectors had no token in workflow tool steps and were never refreshed.
     _wf_mcp_client: Any = None
     try:
         import os as _os
 
         import redis.asyncio as _aioredis_wf
 
-        from app.mcp.client import MCPClient
-        from app.mcp.connector_wiring import build_connector_registry, build_connector_secret_store
-        from app.mcp.registry import MCPRegistry
-        from app.mcp.servers.registry_wiring import get_builtin_server_configs
-        from app.providers.vault import resolve_connector_secret_ref_for_tenant
+        from app.mcp.connector_wiring import build_worker_mcp_client
 
-        for _bcfg in get_builtin_server_configs():
-            MCPRegistry.register_builtin_handler(_bcfg["server_id"], _bcfg["handler"])
         _wf_redis = _aioredis_wf.from_url(
             _os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
         )
         _WORKER_RUNNER_CLIENTS.append(_wf_redis)
-        _wf_secret_store = build_connector_secret_store(_wf_redis)
-
-        async def _wf_resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
-            return await resolve_connector_secret_ref_for_tenant(
-                ref, store=_wf_secret_store, tenant_ctx=tenant_ctx
-            )
-
-        _wf_mcp_client = MCPClient(
-            build_connector_registry(_wf_redis),
-            secret_resolver=_wf_resolve_secret,
-            redis=_wf_redis,
-        )
+        _wf_mcp_client = build_worker_mcp_client(_wf_redis, db_factory=db_factory)
     except Exception as _mcp_exc:
         _log.warning("worker_runner_mcp_client_unavailable", error=str(_mcp_exc)[:120])
     # QA-7: tool steps evaluate the run tenant's governance policies. The engine is

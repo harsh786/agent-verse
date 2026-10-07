@@ -247,6 +247,53 @@ async def _assert_egress_allowed_async(url: str, *, context: str) -> None:
     await asyncio.to_thread(_assert_egress_allowed, url, context=context)
 
 
+_CREDENTIAL_MISSING = (
+    "credentials_required",
+    "no value is stored for it for this tenant; re-enter the connector's credentials.",
+)
+
+
+def _credential_failure(exc: BaseException) -> tuple[str, str]:
+    """``(result status, reason)`` for a connector secret that did not resolve.
+
+    The status classifies the failure for callers that retry (a workflow tool
+    step): a missing or undecryptable credential is not retried, an unreachable
+    store is.
+    """
+    from app.providers.vault import (
+        ConnectorSecretNotFoundError,
+        ConnectorSecretUndecryptableError,
+    )
+
+    if isinstance(exc, ConnectorSecretNotFoundError | ValueError):
+        return _CREDENTIAL_MISSING
+    if isinstance(exc, ConnectorSecretUndecryptableError):
+        return ("credentials_undecryptable", f"it is stored but cannot be decrypted here: {exc}")
+    if _is_decrypt_error(exc):
+        # A store without its own diagnosis (e.g. the Redis-only legacy store).
+        from app.providers.vault import explain_decrypt_failure
+
+        return (
+            "credentials_undecryptable",
+            f"it is stored but cannot be decrypted here: {explain_decrypt_failure(None)}",
+        )
+    return (
+        "",
+        f"the connector credential store is unavailable right now ({type(exc).__name__}); "
+        "retry the call.",
+    )
+
+
+def _is_decrypt_error(exc: BaseException) -> bool:
+    from cryptography.fernet import InvalidToken
+
+    from app.providers.tenant_vault import TenantVaultError, TenantVaultReadError
+
+    return isinstance(exc, InvalidToken) or (
+        isinstance(exc, TenantVaultError) and not isinstance(exc, TenantVaultReadError)
+    )
+
+
 def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     """Extract credentials dict from an MCPServerConfig for passing to builtin handlers.
 
@@ -963,6 +1010,7 @@ class MCPClient:
                     resolved[k] = v
                     continue
                 plain: Any = None
+                failure: tuple[str, str] | None = None
                 try:
                     if self._secret_resolver_accepts_tenant and tenant_ctx is not None:
                         plain = self._secret_resolver(v, tenant_ctx)
@@ -974,20 +1022,29 @@ class MCPClient:
                         plain = await plain
                 except Exception as exc:
                     logger.warning(
-                        "builtin_secret_resolve_failed server_id=%s key=%s error=%s",
+                        "builtin_secret_resolve_failed server_id=%s key=%s error=%s: %s",
                         server.server_id,
                         k,
-                        str(exc)[:120],
+                        type(exc).__name__,
+                        str(exc)[:200],
                     )
                     plain = None
+                    failure = _credential_failure(exc)
                 if not plain:
+                    # Every cause used to read "re-enter the connector's
+                    # credentials" — also a worker that cannot DECRYPT a stored
+                    # value (another VAULT_MASTER_KEY than the API) or a store
+                    # that was briefly unreachable, where re-entering cannot help.
+                    status, reason = failure or _CREDENTIAL_MISSING
+                    message = (
+                        f"Could not resolve the credential '{k}' for connector "
+                        f"'{server.name}': {reason}"
+                    )
                     return ToolCallResult(
                         tool_name=tool_name,
                         success=False,
-                        error=(
-                            f"Could not resolve the credential '{k}' for connector "
-                            f"'{server.name}'; re-enter the connector's credentials."
-                        ),
+                        error=message,
+                        output={"status": status, "error": message} if status else None,
                         server_id=server.server_id,
                     )
                 resolved[k] = str(plain)
@@ -997,7 +1054,12 @@ class MCPClient:
         # holds the client settings, so the handler used to get no token at all.
         if server.auth_type in _OAUTH_AUTH_TYPES:
             oauth_token = await self._oauth_access_token(
-                server, tenant_ctx=tenant_ctx, server_id=server.server_id
+                server,
+                tenant_ctx=tenant_ctx,
+                server_id=server.server_id,
+                # Resolved values: a refresh needs the plain client_secret, not
+                # its vault:// reference.
+                auth_config={**server.auth_config, **credentials},
             )
             if oauth_token:
                 credentials = {**credentials, "access_token": oauth_token}
@@ -2120,6 +2182,7 @@ class MCPClient:
         *,
         tenant_ctx: TenantContext | None,
         server_id: str,
+        auth_config: dict[str, Any] | None = None,
     ) -> str | None:
         """The connection's own OAuth access token from the OAuth token store.
 
@@ -2143,7 +2206,7 @@ class MCPClient:
                         tenant_id=tenant_id,
                         server_id=server_id,
                         token=token,
-                        auth_config=cfg.auth_config,
+                        auth_config=auth_config if auth_config is not None else cfg.auth_config,
                     )
                 except Exception as refresh_exc:
                     # Logged, never swallowed: the caller refuses the call

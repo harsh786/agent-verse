@@ -97,6 +97,9 @@ _NON_RETRYABLE_TOOL_STATUS = {
     "invalid_arguments": "validation",
     "dependency_missing": "configuration",
     "connector_disabled": "configuration",
+    # A stored credential this process cannot decrypt (vault key mismatch):
+    # retrying on the same process cannot open it either.
+    "credentials_undecryptable": "configuration",
 }
 
 

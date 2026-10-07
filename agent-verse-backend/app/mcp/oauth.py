@@ -796,6 +796,11 @@ class OAuthFlowManager:
             cfg = auth_config or {}
             resolved_token_url = token_url or cfg.get("token_url", "")
             resolved_client_id = client_id or cfg.get("client_id", "")
+            # Confidential clients (Google, Microsoft web apps) must authenticate
+            # the refresh with their secret; only a resolved (plain) value is sent.
+            client_secret = str(cfg.get("client_secret") or "")
+            if client_secret.startswith(("vault://", "secret://")):
+                client_secret = ""
 
             if not resolved_token_url:
                 return None
@@ -823,6 +828,7 @@ class OAuthFlowManager:
                             "grant_type": "refresh_token",
                             "refresh_token": existing.refresh_token,
                             "client_id": resolved_client_id,
+                            **({"client_secret": client_secret} if client_secret else {}),
                         },
                     )
                     resp.raise_for_status()

@@ -2176,10 +2176,8 @@ def publish_mission_deliverable(
         # ── Phase B: build a worker MCP client and dispatch the tool call ────────
         import redis.asyncio as aioredis
 
-        from app.mcp.client import MCPClient
-        from app.mcp.connector_wiring import build_connector_secret_store
+        from app.mcp.connector_wiring import build_worker_mcp_client
         from app.mcp.registry import MCPRegistry
-        from app.providers.vault import resolve_connector_secret_ref_for_tenant
 
         # Builtins are registered at module import; re-register defensively so a
         # fresh worker always has the Python handlers (not just Redis records).
@@ -2194,20 +2192,10 @@ def publish_mission_deliverable(
 
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
         try:
-            secret_store = build_connector_secret_store(redis_client)
-
-            async def _resolve_secret(ref: str, tctx: Any = None) -> str | None:
-                return await resolve_connector_secret_ref_for_tenant(
-                    ref, store=secret_store, tenant_ctx=tctx
-                )
-
-            from app.mcp.connector_wiring import build_connector_registry
-
-            registry = build_connector_registry(redis_client)
-            mcp_client = MCPClient(
-                registry,
-                secret_resolver=_resolve_secret,
-                redis=redis_client,
+            # The same credential path as the goal and workflow workers (durable
+            # secret store + DB-backed OAuth manager, which this one lacked).
+            mcp_client = build_worker_mcp_client(
+                redis_client, db_factory=db_factory, register_builtin_handlers=False
             )
             call = await mcp_client.call_tool(
                 server_id=server_id,

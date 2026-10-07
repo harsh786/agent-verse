@@ -219,3 +219,56 @@ def vault_key_health_check(db_factory: Any) -> HealthCheck:
             raise RuntimeError(result.message)
 
     return HealthCheck(name="vault_key", check=_check)
+
+
+_STILL_SAME_KEY_HINT = "Re-entering the credential does not help until the keys match."
+
+
+async def explain_undecryptable_secret(db_factory: Any, exc: BaseException) -> str:
+    """Why a stored secret does not open in THIS process (fingerprints only, never a key).
+
+    Used where a decrypt failure used to read "re-enter the credential": when this
+    process holds another ``VAULT_MASTER_KEY`` than the API (the fleet's canary
+    does not open here) re-entering cannot help, and the message says so and
+    names the setting. When the canary does open here the value was sealed by a
+    process with another key, and re-entering it is the fix.
+    """
+    from app.providers.tenant_vault import TenantVaultError, TenantVaultUnwrapError
+    from app.providers.vault import process_role
+
+    role = process_role()
+    if isinstance(exc, TenantVaultError) and not isinstance(exc, TenantVaultUnwrapError):
+        # The tenant's OWN vault key (BYOK) is missing or no longer opens the
+        # value; the platform key is not involved.
+        return (
+            f"the tenant's vault key cannot open it ({exc}). Re-enter the connector's "
+            "credentials, or restore the tenant vault key it was sealed with."
+        )
+    if db_factory is None:
+        result = last_canary_result()
+    else:
+        try:
+            result = await check_vault_canary(db_factory, role=role)
+        except Exception:  # the explanation must never mask the failure
+            result = last_canary_result()
+    if result is not None and result.status in ("mismatch", "no_key"):
+        return f"{result.message} {_STILL_SAME_KEY_HINT}"
+    if result is not None and result.ok:
+        return (
+            f"this {role} process's vault key (fingerprint {result.local_fingerprint}) "
+            "matches the API's vault canary, so the value was sealed by a process using "
+            "another VAULT_MASTER_KEY. Re-enter the connector's credentials, and make sure "
+            "every API, worker and beat process sets the same VAULT_MASTER_KEY."
+        )
+    local = (
+        f" (fingerprint {result.local_fingerprint})"
+        if result is not None and result.local_fingerprint
+        else ""
+    )
+    unverified = f" ({result.message})" if result is not None else ""
+    return (
+        f"this {role} process's vault key{local} cannot open it and the vault canary "
+        f"could not be checked{unverified}. If the API runs with another VAULT_MASTER_KEY, "
+        "set the same value on every API, worker and beat process; otherwise re-enter "
+        "the connector's credentials."
+    )

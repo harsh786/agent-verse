@@ -39,6 +39,10 @@ class TenantVaultUnwrapError(TenantVaultError):
     """The platform vault key cannot unwrap the tenant key (wrong / missing master key)."""
 
 
+class TenantVaultReadError(TenantVaultError):
+    """The tenant key row could not be read (database unavailable) — transient."""
+
+
 def is_tenant_encrypted(ciphertext: str) -> bool:
     return isinstance(ciphertext, str) and ciphertext.startswith(TENANT_CIPHER_PREFIX)
 
@@ -102,7 +106,7 @@ async def load_tenant_vault(db_factory: Any, tenant_id: str) -> CredentialVault 
         ):
             wrapped = await _read_wrapped(session, tenant_id)
     except Exception as exc:
-        raise TenantVaultError(f"tenant vault key could not be read: {exc}") from exc
+        raise TenantVaultReadError(f"tenant vault key could not be read: {exc}") from exc
     return _unwrap(wrapped) if wrapped else None
 
 

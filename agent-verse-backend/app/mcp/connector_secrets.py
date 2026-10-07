@@ -26,7 +26,13 @@ from collections.abc import Callable
 from typing import Any
 
 from app.db.rls import sqlalchemy_rls_context
-from app.providers.vault import ConnectorSecretUnavailableError, is_connector_secret_ref
+from app.providers.tenant_vault import TenantVaultReadError
+from app.providers.vault import (
+    ConnectorSecretUnavailableError,
+    ConnectorSecretUndecryptableError,
+    is_connector_secret_ref,
+)
+from app.providers.vault_canary import explain_undecryptable_secret
 
 _log = logging.getLogger(__name__)
 
@@ -199,17 +205,36 @@ class DurableConnectorSecretStore:
             if ciphertext is None:
                 return None
             await self._redis_call("set", cache_key, ciphertext, ex=self._ttl)
-        if is_tenant_encrypted(ciphertext):
-            # Needs the tenant key: missing / unreadable raises (fail closed).
-            tenant_vault = await self._tenant_vault(tenant_id)
-            plaintext = open_for_tenant(tenant_vault, ciphertext)
-        else:
-            plaintext = open_for_tenant(None, ciphertext)
-            try:  # only needed to re-wrap: best effort
+        try:
+            if is_tenant_encrypted(ciphertext):
+                # Needs the tenant key: missing / unreadable raises (fail closed).
                 tenant_vault = await self._tenant_vault(tenant_id)
-            except Exception as exc:
-                _log.warning("connector_secret_rewrap_skipped: %s", type(exc).__name__)
-                tenant_vault = None
+                plaintext = open_for_tenant(tenant_vault, ciphertext)
+            else:
+                plaintext = open_for_tenant(None, ciphertext)
+                try:  # only needed to re-wrap: best effort
+                    tenant_vault = await self._tenant_vault(tenant_id)
+                except Exception as exc:
+                    _log.warning("connector_secret_rewrap_skipped: %s", type(exc).__name__)
+                    tenant_vault = None
+        except TenantVaultReadError as exc:
+            raise ConnectorSecretUnavailableError(
+                "connector secret store unavailable: the tenant vault key could not be read"
+            ) from exc
+        except Exception as exc:
+            # The value IS stored but does not open here. This used to surface as
+            # "re-enter the connector's credentials" even when the cause was this
+            # process running with another VAULT_MASTER_KEY than the API.
+            _log.error(
+                "connector_secret_undecryptable tenant=%s server=%s key=%s error=%s",
+                tenant_id,
+                server_id,
+                key,
+                type(exc).__name__,
+            )
+            raise ConnectorSecretUndecryptableError(
+                await explain_undecryptable_secret(self._db, exc)
+            ) from exc
         if needs_rewrap(tenant_vault, ciphertext):
             await self._rewrap(
                 tenant_id, server_id, key, ciphertext, seal_for_tenant(tenant_vault, plaintext)
