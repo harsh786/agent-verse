@@ -82,7 +82,6 @@ from app.observability.logging import configure_logging, get_logger
 from app.observability.tracing import configure_tracing, instrument_app
 from app.providers.fake import FakeProvider
 from app.providers.vault import (
-    RedisConnectorSecretStore,
     get_vault,
     resolve_connector_secret_ref_for_tenant,
 )
@@ -1355,11 +1354,6 @@ def create_app(
             if real_redis is not None:
                 redis_for_runtime = real_redis
                 app.state.mcp_registry = MCPRegistry(redis=real_redis, auto_provision_builtins=True)
-                app.state.connector_secret_store = RedisConnectorSecretStore(
-                    redis=real_redis,
-                    vault=get_vault(),
-                )
-                app.state.connector_secret_store_is_production_safe = True
                 app.state.mcp_client = _make_mcp_client(app.state.mcp_registry)
                 # Re-wire MCP client into tool inverse registry with the real Redis-backed client
                 from app.reliability.tool_inverses import set_mcp_client as _set_inv_mcp
@@ -1511,11 +1505,6 @@ def create_app(
                         )
                         redis_for_runtime = _direct_redis
                         app.state._rate_limiter_redis = _direct_redis
-                        app.state.connector_secret_store = RedisConnectorSecretStore(
-                            redis=_direct_redis,
-                            vault=get_vault(),
-                        )
-                        app.state.connector_secret_store_is_production_safe = True
                         from app.services.llm_config_store import (
                             LLMConfigStore,
                             set_llm_config_store,
