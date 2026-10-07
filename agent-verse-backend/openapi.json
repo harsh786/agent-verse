@@ -676,6 +676,20 @@
       },
       "BatchOcrResponse": {
         "properties": {
+          "errors": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Errors",
+            "type": "array"
+          },
           "failed": {
             "title": "Failed",
             "type": "integer"
@@ -5389,9 +5403,23 @@
             "title": "Document Type",
             "type": "string"
           },
+          "empty_pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Empty Pages",
+            "type": "array"
+          },
           "engine_used": {
             "title": "Engine Used",
             "type": "string"
+          },
+          "failed_pages": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Failed Pages",
+            "type": "array"
           },
           "fields": {
             "additionalProperties": {
@@ -28652,7 +28680,7 @@
     },
     "/enterprise/compliance/regions": {
       "get": {
-        "description": "Return all available data residency regions.",
+        "description": "The data regions this deployment actually uses (primary, then backup).\n\na10-F253-02: this used to return the residency dict followed by a\nfabricated catalog (us-east-1 / eu-west-1 / ap-southeast-1) compared on a\n``region`` key the dict did not have, so us-east-1 was listed twice and\nregions no tenant can select were offered. Empty when the deployment has\nnot declared ``DATA_REGION``; there is no per-tenant region selection.",
         "operationId": "list_data_regions_enterprise_compliance_regions_get",
         "responses": {
           "200": {
@@ -41330,7 +41358,7 @@
     },
     "/ocr/batch": {
       "post": {
-        "description": "Process up to 10 documents concurrently.",
+        "description": "Process up to 10 documents concurrently.\n\nEach document honours its own ``persist_to_kb`` / ``collection_id`` (indexed\nexactly like ``/ocr/extract``). A failed item is ``None`` in ``results`` with\nits reason in ``errors``; an item whose OCR succeeded but whose\nknowledge-base write failed keeps its result and carries the error.",
         "operationId": "extract_documents_batch_ocr_batch_post",
         "requestBody": {
           "content": {
@@ -42532,76 +42560,6 @@
         "summary": "List Rpa Tools",
         "tags": [
           "rpa"
-        ]
-      }
-    },
-    "/sandbox/config": {
-      "get": {
-        "description": "Return sandbox configuration for the tenant.",
-        "operationId": "get_sandbox_config_sandbox_config_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Sandbox Config Sandbox Config Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Sandbox Config",
-        "tags": [
-          "sandbox"
-        ]
-      }
-    },
-    "/sandbox/goals": {
-      "post": {
-        "description": "Submit a goal in sandbox mode \u2014 uses SimulationRunner, no real tools called.",
-        "operationId": "submit_sandbox_goal_sandbox_goals_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "title": "Body",
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Submit Sandbox Goal Sandbox Goals Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Submit Sandbox Goal",
-        "tags": [
-          "sandbox"
         ]
       }
     },
@@ -45612,7 +45570,7 @@
     },
     "/status": {
       "get": {
-        "description": "Public system health: ``operational`` | ``degraded`` | ``unknown``.\n\n``unknown`` when no dependency checks are registered or they could not be\nrun \u2014 the API answering this request is not evidence its dependencies work.\nComponent details carry only up/down, never error text.",
+        "description": "Public system health: ``operational`` | ``degraded`` | ``unknown``.\n\n``unknown`` when no dependency checks are registered or they could not be\nrun \u2014 the API answering this request is not evidence its dependencies work.\nComponent details carry only up/down, never error text.\n\na10-F244-01: this route is anonymous, and every request used to run every\ndependency check. The report is cached per app for\n``PUBLIC_STATUS_CACHE_SECONDS`` and concurrent misses share one run, so a\nflood of anonymous GETs costs at most one check round per window.\n``timestamp`` is when the checks ran.",
         "operationId": "get_public_status_status_get",
         "responses": {
           "200": {
@@ -49426,52 +49384,6 @@
         "summary": "WhatsApp Business Cloud API receiver",
         "tags": [
           "gateway"
-        ]
-      }
-    },
-    "/v1/health": {
-      "get": {
-        "operationId": "health_v1_v1_health_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Health V1 V1 Health Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Health V1",
-        "tags": [
-          "v1"
-        ]
-      }
-    },
-    "/v1/info": {
-      "get": {
-        "operationId": "api_info_v1_info_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Api Info V1 Info Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Api Info",
-        "tags": [
-          "v1"
         ]
       }
     },
