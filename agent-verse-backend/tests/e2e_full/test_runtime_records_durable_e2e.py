@@ -148,6 +148,7 @@ async def test_cost_breakdown_recorded_elsewhere_is_served_and_tenant_isolated(
                 "output_tokens": 40,
                 "cost_usd": 0.75,
                 "calls": 2,
+                "fallback_from": [],  # failover provenance (no failover here)
             }
         ]
 
