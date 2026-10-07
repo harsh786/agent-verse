@@ -538,6 +538,9 @@ class HITLGateway:
                 ).first()
             return str(row[0]) if row else None
         except Exception as exc:
+            # Deliberate degrade: only the waiter / reconcile paths read this
+            # (never an HTTP response). They fail closed on None — keep polling
+            # until the deadline, then time out — so an outage is not a decision.
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("hitl_db_read_status_failed", error=str(exc))
@@ -690,7 +693,16 @@ class HITLGateway:
         if req is None and self._db_session_factory is not None:
             # Raised on another replica (or this process restarted): Postgres is
             # the source of truth, so an id missing locally is not a rejection.
-            req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
+            try:
+                req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
+            except Exception as exc:
+                from app.db.availability import is_db_unavailable_error
+
+                if not is_db_unavailable_error(exc):
+                    raise
+                # Deliberate fail-closed degrade (agent path, not an HTTP read):
+                # an approval that cannot be read is never treated as granted.
+                req = None
         if req is None:
             return ApprovalStatus.REJECTED
         if req.status != ApprovalStatus.PENDING:
@@ -921,8 +933,15 @@ class HITLGateway:
                     .all()
                 )
         except Exception as exc:
+            from app.db.availability import is_db_unavailable_error
             from app.observability.logging import get_logger
 
+            if is_db_unavailable_error(exc):
+                # An outage must surface (503 on GET /governance/approvals; the
+                # emergency stop records approval_listing_failed). The process
+                # cache below holds only this replica's approvals: serving it as
+                # "the pending list" hid every gate raised elsewhere.
+                raise
             get_logger(__name__).warning("hitl_list_pending_db_failed", error=str(exc))
             return self.list_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
 
@@ -1232,8 +1251,13 @@ class HITLGateway:
                     .first()
                 )
         except Exception as exc:
+            from app.db.availability import is_db_unavailable_error
             from app.observability.logging import get_logger
 
+            if is_db_unavailable_error(exc):
+                # "Not found" during an outage made approve/reject answer 404 for
+                # a live gate; let it surface as 503 instead.
+                raise
             get_logger(__name__).warning("hitl_db_fetch_failed", error=str(exc))
             return None
 

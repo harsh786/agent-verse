@@ -8,10 +8,9 @@ from typing import Any
 
 from app.observability.logging import get_logger
 from app.ocr.engine import OcrEngine
+from app.ocr.limits import OcrDocumentTooLargeError, ocr_max_upload_bytes
 
 _log = get_logger(__name__)
-
-_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 class OcrDocumentTool:
@@ -97,6 +96,7 @@ class OcrDocumentTool:
             "degradation_reason": result.degradation_reason,
             "empty_pages": list(result.empty_pages),
             "failed_pages": list(result.failed_pages),
+            "failure_kind": result.failure_kind,
         }
 
     def _resolve_input(
@@ -131,12 +131,13 @@ class OcrDocumentTool:
         # cap (devices like /dev/zero report size 0 and never end).
         if not path.is_file():
             raise ValueError("file_path must point to a regular file.")
-        if path.stat().st_size > _MAX_BYTES:
-            raise ValueError(f"File exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB.")
+        limit = ocr_max_upload_bytes()
+        if path.stat().st_size > limit:
+            raise OcrDocumentTooLargeError(limit)
         with path.open("rb") as fh:
-            data = fh.read(_MAX_BYTES + 1)
-        if len(data) > _MAX_BYTES:
-            raise ValueError(f"File exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB.")
+            data = fh.read(limit + 1)
+        if len(data) > limit:
+            raise OcrDocumentTooLargeError(limit)
         suffix = path.suffix.lower()
         if suffix == ".pdf":
             return None, data
@@ -144,12 +145,13 @@ class OcrDocumentTool:
 
     @staticmethod
     def _decode_b64(encoded: str) -> bytes:
+        """Decode, refusing a document over ``OCR_MAX_UPLOAD_BYTES`` — the same
+        cap the OCR API enforces (this used to be a separate hardcoded 10 MiB)."""
         try:
             data = base64.b64decode(encoded)
         except Exception as exc:
             raise ValueError(f"Invalid base64 input: {exc}") from exc
-        if len(data) > _MAX_BYTES:
-            raise ValueError(
-                f"Decoded input exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB."
-            )
+        limit = ocr_max_upload_bytes()
+        if len(data) > limit:
+            raise OcrDocumentTooLargeError(limit)
         return data

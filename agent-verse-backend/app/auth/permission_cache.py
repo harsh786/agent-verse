@@ -12,7 +12,10 @@ Invalidation:
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionCache:
@@ -28,11 +31,23 @@ class PermissionCache:
         return f"{self.PREFIX}{tenant_id}:{key_id}"
 
     async def get(self, tenant_id: str, key_id: str) -> set[str] | None:
-        """Return cached scope set or None on cache miss."""
-        raw = await self._r.get(self._key(tenant_id, key_id))
+        """Return cached scope set or None on cache miss.
+
+        A Redis error is a miss, not a failure: the DB-derived scopes are the
+        authority and the caller re-resolves them. A Redis restart used to turn
+        every authenticated request into a 500 for the few seconds it took.
+        """
+        try:
+            raw = await self._r.get(self._key(tenant_id, key_id))
+        except Exception as exc:
+            logger.warning("permission_cache_read_failed: %s", type(exc).__name__)
+            return None
         if raw is None:
             return None
-        return set(json.loads(raw))
+        try:
+            return set(json.loads(raw))
+        except (TypeError, ValueError):
+            return None
 
     async def set(self, tenant_id: str, key_id: str, scopes: set[str]) -> None:
         """Store scope set with TTL.
@@ -44,14 +59,19 @@ class PermissionCache:
         validates via a scoped endpoint) until the TTL lapses. On an empty result
         we instead drop any stale entry so the next request re-resolves cleanly.
         """
-        if not scopes:
-            await self._r.delete(self._key(tenant_id, key_id))
-            return
-        await self._r.setex(
-            self._key(tenant_id, key_id),
-            self.TTL,
-            json.dumps(sorted(scopes)),
-        )
+        try:
+            if not scopes:
+                await self._r.delete(self._key(tenant_id, key_id))
+                return
+            await self._r.setex(
+                self._key(tenant_id, key_id),
+                self.TTL,
+                json.dumps(sorted(scopes)),
+            )
+        except Exception as exc:
+            # Not caching is always safe (the next request re-resolves from the DB).
+            # Invalidation below still raises: a role change must never be lost.
+            logger.warning("permission_cache_write_failed: %s", type(exc).__name__)
 
     async def clear_all(self) -> int:
         """Drop every cached permission set (all tenants). Called on startup so a

@@ -52,7 +52,7 @@ from app.auth.agent_identity import AgentIdentityService
 from app.auth.scope_enforcement import ScopeEnforcementMiddleware
 from app.collab.store import CollaborationStore
 from app.core.config import Settings, get_settings
-from app.core.errors import InternalError, PlatformError
+from app.core.errors import DatabaseUnavailableError, InternalError, PlatformError
 from app.core.pools import ConnectionPools
 from app.core.startup import StartupTracker
 from app.enterprise.compliance import ComplianceController
@@ -672,10 +672,65 @@ def _register_error_handlers(app: FastAPI) -> None:
     async def _platform_error_handler(_: Request, exc: PlatformError) -> JSONResponse:
         if exc.severity.value in {"high", "critical"}:
             logger.error("platform_error", code=exc.code, error_id=exc.error_id)
-        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+        retry_after = exc.retry_after_seconds
+        headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status, headers=headers)
+
+    from app.db.availability import db_unavailable_reason
+
+    def _db_unavailable_response(request: Request, exc: BaseException, reason: str) -> JSONResponse:
+        # A Postgres / PgBouncer outage is not a server bug: answer a retryable 503
+        # with Retry-After (never a 500, never an empty 200). No driver text leaks.
+        err = DatabaseUnavailableError(cause=exc)
+        retry_after = err.retry_after_seconds or 5
+        logger.warning(
+            "database_unavailable",
+            error_id=err.error_id,
+            reason=reason,
+            error_type=type(exc).__name__,
+            method=request.method,
+            path=request.url.path,
+        )
+        return JSONResponse(
+            err.to_dict(),
+            status_code=err.http_status,
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    async def _db_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Registered per DB/socket exception class so a route-level outage is
+        # answered inside ExceptionMiddleware. Anything that is NOT an outage
+        # (IntegrityError, ProgrammingError, …) is re-raised untouched and reaches
+        # the generic handler exactly as before (500, re-raised to the server).
+        reason = db_unavailable_reason(exc)
+        if reason is None:
+            raise exc
+        return _db_unavailable_response(request, exc, reason)
+
+    from sqlalchemy import exc as sa_exc
+
+    _db_error_classes: list[type[Exception]] = [
+        sa_exc.DBAPIError,
+        sa_exc.TimeoutError,
+        sa_exc.DisconnectionError,
+        OSError,
+    ]
+    try:
+        import asyncpg
+
+        _db_error_classes += [asyncpg.PostgresError, asyncpg.InterfaceError]
+    except ImportError:  # pragma: no cover - asyncpg is a hard dependency
+        pass
+    for _cls in _db_error_classes:
+        app.add_exception_handler(_cls, _db_error_handler)
 
     @app.exception_handler(Exception)
-    async def _unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
+    async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Outages raised outside a route (middleware: auth, RLS, rate limiting)
+        # only reach this catch-all handler; classify them first.
+        reason = db_unavailable_reason(exc)
+        if reason is not None:
+            return _db_unavailable_response(request, exc, reason)
         # Never leak internal detail to the client; log the real cause server-side.
         internal = InternalError("An internal error occurred", cause=exc)
         logger.error("unhandled_error", error_id=internal.error_id, exc_info=exc)

@@ -24,7 +24,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
-from app.core.errors import PlatformError
+from app.core.errors import DatabaseUnavailableError, PlatformError
 from app.tenancy.context import PlanTier, TenantContext
 
 # ---------------------------------------------------------------------------
@@ -409,7 +409,12 @@ def _key_store_unavailable_response(exc: PlatformError) -> JSONResponse:
 
 
 async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | None:
-    """Resolve an ``av_agent_*`` key; None (→ 401) when unknown or unverifiable."""
+    """Resolve an ``av_agent_*`` key; None (→ 401) when unknown or unverifiable.
+
+    Raises :class:`DatabaseUnavailableError` (→ 503, like the API-key path) when
+    the key store is down: a 401 would tell the agent its key is bad. Either way
+    the request is refused — never an unrestricted context.
+    """
     from app.auth import agent_credentials
 
     store = agent_credentials._agent_credential_store
@@ -418,9 +423,12 @@ async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | 
             raw_key, tenant_service=getattr(request.app.state, "tenant_service", None)
         )
     except Exception as exc:
+        from app.db.availability import is_db_unavailable_error
         from app.observability.logging import get_logger
 
         get_logger(__name__).warning("agent_key_resolution_failed", error=str(exc)[:200])
+        if is_db_unavailable_error(exc):
+            raise DatabaseUnavailableError(cause=exc) from exc
         return None
 
 
@@ -577,7 +585,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
         elif is_agent_key(raw_key):
             # Agent-scoped key: resolved ONLY by the agent-key store (never the
             # tenant-key resolver) into an agent-bound, tool-restricted context.
-            tenant_ctx = await _resolve_agent_key(request, raw_key)
+            try:
+                tenant_ctx = await _resolve_agent_key(request, raw_key)
+            except DatabaseUnavailableError as exc:
+                return _key_store_unavailable_response(exc)
             if tenant_ctx is None:
                 return _auth_error_response()
         elif raw_key.count(".") >= 2:
