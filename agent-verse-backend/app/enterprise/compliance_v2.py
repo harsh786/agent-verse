@@ -407,9 +407,15 @@ class ComplianceChecker:
                     {"tid": tenant_id},
                 )
             ).fetchone()
-            return row[0] if row and row[0] else "us-east-1"
+            if row and row[0]:
+                return str(row[0])
         except Exception:
-            return "us-east-1"
+            pass
+        # a10-F253-01: no tenant override — the deployment's declared region,
+        # never an assumed "us-east-1".
+        from app.enterprise.compliance import deployment_data_regions
+
+        return deployment_data_regions()[0] or "unconfigured"
 
     async def _check_retention_policy(self, db: Any, tenant_id: str) -> bool:
         from sqlalchemy import text as _t

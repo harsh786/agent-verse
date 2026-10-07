@@ -652,9 +652,9 @@ warn_return_any = false
 no_warn_return_any = true
 disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
-# Capabilities + content + context: dynamic registry
+# Content + context: dynamic registry
 [[tool.mypy.overrides]]
-module = ["app.capabilities.*", "app.content.*", "app.context.*"]
+module = ["app.content.*", "app.context.*"]
 warn_return_any = false
 no_warn_return_any = true
 disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
@@ -720,9 +720,9 @@ warn_return_any = false
 no_warn_return_any = true
 disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
-# AI router + agent runtime + plan runtime: dynamic model dispatch
+# AI router + agent runtime: dynamic model dispatch
 [[tool.mypy.overrides]]
-module = ["app.ai_router.*", "app.agent_runtime.*", "app.plan_runtime.*", "app.state_runtime.*"]
+module = ["app.ai_router.*", "app.agent_runtime.*", "app.state_runtime.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false

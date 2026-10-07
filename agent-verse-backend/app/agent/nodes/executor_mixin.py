@@ -1297,8 +1297,15 @@ class ExecutorMixin:
                                     "description": step_desc,
                                     "tool_called": self._extract_tool_name(step_desc),
                                     "output": output[:500] if output else "",
-                                    "cost_increment": (
-                                        agent_state.context.get("last_step_cost", 0.0)
+                                    # The goal's running metered LLM spend
+                                    # (llm_cost accumulates it); the listener
+                                    # derives the per-step increment. The old
+                                    # "last_step_cost" key was never set.
+                                    "total_cost_usd": (
+                                        float(
+                                            agent_state.context.get("total_cost_usd", 0.0)
+                                            or 0.0
+                                        )
                                         if isinstance(agent_state.context, dict)
                                         else 0.0
                                     ),

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
@@ -32,6 +33,40 @@ from app.ocr.rasterize import pdf_page_count, render_pdf_page_image
 PageLoader = Callable[[], Any]
 
 _log = logging.getLogger(__name__)
+
+# a10-F243-03: why the page being OCR'd in this task produced no text. Each page
+# runs in its own task (map_bounded), so the sink set there is that page's own;
+# callers outside a document extraction (sink None) record nothing.
+_PAGE_FAILURES: ContextVar[list[str] | None] = ContextVar("ocr_page_failures", default=None)
+
+
+def _note_page_failure(reason: str) -> None:
+    sink = _PAGE_FAILURES.get()
+    if sink is not None:
+        sink.append(reason)
+
+
+def _page_outcome(
+    results: Sequence[tuple[tuple[str, float, str], list[str]]],
+) -> tuple[list[int], list[int], str | None]:
+    """``(empty_pages, failed_pages, degradation_reason)`` of a document's pages.
+
+    A page is *failed* when it has no text and the engine recorded a failure on
+    it; a blank page the engine read successfully is only *empty*. The reason is
+    set when any page failed, naming the distinct failure causes.
+    """
+    empty = [i for i, ((text, _, _), _) in enumerate(results, 1) if not text.strip()]
+    failed = [i for i, ((text, _, _), why) in enumerate(results, 1) if not text.strip() and why]
+    if not failed:
+        return empty, failed, None
+    causes = "; ".join(dict.fromkeys(r for _, why in results for r in why))
+    total = len(results)
+    if len(failed) == total:
+        reason = f"no text could be read from any of the {total} page(s): {causes}"
+    else:
+        listed = ", ".join(str(n) for n in failed[:20]) + (", ..." if len(failed) > 20 else "")
+        reason = f"{len(failed)} of {total} page(s) could not be read (pages {listed}): {causes}"
+    return empty, failed, reason
 
 
 def _ocr_model() -> str:
@@ -268,23 +303,37 @@ class OcrEngine:
                     page_count=0,
                 )
 
-            async def _page(load: PageLoader) -> tuple[str, float, str]:
-                return await self._ocr_loaded_page(
+            async def _page(load: PageLoader) -> tuple[tuple[str, float, str], list[str]]:
+                # This page's task-local failure sink (see _PAGE_FAILURES).
+                failures: list[str] = []
+                _PAGE_FAILURES.set(failures)
+                page = await self._ocr_loaded_page(
                     load, provider=provider, vision_fallback=vision_fallback
                 )
+                return page, failures
 
             # Pages run concurrently (bounded per document and process-wide);
             # results stay in page order, so each page keeps its own text.
-            raw_texts = await map_bounded(
+            page_results = await map_bounded(
                 pages, _page, limit=current_limits().page_concurrency
             )
 
+        raw_texts = [page for page, _ in page_results]
         raw_text = "\n\n".join(t for t, _, _ in raw_texts)
         overall_conf, engine_used, vision_pages, measured = _summarise_pages(raw_texts)
+        # a10-F243-03: pages the engine failed on (no provider, vision error,
+        # render failure) used to be joined in as silent empty text.
+        empty_pages, failed_pages, failure_reason = _page_outcome(page_results)
+        if failure_reason:
+            _log.warning("ocr_pages_failed %s", failure_reason)
         provenance: dict[str, Any] = {
             "page_engines": [e for _, _, e in raw_texts],
             "vision_pages": vision_pages,
             "confidence_measured": measured,
+            "empty_pages": empty_pages,
+            "failed_pages": failed_pages,
+            "degraded": failure_reason is not None,
+            "degradation_reason": failure_reason,
         }
 
         if not extract_fields:
@@ -499,6 +548,7 @@ class OcrEngine:
         async with ocr_page_slot():
             img = await run_ocr_work(load)
             if img is None:
+                _note_page_failure("page could not be rendered")
                 return "", 0.0, "tesseract"
             return await self._ocr_page(img, provider=provider, vision_fallback=vision_fallback)
 
@@ -630,6 +680,7 @@ class OcrEngine:
                 self._fallback_provider = provider
             except Exception as exc:
                 _log.warning("No provider for LLM vision OCR (%s); empty text", exc)
+                _note_page_failure("no LLM provider is available for vision OCR")
                 return "", 0.0, "llm_vision"
 
         img_b64 = await run_ocr_work(self._image_to_base64, img)  # PNG encode: off the loop
@@ -678,6 +729,8 @@ class OcrEngine:
             raise
         except Exception as exc:
             _log.warning("LLM vision OCR failed: %s", exc)
+            # The exception type only: provider messages may echo request details.
+            _note_page_failure(f"LLM vision OCR failed ({type(exc).__name__})")
             return "", 0.0, "llm_vision"
 
     @staticmethod

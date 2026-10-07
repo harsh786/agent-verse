@@ -452,7 +452,8 @@ async def test_get_data_region_exception():
     mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
     checker = ComplianceChecker(None)  # type: ignore[arg-type]
     result = await checker._get_data_region(mock_session, "tid")
-    assert result == "us-east-1"
+    # a10-F253-01: no assumed us-east-1 — the declared DATA_REGION (unset here).
+    assert result == "unconfigured"
 
 
 @pytest.mark.asyncio
@@ -525,7 +526,8 @@ async def test_get_data_region_null_value():
     mock_session.execute = AsyncMock(return_value=mock_result)
     checker = ComplianceChecker(None)  # type: ignore[arg-type]
     result = await checker._get_data_region(mock_session, "tid")
-    assert result == "us-east-1"
+    # a10-F253-01: no assumed us-east-1 — the declared DATA_REGION (unset here).
+    assert result == "unconfigured"
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,6 @@ import time
 
 import pytest
 
-from app.capabilities.registry import build_default_capability_registry
 from app.data_classification.classifier import DataClassifier
 from app.data_classification.schema import DataClass
 from app.evals.runtime_scorecard import RuntimeScorecard
@@ -27,8 +26,6 @@ from app.orchestration.runtime_profile import (
 )
 from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
 from app.orchestration.strategy_registry import build_default_registry
-from app.plan_runtime.plan_verifier import PlanVerifier
-from app.recovery.failure_classifier import FailureClass, FailureClassifier
 from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
 from app.runtime_readiness.readiness_gate import ReadinessGate
 from app.security_runtime.governance_profile import GovernanceProfileSelector
@@ -476,46 +473,6 @@ async def test_ac_guardrail_profile_correct_for_critical(builder, tenant_ctx):
     assert config.block_on_injection is True
 
 
-def test_ac_plan_verifier_flags_critical_operation():
-    """AC §5.6 — PlanVerifier flags destructive operations as critical."""
-    from app.orchestration.runtime_profile import (
-        AgentPatternConfig,
-        Complexity,
-        EvalConfig,
-        GoalProperties,
-        GoalRuntimeProfile,
-        MemoryCacheConfig,
-        ModelPlanConfig,
-        RAGStrategyConfig,
-        RiskLevel,
-        SecurityConfig,
-    )
-
-    props = GoalProperties(
-        raw_goal="delete all data",
-        complexity=Complexity.SIMPLE,
-        risk=RiskLevel.CRITICAL,
-    )
-    profile = GoalRuntimeProfile(
-        goal_id="pv-test",
-        tenant_id="t1",
-        properties=props,
-        agent_patterns=AgentPatternConfig(),
-        rag_strategy=RAGStrategyConfig(),
-        model_plan=ModelPlanConfig(cost_class="high"),
-        security=SecurityConfig(hitl_required=True, rollback_required=True),
-        memory_cache=MemoryCacheConfig(),
-        eval_config=EvalConfig(),
-    )
-    verifier = PlanVerifier()
-    result = verifier.verify(
-        plan=["delete all data from production database", "drop all tables"],
-        profile=profile,
-    )
-    assert result.risk_level == "critical"
-    assert result.requires_hitl is True
-
-
 def test_ac_readiness_gate_blocks_when_postgres_down():
     """AC §5.7 — ReadinessGate returns ready=False when postgres is unavailable."""
     from app.orchestration.runtime_profile import (
@@ -586,46 +543,6 @@ def test_ac_readiness_gate_ready_all_healthy():
     assert result.ready is True
 
 
-def test_ac_failure_classifier_categorizes_auth_error():
-    """AC §5.8 — FailureClassifier correctly categorizes auth errors."""
-    classifier = FailureClassifier()
-    result = classifier.classify("401 Unauthorized — invalid api key")
-    assert result.failure_class == FailureClass.AUTH_FAILURE
-
-
-def test_ac_failure_classifier_categorizes_rate_limit():
-    """AC §5.8b — FailureClassifier correctly categorizes rate limit."""
-    classifier = FailureClassifier()
-    result = classifier.classify("429 Too Many Requests — rate limit exceeded")
-    assert result.failure_class == FailureClass.RATE_LIMIT
-
-
-def test_ac_failure_classifier_categorizes_timeout():
-    """AC §5.8c — FailureClassifier correctly categorizes timeout."""
-    classifier = FailureClassifier()
-    result = classifier.classify("Operation timed out after 30 seconds")
-    assert result.failure_class == FailureClass.TIMEOUT
-
-
-def test_ac_failure_classifier_categorizes_unknown():
-    """AC §5.8d — FailureClassifier returns UNKNOWN for unrecognized errors."""
-    classifier = FailureClassifier()
-    result = classifier.classify("Something went very wrong with the frob")
-    assert result.failure_class == FailureClass.UNKNOWN
-
-
-def test_ac_capability_registry_is_populated():
-    """AC §5.9 — CapabilityRegistry contains entries for all major capabilities."""
-    reg = build_default_capability_registry()
-    caps = reg.list_all()
-    assert len(caps) > 0
-    cap_ids = {c.capability_id for c in caps}
-    # Verify some known capabilities are present (IDs use prefixes like retriever:, tool:, etc.)
-    assert any("retriever" in cid for cid in cap_ids)
-    assert any("tool" in cid for cid in cap_ids)
-    assert any("guardrail" in cid for cid in cap_ids)
-
-
 async def test_ac_profile_has_all_required_sections(builder):
     """AC §5.10 — Profile must have all 7 strategy sections populated."""
     profile, _ = await builder.build_with_trace(
@@ -645,37 +562,6 @@ async def test_ac_profile_has_all_required_sections(builder):
     assert profile.profile_id
     # Assembly latency should be recorded
     assert profile.assembly_latency_ms >= 0
-
-
-async def test_ac_full_pipeline_e2e(builder, tenant_ctx):
-    """AC §5.11 — Full pipeline: classify → select → guardrails → governance → verify."""
-    goal = "analyze and synthesize market intelligence report across 15 data sources"
-    profile, trace = await builder.build_with_trace(
-        goal,
-        tenant_id="t1",
-        goal_id="ac11",
-    )
-
-    # Verify all pipeline stages ran
-    assert len(trace.decisions) >= 6
-
-    # Guardrail selection
-    guard_selector = GuardrailProfileSelector()
-    guard_config = guard_selector.select(profile, tenant_ctx=tenant_ctx)
-    assert guard_config.name is not None
-
-    # Governance selection
-    gov_selector = GovernanceProfileSelector()
-    gov_config = gov_selector.select(profile, tenant_ctx=tenant_ctx)
-    assert gov_config.name is not None
-
-    # Plan verification
-    verifier = PlanVerifier()
-    vresult = verifier.verify(
-        plan=["Retrieve market data", "Analyze trends", "Synthesize report"],
-        profile=profile,
-    )
-    assert vresult.feasible is True
 
 
 async def test_ac_strategy_registry_contains_all_required_strategies(registry):
@@ -885,22 +771,6 @@ def test_acceptance_data_classification_no_silent_pass():
         assert len(result.classes) > 0
 
 
-async def test_acceptance_plan_verifier_gates_high_risk():
-    """Spec §5 AC: No high-risk plan executes without verification."""
-    verifier = PlanVerifier()
-    plan = ["Drop the production database", "Truncate all user tables", "Revoke all API keys"]
-    profile = GoalRuntimeProfile(
-        goal_id="g1", tenant_id="t1",
-        properties=GoalProperties(raw_goal="destroy everything", risk=RiskLevel.CRITICAL),
-        agent_patterns=AgentPatternConfig(), rag_strategy=RAGStrategyConfig(),
-        model_plan=ModelPlanConfig(), security=SecurityConfig(hitl_required=True),
-        memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
-    )
-    result = verifier.verify(plan=plan, profile=profile)
-    assert result.requires_hitl is True
-    assert result.risk_level in ("high", "critical")
-
-
 def test_acceptance_readiness_gate_blocks_when_llm_down():
     """Spec §5 AC: Platform blocks goals when LLM provider is unavailable."""
     health = DependencyHealth(
@@ -918,27 +788,6 @@ def test_acceptance_readiness_gate_blocks_when_llm_down():
     result = gate.check(profile)
     assert result.ready is False
     assert "llm_provider" in result.blocking_deps
-
-
-def test_acceptance_failure_classifier_never_generic_retry():
-    """Spec §5 AC: Recovery never generic retry — every failure has classified reason."""
-    classifier = FailureClassifier()
-    from app.recovery.recovery_policy import RecoveryPolicy
-    policy = RecoveryPolicy()
-    test_cases = [
-        ("401 Unauthorized", FailureClass.AUTH_FAILURE),
-        ("429 rate limit exceeded", FailureClass.RATE_LIMIT),
-        ("INSUFFICIENT DATA: cannot find answer", FailureClass.CONTEXT_GAP),
-        ("TimeoutError after 30s", FailureClass.TIMEOUT),
-        ("GUARDRAIL: injection detected", FailureClass.SAFETY_VIOLATION),
-    ]
-    for error_text, expected_class in test_cases:
-        result = classifier.classify(error_text)
-        assert result.failure_class == expected_class, (
-            f"'{error_text}' should classify as {expected_class}, got {result.failure_class}"
-        )
-        action = policy.select(result)
-        assert action is not None  # must have a specific action, not None
 
 
 async def test_acceptance_profile_builder_latency_under_100ms(builder):
@@ -978,3 +827,30 @@ async def test_acceptance_all_10_archetypes_produce_valid_profiles(builder):
         except Exception as e:
             pytest.fail(f"Archetype {i}: profile not JSON-serializable: {e}")
         assert len(trace.decisions) > 0, f"Archetype {i}: no decisions in trace"
+
+
+async def test_ac_full_pipeline_e2e(builder, tenant_ctx):
+    """AC §5.11 — Full pipeline: classify → select → guardrails → governance.
+
+    (The plan-verification stage used the unwired app.plan_runtime scaffold,
+    removed by a10-F252-01; plan_verification is a PLANNED strategy.)
+    """
+    goal = "analyze and synthesize market intelligence report across 15 data sources"
+    profile, trace = await builder.build_with_trace(
+        goal,
+        tenant_id="t1",
+        goal_id="ac11",
+    )
+
+    # Verify all pipeline stages ran
+    assert len(trace.decisions) >= 6
+
+    # Guardrail selection
+    guard_selector = GuardrailProfileSelector()
+    guard_config = guard_selector.select(profile, tenant_ctx=tenant_ctx)
+    assert guard_config.name is not None
+
+    # Governance selection
+    gov_selector = GovernanceProfileSelector()
+    gov_config = gov_selector.select(profile, tenant_ctx=tenant_ctx)
+    assert gov_config.name is not None

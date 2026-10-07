@@ -15,6 +15,11 @@ This pure-ASGI middleware bounds every request on those prefixes:
   ``Content-Length`` is never read past the cap.
 
 Signature verification therefore always runs on bounded bytes.
+
+The authenticated OCR upload routes (``/ocr/``, a10-F243-05) are bounded the
+same way: their JSON bodies carry whole documents as base64 and used to be read
+with no limit. Their cap is the base64-inflated ``OCR_MAX_UPLOAD_BYTES`` plus
+envelope room; the route enforces the exact per-document limit.
 """
 
 from __future__ import annotations
@@ -40,6 +45,24 @@ PUBLIC_INGRESS_PREFIXES: tuple[str, ...] = (
     "/v1/gateway/",
 )
 _EMAIL_PREFIXES: tuple[str, ...] = ("/channels/email/",)
+_OCR_PREFIXES: tuple[str, ...] = ("/ocr/",)
+# JSON / multipart envelope allowance on top of the base64-inflated document.
+_OCR_ENVELOPE_BYTES = 1_048_576
+
+
+def ocr_body_cap(max_document_bytes: int) -> int:
+    """The request-body cap for an OCR route: one document base64-encoded plus
+    envelope room (a batch shares it — its documents together)."""
+    return -(-max(1, max_document_bytes) * 4 // 3) + _OCR_ENVELOPE_BYTES
+
+
+def _default_ocr_cap() -> int:
+    try:
+        from app.core.config import get_settings
+
+        return ocr_body_cap(int(get_settings().ocr_max_upload_bytes))
+    except Exception:
+        return ocr_body_cap(25 * 1_048_576)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -53,8 +76,15 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-def cap_for_path(path: str, default_cap: int, email_cap: int | None = None) -> int | None:
-    """The body cap for ``path``, or ``None`` when the path is not public ingress."""
+def cap_for_path(
+    path: str,
+    default_cap: int,
+    email_cap: int | None = None,
+    ocr_cap: int | None = None,
+) -> int | None:
+    """The body cap for ``path``, or ``None`` when the path is not bounded here."""
+    if ocr_cap is not None and any(path.startswith(p) for p in _OCR_PREFIXES):
+        return ocr_cap
     if any(path.startswith(p) for p in _EMAIL_PREFIXES):
         return max(default_cap, email_cap or DEFAULT_EMAIL_INGRESS_MAX_BODY_BYTES)
     if any(path.startswith(p) for p in PUBLIC_INGRESS_PREFIXES):
@@ -86,13 +116,15 @@ async def _send_413(send: Send, cap: int) -> None:
 
 
 class PublicIngressBodyLimitMiddleware:
-    """Bound request bodies on :data:`PUBLIC_INGRESS_PREFIXES` (413 past the cap)."""
+    """Bound request bodies on :data:`PUBLIC_INGRESS_PREFIXES` and the OCR upload
+    routes (413 past the cap)."""
 
     def __init__(
         self,
         app: ASGIApp,
         max_body_bytes: int | None = None,
         email_max_body_bytes: int | None = None,
+        ocr_max_body_bytes: int | None = None,
     ) -> None:
         self.app = app
         self.max_body_bytes = max_body_bytes or _env_int(
@@ -101,13 +133,16 @@ class PublicIngressBodyLimitMiddleware:
         self.email_max_body_bytes = email_max_body_bytes or _env_int(
             "EMAIL_INGRESS_MAX_BODY_BYTES", DEFAULT_EMAIL_INGRESS_MAX_BODY_BYTES
         )
+        self.ocr_max_body_bytes = ocr_max_body_bytes or _default_ocr_cap()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         path = str(scope.get("path", ""))
-        cap = cap_for_path(path, self.max_body_bytes, self.email_max_body_bytes)
+        cap = cap_for_path(
+            path, self.max_body_bytes, self.email_max_body_bytes, self.ocr_max_body_bytes
+        )
         if cap is None:
             await self.app(scope, receive, send)
             return

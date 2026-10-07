@@ -76,8 +76,13 @@ def test_ingest_image_response_never_claims_real_multimodal_embedding() -> None:
         headers=_HEADERS,
     )
     data = resp.json()
-    assert data["embedding_strategy"] == "caption_then_text_embed"
-    assert data["real_multimodal_embedding"] is False
+    # No vision provider in this harness: the job fails honestly (a10-F242-02)
+    # and claims no embedding at all, let alone a real multimodal one.
+    assert data["status"] == "failed"
+    assert data["span_count"] == 0
+    assert "vision" in data["error"].lower()
+    assert data["real_multimodal_embedding"] is not True
+    assert data["embedding_strategy"] is None
     assert data.get("extractor_model")
 
 

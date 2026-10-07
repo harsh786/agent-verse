@@ -109,8 +109,8 @@ class TestStubSimulationWithProvider:
 
 class TestStartWithPipelineFailure:
     @pytest.mark.asyncio
-    async def test_start_falls_back_to_stub_on_graph_exception(self):
-        """Lines 225-227: AgentGraph raises → _stub_simulation called."""
+    async def test_start_reports_failure_on_graph_exception(self):
+        """AgentGraph raises → a failed run (a10-F241-04: no silent stub success)."""
         runner = SimulationRunner()
 
         with patch("app.agent.graph.AgentGraph") as mock_graph_cls:
@@ -122,7 +122,8 @@ class TestStartWithPipelineFailure:
                 tenant_ctx=_CTX,
                 provider=MagicMock(),
             )
-        assert run.status in ("completed", "running")
+        assert run.status == "failed"
+        assert run.result["outcome"] == "failed (simulated)"
 
     @pytest.mark.asyncio
     async def test_start_no_provider_uses_stub(self):
