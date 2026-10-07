@@ -2620,6 +2620,10 @@ export interface GoldenTask {
   min_score: number;
   max_iterations: number;
   tags: string[];
+  /** Sources a run must cite (a scored check). */
+  expected_citations?: string[];
+  /** The goal this task was promoted from, if any. */
+  source_goal_id?: string;
   /** The dataset version this revision of the task was written in. */
   revision?: number;
 }
@@ -2676,6 +2680,7 @@ export interface GoldenTaskInput {
   min_score?: number;
   max_iterations?: number;
   tags?: string[];
+  expected_citations?: string[];
 }
 
 /** A golden task must check something (MEM-51); the API refuses one that doesn't. */
@@ -2684,8 +2689,32 @@ export function goldenTaskHasChecks(task: GoldenTaskInput): boolean {
     (task.expected_tools ?? []).some((t) => t.trim()) ||
       (task.forbidden_tools ?? []).some((t) => t.trim()) ||
       (task.expected_output_contains ?? []).some((t) => t.trim()) ||
+      (task.expected_citations ?? []).some((t) => t.trim()) ||
       (task.expected_output ?? "").trim(),
   );
+}
+
+/** Options for promoting a completed goal to a golden task (a10-F235-01). */
+export interface PromoteGoalOptions {
+  /** Appended to the goal text as the task input. */
+  context?: string;
+  tags?: string[];
+  /** Expect the tools the run called (default true). */
+  include_tools?: boolean;
+  /** Expect the sources the run cited (default true). */
+  include_citations?: boolean;
+  expected_output_contains?: string[];
+  min_score?: number;
+  max_iterations?: number;
+}
+
+export interface PromoteGoalResult {
+  suite_id: string;
+  goal_id: string;
+  task_id: string;
+  /** The new dataset version the task was added in. */
+  dataset_version: number;
+  task: GoldenTask;
 }
 
 export const evalSuitesApi = {
@@ -2701,6 +2730,16 @@ export const evalSuitesApi = {
       method: "POST",
       body: JSON.stringify(task),
     }),
+  /**
+   * Promote a completed goal to a golden task of the suite (a new dataset version):
+   * its verified answer, the tools it called and the sources it cited become the
+   * expectation. 409 when already promoted into this suite; 422 when not promotable.
+   */
+  promoteGoal: (suiteId: string, goalId: string, options: PromoteGoalOptions = {}) =>
+    request<PromoteGoalResult>(
+      `/intelligence/eval-suites/${encodeURIComponent(suiteId)}/tasks/from-goal/${encodeURIComponent(goalId)}`,
+      { method: "POST", body: JSON.stringify(options) },
+    ),
   /** With ``agentId`` every golden goal runs on that agent and the run can vouch for it in the rollout gate. */
   runSuite: (id: string, agentId?: string) =>
     request<{ run_id: string; dataset_version?: number; agent_id?: string | null }>(

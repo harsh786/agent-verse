@@ -36,6 +36,7 @@ import { GoalFeedback } from "./components/GoalFeedback";
 import { GoalExplainPanel } from "./components/GoalExplainPanel";
 import { PatternSelectionPanel } from "./components/PatternSelectionPanel";
 import { EvalSuggestionsPanel } from "./components/EvalSuggestionsPanel";
+import { PromoteToGoldenDataset } from "./components/PromoteToGoldenDataset";
 import { evalLoadError } from "./components/evalLoadError";
 import { normalizeAdaptiveResult } from "./adaptiveResult";
 import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
@@ -1134,6 +1135,11 @@ export function GoalDetailPage() {
             <RotateCcw className="h-4 w-4" aria-hidden="true" /> Rerun
           </button>
         )}
+        <PromoteToGoldenDataset
+          goalId={goal.goal_id ?? goalId ?? ""}
+          status={goal.status}
+          dryRun={Boolean((goal as { dry_run?: boolean }).dry_run)}
+        />
         <div className="flex items-center gap-1 ml-auto">
           <button onClick={() => navigate(`/goals/${goalId}/dna`)} title="View DNA" className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"><Dna className="h-4 w-4" aria-hidden="true" /></button>
           <button onClick={() => navigate(`/goals/${goalId}/diff`)} title="Diff Run" className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"><GitCompare className="h-4 w-4" aria-hidden="true" /></button>
