@@ -60,7 +60,7 @@ Live results on the rebuilt stack: **MongoDB pipeline + failures 14/14**, **OCR 
 - `feat/per-collection-embedders` (fx-percoll-embed): each KB collection bound to its own embedder/dimension.
 - Baseline live suite (tests/real_world minus the new suites) running; 35 pass / 8 fail so far on the PRE-fix
   deployment (goal strategies, approvals, budget audit, KB re-embed/hard retrieval) — re-run after redeploy.
-Audit driving the model work: scratchpad `model_audit.md` (copy the content into a doc if the scratchpad is gone).
+Audit driving the model work: `docs/audits/fixwave/model-registry-audit-2026-10-07.md`.
 
 ### 0.3 Queue (strict order)
 1. Speech STT/TTS through the registry. 2. Embedding side paths (after per-collection embedders): llm_step
