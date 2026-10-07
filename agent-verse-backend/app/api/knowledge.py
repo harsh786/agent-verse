@@ -84,7 +84,11 @@ from app.rag.store import (
     KnowledgeLegalHoldError,
     KnowledgeStore,
 )
-from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
+from app.rag_platform.retriever import (
+    RAGRetriever,
+    RAGSynthesisError,
+    citation_verification_detail,
+)
 from app.tenancy.context import TenantContext
 from app.tenancy.limits import PlanLimitExceededError
 from app.tenancy.rbac import require_role
@@ -3325,7 +3329,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
         if not verified.grounded:
             from app.observability.logging import get_logger as _get_logger
 
-            _last = verified.strategy_trace[-1].detail if verified.strategy_trace else {}
+            _last = citation_verification_detail(verified.strategy_trace)
             _get_logger(__name__).warning(
                 "knowledge_chat_answer_ungrounded",
                 reason=_last.get("reason"),
@@ -3337,10 +3341,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
                 status_code=422,
                 detail={
                     "code": "answer_ungrounded",
-                    "reason": verified.strategy_trace[-1].detail.get(
-                        "reason",
-                        "unsupported",
-                    ),
+                    "reason": _last.get("reason", "unsupported"),
                     "requested_strategy_id": body.strategy,
                     "strategy_trace": [
                         trace.model_dump(mode="json") for trace in verified.strategy_trace

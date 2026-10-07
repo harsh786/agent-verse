@@ -121,3 +121,37 @@ def test_empty_result_without_an_answer_is_still_200() -> None:
         resp = _client(object()).post("/rag/query", json={"query": "q"}, headers=_HDRS)
     assert resp.status_code == 200, resp.text
     assert resp.json()["grounded"] is False
+
+
+def test_ungrounded_reason_is_the_verifier_reason_not_the_last_trace_step() -> None:
+    """Budget steps are appended after citation verification; the 422 used to
+    read ``strategy_trace[-1]`` and so always said ``unsupported``."""
+    from app.rag.contracts import RAGStrategyTrace
+
+    ungrounded = _result(calibrated=0.8).model_copy(
+        update={
+            "grounded": False,
+            "answer": "Not available.",
+            "strategy_trace": [
+                RAGStrategyTrace(
+                    strategy=RAGStrategy.HYBRID,
+                    action="citation_verification",
+                    status="complete",
+                    detail={"reason": "invalid_citation", "unsupported_claims": ["x"]},
+                ),
+                RAGStrategyTrace(
+                    strategy=RAGStrategy.HYBRID,
+                    action="budget_charge",
+                    status="complete",
+                    detail={"operation": "synthesis"},
+                ),
+            ],
+        }
+    )
+    with patch(
+        "app.api.rag_platform.RAGRetriever.retrieve",
+        new=AsyncMock(return_value=ungrounded),
+    ):
+        resp = _client(object()).post("/rag/query", json={"query": "q"}, headers=_HDRS)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["reason"] == "invalid_citation"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import re
 import unicodedata
@@ -70,12 +71,68 @@ class MinimalCitationVerifier:
             normalized = normalized.rstrip(".!?").rstrip()
         return normalized
 
+    @staticmethod
+    def _key_path_masked(answer: str, evidence: str) -> str:
+        """``answer`` with the array indexes of flattened-record key paths masked.
+
+        A flattened MongoDB / JSON record renders arrays as ``lines[6].title`` and
+        ``timeline[1].at``; an answer quoting such a path is not citing evidence
+        6 or 1. ``lines[6]`` used to be read as a marker for citation 6 (out of
+        range with top_k=5, so the whole answer was refused as
+        ``invalid_citation``) and ``timeline[1]`` split one sentence into
+        fragments ("... (timeline" / "at)") the entailment model rejected.
+
+        An index counts as a key path when it is attached to an identifier and
+        the path continues (``[6].title``, ``[0][1]``) or the attached token
+        (``timeline[1]``) occurs verbatim in the cited evidence. Ambiguity only
+        ever turns a marker into text, which leaves the claim uncited (refused),
+        never the reverse. Same-length replacement keeps offsets aligned.
+        """
+
+        def replace(match: re.Match[str]) -> str:
+            start = match.start()
+            while start > 0 and (answer[start - 1].isalnum() or answer[start - 1] in "_.[]"):
+                start -= 1
+            token = answer[start : match.end()].lstrip(".")
+            follows = answer[match.end() : match.end() + 2]
+            continues = bool(re.match(r"\.[^\W\d]|\[\d", follows))
+            if continues or (token and token in evidence):
+                return f"{_KEY_OPEN}{match.group(1)}{_KEY_CLOSE}"
+            return match.group()
+
+        return _KEY_PATH_INDEX.sub(replace, answer)
+
+    @staticmethod
+    def _unmask(text: str) -> str:
+        return text.replace(_KEY_OPEN, "[").replace(_KEY_CLOSE, "]")
+
     @classmethod
-    def _atomic_claims(cls, answer: str) -> list[tuple[str, list[int]]]:
-        atomic: list[tuple[str, list[int]]] = []
+    def _claim_units(cls, answer: str, evidence: str = "") -> list[tuple[str, list[int], str]]:
+        """Marker-scoped claims as ``(claim, references, sentence)``.
+
+        ``sentence`` is the answer sentence the claim was cut from (markers
+        removed). A sentence with several markers yields fragments such as
+        "and PDF format"; the entailment model gets the sentence so it can tell
+        what a fragment refers to.
+        """
+        masked = cls._key_path_masked(answer, evidence)
+        boundaries = [0]
+        boundaries.extend(
+            m.end() for m in re.finditer(r"(?<=[.!?\u3002\uff01\uff1f])\s+|\n+", masked)
+        )
+        boundaries.append(len(masked))
+
+        def sentence_at(position: int) -> str:
+            for left, right in itertools.pairwise(boundaries):
+                if left <= position < right:
+                    sentence = cls._normalize(masked[left:right])
+                    return cls._unmask(re.sub(r"\s+(?=[,;:.!?])", "", sentence))
+            return ""
+
+        atomic: list[tuple[str, list[int], str]] = []
         cursor = 0
-        for marker in cls._MARKER_GROUP.finditer(answer):
-            scoped = answer[cursor : marker.start()]
+        for marker in cls._MARKER_GROUP.finditer(masked):
+            scoped = masked[cursor : marker.start()]
             scoped = re.sub(
                 r"^[\s,;:.!?]+(?:and\s+|but\s+)?",
                 "",
@@ -90,14 +147,33 @@ class MinimalCitationVerifier:
             )
             references = [int(value) for value in re.findall(r"\d+", marker.group())]
             if cls._normalize(scoped):
-                atomic.append((scoped, list(references)))
+                anchor = marker.start()
+                while anchor > cursor and masked[anchor - 1].isspace():
+                    anchor -= 1
+                atomic.append(
+                    (cls._unmask(scoped), list(references), sentence_at(max(0, anchor - 1)))
+                )
             cursor = marker.end()
-        trailing = re.sub(r"^[\s,;:.!?]+", "", answer[cursor:]).strip()
+        trailing = re.sub(r"^[\s,;:.!?]+", "", masked[cursor:]).strip()
         if cls._normalize(trailing):
-            atomic.append((trailing, []))
+            atomic.append((cls._unmask(trailing), [], cls._unmask(cls._normalize(trailing))))
         return atomic
 
-    async def _provider_entails(self, claim: str, evidence: str) -> CitationVerification:
+    @classmethod
+    def _atomic_claims(cls, answer: str, evidence: str = "") -> list[tuple[str, list[int]]]:
+        return [(claim, refs) for claim, refs, _ in cls._claim_units(answer, evidence)]
+
+    @classmethod
+    def _identical(cls, claim: str, evidence: str) -> bool:
+        """Claim and evidence are the same text up to NFKC, whitespace, a final
+        full stop and number formatting (``1,234.50`` == ``1234.5``)."""
+        return _canonical_numbers(cls._normalize(claim)) == _canonical_numbers(
+            cls._normalize(evidence)
+        )
+
+    async def _provider_entails(
+        self, claim: str, evidence: str, sentence: str = ""
+    ) -> CitationVerification:
         if self.provider is None or not self.model:
             return CitationVerification(False, [claim], "unsupported")
         schema = {
@@ -121,13 +197,7 @@ class MinimalCitationVerifier:
                     messages=[
                         Message(
                             role="user",
-                            content=(
-                                "Determine whether the claim is fully entailed by the evidence. "
-                                'Reply with only this JSON object: {"supported": true, '
-                                '"reason": "entailed"} or {"supported": false, '
-                                '"reason": "not_entailed"}.\n\n'
-                                f"Claim: {claim}\nEvidence: {evidence}"
-                            ),
+                            content=_entailment_prompt(claim, evidence, sentence),
                         )
                     ],
                     model=self.model,
@@ -174,7 +244,8 @@ class MinimalCitationVerifier:
         reasons: list[str] = []
         checked = 0
         entailment_calls = 0
-        for claim, references in self._atomic_claims(answer):
+        all_evidence = "\n".join(citation.content for citation in citations)
+        for claim, references, sentence in self._claim_units(answer, all_evidence):
             claim_normalized = self._normalize(claim)
             if not claim_normalized:
                 continue
@@ -186,15 +257,18 @@ class MinimalCitationVerifier:
                 reasons.append("invalid_citation")
                 continue
             evidence = " ".join(citations[index - 1].content for index in references)
-            evidence_normalized = self._normalize(evidence)
-            if claim_normalized == evidence_normalized:
+            if self._identical(claim, evidence):
                 continue
             if entailment_calls >= self.MAX_ENTAILMENT_CALLS:
                 unsupported.append(claim)
                 reasons.append("verification_limit_exceeded")
                 continue
             entailment_calls += 1
-            entailment = await self._provider_entails(claim, evidence)
+            entailment = await self._provider_entails(
+                claim,
+                evidence,
+                sentence if self._normalize(sentence) != claim_normalized else "",
+            )
             if not entailment.grounded:
                 unsupported.extend(entailment.unsupported_claims)
                 reasons.append(entailment.reason)
@@ -434,26 +508,7 @@ class RAGRetriever:
             raise RAGSynthesisError("Tenant LLM provider is unavailable")
         if budget_context is not None:
             provider = budget_context.wrap_provider(provider, "synthesis")
-        # Every citation gets a fair share of the budget and an oversized one is
-        # trimmed. The loop used to stop at the first citation that overflowed,
-        # so a long first hit (a web page, a big table chunk) left NO evidence and
-        # synthesis failed with "No retrieved evidence fits the synthesis context".
-        # Numbering stays aligned with ``citations``, which the verifier checks
-        # against the full stored text.
-        context_parts: list[str] = []
-        context_length = 0
-        share = max(600, max_context_chars // max(1, len(citations)))
-        for index, citation in enumerate(citations, start=1):
-            remaining = max_context_chars - context_length
-            if remaining <= 80:
-                break
-            content = citation.content
-            limit = min(share, remaining) - len(f"[{index}] ")
-            if len(content) > limit:
-                content = content[: max(0, limit - 1)].rstrip() + "…"
-            part = f"[{index}] {content}"
-            context_parts.append(part)
-            context_length += len(part) + 2
+        context_parts = _synthesis_context_parts(query, citations, max_context_chars)
         if not context_parts:
             raise RAGSynthesisError("No retrieved evidence fits the synthesis context")
         context = "\n\n".join(context_parts)
@@ -487,6 +542,10 @@ class RAGRetriever:
                                 "full stop's line break; never before a quote.\n"
                                 "- Do not add a separate 'Sources' or 'Supporting evidence' "
                                 "section and do not quote the evidence.\n"
+                                "- State facts as the evidence gives them: do not add dates, "
+                                "time zones, units or other details it does not state, and "
+                                "do not copy record field paths such as lines[6].title; say "
+                                "what the field holds instead.\n"
                                 "- If the evidence does not answer the question, say that the "
                                 "information is not available, without a marker.\n\n"
                                 f"Evidence:\n{context}"
@@ -533,8 +592,230 @@ class RAGRetriever:
         return resolved
 
 
+def citation_verification_detail(trace: list[RAGStrategyTrace]) -> dict[str, Any]:
+    """The detail of the last ``citation_verification`` step of ``trace``.
+
+    The refusal used to read ``strategy_trace[-1]``, but budget / cost steps are
+    appended after verification, so every 422 said ``reason: unsupported`` (the
+    default) and the log said ``reason=None`` — whatever really failed.
+    """
+    for step in reversed(trace):
+        if step.action == "citation_verification":
+            return dict(step.detail)
+    # A verifier that names its step differently: its last step with a reason.
+    for step in reversed(trace):
+        if "reason" in step.detail:
+            return dict(step.detail)
+    return {}
+
+
 # Kept for callers that configure a process-local singleton explicitly.
 rag_retriever = RAGRetriever()
+
+
+# Synthesis context: below this share an excerpt is too short to carry a fact.
+_MIN_CITATION_SHARE = 600
+_EXCERPT_HEAD = 240  # a record's identity lines (_id, order_no, name) stay in view
+_ELLIPSIS = " … "
+_STOPWORDS_TEXT = (
+    "a an and are as at be by did do does for from had has have how in into is it its "
+    "of on or that the their this to was were what when where which who whom whose why "
+    "with during part"
+)
+_QUERY_STOPWORDS = frozenset(_STOPWORDS_TEXT.split())
+
+
+def _query_terms(query: str) -> list[str]:
+    """Distinct lower-cased query terms worth locating in evidence.
+
+    Word-like tokens keep their internal ``-``/``:``/``.`` (``ord-770005``,
+    ``02:14``) and also contribute their parts; a run of CJK / kana characters,
+    which has no spaces, contributes its character bigrams.
+    """
+    text = unicodedata.normalize("NFKC", query).casefold()
+    terms: dict[str, None] = {}
+    for token in re.findall(r"[^\W_]+(?:[-:./][^\W_]+)*", text):
+        pieces = [token, *re.split(r"[-:./]", token)]
+        for piece in pieces:
+            if re.fullmatch(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+", piece):
+                terms.update((piece[i : i + 2], None) for i in range(len(piece) - 1))
+            elif len(piece) >= 3 and piece not in _QUERY_STOPWORDS:
+                terms[piece] = None
+    return list(terms)
+
+
+def _excerpt(content: str, limit: int, terms: list[str]) -> str:
+    """At most ``limit`` characters of ``content``, keeping what the query asks for.
+
+    A head cut used to drop the answer whenever it sat past the cut — the bulk
+    order's ``lines[6].title: Channapatna lacquer toy train`` started at
+    character 1203 of a 1248-character chunk and the cut was at 1195, so the
+    model never saw it and the question was refused. The excerpt keeps the
+    record's head (its identity fields) plus the window with the most query
+    terms, rarer terms weighing more; with no term in the content it is the
+    old head cut.
+    """
+    if len(content) <= limit:
+        return content
+    if limit <= 1:
+        return ""
+    occurrences: list[tuple[int, int, str]] = []
+    for term in terms:
+        occurrences.extend(
+            (m.start(), m.end(), term)
+            for m in re.finditer(re.escape(term), content, flags=re.IGNORECASE)
+        )
+    head_len = min(_EXCERPT_HEAD, limit // 4)
+    window_len = limit - head_len - len(_ELLIPSIS) - 1
+    if not occurrences or window_len <= 0:
+        return content[: limit - 1].rstrip() + "…"
+    counts: dict[str, int] = {}
+    for _, _, term in occurrences:
+        counts[term] = counts.get(term, 0) + 1
+    in_head = {term for start, end, term in occurrences if end <= head_len}
+
+    def score(window_start: int) -> float:
+        covered = set(in_head)
+        covered.update(
+            term
+            for start, end, term in occurrences
+            if start >= window_start and end <= window_start + window_len
+        )
+        return sum(1.0 / counts[term] for term in covered)
+
+    candidates = {head_len}
+    candidates.update(
+        max(head_len, min(start - window_len // 3, len(content) - window_len))
+        for start, _, _ in occurrences
+    )
+    best = min(candidates, key=lambda start: (-score(start), start))
+    if best <= head_len:
+        return content[: limit - 1].rstrip() + "…"
+    window_start = best
+    space = content.find(" ", window_start, window_start + 40)
+    if space != -1:
+        window_start = space + 1
+    window = content[window_start : best + window_len]
+    tail = "…" if best + window_len < len(content) else ""
+    return content[:head_len].rstrip() + _ELLIPSIS + window.strip() + tail
+
+
+def _synthesis_context_parts(
+    query: str, citations: list[RAGCitation], max_context_chars: int
+) -> list[str]:
+    """``[N] evidence`` parts within ``max_context_chars``, numbered like ``citations``.
+
+    Short citations take only what they need and the rest of the budget goes to
+    the long ones (it used to be a fixed share each, so four short hits left
+    most of the budget unused while the long one was cut). An oversized one is
+    excerpted around the query terms (:func:`_excerpt`); the verifier still
+    checks claims against the full stored text.
+    """
+    terms = _query_terms(query)
+    sizes = [len(f"[{index}] ") + len(c.content) for index, c in enumerate(citations, start=1)]
+    allocation = [0] * len(citations)
+    remaining = max_context_chars
+    order = sorted(range(len(citations)), key=lambda i: sizes[i])
+    for position, index in enumerate(order):
+        share = max(_MIN_CITATION_SHARE, remaining // max(1, len(citations) - position))
+        allocation[index] = min(sizes[index], share, max(0, remaining))
+        remaining -= allocation[index] + 2
+    parts: list[str] = []
+    used = 0
+    for index, citation in enumerate(citations, start=1):
+        if max_context_chars - used <= 80:
+            break
+        prefix = f"[{index}] "
+        limit = min(allocation[index - 1], max_context_chars - used) - len(prefix)
+        if limit <= 0:
+            continue
+        part = prefix + _excerpt(citation.content, limit, terms)
+        parts.append(part)
+        used += len(part) + 2
+    return parts
+
+
+# Masked brackets of a key-path array index (``lines[6]``) — see
+# ``MinimalCitationVerifier._key_path_masked``. Same length as ``[`` / ``]``.
+_KEY_OPEN, _KEY_CLOSE = "\u27e6", "\u27e7"
+_KEY_PATH_INDEX = re.compile(r"(?<=[^\W\d]|[_\]])\[(\d+)\]")
+
+# A number with optional thousands (``1,234``) or Indian (``2,50,000``) grouping
+# and an optional decimal part.
+_NUMBER = re.compile(
+    r"(?<![\w.,])\d{1,3}(?:,\d{2})*,\d{3}(?:\.\d+)?(?![\w,])"
+    r"|(?<![\w.,])\d+\.\d+(?![\w.])"
+)
+
+
+def _canonical_numbers(text: str) -> str:
+    """``text`` with grouped / zero-padded decimals in one canonical form.
+
+    ``1,234.50`` → ``1234.5``; ``2,50,000`` → ``250000``; ``99.00`` → ``99``.
+    Only digit groups change — ``3.5`` and ``3-5`` stay different.
+    """
+
+    def canonical(match: re.Match[str]) -> str:
+        value = match.group().replace(",", "")
+        if "." in value:
+            value = value.rstrip("0").rstrip(".")
+        return value
+
+    return _NUMBER.sub(canonical, text)
+
+
+# ``path: value`` keys of a flattened record (``lines[6].title: …``). A chunker
+# that joins lines with spaces leaves ``… lines[6].sku: SKU-7 lines[6].title: …``
+# on one line; the entailment prompt gets one field per line again.
+_FLAT_KEY = re.compile(r"\s+(?=[^\W\d][\w-]*(?:\[\d+\])*(?:\.[^\W\d][\w-]*(?:\[\d+\])*)*:\s)")
+_STRUCTURED_KEY = re.compile(r"[^\W\d][\w-]*(?:\[\d+\]|\.[^\W\d][\w-]*)+:\s")
+
+
+def _readable_evidence(evidence: str) -> str:
+    text = unicodedata.normalize("NFKC", evidence)
+    if len(_STRUCTURED_KEY.findall(text)) >= 3:
+        text = _FLAT_KEY.sub("\n", text)
+    return text
+
+
+def _entailment_prompt(claim: str, evidence: str, sentence: str = "") -> str:
+    """The single entailment question for one claim (structured-data aware).
+
+    The judge decides alone whenever the claim is not the evidence verbatim —
+    including any claim in a non-Latin script, which no lexical rule can
+    compare to a translated or transliterated answer. It is told how flattened
+    records read (``timeline[1].at`` is the time of ``timeline[1].event``) and
+    which surface differences do not matter, and what still makes a claim
+    unsupported.
+    """
+    context = (
+        f"Sentence the claim was taken from (only to tell what the claim refers to): "
+        f"{unicodedata.normalize('NFKC', sentence)}\n"
+        if sentence
+        else ""
+    )
+    return (
+        "Determine whether the claim is fully entailed by the evidence. "
+        'Reply with only this JSON object: {"supported": true, '
+        '"reason": "entailed"} or {"supported": false, '
+        '"reason": "not_entailed"}.\n'
+        "How to judge:\n"
+        "- Entailed: the evidence states the claim, possibly in other words. Not entailed: "
+        "the claim contradicts the evidence, or adds a fact, number, date, time zone, unit, "
+        "entity or qualifier the evidence does not state.\n"
+        "- The evidence may be a flattened database record, one 'path: value' field per "
+        "line. 'name[i]' is item i of a list, and fields that share the same 'name[i]' "
+        "prefix belong to the same item (for example 'timeline[1].at' is the time of "
+        "'timeline[1].event'). A claim that restates a field value or a note of the record "
+        "is entailed.\n"
+        "- These differences do not matter: number formatting (1,234.50 is 1234.5), "
+        "currency symbols or codes (Rs, INR, \u20b9), date and time notation, letter width, "
+        "and a name or value written in another language or script, translated or "
+        "transliterated, when it clearly denotes the same thing.\n\n"
+        f"Claim: {unicodedata.normalize('NFKC', claim)}\n"
+        f"{context}"
+        f"Evidence:\n{_readable_evidence(evidence)}"
+    )
 
 
 def _parse_json_object(text: str) -> Any:
