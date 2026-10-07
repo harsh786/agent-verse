@@ -515,25 +515,74 @@ def redispatch_stuck_runs() -> dict[str, int]:
     return result
 
 
-@celery_app.task(name="workflow.check_hitl_escalations")
-def check_hitl_escalations() -> dict[str, int]:
-    """Run every 15 minutes to auto-escalate overdue HITL requests.
+async def _resume_after_sla_decision(req: Any) -> None:
+    """Resume callback for an approval the SLA sweep decided (auto_approve /
+    auto_reject): the same ``WorkflowRunner.resume_from_hitl`` a human decision
+    takes, on this process's DB-backed runner (resolved only when needed)."""
+    runner = _get_runner()
+    if runner is None:
+        raise RuntimeError("no workflow runner available to resume the run")
+    await runner.resume_from_hitl(
+        run_id=req.run_id,
+        step_id=req.step_id,
+        action=req.action_taken or "",
+        actor_id=req.reviewed_by or "",
+        note=req.note,
+        form_data=req.form_data,
+        tenant_id=req.tenant_id,
+    )
 
-    It used to call a gateway method that did not exist (AttributeError logged
-    as a warning every run), so no approval was ever escalated. It now builds a
-    worker gateway with the durable approval store and runs the SLA sweep; a
-    failure fails the task instead of being swallowed.
-    """
+
+async def check_hitl_timeouts_async(*, limit: int | None = None) -> dict[str, int]:
+    """One SLA sweep over overdue workflow approvals (see
+    ``HITLWorkflowGateway.check_and_escalate_overdue``), with the durable
+    approval store, the run resume path and the trigger-event Redis a human
+    decision uses."""
+    from app.core.config import get_settings
     from app.db.session import get_session_factory
     from app.workflow.approval_store import PostgresWorkflowApprovalStore
     from app.workflow.hitl_extension import HITLWorkflowGateway
 
+    batch = limit if limit is not None else int(get_settings().workflow_hitl_sla_sweep_batch)
+    event_redis: Any = None
+    try:
+        import redis.asyncio as aioredis
+
+        event_redis = aioredis.from_url(
+            os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
+        )
+    except Exception as exc:  # pragma: no cover - redis optional in some envs
+        _log.warning("hitl_sla_event_redis_unavailable", error=str(exc)[:120])
     gateway = HITLWorkflowGateway(
-        approval_store=PostgresWorkflowApprovalStore(get_session_factory())
+        approval_store=PostgresWorkflowApprovalStore(get_session_factory()),
+        resume_callback=_resume_after_sla_decision,
+        event_redis=event_redis,
     )
-    result: dict[str, int] = _run_async(gateway.check_and_escalate_overdue())
-    if result.get("escalated"):
-        _log.info("hitl_sla_escalations", **result)
+    try:
+        result: dict[str, int] = await gateway.check_and_escalate_overdue(limit=batch)
+    finally:
+        if event_redis is not None:
+            with contextlib.suppress(Exception):
+                await event_redis.aclose()
+    return result
+
+
+@celery_app.task(name="workflow.check_hitl_escalations")
+@beat_task_guard(lock_ttl_seconds=300)
+def check_hitl_escalations() -> dict[str, int]:
+    """Beat task (every ``WORKFLOW_HITL_SLA_SWEEP_SECONDS``, default 60 s):
+    apply each overdue workflow approval's ``timeout_action`` once.
+
+    Single-flight across replicas (beat guard); one bounded, indexed batch per
+    run. It used to run every 15 minutes (a 1-minute gate escalated up to 15
+    minutes late) and to act only on ``escalate``. A failure fails the task
+    instead of being swallowed.
+    """
+    result: dict[str, int] = _run_async(check_hitl_timeouts_async())
+    if any(result.get(k) for k in ("escalated", "auto_rejected", "auto_approved", "paused")):
+        _log.info("hitl_sla_timeouts_applied", **result)
+    if result.get("failed"):
+        _log.error("hitl_sla_timeouts_failed", **result)
     return result
 
 

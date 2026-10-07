@@ -81,11 +81,17 @@ async def write_engine_audit(
     event: str,
     step_id: str = "",
     note: str = "",
+    actor: str = ENGINE_ACTOR,
+    approver: str | None = None,
 ) -> None:
     """Insert one ``workflow.<kind>.<event>`` row in the caller's transaction.
 
     Runs in a SAVEPOINT: on failure only the audit insert is rolled back and the
-    caller's status write still commits.
+    caller's status write still commits. ``actor`` is recorded as the row's
+    ``api_key_id`` (the engine by default; ``sla-timeout`` for the HITL SLA
+    sweep) and ``approver`` for a decision made by a system actor. It re-scopes
+    the transaction's ``app.tenant_id`` GUC, so write it after the caller's
+    other tenant-scoped statements.
     """
     from sqlalchemy import text as sa_text
 
@@ -106,9 +112,9 @@ async def write_engine_audit(
             await session.execute(
                 sa_text(
                     "INSERT INTO audit_log (id, tenant_id, goal_id, tool_name, action_level, "
-                    " outcome, step_id, note, api_key_id, created_at) "
+                    " outcome, step_id, note, api_key_id, approver, created_at) "
                     "VALUES (:id, :tid, :gid, :tool, 'allow_log', :outcome, :step, :note, "
-                    " :actor, NOW())"
+                    " :actor, :approver, NOW())"
                 ),
                 {
                     "id": uuid.uuid4().hex,
@@ -118,7 +124,8 @@ async def write_engine_audit(
                     "outcome": event[:100],
                     "step": step_id or "",
                     "note": note[:1000],
-                    "actor": ENGINE_ACTOR,
+                    "actor": actor,
+                    "approver": approver,
                 },
             )
     except Exception as exc:  # auditing must never fail the run

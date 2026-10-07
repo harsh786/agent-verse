@@ -569,6 +569,12 @@ class WorkflowRunner:
             run_metadata=run_metadata,
             labels=labels,
         )
+        # A run the HITL SLA sweep paused at THIS approval step (timeout_action
+        # "pause") is resumed by a decision on that still-pending approval.
+        sla_paused_here = (
+            str(((run_metadata or {}).get("hitl_timeout_pause") or {}).get("step_id") or "")
+            == step_id
+        )
         # Seed the reviewer's decision. HITLStepNode.execute() resumes (rather
         # than re-suspends) when ``hitl_request_id == step.id``.
         initial_state["hitl_request_id"] = step_id
@@ -594,6 +600,7 @@ class WorkflowRunner:
                     WorkflowRunStatus.WAITING_HITL.value,
                     WorkflowRunStatus.RUNNING.value,
                     WorkflowRunStatus.PENDING.value,
+                    *((WorkflowRunStatus.PAUSED.value,) if sla_paused_here else ()),
                 ),
             )
             if not resumed:

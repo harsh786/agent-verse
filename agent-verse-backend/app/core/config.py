@@ -383,6 +383,12 @@ class Settings(BaseSettings):
     # HMAC signing key for stateless workflow webhook trigger tokens. Empty in
     # dev falls back to a warned default; set a real secret in any deployment.
     workflow_webhook_secret: str = ""
+    # Workflow approval SLA sweep (workflow.check_hitl_escalations): how often the
+    # beat runs it — a timed-out approval gets its timeout_action at most this
+    # late — and how many overdue approvals one sweep handles (most overdue
+    # first; the rest wait for the next tick).
+    workflow_hitl_sla_sweep_seconds: float = Field(default=60.0, ge=5.0, le=3600.0)
+    workflow_hitl_sla_sweep_batch: int = Field(default=200, ge=1, le=5000)
 
     # --- Voice OS configuration ---
     voice_enabled: bool = True

@@ -21,17 +21,29 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from app.observability.logging import get_logger
 
 if TYPE_CHECKING:
-    from app.workflow.hitl_extension import WorkflowHITLRequest
+    from app.workflow.hitl_extension import TimeoutPlan, WorkflowHITLRequest
 
 _log = get_logger(__name__)
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+_TERMINAL_RUN_STATUSES = ("complete", "failed", "cancelled", "timed_out")
+
+
+def _bump(escalation: bool) -> str:
+    """SQL suffix merging ``escalation_level + 1`` into ``payload`` (or nothing)."""
+    if not escalation:
+        return ""
+    return (
+        " || jsonb_build_object('escalation_level', "
+        "COALESCE((payload->>'escalation_level')::int, 0) + 1)"
+    )
 
 
 @runtime_checkable
@@ -96,29 +108,42 @@ class PostgresWorkflowApprovalStore:
         """Upsert an approval. ``request_id`` is the primary key."""
         from sqlalchemy import text as sa_text
 
+        from app.workflow.hitl_extension import _parse_ts, effective_deadline
+
         payload = self._to_payload(req)
+        # Lifted out of the payload for the SLA sweep's indexed overdue scan.
+        deadline = effective_deadline(req)
+        timed_out = _parse_ts(req.timed_out_at)
         async with self._db() as session:
             await self._set_tenant(session, req.tenant_id)
             # Explicit tenant guard on the upsert as well as RLS: on a BYPASSRLS
             # connection a colliding request_id must never rewrite another
             # tenant's approval. No row back = that collision -> refuse.
+            # ``timeout_handled_at`` is never cleared by a (stale) full save: the
+            # SLA timeout is applied exactly once.
             row = (
                 await session.execute(
                     sa_text(
                         "INSERT INTO workflow_approvals "
                         "(request_id, tenant_id, run_id, workflow_id, step_id, status, "
-                        " priority, assigned_to, payload, created_at, updated_at) "
+                        " priority, assigned_to, payload, deadline_at, timeout_handled_at, "
+                        " created_at, updated_at) "
                         "VALUES (:request_id, CAST(:tenant_id AS uuid), :run_id, :workflow_id, "
                         " :step_id, :status, :priority, :assigned_to, CAST(:payload AS jsonb), "
-                        " NOW(), NOW()) "
+                        " :deadline_at, :timed_out_at, NOW(), NOW()) "
                         "ON CONFLICT (request_id) DO UPDATE SET "
                         " status = EXCLUDED.status, priority = EXCLUDED.priority, "
                         " assigned_to = EXCLUDED.assigned_to, payload = EXCLUDED.payload, "
+                        " deadline_at = EXCLUDED.deadline_at, "
+                        " timeout_handled_at = COALESCE(workflow_approvals.timeout_handled_at, "
+                        "                               EXCLUDED.timeout_handled_at), "
                         " updated_at = NOW() "
                         "WHERE workflow_approvals.tenant_id = EXCLUDED.tenant_id "
                         "RETURNING request_id"
                     ),
                     {
+                        "deadline_at": deadline,
+                        "timed_out_at": timed_out,
                         "request_id": req.request_id,
                         "tenant_id": req.tenant_id,
                         "run_id": req.run_id,
@@ -190,6 +215,7 @@ class PostgresWorkflowApprovalStore:
         *,
         discussion_entry: dict[str, Any],
         assignment: dict[str, Any] | None = None,
+        escalated_at: str | None = None,
     ) -> WorkflowHITLRequest | None:
         """Append a discussion entry (and optionally reassign) a PENDING approval.
 
@@ -198,13 +224,16 @@ class PostgresWorkflowApprovalStore:
         decided approval back to ``pending`` and allowed a second decision and a
         second resume. This is one conditional UPDATE that never writes
         ``status``; ``None`` means the approval is not pending (or not found).
+        ``escalated_at`` records an escalation and bumps ``escalation_level``.
         """
         from sqlalchemy import text as sa_text
 
         patch = dict(assignment or {})
+        if escalated_at:
+            patch["escalated_at"] = escalated_at
         sets = [
-            "payload = jsonb_set(payload || CAST(:patch AS jsonb), '{discussion}', "
-            " COALESCE(payload->'discussion', '[]'::jsonb) || "
+            f"payload = jsonb_set(payload || CAST(:patch AS jsonb){_bump(bool(escalated_at))}, "
+            " '{discussion}', COALESCE(payload->'discussion', '[]'::jsonb) || "
             " jsonb_build_array(CAST(:entry AS jsonb)))",
             "updated_at = NOW()",
         ]
@@ -321,6 +350,230 @@ class PostgresWorkflowApprovalStore:
                 )
             ).all()
         return [self._from_payload(r[0]) for r in rows]
+
+    async def list_overdue_pending(
+        self, *, now: datetime, limit: int = 200, system_db: Any = None
+    ) -> list[WorkflowHITLRequest]:
+        """Cross-tenant pending approvals whose SLA deadline has passed and whose
+        timeout action has not been applied yet — most overdue first.
+
+        Served by the partial index ``ix_workflow_approvals_pending_deadline``
+        (``deadline_at WHERE status = 'pending' AND timeout_handled_at IS
+        NULL``), so each sweep is one bounded index range scan however many
+        approvals are pending. Maintenance (BYPASSRLS) role, like
+        :meth:`list_pending_all_tenants`.
+        """
+        from sqlalchemy import text as sa_text
+
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
+
+        factory = system_db or get_system_session_factory()
+        async with factory() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT payload FROM workflow_approvals "
+                        "WHERE status = 'pending' AND timeout_handled_at IS NULL "
+                        "AND deadline_at <= :now "
+                        "ORDER BY deadline_at LIMIT :lim"
+                    ),
+                    {"now": now, "lim": limit},
+                )
+            ).all()
+        return [self._from_payload(r[0]) for r in rows]
+
+    async def claim_timeout(
+        self, req: WorkflowHITLRequest, plan: TimeoutPlan, *, now: datetime
+    ) -> tuple[str, WorkflowHITLRequest | None]:
+        """Apply an SLA timeout ``plan`` to one approval — exactly once, atomically.
+
+        One transaction (application role, the approval's tenant):
+
+        1. lock the run row (``FOR UPDATE``: serialises with every run status
+           write, which takes the same lock first);
+        2. a run that is gone or terminal → the approval is ``expired``
+           (``run_ended``); a pause of a run that has not finished suspending
+           (``pending`` / ``running``) is retried next sweep
+           (``run_not_waiting``);
+        3. compare-and-set the approval: only while ``status = 'pending'`` AND
+           ``timeout_handled_at IS NULL``. A human decision is the same kind of
+           conditional UPDATE on the same row, so exactly one of them wins; a
+           loss rolls everything back (``not_pending``);
+        4. the run: ``paused`` for a pause (from ``waiting_hitl``) and the
+           timeout recorded in ``run_metadata.hitl_timeouts[step_id]``;
+        5. the audit rows (``workflow.approval.timeout_<outcome>``, approver
+           ``sla-timeout``; ``workflow.run.paused`` for a pause) — last, as
+           they re-scope the tenant GUC.
+        """
+        from sqlalchemy import text as sa_text
+
+        from app.workflow.engine_audit import note_of, write_engine_audit
+        from app.workflow.hitl_extension import (
+            CLAIM_APPLIED,
+            CLAIM_NOT_PENDING,
+            CLAIM_RUN_ENDED,
+            CLAIM_RUN_NOT_WAITING,
+            SLA_TIMEOUT_ACTOR,
+        )
+
+        try:
+            run_uuid: str | None = str(uuid.UUID(str(req.run_id)))
+        except ValueError:
+            run_uuid = None
+        at = now.isoformat()
+        params = {"rid": req.request_id, "tid": req.tenant_id}
+        async with self._db() as session:
+            await self._set_tenant(session, req.tenant_id)
+            run_row = None
+            if run_uuid is not None:
+                run_row = (
+                    await session.execute(
+                        sa_text(
+                            "SELECT status, workflow_id FROM workflow_runs "
+                            "WHERE id = CAST(:run AS uuid) AND tenant_id = CAST(:tid AS uuid) "
+                            "FOR UPDATE"
+                        ),
+                        {"run": run_uuid, "tid": req.tenant_id},
+                    )
+                ).first()
+            run_status = str(run_row[0]) if run_row is not None else None
+
+            if run_status is None or run_status in _TERMINAL_RUN_STATUSES:
+                expired = {
+                    "status": "expired",
+                    "timed_out_at": at,
+                    "timeout_outcome": "expired",
+                    "note": f"Expired: the run ended ({run_status or 'gone'}) before a decision",
+                }
+                row = (
+                    await session.execute(
+                        sa_text(
+                            "UPDATE workflow_approvals SET status = 'expired', "
+                            " payload = payload || CAST(:patch AS jsonb), "
+                            " timeout_handled_at = NOW(), updated_at = NOW() "
+                            "WHERE request_id = :rid AND tenant_id = CAST(:tid AS uuid) "
+                            "AND status = 'pending' AND timeout_handled_at IS NULL "
+                            "RETURNING payload"
+                        ),
+                        {**params, "patch": json.dumps(expired)},
+                    )
+                ).first()
+                await session.commit()
+                if row is None:
+                    return CLAIM_NOT_PENDING, None
+                return CLAIM_RUN_ENDED, self._from_payload(row[0])
+
+            if plan.pause_run and run_status in ("pending", "running"):
+                await session.rollback()
+                return CLAIM_RUN_NOT_WAITING, None
+
+            assignment = dict(plan.assignment or {})
+            sets = [
+                "payload = jsonb_set(payload || CAST(:patch AS jsonb)"
+                f"{_bump(plan.bump_escalation)}, '{{discussion}}', "
+                "COALESCE(payload->'discussion', '[]'::jsonb) || "
+                " jsonb_build_array(CAST(:entry AS jsonb)))",
+                "timeout_handled_at = NOW()",
+                "updated_at = NOW()",
+            ]
+            values: dict[str, Any] = {
+                **params,
+                "patch": json.dumps(plan.patch, default=str),
+                "entry": json.dumps(plan.entry, default=str),
+            }
+            if plan.status is not None:
+                sets.append("status = :status")
+                values["status"] = plan.status
+            if "assigned_to" in assignment:
+                sets.append("assigned_to = :assigned_to")
+                values["assigned_to"] = assignment["assigned_to"]
+            row = (
+                await session.execute(
+                    sa_text(
+                        f"UPDATE workflow_approvals SET {', '.join(sets)} "
+                        "WHERE request_id = :rid AND tenant_id = CAST(:tid AS uuid) "
+                        "AND status = 'pending' AND timeout_handled_at IS NULL "
+                        "RETURNING payload"
+                    ),
+                    values,
+                )
+            ).first()
+            if row is None:
+                await session.rollback()
+                return CLAIM_NOT_PENDING, None
+
+            record = {
+                "outcome": plan.outcome,
+                "timeout_action": req.timeout_action,
+                "request_id": req.request_id,
+                "deadline_at": req.deadline_at,
+                "action_taken": plan.patch.get("action_taken"),
+                "by": SLA_TIMEOUT_ACTOR,
+                "at": at,
+            }
+            pause = plan.pause_run and run_status == "waiting_hitl"
+            run_meta = (
+                "run_metadata = COALESCE(run_metadata, '{}'::jsonb) || jsonb_build_object("
+                " 'hitl_timeouts', COALESCE(run_metadata -> 'hitl_timeouts', '{}'::jsonb) || "
+                "   jsonb_build_object(CAST(:step AS text), CAST(:record AS jsonb))"
+            )
+            if pause:
+                run_meta += ", 'hitl_timeout_pause', CAST(:record AS jsonb) || "
+                run_meta += "jsonb_build_object('step_id', CAST(:step AS text))"
+            run_meta += ")"
+            if pause:
+                run_meta += ", status = 'paused'"
+            await session.execute(
+                sa_text(
+                    f"UPDATE workflow_runs SET {run_meta} "
+                    "WHERE id = CAST(:run AS uuid) AND tenant_id = CAST(:tid AS uuid)"
+                ),
+                {
+                    "run": run_uuid,
+                    "tid": req.tenant_id,
+                    "step": req.step_id,
+                    "record": json.dumps(record, default=str),
+                },
+            )
+            workflow_id = run_row[1] if run_row is not None else None
+            if pause:
+                await write_engine_audit(
+                    session,
+                    tenant_id=req.tenant_id,
+                    run_id=str(run_uuid),
+                    kind="run",
+                    event="paused",
+                    step_id=req.step_id,
+                    note=note_of(
+                        workflow_id=workflow_id,
+                        previous=run_status,
+                        status="paused",
+                        reason="hitl_timeout",
+                        request_id=req.request_id,
+                    ),
+                    actor=SLA_TIMEOUT_ACTOR,
+                )
+            await write_engine_audit(
+                session,
+                tenant_id=req.tenant_id,
+                run_id=str(run_uuid),
+                kind="approval",
+                event=plan.audit_event,
+                step_id=req.step_id,
+                note=plan.audit_note,
+                actor=SLA_TIMEOUT_ACTOR,
+                approver=SLA_TIMEOUT_ACTOR,
+            )
+            await session.commit()
+        if plan.status is not None:
+            # A12: the tenant's agent_generated Sources index the decision now.
+            from app.ingestion.agent_generated_events import notify_agent_generated
+
+            await notify_agent_generated(
+                req.tenant_id, "hitl_decision", req.request_id, db_factory=self._db
+            )
+        return CLAIM_APPLIED, self._from_payload(row[0])
 
     async def get_stats(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import text as sa_text

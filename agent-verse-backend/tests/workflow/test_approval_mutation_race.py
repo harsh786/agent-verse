@@ -47,13 +47,22 @@ class _AtomicStore:
         return True
 
     async def mutate_if_pending(
-        self, request_id: str, tenant_id: str, *, discussion_entry: Any, assignment: Any = None
+        self,
+        request_id: str,
+        tenant_id: str,
+        *,
+        discussion_entry: Any,
+        assignment: Any = None,
+        escalated_at: str | None = None,
     ) -> Any:
         await asyncio.sleep(0.005)
         current = json.loads(self.rows[request_id])
         if current["status"] != "pending":
             return None
         current.update(assignment or {})
+        if escalated_at:
+            current["escalated_at"] = escalated_at
+            current["escalation_level"] = int(current.get("escalation_level") or 0) + 1
         current["discussion"] = [*current.get("discussion", []), discussion_entry]
         self.rows[request_id] = json.dumps(current)
         return WorkflowHITLRequest(**current)
@@ -121,3 +130,5 @@ async def test_escalate_reassigns_to_the_role_on_a_pending_approval() -> None:
     assert out.assigned_role == "managers" and out.assigned_to is None
     stored = await store.get(rid, _T)
     assert stored.status == "pending" and stored.discussion[-1]["type"] == "escalation"
+    # An escalation is visible as such (time + level), not only in the thread.
+    assert stored.escalated_at and stored.escalation_level == 1

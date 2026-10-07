@@ -83,6 +83,17 @@ PLAN_QUEUE_MAP = {
 SUBGOAL_QUEUE_MAP = {plan: f"goals.subgoals.{plan}" for plan in PLAN_QUEUE_MAP}
 
 
+def _hitl_sla_sweep_seconds() -> float:
+    """Beat period of the workflow approval SLA sweep (setting
+    ``WORKFLOW_HITL_SLA_SWEEP_SECONDS``, default 60 s)."""
+    try:
+        from app.core.config import get_settings
+
+        return float(get_settings().workflow_hitl_sla_sweep_seconds)
+    except Exception:  # never let a settings problem break the beat schedule
+        return 60.0
+
+
 def goal_queue_for(plan: str, *, subgoal: bool = False) -> str:
     """The Celery queue a goal of *plan* is dispatched to (unknown plan: free)."""
     if subgoal:
@@ -510,9 +521,12 @@ celery_app.conf.update(
         # (see @celery_app.task(name=...) in app/workflow/celery_tasks.py), NOT
         # their dotted module path — beat entries must reference the registered
         # name or the schedule fires an unregistered-task error.
+        # Approval SLA sweep: every 60 s by default (it was 900 s, so a
+        # 1-minute gate timed out up to 15 minutes late). Single-flight via the
+        # beat guard; one bounded, indexed batch per tick.
         "workflow-check-hitl-escalations": {
             "task": "workflow.check_hitl_escalations",
-            "schedule": 900.0,  # every 15 minutes
+            "schedule": _hitl_sla_sweep_seconds(),
             "options": {"queue": "workflows.maintenance"},
         },
         "workflow-retry-dead-letter-webhooks": {

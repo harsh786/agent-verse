@@ -195,6 +195,12 @@ async def resume_run(run_id: str, request: Request) -> dict[str, str]:
     ok = await svc.resume_run(tenant_id=tenant_id, run_id=run_id)
     if not ok:
         raise HTTPException(status_code=409, detail="Run is not paused")
+    # A run the HITL SLA sweep paused went back to waiting for its pending
+    # approval (WorkflowService.resume_run): nothing to re-dispatch.
+    getter = getattr(svc, "get_run", None)
+    current = await getter(tenant_id, run_id) if getter is not None else None
+    if isinstance(current, dict) and current.get("status") == WorkflowRunStatus.WAITING_HITL:
+        return {"run_id": run_id, "status": WorkflowRunStatus.WAITING_HITL.value}
     # Status is now RUNNING; re-dispatch execution so the run actually continues
     # (the engine skips already-completed steps). Best-effort — if no runner is
     # wired the status flip alone stands.

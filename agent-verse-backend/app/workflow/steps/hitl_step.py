@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -16,6 +17,55 @@ _log = get_logger(__name__)
 # declare its own actions (or declares these ids). Compared case-insensitively.
 REJECT_ACTIONS = frozenset({"reject", "rejected", "deny", "denied", "decline", "declined"})
 APPROVE_ACTIONS = frozenset({"approve", "approved", "accept", "accepted"})
+
+# An approval step's SLA when it sets no timeout of its own.
+DEFAULT_APPROVAL_TIMEOUT_HOURS = 48.0
+# Every step's DSL default timeout. On an approval step it cannot be told apart
+# from "not set" once a definition has been stored (``to_json`` writes defaults),
+# and a 60-second approval SLA would time a gate out before anyone saw it — so
+# it means the 48 h approval default. Write ``1m`` for a one-minute gate.
+_GENERIC_STEP_TIMEOUT = "60s"
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*([a-z]+)")
+_UNIT_SECONDS = {
+    "ms": 0.001,
+    "s": 1.0, "sec": 1.0, "secs": 1.0, "second": 1.0, "seconds": 1.0,
+    "m": 60.0, "min": 60.0, "mins": 60.0, "minute": 60.0, "minutes": 60.0,
+    "h": 3600.0, "hr": 3600.0, "hrs": 3600.0, "hour": 3600.0, "hours": 3600.0,
+    "d": 86_400.0, "day": 86_400.0, "days": 86_400.0,
+    "w": 604_800.0, "week": 604_800.0, "weeks": 604_800.0,
+}
+
+
+def parse_approval_timeout_hours(timeout: Any) -> float:
+    """An approval step's ``timeout`` as hours — its SLA deadline is
+    ``created_at`` + this.
+
+    Accepts ``90s`` / ``1m`` / ``2h`` / ``3d`` / ``1w`` and compounds such as
+    ``1h30m``. Empty, the generic ``60s`` step default, a non-positive value or
+    anything unparseable mean the 48 h approval default (unparseable ones are
+    logged) — never a shorter deadline than the author meant.
+
+    Old bug: only ``m`` / ``h`` / ``d`` suffixes were understood — ``90s`` was
+    48 h and ``1h30m`` raised ``ValueError`` at the gate.
+    """
+    text = str(timeout or "").strip().lower()
+    if not text or text == _GENERIC_STEP_TIMEOUT:
+        return DEFAULT_APPROVAL_TIMEOUT_HOURS
+    compact = text.replace(" ", "")
+    parts = _DURATION_PART.findall(compact)
+    if not parts or "".join(n + u for n, u in parts) != compact:
+        _log.warning("hitl_timeout_unparseable", timeout=text[:40])
+        return DEFAULT_APPROVAL_TIMEOUT_HOURS
+    seconds = 0.0
+    for number, unit in parts:
+        factor = _UNIT_SECONDS.get(unit)
+        if factor is None:
+            _log.warning("hitl_timeout_unparseable", timeout=text[:40])
+            return DEFAULT_APPROVAL_TIMEOUT_HOURS
+        seconds += float(number) * factor
+    if seconds <= 0:
+        return DEFAULT_APPROVAL_TIMEOUT_HOURS
+    return seconds / 3600.0
 
 
 @dataclass(frozen=True)
@@ -194,16 +244,7 @@ class HITLStepNode:
 
     @staticmethod
     def _parse_timeout_hours(timeout_str: str) -> float:
-        if not timeout_str:
-            return 48.0
-        s = timeout_str.strip()
-        if s.endswith("h"):
-            return float(s[:-1])
-        if s.endswith("m"):
-            return float(s[:-1]) / 60
-        if s.endswith("d"):
-            return float(s[:-1]) * 24
-        return 48.0
+        return parse_approval_timeout_hours(timeout_str)
 
     @staticmethod
     def _compute_priority(state: WorkflowState) -> str:

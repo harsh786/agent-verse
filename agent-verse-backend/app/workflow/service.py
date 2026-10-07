@@ -965,12 +965,26 @@ class WorkflowService:
         )
 
     async def resume_run(self, tenant_id: str, run_id: str) -> bool:
-        """Resume a paused run."""
+        """Resume a paused run.
+
+        A run the HITL SLA sweep paused (``timeout_action: pause``) is still
+        gated by its pending approval: resuming returns it to
+        ``waiting_hitl`` — re-executing it would re-enter the approval step
+        and open a second approval — and the decision on that approval
+        resumes it as usual.
+        """
         if self._run_store is None:
             return False
         run = await self._run_store.get(tenant_id, run_id)
         if run is None or run.get("status") != "paused":
             return False
+        if (run.get("run_metadata") or {}).get("hitl_timeout_pause"):
+            return await self._run_store.update_status(
+                run_id,
+                WorkflowRunStatus.WAITING_HITL,
+                tenant_id=tenant_id,
+                only_from=(WorkflowRunStatus.PAUSED.value,),
+            )
         return await self._run_store.update_status(
             run_id, WorkflowRunStatus.RUNNING, tenant_id=tenant_id
         )

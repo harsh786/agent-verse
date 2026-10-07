@@ -10,8 +10,9 @@ Features (20):
   7. Magic link JWT: single-use Redis jti guard for email/Slack approval
   8. 4 assignment strategies: round_robin, least_busy, skill_based, specific_user
   9. Priority levels: critical / high / medium / low
- 10. Deadline tracking + SLA countdown
- 11. timeout_action: auto_approve | auto_reject | escalate | pause
+ 10. Deadline tracking + SLA countdown (deadline = created_at + the step timeout)
+ 11. timeout_action: auto_approve | auto_reject | escalate | pause — applied once
+     per request by the SLA sweep (``check_and_escalate_overdue``)
  12. Discussion thread: comments between reviewers
  13. Audit trail: reviewed_by + reviewed_at stored per decision
  14. Notification hooks: email, Slack, PagerDuty
@@ -33,7 +34,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from app.governance.hitl import HITLGateway
@@ -85,6 +86,16 @@ class WorkflowHITLRequest:
     # Escalation chain
     escalation_to_role: str | None = None
     escalation_after_hours: float = 48.0
+    # Set by every escalation (manual or SLA); ``escalation_level`` counts them.
+    escalated_at: str | None = None
+    escalation_level: int = 0
+
+    # SLA timeout: when the sweep applied ``timeout_action`` (set once — the
+    # exactly-once marker, mirrored to ``workflow_approvals.timeout_handled_at``)
+    # and what it did: escalated / auto_rejected / auto_approved / paused /
+    # escalation_disallowed / expired.
+    timed_out_at: str | None = None
+    timeout_outcome: str | None = None
 
     # Allow features
     allow_delegate: bool = True
@@ -114,7 +125,41 @@ class WorkflowHITLRequest:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-_SLA_ACTOR = "system:sla"
+# The system actor the SLA sweep acts as (reviewed_by / audit approver).
+SLA_TIMEOUT_ACTOR = "sla-timeout"
+# Escalations recorded before the sweep marked ``timed_out_at`` used this actor.
+_LEGACY_SLA_ACTOR = "system:sla"
+_TIMEOUT_ACTIONS = frozenset({"auto_approve", "auto_reject", "escalate", "pause"})
+
+# claim_timeout results (durable store and in-memory path alike).
+CLAIM_APPLIED = "applied"
+CLAIM_NOT_PENDING = "not_pending"  # decided / already timed out meanwhile
+CLAIM_RUN_ENDED = "run_ended"  # the run is gone or terminal: approval expired
+CLAIM_RUN_NOT_WAITING = "run_not_waiting"  # pause before the run suspended: retry
+
+
+@dataclass(frozen=True)
+class TimeoutPlan:
+    """What the SLA sweep does to one overdue approval (see ``_timeout_plan``).
+
+    Applied atomically by ``PostgresWorkflowApprovalStore.claim_timeout``: the
+    approval changes only while it is still ``pending`` and not yet timed out
+    (compare-and-set), together with the run (pause / run_metadata) and the
+    audit row, in one transaction.
+    """
+
+    outcome: str
+    patch: dict[str, Any]
+    entry: dict[str, Any]
+    status: str | None = None  # a decision (approved / rejected); else stays pending
+    assignment: dict[str, Any] | None = None
+    bump_escalation: bool = False
+    pause_run: bool = False
+    audit_note: str = ""
+
+    @property
+    def audit_event(self) -> str:
+        return f"timeout_{self.outcome}"
 
 
 class ApprovalNotPendingError(ValueError):
@@ -198,15 +243,36 @@ def _parse_ts(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def _is_overdue(req: Any, now: datetime) -> bool:
+def effective_deadline(req: Any) -> datetime | None:
+    """When ``req``'s SLA runs out: its ``deadline_at`` (created_at + the step's
+    timeout), else — for an approval created without one — ``created_at`` +
+    ``escalation_after_hours``; None when neither is known."""
     deadline = _parse_ts(getattr(req, "deadline_at", None))
     if deadline is not None:
-        return now >= deadline
+        return deadline
     created = _parse_ts(getattr(req, "created_at", None))
-    hours = float(getattr(req, "escalation_after_hours", 0) or 0)
+    try:
+        hours = float(getattr(req, "escalation_after_hours", 0) or 0)
+    except (TypeError, ValueError):
+        hours = 0.0
     if created is None or hours <= 0:
-        return False
-    return (now - created).total_seconds() >= hours * 3600
+        return None
+    return created + timedelta(hours=hours)
+
+
+def _is_overdue(req: Any, now: datetime) -> bool:
+    deadline = effective_deadline(req)
+    return deadline is not None and now >= deadline
+
+
+def _timeout_handled(req: Any) -> bool:
+    """The SLA timeout was already applied to ``req`` (exactly once)."""
+    if getattr(req, "timed_out_at", None):
+        return True
+    return any(
+        isinstance(d, dict) and d.get("type") == "escalation" and d.get("by") == _LEGACY_SLA_ACTOR
+        for d in (getattr(req, "discussion", None) or [])
+    )
 
 
 def decision_status(action: str) -> str:
@@ -331,13 +397,15 @@ class HITLWorkflowGateway:
         at all, so every real HITL workflow step raised ``AttributeError`` the
         first time it tried to suspend). Returns the new request's id.
         """
-        from datetime import timedelta
-
+        # The SLA deadline is measured from the approval's own creation time
+        # (deadline = created_at + the step's timeout), so the two never drift.
+        created = datetime.now(UTC)
         deadline_at = None
         if deadline_hours is not None:
-            deadline_at = (datetime.now(UTC) + timedelta(hours=deadline_hours)).isoformat()
+            deadline_at = (created + timedelta(hours=deadline_hours)).isoformat()
 
         req = WorkflowHITLRequest(
+            created_at=created.isoformat(),
             run_id=run_id,
             workflow_id=workflow_id,
             step_id=step_id,
@@ -536,19 +604,17 @@ class HITLWorkflowGateway:
         if req.status != "pending":
             raise ApprovalNotPendingError("Cannot escalate a non-pending request")
 
-        entry = {
-            "type": "escalation",
-            "by": actor_id,
-            "note": note,
-            "at": datetime.now(UTC).isoformat(),
-        }
+        at = datetime.now(UTC).isoformat()
+        entry = {"type": "escalation", "by": actor_id, "note": note, "at": at}
         # Change assignment to escalation role
         assignment = (
             {"assigned_role": req.escalation_to_role, "assigned_to": None}
             if req.escalation_to_role
             else None
         )
-        req = await self._mutate_pending(req, entry, assignment, action="escalate")
+        req = await self._mutate_pending(
+            req, entry, assignment, action="escalate", escalated_at=at
+        )
         await self._send_notification(req)
         return req
 
@@ -602,22 +668,27 @@ class HITLWorkflowGateway:
         assignment: dict[str, Any] | None,
         *,
         action: str,
+        escalated_at: str | None = None,
     ) -> WorkflowHITLRequest:
         """Apply a discussion entry / reassignment to a still-PENDING approval.
 
         With the durable store this is one conditional UPDATE that never
         writes ``status`` (WF-41), so a decision racing it can never be reverted
-        to pending. Raises :class:`ApprovalNotPendingError` when the approval was
-        decided meanwhile, :class:`ApprovalPersistenceError` when unwritable.
+        to pending. ``escalated_at`` records an escalation (and bumps
+        ``escalation_level``). Raises :class:`ApprovalNotPendingError` when the
+        approval was decided meanwhile, :class:`ApprovalPersistenceError` when
+        unwritable.
         """
         mutate = getattr(self._approval_store, "mutate_if_pending", None)
         if mutate is not None:
+            extra = {"escalated_at": escalated_at} if escalated_at else {}
             try:
                 updated = await mutate(
                     req.request_id,
                     req.tenant_id,
                     discussion_entry=entry,
                     assignment=assignment,
+                    **extra,
                 )
             except Exception as exc:
                 _log.error(
@@ -639,6 +710,9 @@ class HITLWorkflowGateway:
                 )
             for key, value in (assignment or {}).items():
                 setattr(req, key, value)
+            if escalated_at:
+                req.escalated_at = escalated_at
+                req.escalation_level = int(req.escalation_level or 0) + 1
             req.discussion.append(entry)
             await self._save(req)
         return req
@@ -759,48 +833,265 @@ class HITLWorkflowGateway:
         return found_local
 
     async def check_and_escalate_overdue(
-        self, *, now: datetime | None = None, candidates: list[Any] | None = None
+        self,
+        *,
+        now: datetime | None = None,
+        candidates: list[Any] | None = None,
+        limit: int = 200,
     ) -> dict[str, int]:
-        """SLA sweep: escalate pending approvals past their deadline.
+        """SLA sweep: apply ``timeout_action`` to pending approvals past their deadline.
 
-        The beat task ``workflow.check_hitl_escalations`` called this method,
-        which did not exist — so no approval was ever auto-escalated. A request
-        is overdue when ``deadline_at`` has passed, or (without a deadline) when
-        it has been pending longer than ``escalation_after_hours``. Only
-        ``timeout_action == "escalate"`` is acted on, once per request;
-        auto_approve / auto_reject / pause are NOT IMPLEMENTED and are counted as
-        ``skipped``. Candidates come from the durable store's cross-tenant scan
-        (maintenance role) when wired, else this process's mirror.
+        A request is overdue once its deadline (``deadline_at`` = created_at +
+        the step's timeout, else created_at + ``escalation_after_hours``) has
+        passed. Each overdue request gets its author's ``timeout_action``
+        exactly once (see :meth:`apply_timeout_action`):
+
+        * ``escalate`` — reassign to ``escalation.to_role`` and notify; the
+          approval stays pending and the run keeps waiting (never proceeds);
+        * ``auto_reject`` / ``auto_approve`` — decided by ``sla-timeout``,
+          audited, and the run resumes down the rejection / approval path;
+        * ``pause`` — the run is paused; the approval stays pending.
+
+        Old bug: only ``escalate`` was acted on — auto_approve / auto_reject /
+        pause were accepted by the DSL and silently did nothing. Candidates come
+        from the durable store's indexed overdue scan (maintenance role, at most
+        ``limit`` per sweep, most overdue first), else this process's mirror.
         """
         current = now or datetime.now(UTC)
         if candidates is None:
-            scan = getattr(self._approval_store, "list_pending_all_tenants", None)
-            candidates = list(await scan()) if scan is not None else [
-                r for r in self._store.values() if r.status == "pending"
-            ]
-        escalated = skipped = 0
+            candidates = await self._overdue_candidates(current, limit)
+        counts = {
+            "checked": len(candidates),
+            "escalated": 0,
+            "auto_rejected": 0,
+            "auto_approved": 0,
+            "paused": 0,
+            "expired": 0,
+            "skipped": 0,
+            "failed": 0,
+        }
         for req in candidates:
-            if getattr(req, "status", "") != "pending" or not _is_overdue(req, current):
-                continue
-            if req.timeout_action != "escalate" or not req.allow_escalate:
-                skipped += 1
-                continue
-            if any(
-                d.get("type") == "escalation" and d.get("by") == _SLA_ACTOR
-                for d in req.discussion
+            if (
+                getattr(req, "status", "") != "pending"
+                or not _is_overdue(req, current)
+                or _timeout_handled(req)
             ):
-                continue  # already auto-escalated once
+                continue
             try:
-                await self.escalate(
-                    req.request_id, _SLA_ACTOR, note="SLA deadline passed",
-                    tenant_id=req.tenant_id,
-                )
-                escalated += 1
+                outcome = await self.apply_timeout_action(req, now=current)
             except Exception as exc:
-                _log.warning(
-                    "hitl_sla_escalation_failed", request_id=req.request_id, error=str(exc)
+                counts["failed"] += 1
+                _log.error(
+                    "hitl_sla_timeout_failed",
+                    request_id=getattr(req, "request_id", ""),
+                    timeout_action=getattr(req, "timeout_action", ""),
+                    error=str(exc)[:300],
                 )
-        return {"checked": len(candidates), "escalated": escalated, "skipped": skipped}
+                continue
+            counts[outcome if outcome in counts else "skipped"] += 1
+        return counts
+
+    async def _overdue_candidates(self, now: datetime, limit: int) -> list[Any]:
+        """Overdue pending approvals, most overdue first, at most ``limit``."""
+        store = self._approval_store
+        overdue = getattr(store, "list_overdue_pending", None)
+        if overdue is not None:
+            return list(await overdue(now=now, limit=limit))
+        scan = getattr(store, "list_pending_all_tenants", None)
+        pool = (
+            list(await scan(limit=max(limit, 500)))
+            if scan is not None
+            else [r for r in self._store.values() if r.status == "pending"]
+        )
+        due = [r for r in pool if _is_overdue(r, now) and not _timeout_handled(r)]
+        due.sort(key=lambda r: effective_deadline(r) or now)
+        return due[:limit]
+
+    async def apply_timeout_action(self, req: WorkflowHITLRequest, *, now: datetime) -> str:
+        """Apply ``req.timeout_action`` once, race-safe with human decisions.
+
+        Returns the outcome: ``escalated`` / ``auto_rejected`` /
+        ``auto_approved`` / ``paused`` / ``escalation_disallowed`` / ``expired``
+        (its run already ended), or ``not_pending`` (a human decided — or
+        another sweep timed it out — first: nothing done) / ``deferred`` (pause
+        before the run finished suspending: retried next sweep).
+        """
+        plan = self._timeout_plan(req, now)
+        result, updated = await self._claim_timeout(req, plan, now)
+        if result == CLAIM_RUN_ENDED:
+            _log.info("hitl_sla_timeout_run_ended", request_id=req.request_id, run_id=req.run_id)
+            return "expired"
+        if result == CLAIM_RUN_NOT_WAITING:
+            return "deferred"
+        if result != CLAIM_APPLIED or updated is None:
+            _log.info("hitl_sla_timeout_lost_race", request_id=req.request_id)
+            return "not_pending"
+
+        log_fields = {
+            "request_id": req.request_id,
+            "run_id": req.run_id,
+            "step_id": req.step_id,
+            "tenant_id": req.tenant_id,
+            "deadline_at": req.deadline_at,
+            "timeout_action": req.timeout_action,
+        }
+        if plan.outcome == "escalated":
+            _log.info("hitl_sla_escalated", to_role=req.escalation_to_role, **log_fields)
+            await self._send_notification(updated)
+        elif plan.status is not None:
+            if plan.outcome == "auto_approved":
+                # An explicit author opt-in, but the run proceeds with nobody
+                # having looked at it: always loud.
+                _log.warning("hitl_sla_auto_approved", **log_fields)
+            else:
+                _log.info("hitl_sla_auto_rejected", **log_fields)
+            # Same as a human decision: HITL triggers fire, then the run resumes.
+            await self._publish_trigger_event(updated)
+            if self._resume_callback is None:
+                _log.error("hitl_sla_decision_no_resume_callback", **log_fields)
+            else:
+                try:
+                    await self._resume_callback(updated)
+                except Exception as exc:
+                    _log.error("hitl_sla_resume_failed", error=str(exc)[:300], **log_fields)
+                    raise
+        elif plan.outcome == "paused":
+            _log.info("hitl_sla_run_paused", **log_fields)
+        else:
+            _log.warning("hitl_sla_escalation_disallowed", **log_fields)
+        return plan.outcome
+
+    @staticmethod
+    def _timeout_decision_action(req: WorkflowHITLRequest, *, approve: bool) -> str:
+        """The action id an automatic decision takes: the step's own approve /
+        reject action when it declares one (so its ``next`` branch is honoured),
+        else the canonical ``approve`` / ``reject``."""
+        from app.workflow.steps.hitl_step import APPROVE_ACTIONS, REJECT_ACTIONS
+
+        family = APPROVE_ACTIONS if approve else REJECT_ACTIONS
+        for action in req.actions or []:
+            action_id = str((action or {}).get("id") or "") if isinstance(action, dict) else ""
+            if action_id.strip().lower() in family:
+                return action_id
+        return "approve" if approve else "reject"
+
+    def _timeout_plan(self, req: WorkflowHITLRequest, now: datetime) -> TimeoutPlan:
+        at = now.isoformat()
+        action = req.timeout_action if req.timeout_action in _TIMEOUT_ACTIONS else "escalate"
+        deadline = req.deadline_at or (
+            dl.isoformat() if (dl := effective_deadline(req)) is not None else ""
+        )
+        base_note = f"request_id={req.request_id}; deadline_at={deadline}; timeout_action={action}"
+        entry: dict[str, Any] = {
+            "type": "timeout",
+            "action": action,
+            "by": SLA_TIMEOUT_ACTOR,
+            "at": at,
+            "deadline_at": deadline,
+        }
+        if action == "escalate":
+            if not req.allow_escalate:
+                outcome = "escalation_disallowed"
+                return TimeoutPlan(
+                    outcome=outcome,
+                    patch={"timed_out_at": at, "timeout_outcome": outcome},
+                    entry={**entry, "note": "Deadline passed; escalation is disabled"},
+                    audit_note=base_note,
+                )
+            assignment = (
+                {"assigned_role": req.escalation_to_role, "assigned_to": None}
+                if req.escalation_to_role
+                else None
+            )
+            return TimeoutPlan(
+                outcome="escalated",
+                patch={
+                    "timed_out_at": at,
+                    "timeout_outcome": "escalated",
+                    "escalated_at": at,
+                    **(assignment or {}),
+                },
+                entry={
+                    "type": "escalation",
+                    "by": SLA_TIMEOUT_ACTOR,
+                    "note": "SLA deadline passed",
+                    "at": at,
+                    "to_role": req.escalation_to_role,
+                    "deadline_at": deadline,
+                },
+                assignment=assignment,
+                bump_escalation=True,
+                audit_note=f"{base_note}; to_role={req.escalation_to_role or ''}",
+            )
+        if action in ("auto_reject", "auto_approve"):
+            approve = action == "auto_approve"
+            outcome = "auto_approved" if approve else "auto_rejected"
+            act = self._timeout_decision_action(req, approve=approve)
+            status = decision_status(act)
+            note = (
+                f"Automatically {'approved' if approve else 'rejected'}: no decision "
+                f"before the deadline ({deadline}); timeout_action={action}"
+            )
+            return TimeoutPlan(
+                outcome=outcome,
+                patch={
+                    "timed_out_at": at,
+                    "timeout_outcome": outcome,
+                    "status": status,
+                    "action_taken": act,
+                    "reviewed_by": SLA_TIMEOUT_ACTOR,
+                    "reviewed_at": at,
+                    "note": note,
+                },
+                entry={**entry, "decision": act},
+                status=status,
+                audit_note=f"{base_note}; action={act}",
+            )
+        return TimeoutPlan(
+            outcome="paused",
+            patch={"timed_out_at": at, "timeout_outcome": "paused"},
+            entry={**entry, "note": "Deadline passed; the run is paused"},
+            pause_run=True,
+            audit_note=base_note,
+        )
+
+    async def _claim_timeout(
+        self, req: WorkflowHITLRequest, plan: TimeoutPlan, now: datetime
+    ) -> tuple[str, WorkflowHITLRequest | None]:
+        """Compare-and-set ``plan`` onto a still-pending, not-yet-timed-out approval.
+
+        The durable store does it in one transaction with the run update and
+        the audit row (atomic across replicas, and against a human decision's
+        conditional UPDATE). Without it, the per-process lock that serialises
+        :meth:`decide` serialises this too.
+        """
+        claim = getattr(self._approval_store, "claim_timeout", None)
+        if claim is not None:
+            result, updated = await claim(req, plan, now=now)
+            if updated is not None:
+                self._store[req.request_id] = updated
+                if self._redis is not None:
+                    with contextlib.suppress(Exception):
+                        await self._redis.setex(
+                            f"hitl:req:{req.request_id}",
+                            86_400 * 30,
+                            json.dumps(updated.__dict__),
+                        )
+            return str(result), updated
+        async with self._decide_lock:
+            local = self._store.get(req.request_id)
+            current = local if local is not None else req
+            if current.status != "pending" or _timeout_handled(current):
+                return CLAIM_NOT_PENDING, None
+            updated = dataclasses.replace(current, discussion=[*current.discussion, plan.entry])
+            for key, value in plan.patch.items():
+                setattr(updated, key, value)
+            if plan.bump_escalation:
+                updated.escalation_level = int(current.escalation_level or 0) + 1
+            if plan.status is not None:
+                updated.status = plan.status
+            await self._save(updated)
+        return CLAIM_APPLIED, updated
 
     async def list_pending(
         self,

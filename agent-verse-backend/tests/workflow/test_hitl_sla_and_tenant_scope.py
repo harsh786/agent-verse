@@ -46,12 +46,17 @@ async def test_overdue_deadline_escalates_once_to_the_escalation_role() -> None:
     assert stored is not None and stored.assigned_role == "manager" and stored.assigned_to is None
 
 
-async def test_not_yet_due_and_non_escalate_actions_are_left_alone() -> None:
+async def test_not_yet_due_is_left_alone_and_other_actions_are_applied() -> None:
+    """auto_approve used to be counted as ``skipped`` (NOT IMPLEMENTED); every
+    timeout action is applied now (tests/workflow/test_hitl_timeout_actions.py)."""
     future = _req("f", deadline_at=(NOW + timedelta(hours=1)).isoformat())
     auto = _req("g", deadline_at=(NOW - timedelta(hours=1)).isoformat(), timeout_action="auto_approve")
     gw = await _gw(future, auto)
     result = await gw.check_and_escalate_overdue(now=NOW)
-    assert result == {"checked": 2, "escalated": 0, "skipped": 1}
+    assert result["escalated"] == 0 and result["auto_approved"] == 1
+    assert result["skipped"] == 0 and result["failed"] == 0
+    still = await gw.get_request("f", "t1")
+    assert still is not None and still.status == "pending" and still.timed_out_at is None
 
 
 async def test_age_based_escalation_without_deadline() -> None:
