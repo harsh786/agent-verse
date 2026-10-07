@@ -275,8 +275,26 @@ def redact_url_credentials(url: str) -> str:
     return urlunsplit((parts.scheme, netloc, path, query, parts.fragment))
 
 
+def _max_command_file_bytes() -> int:
+    """Chat attachments land in knowledge, so they share the knowledge upload cap."""
+    from app.core.config import get_settings
+
+    return int(get_settings().knowledge_max_upload_bytes)
+
+
 async def _download_command_file(cf: Any) -> bytes | None:
+    """Fetch one chat attachment, or None when it is missing, blocked or too large.
+
+    The body is streamed and refused once it passes the knowledge upload cap (a
+    declared Content-Length over the cap is refused before a byte is read): the
+    URL comes from an external chat payload, so an unbounded ``r.content`` let
+    any sender make the API buffer an arbitrarily large file (a10-F248-05).
+    """
+    cap = _max_command_file_bytes()
     if getattr(cf, "data", None):
+        if len(cf.data) > cap:
+            _log.warning("gateway.file_too_large", size=len(cf.data), cap=cap)
+            return None
         return cf.data
     url = getattr(cf, "url", None)
     if not url:
@@ -296,9 +314,26 @@ async def _download_command_file(cf: Any) -> bytes | None:
         # re-resolved the name: DNS rebinding); chat file links commonly
         # redirect to a CDN, so redirects are followed with every hop checked.
         async with public_async_client(timeout=20.0) as client:
-            r = await request_public(client, "GET", str(url), context="gateway.file_download")
-            r.raise_for_status()
-            return r.content
+            r = await request_public(
+                client, "GET", str(url), context="gateway.file_download", stream=True
+            )
+            try:
+                r.raise_for_status()
+                declared = str(r.headers.get("content-length") or "").strip()
+                if declared.isdigit() and int(declared) > cap:
+                    _log.warning("gateway.file_too_large", size=int(declared), cap=cap)
+                    return None
+                chunks: list[bytes] = []
+                total = 0
+                async for part in r.aiter_bytes():
+                    total += len(part)
+                    if total > cap:
+                        _log.warning("gateway.file_too_large", size=total, cap=cap)
+                        return None
+                    chunks.append(part)
+                return b"".join(chunks)
+            finally:
+                await r.aclose()
     except Exception as exc:
         _log.warning("gateway.file_download_failed", error=str(exc)[:120])
         return None
