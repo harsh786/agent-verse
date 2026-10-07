@@ -85,9 +85,20 @@ def _site(status: Callable[[str], int]) -> Any:
     return _send
 
 
+@pytest.fixture(scope="module")
+def dlq_pg_url(pg_url: str) -> Any:
+    """A database of this module's own: the DLQ retry job walks EVERY tenant's
+    open DLQ rows, so rows other tests left in the shared ``pg_url`` database
+    changed its counts in full-suite order."""
+    from tests._test_backends import fresh_migrated_database
+
+    with fresh_migrated_database(pg_url) as url:
+        yield url
+
+
 @pytest_asyncio.fixture
-async def world(pg_url: str) -> Any:
-    engine = create_async_engine(pg_url)
+async def world(dlq_pg_url: str) -> Any:
+    engine = create_async_engine(dlq_pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant = f"usr4-{uuid.uuid4().hex[:8]}"
     async with factory() as s, s.begin():
