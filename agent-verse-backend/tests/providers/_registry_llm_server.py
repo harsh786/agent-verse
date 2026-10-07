@@ -55,8 +55,12 @@ class RecordedRequest:
 
 
 class LocalLLMServer:
-    def __init__(self) -> None:
+    def __init__(self, *, reply: str | None = None, fail_models: set[str] | None = None) -> None:
         self.requests: list[RecordedRequest] = []
+        # A fixed answer for every non-agent role (e.g. an image caption).
+        self.reply = reply
+        # Models this server refuses with HTTP 400 (a broken model, for failover).
+        self.fail_models = set(fail_models or ())
         server = self
 
         class _Handler(BaseHTTPRequestHandler):
@@ -89,8 +93,16 @@ class LocalLLMServer:
                         body=body,
                     )
                 )
-                reply = _REPLIES.get(role, DEFAULT_REPLY)
+                reply = _REPLIES.get(role, server.reply or DEFAULT_REPLY)
                 model = str(body.get("model") or "")
+                if model in server.fail_models:
+                    err = json.dumps({"error": {"message": f"{model} is broken"}}).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(err)))
+                    self.end_headers()
+                    self.wfile.write(err)
+                    return
                 if stream:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
@@ -173,6 +185,34 @@ def add_registry_model(base_url: str | None, *, model_id: str = MODEL, key: str 
             capabilities=[_TG, _TU, _SO],
             supports_tools=True,
             supports_structured_output=True,
+            base_url=base_url,
+            extra={
+                "source": "override",
+                "origin": "manual",
+                "api_key_encrypted": encrypt_endpoint_api_key(key),
+            },
+        )
+    )
+
+
+VISION_MODEL = "registry-vlm"
+VISION_KEY = "sk-registry-vision-key"
+
+
+def add_registry_vision_model(base_url: str | None, *, model_id: str = VISION_MODEL,
+                              key: str = VISION_KEY, provider: str = "openai_compatible",
+                              cost: float = 0.0) -> None:
+    """An operator-added vision model at its own endpoint (base_url + own key)."""
+    from app.ai_router.model_endpoints import encrypt_endpoint_api_key
+
+    model_registry.register_configured(
+        ModelEndpoint(
+            provider=provider,
+            model_id=model_id,
+            display_name=model_id,
+            capabilities=[ModelCapability.VISION, ModelCapability.OCR],
+            supports_vision=True,
+            cost_per_1k_input=cost,
             base_url=base_url,
             extra={
                 "source": "override",

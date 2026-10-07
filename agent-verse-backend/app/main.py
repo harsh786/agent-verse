@@ -1193,16 +1193,14 @@ def create_app(
     from app.rpa.executor import build_rpa_executor
     from app.rpa.session import RPASessionStore
 
-    # Determine whether the embedder supports vision for screenshot analysis
-    _supports_vision = (
-        _embedder is not None
-        and hasattr(_embedder, "supports_vision")
-        and _embedder.supports_vision()
-    )
+    # Screenshot analysis uses the Model Registry's vision model (resolve_vision),
+    # dispatched to that model's own endpoint through the platform provider —
+    # whether vision is available is decided by the registry, not by the
+    # embedder's supports_vision() (the embedder used to be the vision transport).
     # Shared with the Celery worker (app.scaling.tasks) so both runtimes get the
     # same session manager + browser guard, artifact store and SSRF allowlist
     # (RPA_SSRF_ALLOWED_DOMAINS; empty → public-only).
-    _rpa_executor = build_rpa_executor(vision_provider=_embedder if _supports_vision else None)
+    _rpa_executor = build_rpa_executor(vision_provider=None)
     _rpa_session_manager = _rpa_executor._session_manager
     _rpa_artifact_store = _rpa_executor._artifact_store
     _rpa_session_store = RPASessionStore()
@@ -1211,7 +1209,7 @@ def create_app(
     from app.perception.browser_agent import BrowserAgent
     from app.perception.page_analyzer import PageAnalyzer
 
-    _browser_agent = BrowserAgent(vision_provider=_embedder if _supports_vision else None)
+    _browser_agent = BrowserAgent(vision_provider=None)
     _page_analyzer = PageAnalyzer(browser_agent=_browser_agent)
 
     _task_queue = CeleryGoalTaskQueue() if manage_pools and settings.redis_url else None

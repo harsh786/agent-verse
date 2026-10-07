@@ -72,6 +72,7 @@ async def test_require_vision_with_non_vision_provider_raises() -> None:
         await analyzer.analyze_url("https://a.com", require_vision=True)
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_vision_provider_failure_is_an_error_not_the_analysis() -> None:
     analyzer = PageAnalyzer(browser_agent=_agent(_Provider(vision=True, fail=True)))
 
@@ -83,6 +84,7 @@ async def test_vision_provider_failure_is_an_error_not_the_analysis() -> None:
     assert result.metadata["vision"] == "failed"
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_vision_provider_success_is_reported_as_analysis() -> None:
     analyzer = PageAnalyzer(browser_agent=_agent(_Provider(vision=True)))
 

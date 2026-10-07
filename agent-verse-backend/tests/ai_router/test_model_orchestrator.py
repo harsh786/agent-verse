@@ -98,12 +98,15 @@ def test_budget_downgrade_at_75_percent_from_high() -> None:
     assert assignment.quality_tier == "medium"
 
 
-def test_content_type_image_routing() -> None:
+def test_content_type_image_routing(monkeypatch) -> None:
+    from tests.ai_router._vision_registry import vision_models
+
     orch = ModelOrchestrator()
-    result = orch.select_for_content_type(ContentType.IMAGE)
+    with vision_models(monkeypatch, ("openai", "registry-vlm")):
+        result = orch.select_for_content_type(ContentType.IMAGE)
     assert result.modality == "image"
     assert result.requires_vision is True
-    assert result.extractor_model
+    assert result.extractor_model == "registry-vlm"
     assert result.reasoner_model
 
 

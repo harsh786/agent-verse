@@ -22,6 +22,7 @@ from app.ai_router.model_orchestrator import (
 )
 from app.ai_router.provider_health_policy import ProviderHealthPolicy
 from app.ingestion.content_classifier import ContentType
+from tests.ai_router._vision_registry import vision_models
 
 
 def _high_tier_config() -> PatternConfig:
@@ -112,14 +113,23 @@ def test_both_providers_down_returns_a_usable_model() -> None:
 # ── D-14: vision/audio content-type selection ─────────────────────────────────
 
 
-def test_image_selects_vision_capable_model() -> None:
+def test_image_selects_vision_capable_model(monkeypatch) -> None:
     orch = ModelOrchestrator()
-    a = orch.select_for_content_type(ContentType.IMAGE)
+    with vision_models(monkeypatch, ("openai", "gpt-4o"), ("anthropic", "claude-3-5-sonnet")):
+        a = orch.select_for_content_type(ContentType.IMAGE)
     assert a.modality == "image"
     assert a.requires_vision is True
     assert a.requires_audio is False
-    # extractor must be a vision-capable model.
-    assert a.extractor_model in {"gpt-4o", "claude-3-5-sonnet", "gemini-2.5-pro"}
+    # The extractor is the Model Registry's vision model; the rest of the chain fails over.
+    assert a.extractor_model == "gpt-4o"
+    assert a.extractor_fallbacks == ("claude-3-5-sonnet",)
+
+
+def test_image_without_a_registry_vision_model_has_no_extractor(monkeypatch) -> None:
+    with vision_models(monkeypatch):
+        a = ModelOrchestrator().select_for_content_type(ContentType.IMAGE)
+    assert a.requires_vision is True
+    assert (a.extractor_model, a.extractor_fallbacks) == ("", ())
 
 
 def test_audio_selects_audio_capable_model() -> None:
@@ -144,13 +154,16 @@ def test_audio_failover_preserves_audio_capability() -> None:
     assert _provider_of(a.extractor_model) != "openai"
 
 
-def test_image_failover_preserves_vision_capability() -> None:
+def test_image_failover_preserves_vision_capability(monkeypatch) -> None:
     orch = ModelOrchestrator()
     for _ in range(6):
         orch.record_provider_result("openai", ok=False)
-    a = orch.select_for_content_type(ContentType.IMAGE)
+    with vision_models(monkeypatch, ("openai", "gpt-4o"), ("anthropic", "claude-3-5-sonnet")):
+        a = orch.select_for_content_type(ContentType.IMAGE)
     assert a.requires_vision is True
-    assert a.extractor_model in {"claude-3-5-sonnet", "gemini-2.5-pro"}, a.extractor_model
+    # The open provider's model moves behind the healthy registry vision model.
+    assert a.extractor_model == "claude-3-5-sonnet", a.extractor_model
+    assert a.extractor_fallbacks == ("gpt-4o",)
     assert _provider_of(a.extractor_model) != "openai"
 
 
@@ -162,9 +175,10 @@ def test_text_needs_no_vision() -> None:
     assert a.requires_audio is False
 
 
-def test_all_content_types_get_a_valid_assignment() -> None:
+def test_all_content_types_get_a_valid_assignment(monkeypatch) -> None:
     orch = ModelOrchestrator()
-    for ct in ContentType:
-        a = orch.select_for_content_type(ct)
+    with vision_models(monkeypatch, ("openai", "registry-vlm")):
+        assignments = [orch.select_for_content_type(ct) for ct in ContentType]
+    for ct, a in zip(ContentType, assignments, strict=True):
         assert a.extractor_model, f"{ct.value}: extractor empty"
         assert a.reasoner_model, f"{ct.value}: reasoner empty"

@@ -520,19 +520,22 @@ class RPAExecutor:
                     except Exception:
                         pass  # Fall back to base64 in response
 
-                # Analyze screenshot with vision provider if available
+                # Analyze the screenshot when the Model Registry has a vision
+                # model (the registry decides; the call is dispatched to that
+                # model's own endpoint, via this executor's provider or else the
+                # platform provider).
                 vision_analysis = ""
-                if self._vision_provider:
-                    try:
-                        from app.perception.browser_agent import BrowserAgent
+                try:
+                    from app.perception.browser_agent import BrowserAgent
 
-                        _ba = BrowserAgent(vision_provider=self._vision_provider)
+                    _ba = BrowserAgent(vision_provider=self._vision_provider)
+                    if _ba.has_vision:
                         vision_analysis = await _ba.analyze_screenshot(
                             b64,
                             "Describe the main content and purpose of this page.",
                         )
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
                 output = f"Screenshot captured: {name}"
                 if vision_analysis:

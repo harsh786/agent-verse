@@ -195,12 +195,14 @@ class OllamaProvider(OpenAICompatibleProvider):
         self._base = _raw_base.rstrip("/")
         _model = default_model or os.getenv("OLLAMA_DEFAULT_MODEL", "qwen3.8:latest")
         _embed = default_embed_model or os.getenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:latest")
-        _ocr = default_ocr_model or os.getenv("OLLAMA_OCR_MODEL", "glm-ocr:latest")
+        # OCR model: an explicit pin only (the Model Registry's OCR order decides
+        # first — app.ai_router.resolve.resolve_ocr); no literal default.
+        _ocr = default_ocr_model or (os.getenv("OLLAMA_OCR_MODEL") or "").strip()
         super().__init__(
             api_key="ollama",  # Ollama does not require a real key
             base_url=f"{self._base}/v1",
             default_model=str(_model),
-            supports_vision_flag=True,  # glm-ocr supports vision
+            supports_vision_flag=True,  # Ollama serves vision models (e.g. an OCR VLM)
         )
         self._default_embed_model = _embed
         self._default_ocr_model = _ocr

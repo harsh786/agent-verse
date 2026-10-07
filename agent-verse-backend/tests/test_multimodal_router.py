@@ -125,10 +125,16 @@ async def test_vision_parser_fallback_no_key():
     tiny_png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg=="
     )
+    from app.ai_router.resolve import Resolution
+
     parser = VisionParser()
     with (
-        patch.object(parser, "_describe_with_openai", AsyncMock(side_effect=Exception("No key"))),
-        patch.object(parser, "_describe_with_anthropic", AsyncMock(side_effect=Exception("No key"))),
+        patch(
+            "app.ingestion.parsers.vision_parser._resolve_vision",
+            lambda: Resolution(capability="vision", model="registry-vlm", source="env_pin"),
+        ),
+        patch.object(parser, "_describe_with_provider", AsyncMock(side_effect=Exception("down"))),
+        patch("app.ingestion.parsers.vision_parser._VISION_MAX_ATTEMPTS", 1),
     ):
         result = await parser.parse_image_bytes(tiny_png, "test.png")
     # Must return placeholder, not crash

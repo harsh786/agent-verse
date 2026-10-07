@@ -274,60 +274,62 @@ def resolve_embed_model(fallback: str = "", *, provider: str | None = None) -> s
 
 
 def resolve_vision_model(fallback: str = "") -> str:
-    """Cheapest configured vision/OCR model, else the env-configured one."""
-    from app.providers.model_defaults import configured_vision_model
+    """The vision model id (:func:`app.ai_router.resolve.resolve_vision`), else
+    *fallback* when nothing is configured.
 
-    return (
-        select_configured_model_id(TaskType.VISION, require_vision=True)
-        or select_configured_model_id(TaskType.OCR)
-        or configured_vision_model(fallback)
-    )
+    Registry vision models (``supports_vision``) in preference order, then the
+    ``VISION_MODEL`` / ``NVIDIA_VISION_MODEL`` pin — never the reasoning model.
+    """
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_vision
+
+    try:
+        return resolve_vision().model
+    except ModelNotConfiguredError:
+        return fallback
 
 
 def resolve_vision_fallback_models(primary: str, *, limit: int = 3) -> list[str]:
-    """Other configured vision/OCR models to try after *primary*, in order.
+    """Other vision models to try after *primary*, in order.
 
-    Vision-capable models of the VISION capability, then OCR models (each in the
-    operator's preference order, else cheapest first), then the env-configured
-    vision model; *primary* and duplicates are skipped. Empty when nothing else
-    is configured (the caller simply has no failover).
+    The registry vision chain (preference order, else cheapest first), then the
+    env vision pin; *primary* and duplicates are skipped. Empty when nothing
+    else is configured (the caller simply has no failover).
     """
-    from app.providers.model_defaults import configured_vision_model
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_vision
 
-    ordered = [
-        m.model_id for m in ordered_configured_models(TaskType.VISION, require_vision=True)
-    ]
-    ordered += [m.model_id for m in ordered_configured_models(TaskType.OCR)]
-    ordered.append(configured_vision_model(""))
+    try:
+        res = resolve_vision()
+    except ModelNotConfiguredError:
+        return []
     out: list[str] = []
-    for model_id in ordered:
+    for model_id in (res.model, *res.fallbacks):
         if model_id and model_id != primary and model_id not in out:
             out.append(model_id)
     return out[:limit]
 
 
-def resolve_ocr_model(fallback: str = "") -> str:
-    """The OCR model: the OCR preference order first, then vision models, else env."""
-    from app.providers.model_defaults import configured_vision_model
+def _ocr_model_ids() -> list[str]:
+    """The OCR model chain (registry OCR → registry vision → env pins); no Tesseract."""
+    from app.ai_router.resolve import TESSERACT_MODEL, ModelNotConfiguredError, resolve_ocr
 
-    return (
-        select_configured_model_id(TaskType.OCR)
-        or select_configured_model_id(TaskType.VISION, require_vision=True)
-        or configured_vision_model(fallback)
-    )
+    try:
+        res = resolve_ocr(tesseract_enabled=False)
+    except ModelNotConfiguredError:
+        return []
+    return [m for m in (res.model, *res.fallbacks) if m and m != TESSERACT_MODEL]
+
+
+def resolve_ocr_model(fallback: str = "") -> str:
+    """The OCR model id: the OCR preference order first, then vision models, then
+    ``OCR_MODEL`` — else *fallback* (the caller's local tier decides)."""
+    ids = _ocr_model_ids()
+    return ids[0] if ids else fallback
 
 
 def resolve_ocr_fallback_models(primary: str, *, limit: int = 3) -> list[str]:
-    """OCR failover after *primary*: OCR order, then vision models, then env."""
-    from app.providers.model_defaults import configured_vision_model
-
-    ordered = [m.model_id for m in ordered_configured_models(TaskType.OCR)]
-    ordered += [
-        m.model_id for m in ordered_configured_models(TaskType.VISION, require_vision=True)
-    ]
-    ordered.append(configured_vision_model(""))
+    """OCR failover after *primary*: OCR order, then vision models, then env pins."""
     out: list[str] = []
-    for model_id in ordered:
+    for model_id in _ocr_model_ids():
         if model_id and model_id != primary and model_id not in out:
             out.append(model_id)
     return out[:limit]

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 import app.perception.browser_agent as ba_module
 from app.perception.browser_agent import BrowserAction, BrowserAgent, BrowserResult
 
@@ -143,6 +145,7 @@ async def test_analyze_screenshot_vision_provider_no_supports_vision() -> None:
     assert "No vision provider" in result
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_analyze_screenshot_with_vision_returns_content() -> None:
 
     mock_vision = MagicMock()
@@ -157,6 +160,7 @@ async def test_analyze_screenshot_with_vision_returns_content() -> None:
     mock_vision.complete.assert_called_once()
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_analyze_screenshot_vision_exception_returns_error_string() -> None:
     mock_vision = MagicMock()
     mock_vision.supports_vision = MagicMock(return_value=True)

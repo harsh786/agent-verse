@@ -12,10 +12,17 @@ the choice came from (``source``), so callers and logs can say why a model ran.
 Capabilities resolved here:
 
 * ``rerank`` — :func:`resolve_reranker`.
+* ``vision`` — :func:`resolve_vision`.
+* ``ocr`` — :func:`resolve_ocr`.
+
+A vision / OCR call goes through :func:`dispatch_provider`: the
+:class:`~app.providers.model_dispatch.ModelDispatchProvider` sends each model
+(the head, then every fallback) to its own registry endpoint and key.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -53,7 +60,9 @@ class Resolution:
     source: ResolutionSource
     provider: str = ""
     base_url: str | None = None
-    # What runs next if this model fails, in order (labels, e.g. ``onprem/<model>``).
+    # What runs next if this model fails, in order: labels for rerank (e.g.
+    # ``onprem/<model>``), model ids for vision / OCR (each dispatched to its own
+    # registry endpoint).
     fallbacks: tuple[str, ...] = ()
 
 
@@ -208,11 +217,240 @@ def resolve_reranker(
     )
 
 
+# ── shared helpers (vision / OCR) ───────────────────────────────────────────
+
+
+def _preferences(capability: Any, registry: Any) -> list[str]:
+    try:
+        from app.ai_router.registry import model_registry
+
+        return list((registry or model_registry).preference_order(capability))
+    except Exception:  # pragma: no cover - never block a call on the registry
+        return []
+
+
+def _dedupe_ids(ids: Sequence[str], *, skip: str = "") -> tuple[str, ...]:
+    out: list[str] = []
+    for mid in ids:
+        if mid and mid != skip and mid not in out:
+            out.append(mid)
+    return tuple(out)
+
+
+def _from_registry(
+    capability: str,
+    chain: Sequence[Any],
+    *,
+    preferences: Sequence[str],
+    extra_fallbacks: Sequence[str] = (),
+) -> Resolution:
+    head = chain[0]
+    model = str(getattr(head, "model_id", "") or "")
+    rest = [str(getattr(m, "model_id", "") or "") for m in chain[1:]]
+    return Resolution(
+        capability=capability,
+        model=model,
+        source=_registry_source(head, preferences),
+        provider=str(getattr(head, "provider", "") or ""),
+        base_url=getattr(head, "base_url", None) or None,
+        fallbacks=_dedupe_ids([*rest, *extra_fallbacks], skip=model),
+    )
+
+
+def _env_provider(model_id: str) -> str:
+    try:
+        from app.ai_router.seeder import _provider_for_model
+
+        return _provider_for_model(model_id)
+    except Exception:  # pragma: no cover - a label only
+        return ""
+
+
+# ── vision ───────────────────────────────────────────────────────────────────
+
+_VISION_HINT = (
+    "add a vision-capable model in the Model Registry (capability 'vision') or set "
+    "VISION_MODEL / NVIDIA_VISION_MODEL"
+)
+
+
+def vision_chain(registry: Any = None) -> list[Any]:
+    """Registry vision models (``supports_vision``) in execution order."""
+    from app.ai_router.models import TaskType
+    from app.ai_router.selection import ordered_configured_models
+
+    return ordered_configured_models(TaskType.VISION, require_vision=True, registry=registry)
+
+
+def resolve_vision(*, registry: Any = None) -> Resolution:
+    """The image-understanding model, in order:
+
+    1. the Model Registry vision models that support vision, in the operator's
+       preference order (then cheapest) — the rest are the failover chain;
+    2. the explicit env pin ``VISION_MODEL`` / ``NVIDIA_VISION_MODEL``;
+    3. :class:`ModelNotConfiguredError` — never the reasoning model, never a
+       vendor literal.
+    """
+    from app.ai_router.models import ModelCapability
+    from app.providers.model_defaults import configured_vision_model
+
+    env = configured_vision_model("")
+    chain = vision_chain(registry)
+    if chain:
+        return _from_registry(
+            "vision",
+            chain,
+            preferences=_preferences(ModelCapability.VISION, registry),
+            extra_fallbacks=[env],
+        )
+    if env:
+        return Resolution(
+            capability="vision", model=env, source="env_pin", provider=_env_provider(env)
+        )
+    raise ModelNotConfiguredError("vision", _VISION_HINT)
+
+
+def vision_configured(*, registry: Any = None) -> bool:
+    """Whether :func:`resolve_vision` finds a model (the registry decides)."""
+    try:
+        resolve_vision(registry=registry)
+    except ModelNotConfiguredError:
+        return False
+    return True
+
+
+# ── ocr ──────────────────────────────────────────────────────────────────────
+
+_OCR_HINT = (
+    "add an OCR or vision model in the Model Registry, set OCR_MODEL, or enable the "
+    "local Tesseract tier (OCR_TESSERACT_ENABLED=true)"
+)
+
+TESSERACT_MODEL = "tesseract"
+
+
+def _ocr_env_pins() -> list[tuple[str, str, str | None]]:
+    """``(model, provider, base_url)`` env pins for OCR, most specific first.
+
+    ``OCR_MODEL``, then ``OLLAMA_OCR_MODEL`` (only when explicitly set — the
+    settings default is catalogue metadata, not a selection).
+    """
+    from app.providers.model_defaults import configured_ocr_model
+
+    pins: list[tuple[str, str, str | None]] = []
+    ocr = configured_ocr_model("")
+    if ocr:
+        pins.append((ocr, _env_provider(ocr), None))
+    ollama = (os.getenv("OLLAMA_OCR_MODEL") or "").strip()
+    if ollama and ollama != ocr:
+        base = (os.getenv("OLLAMA_BASE_URL") or "").strip() or None
+        pins.append((ollama, "ollama", base))
+    return pins
+
+
+def ocr_chain(registry: Any = None) -> list[Any]:
+    """Registry OCR models, then registry vision models — execution order, deduped."""
+    from app.ai_router.models import TaskType
+    from app.ai_router.selection import ordered_configured_models
+
+    out: list[Any] = []
+    seen: set[str] = set()
+    for m in [
+        *ordered_configured_models(TaskType.OCR, registry=registry),
+        *vision_chain(registry),
+    ]:
+        mid = str(getattr(m, "model_id", "") or "")
+        if mid and mid not in seen:
+            seen.add(mid)
+            out.append(m)
+    return out
+
+
+def _tesseract_enabled() -> bool:
+    raw = os.getenv("OCR_TESSERACT_ENABLED", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def resolve_ocr(*, registry: Any = None, tesseract_enabled: bool | None = None) -> Resolution:
+    """The OCR model, in order:
+
+    1. the Model Registry OCR models (preference order, then cheapest);
+    2. the Model Registry vision models;
+    3. the env pin ``OCR_MODEL`` (then an explicitly set ``OLLAMA_OCR_MODEL``);
+    4. the local Tesseract tier when ``OCR_TESSERACT_ENABLED`` is on
+       (``model == "tesseract"``, ``source == "local_default"``);
+    5. :class:`ModelNotConfiguredError`.
+    """
+    from app.ai_router.models import ModelCapability
+
+    pins = _ocr_env_pins()
+    chain = ocr_chain(registry)
+    if chain:
+        head_caps = getattr(chain[0], "capabilities", None) or []
+        cap = ModelCapability.OCR if ModelCapability.OCR in head_caps else ModelCapability.VISION
+        return _from_registry(
+            "ocr",
+            chain,
+            preferences=_preferences(cap, registry),
+            extra_fallbacks=[p[0] for p in pins],
+        )
+    if pins:
+        model, provider, base_url = pins[0]
+        return Resolution(
+            capability="ocr",
+            model=model,
+            source="env_pin",
+            provider=provider,
+            base_url=base_url,
+            fallbacks=_dedupe_ids([p[0] for p in pins[1:]], skip=model),
+        )
+    enabled = _tesseract_enabled() if tesseract_enabled is None else tesseract_enabled
+    if enabled:
+        return Resolution(
+            capability="ocr", model=TESSERACT_MODEL, source="local_default", provider="local"
+        )
+    raise ModelNotConfiguredError("ocr", _OCR_HINT)
+
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+
+
+def dispatch_provider(provider: Any = None) -> Any:
+    """The provider a vision / OCR call goes through.
+
+    *provider* (an injected or tenant BYOK provider) — else the platform
+    provider — wrapped in :class:`ModelDispatchProvider`, so the resolved model
+    and every fallback run at their own registry endpoint with their own key.
+    """
+    if provider is None:
+        from app.providers.registry import resolve_provider
+
+        provider = resolve_provider()
+    if provider is None or getattr(type(provider), "_agentverse_guarded", False):
+        # A guarded wrapper (charging / budgeted provider) routes and meters its
+        # own calls; wrapping it would hide that and charge twice.
+        return provider
+    from app.providers.model_dispatch import ModelDispatchProvider
+
+    if isinstance(provider, ModelDispatchProvider):
+        return provider
+    # Wrapped even when the platform provider is a placeholder / canned fake: a
+    # registry vision model with its own endpoint must still reach it.
+    return ModelDispatchProvider(provider)
+
+
 __all__ = [
+    "TESSERACT_MODEL",
     "ModelNotConfiguredError",
     "RerankTier",
     "RerankerResolution",
     "Resolution",
     "ResolutionSource",
+    "dispatch_provider",
+    "ocr_chain",
+    "resolve_ocr",
     "resolve_reranker",
+    "resolve_vision",
+    "vision_chain",
+    "vision_configured",
 ]

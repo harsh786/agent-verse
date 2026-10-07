@@ -24,6 +24,7 @@ from app.observability.logging import get_logger
 from app.providers.model_defaults import (
     configured_default_model,
     configured_embed_model,
+    configured_ocr_model,
     configured_vision_model,
 )
 
@@ -115,6 +116,14 @@ def _register(
     *,
     provider: str | None = None,
 ) -> None:
+    """Register an env-configured model, MERGING into an entry already seeded.
+
+    One model can be configured for several roles (e.g. ``VISION_MODEL`` equal to
+    the reasoning model). Its capabilities and ``supports_*`` flags are the
+    union: a later role never replaces an earlier one (the vision seed used to
+    overwrite the reasoning model's entry with ``supports_tools=False``,
+    removing it from step execution).
+    """
     if not model_id:
         return
     ci, co = registry.price_for(model_id)
@@ -122,10 +131,20 @@ def _register(
     existing = registry.get_configured(provider, model_id)
     if existing is not None:
         # Merge, never replace: the same model seeded for another capability keeps
-        # its entry (and everything it supports); it only gains *capabilities*.
+        # its entry (and everything it supports); it gains the new capabilities
+        # and the matching ``supports_*`` flags.
         merged = list(existing.capabilities)
         merged += [c for c in capabilities if c not in merged]
-        registry.register_configured(dataclasses.replace(existing, capabilities=merged))
+        registry.register_configured(
+            dataclasses.replace(
+                existing,
+                capabilities=merged,
+                supports_tools=existing.supports_tools or _TU in merged,
+                supports_vision=existing.supports_vision or _VI in merged,
+                supports_structured_output=existing.supports_structured_output
+                or _SO in merged,
+            )
+        )
         return
     registry.register_configured(
         ModelEndpoint(
@@ -271,10 +290,13 @@ def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
             _register(reg, mid, [_TG, _TU, _SO])
         # Embeddings (used from P2 onward; harmless to register now).
         _register(reg, configured_embed_model(), [_EM])
-        # Vision / OCR (used from P3 onward).
-        _vision = configured_vision_model()
-        if _vision:
-            _register(reg, _vision, [_TG, _VI, _OC])
+        # Vision / OCR — only when EXPLICITLY pinned (VISION_MODEL /
+        # NVIDIA_VISION_MODEL, OCR_MODEL), never the reasoning model by default.
+        # Merged into an existing entry, so a vision pin equal to the reasoning
+        # model keeps its tool use. A dedicated vision model is not a
+        # text-generation candidate (it would be picked for planning by cost).
+        _register(reg, configured_vision_model(), [_VI, _OC])
+        _register(reg, configured_ocr_model(), [_OC])
         # Rerankers the deployment is configured with: the hosted endpoint
         # (RAG_HOSTED_RERANKER_URL/MODEL) and the on-prem reranker
         # (ONPREM_RERANKER_URL/MODEL, e.g. a vLLM Qwen3-Reranker).

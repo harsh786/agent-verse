@@ -4002,14 +4002,9 @@ def run_goal(
             # executor fails each call honestly (NOT IMPLEMENTED).
             from app.rpa import executor as _rpa_exec_mod
 
-            _worker_rpa_vision = (
-                _embedder_for_graph is not None
-                and hasattr(_embedder_for_graph, "supports_vision")
-                and _embedder_for_graph.supports_vision()
-            )
-            _worker_rpa_executor = _rpa_exec_mod.build_rpa_executor(
-                vision_provider=_embedder_for_graph if _worker_rpa_vision else None
-            )
+            # Screenshot vision: the Model Registry's vision model, dispatched
+            # through the platform provider (the registry decides availability).
+            _worker_rpa_executor = _rpa_exec_mod.build_rpa_executor(vision_provider=None)
             _agent_runner._rpa_executor = _worker_rpa_executor
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory

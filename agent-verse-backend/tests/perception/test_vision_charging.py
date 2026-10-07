@@ -13,6 +13,9 @@ from app.providers.guarded_completion import DecisionBudgetExceededError, tenant
 from app.tenancy.context import PlanTier, TenantContext
 from tests.providers._decision_fakes import RecordingController, ScriptedProvider
 
+# Vision availability is decided by the Model Registry.
+pytestmark = pytest.mark.usefixtures("registry_vision")
+
 T = TenantContext(tenant_id="t-vision", plan=PlanTier.PROFESSIONAL, api_key_id="k")
 
 

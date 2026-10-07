@@ -20,8 +20,10 @@ import os
 _LLM_ENV_VARS = ("NVIDIA_MODEL", "DEFAULT_MODEL", "OPENAI_MODEL")
 # Priority order for the embedding model.
 _EMBED_ENV_VARS = ("NVIDIA_EMBED_MODEL", "EMBEDDING_MODEL")
-# Priority order for the OCR / image-understanding (vision) model.
-_VISION_ENV_VARS = ("VISION_MODEL", "OCR_MODEL", "NVIDIA_VISION_MODEL")
+# Priority order for the image-understanding (vision) model pin.
+_VISION_ENV_VARS = ("VISION_MODEL", "NVIDIA_VISION_MODEL")
+# The dedicated OCR model pin.
+_OCR_ENV_VARS = ("OCR_MODEL",)
 # Priority order for the audio transcription (speech-to-text) model.
 _AUDIO_ENV_VARS = ("AUDIO_MODEL", "TRANSCRIPTION_MODEL", "NVIDIA_AUDIO_MODEL")
 
@@ -51,18 +53,31 @@ def configured_embed_model(fallback: str = "") -> str:
 
 
 def configured_vision_model(fallback: str = "") -> str:
-    """Return the system-configured OCR / image-understanding model.
+    """Return the explicitly pinned image-understanding (vision) model.
 
-    A dedicated vision model is independent of the reasoning model. Priority:
-    ``VISION_MODEL`` → ``OCR_MODEL`` → ``NVIDIA_VISION_MODEL``; when none is set
-    it falls back to the reasoning model (``configured_default_model``) so a
-    single multimodal model still serves both, and finally to ``fallback``.
+    Priority: ``VISION_MODEL`` → ``NVIDIA_VISION_MODEL`` → ``fallback``. It never
+    falls back to the reasoning model: a text model handed an image fails (or
+    hallucinates). The Model Registry decides first — see
+    :func:`app.ai_router.resolve.resolve_vision`; this is only the env pin.
     """
     for var in _VISION_ENV_VARS:
         value = (os.getenv(var) or "").strip()
         if value:
             return value
-    return configured_default_model(fallback)
+    return fallback
+
+
+def configured_ocr_model(fallback: str = "") -> str:
+    """Return the explicitly pinned OCR model (``OCR_MODEL``), else ``fallback``.
+
+    The env pin below the Model Registry's OCR / vision order — see
+    :func:`app.ai_router.resolve.resolve_ocr`.
+    """
+    for var in _OCR_ENV_VARS:
+        value = (os.getenv(var) or "").strip()
+        if value:
+            return value
+    return fallback
 
 
 def configured_audio_model(fallback: str = "whisper-1") -> str:

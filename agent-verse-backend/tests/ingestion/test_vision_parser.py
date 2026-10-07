@@ -1,5 +1,5 @@
 # tests/ingestion/test_vision_parser.py
-"""Vision parser must describe images using GPT-4V or Claude Vision."""
+"""Vision parser describes images with the Model Registry's vision model."""
 from __future__ import annotations
 
 import base64
@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.ai_router.resolve import ModelNotConfiguredError, Resolution
 from app.ingestion.parsers.vision_parser import VisionParser, VisionParseResult
 
 
@@ -17,26 +18,36 @@ def tiny_png_bytes():
     return base64.b64decode(b64)
 
 
+def _registry_vlm(*fallbacks: str):
+    res = Resolution(
+        capability="vision", model="vision-primary", source="registry_preference",
+        fallbacks=tuple(fallbacks),
+    )
+    return patch("app.ingestion.parsers.vision_parser._resolve_vision", lambda: res)
+
+
 async def test_vision_parser_describes_image(tiny_png_bytes):
-    """VisionParser must call vision model and return description."""
+    """VisionParser must call the vision model and return its description."""
     parser = VisionParser()
-    with patch.object(parser, "_describe_with_openai",
-                      AsyncMock(return_value="A white 1x1 pixel image.")):
+    with _registry_vlm(), patch.object(
+        parser, "_describe_with_provider", AsyncMock(return_value="A white 1x1 pixel image.")
+    ):
         result = await parser.parse_image_bytes(
             image_bytes=tiny_png_bytes,
             source_name="test.png",
             prompt="Describe this image in detail.",
         )
     assert isinstance(result, VisionParseResult)
-    assert result.description
-    assert len(result.description) > 0
+    assert result.description == "A white 1x1 pixel image."
+    assert result.model_used == "vision-primary"
 
 
 async def test_vision_parser_returns_structured_chunks(tiny_png_bytes):
     """VisionParseResult must produce chunks with image metadata."""
     parser = VisionParser()
-    with patch.object(parser, "_describe_with_openai",
-                      AsyncMock(return_value="White pixel image")):
+    with _registry_vlm(), patch.object(
+        parser, "_describe_with_provider", AsyncMock(return_value="White pixel image")
+    ):
         result = await parser.parse_image_bytes(tiny_png_bytes, "test.png")
     chunks = result.to_chunks()
     assert len(chunks) == 1
@@ -44,25 +55,29 @@ async def test_vision_parser_returns_structured_chunks(tiny_png_bytes):
     assert chunks[0]["source_name"] == "test.png"
 
 
-async def test_vision_parser_fallback_on_no_key(tiny_png_bytes):
-    """Vision parser must degrade gracefully without API key."""
+async def test_vision_parser_degrades_when_the_model_fails(tiny_png_bytes):
+    """A failing vision model degrades to a placeholder with the error recorded."""
     parser = VisionParser()
-    with patch.object(parser, "_describe_with_openai",
-                      AsyncMock(side_effect=Exception("No API key"))), \
-         patch.object(parser, "_describe_with_anthropic",
-                      AsyncMock(side_effect=Exception("No API key"))):
+    with _registry_vlm(), patch.object(
+        parser, "_describe_with_provider", AsyncMock(side_effect=Exception("down"))
+    ), patch("app.ingestion.parsers.vision_parser._VISION_MAX_ATTEMPTS", 1):
         result = await parser.parse_image_bytes(tiny_png_bytes, "test.png")
-    assert isinstance(result, VisionParseResult)
-    assert result.description or result.error
+    assert result.description == "[Image: test.png]"
+    assert result.error == "down"
+    assert result.model_used == "fallback"
 
 
-async def test_vision_parser_uses_anthropic_fallback(tiny_png_bytes):
-    """Vision parser tries Anthropic Claude when OpenAI is unavailable."""
-    parser = VisionParser(prefer_provider="anthropic")
-    with patch.object(parser, "_describe_with_anthropic",
-                      AsyncMock(return_value="Image described by Claude.")):
-        result = await parser.parse_image_bytes(tiny_png_bytes, "test.png")
-    assert result.description
+async def test_vision_parser_without_a_vision_model_is_honest(tiny_png_bytes):
+    """No vision model in the registry (nor a VISION_MODEL pin): an honest error,
+    never a vendor default model."""
+
+    def _none():
+        raise ModelNotConfiguredError("vision", "add one")
+
+    with patch("app.ingestion.parsers.vision_parser._resolve_vision", _none):
+        result = await VisionParser().parse_image_bytes(tiny_png_bytes, "test.png")
+    assert result.model_used == "fallback"
+    assert result.error and "'vision'" in result.error
 
 
 # ── Vision model failover (Model Registry vision order) ─────────────────────
@@ -95,18 +110,10 @@ async def _vision_noop(*_a, **_k) -> None:
 
 
 async def test_vision_provider_path_fails_over_to_the_next_vision_model(tiny_png_bytes):
-    from app.ingestion.parsers import vision_parser as vp
-
     provider = _RoutingVisionProvider(broken={"vision-primary"})
-    seen_primary: list[str] = []
-
-    def _fallbacks(primary: str) -> list[str]:
-        seen_primary.append(primary)
-        return ["vision-backup"]
 
     with (
-        patch("app.ai_router.selection.resolve_vision_model", lambda f="": "vision-primary"),
-        patch.object(vp, "_vision_fallback_models", _fallbacks),
+        _registry_vlm("vision-backup"),
         patch("app.providers.guarded_completion._require_attribution", lambda *a: None),
         patch("app.providers.guarded_completion._preflight", _vision_noop),
         patch("app.providers.guarded_completion._charge", _vision_noop),
@@ -117,41 +124,5 @@ async def test_vision_provider_path_fails_over_to_the_next_vision_model(tiny_png
 
     assert result.error is None
     assert result.description == "described by vision-backup"
+    assert result.model_used == "vision-backup"
     assert provider.models_called == ["vision-primary", "vision-backup"]
-    assert seen_primary == ["vision-primary"]
-
-
-async def test_vision_fallback_list_comes_from_the_registry_vision_order():
-    from app.ingestion.parsers import vision_parser as vp
-
-    with patch(
-        "app.ai_router.selection.resolve_vision_fallback_models",
-        lambda primary, limit=3: ["v2", "v3"] if primary == "v1" else [],
-    ):
-        assert vp._vision_fallback_models("v1") == ["v2", "v3"]
-
-
-async def test_legacy_openai_path_fails_over_across_vision_models(tiny_png_bytes):
-    from types import SimpleNamespace
-
-    from app.ingestion.parsers import vision_parser as vp
-
-    called: list[str] = []
-
-    async def _create(*, model, **_kw):
-        called.append(model)
-        if model == "vision-primary":
-            raise RuntimeError("timed out")
-        msg = SimpleNamespace(content=f"described by {model}")
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
-
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
-    with (
-        patch("app.providers.openai_client.async_openai_client", lambda: client),
-        patch("app.ai_router.selection.resolve_vision_model", lambda f="": "vision-primary"),
-        patch.object(vp, "_vision_fallback_models", lambda primary: ["vision-backup"]),
-    ):
-        text = await VisionParser()._describe_with_openai("aGk=", "image/png", "describe")
-
-    assert text == "described by vision-backup"
-    assert called == ["vision-primary", "vision-backup"]

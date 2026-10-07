@@ -22,6 +22,7 @@ from app.providers import guarded_completion as gc
 from app.providers.base import CompletionResponse
 from app.providers.guarded_completion import DecisionBudgetExceededError
 from app.tenancy.context import PlanTier, TenantContext
+from tests.ai_router._vision_registry import registry_vision  # noqa: F401  (fixture)
 
 _CTX = TenantContext(tenant_id="t-ops05", plan=PlanTier.PROFESSIONAL, api_key_id="k")
 
@@ -179,6 +180,7 @@ async def test_nl_query_budget_refusal_is_raised(controller: _Controller) -> Non
 # ── multimodal ────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_multimodal_image_uses_per_call_provider_and_charges(
     controller: _Controller,
 ) -> None:
@@ -195,6 +197,7 @@ async def test_multimodal_image_uses_per_call_provider_and_charges(
     assert controller.recorded == ["t-ops05"]
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_multimodal_api_does_not_mutate_the_shared_pipeline(
     controller: _Controller, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -209,6 +212,7 @@ async def test_multimodal_api_does_not_mutate_the_shared_pipeline(
     assert byok.calls == 1 and pipeline._provider is None
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_multimodal_budget_refusal_is_raised(controller: _Controller) -> None:
     from app.multimodal.pipeline import MultimodalPipeline
 

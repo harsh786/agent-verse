@@ -83,7 +83,8 @@ def test_ingest_image_response_never_claims_real_multimodal_embedding() -> None:
     assert "vision" in data["error"].lower()
     assert data["real_multimodal_embedding"] is not True
     assert data["embedding_strategy"] is None
-    assert data.get("extractor_model")
+    # No vision model in the Model Registry: no extractor model is invented.
+    assert data.get("extractor_model") == ""
 
 
 # ── Unsupported modality / oversized attachment ────────────────────────────

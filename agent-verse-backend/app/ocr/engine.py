@@ -109,11 +109,10 @@ def _pdf_problem_or_none(data: bytes) -> tuple[str, str] | None:
 def _ocr_model() -> str:
     """The configured OCR/vision model (independent of the reasoning model).
 
-    Prefers the CONFIGURED OCR model (the operator's OCR preference order, else
-    the cheapest), then vision models, else VISION_MODEL/OCR_MODEL/
-    NVIDIA_VISION_MODEL, else the reasoning model.
-    Empty string lets the provider fall back to its own default model, so no cloud
-    slug is ever forced onto a differently-configured endpoint.
+    :func:`app.ai_router.resolve.resolve_ocr` without its local tier: the
+    Model Registry's OCR order, then its vision models, then ``OCR_MODEL`` —
+    never the reasoning model. Empty when none is configured (the provider
+    keeps its own default; Tesseract is the engine's own tier).
     """
     from app.ai_router.selection import resolve_ocr_model
 
@@ -790,7 +789,12 @@ class OcrEngine:
 
         img_b64 = await run_ocr_work(self._image_to_base64, img)  # PNG encode: off the loop
         try:
+            from app.ai_router.resolve import dispatch_provider
             from app.providers.base import CompletionRequest, Message
+
+            # Each OCR / vision model (the head and every fallback) runs at its
+            # own Model Registry endpoint, whatever provider was injected.
+            provider = dispatch_provider(provider)
 
             req = CompletionRequest(
                 messages=[

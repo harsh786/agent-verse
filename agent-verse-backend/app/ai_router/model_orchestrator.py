@@ -121,12 +121,9 @@ _PROVIDER_CHAT_MODEL: dict[str, str] = {
     "google": "gemini-2.5-pro",
 }
 
-# Vision-capable model per provider (failover for image/video extraction).
-_PROVIDER_VISION_MODEL: dict[str, str] = {
-    "openai": "gpt-4o",
-    "anthropic": "claude-3-5-sonnet",
-    "google": "gemini-2.5-pro",
-}
+# Vision (image / video) extraction has no per-provider literal: the extractor
+# and its failover chain are the Model Registry's vision models
+# (app.ai_router.resolve.resolve_vision).
 
 # Audio-capable model per provider (failover for audio extraction). Anthropic has
 # no audio model, so it is deliberately absent — audio fails over to google.
@@ -153,9 +150,10 @@ _CONTENT_TYPE_MODALITY: dict[str, str] = {
 }
 
 _MULTIMODAL_MODELS: dict[str, dict[str, Any]] = {
-    "image": {"extractor": "gpt-4o", "reasoner": "gpt-5.2", "requires_vision": True},
+    # Vision extractors ("") are resolved from the Model Registry, never a literal.
+    "image": {"extractor": "", "reasoner": "gpt-5.2", "requires_vision": True},
     "audio": {"extractor": "gpt-4o-audio", "reasoner": "gpt-5.2", "requires_vision": False},
-    "video": {"extractor": "gemini-2.5-pro", "reasoner": "gpt-5.2", "requires_vision": True},
+    "video": {"extractor": "", "reasoner": "gpt-5.2", "requires_vision": True},
     "code": {"extractor": "gpt-5.2", "reasoner": "gpt-5.2", "requires_vision": False},
     "text": {"extractor": "gpt-4o", "reasoner": "gpt-5.2", "requires_vision": False},
 }
@@ -316,6 +314,10 @@ class MultimodalModelAssignment:
     reasoner_model: str
     requires_vision: bool = False
     requires_audio: bool = False
+    # Models to fail over to after ``extractor_model``, in order (vision: the rest
+    # of the Model Registry vision chain). Empty for a vision content type with no
+    # vision model configured — ``extractor_model`` is then ``""`` too.
+    extractor_fallbacks: tuple[str, ...] = ()
 
 
 class ModelOrchestrator:
@@ -376,41 +378,59 @@ class ModelOrchestrator:
     def select_for_content_type(self, content_type: ContentType) -> MultimodalModelAssignment:
         """Pick a vision/audio-aware extractor+reasoner pair for a classified content type.
 
-        TODO(D-14 wiring): call this from the multimodal ingestion path in
-        ``app/ingestion/`` (the multimodal parser/transcription dispatch, e.g. where
-        ``ContentType.IMAGE``/``AUDIO``/``VIDEO`` are routed to a parser) to choose the
-        extraction model instead of a hardcoded one. Do NOT edit the ingestion package
-        as part of this ai_router change.
+        Image / video extraction uses the Model Registry's vision model
+        (:func:`app.ai_router.resolve.resolve_vision`) with the rest of the
+        vision chain as ``extractor_fallbacks``; ``extractor_model`` is ``""``
+        when no vision model is configured. Called by the multimodal pipeline.
         """
         modality = _CONTENT_TYPE_MODALITY.get(content_type.value, "text")
         spec = _MULTIMODAL_MODELS.get(modality, _MULTIMODAL_MODELS["text"])
         requires_vision = bool(spec.get("requires_vision", False))
         requires_audio = modality == "audio"
-        # Prefer the cheapest CONFIGURED vision/OCR model from the generic registry
-        # for image/vision extraction, instead of the hardcoded cloud slug — so the
-        # deployment's actual model is used. Falls back to the spec when none is
-        # configured.
-        _extractor = str(spec["extractor"])
+        reasoner = self._with_failover(str(spec["reasoner"]))
         if requires_vision:
-            try:
-                from app.ai_router.selection import resolve_vision_model
-
-                _extractor = resolve_vision_model(_extractor)
-            except Exception:  # pragma: no cover - never block selection
-                pass
+            # The extractor is the Model Registry's vision model; its failover
+            # chain is the rest of the registry vision order. A model whose
+            # provider circuit is open moves behind the healthy ones.
+            extractor, fallbacks = self._vision_extractor()
+            return MultimodalModelAssignment(
+                modality=modality,
+                extractor_model=extractor,
+                reasoner_model=reasoner,
+                requires_vision=True,
+                requires_audio=False,
+                extractor_fallbacks=fallbacks,
+            )
         # The extractor must preserve the modality capability across a failover;
         # the reasoner reasons over already-extracted text, so a plain chat model is fine.
         return MultimodalModelAssignment(
             modality=modality,
             extractor_model=self._with_failover(
-                _extractor,
-                requires_vision=requires_vision,
+                str(spec["extractor"]),
                 requires_audio=requires_audio,
             ),
-            reasoner_model=self._with_failover(str(spec["reasoner"])),
-            requires_vision=requires_vision,
+            reasoner_model=reasoner,
+            requires_vision=False,
             requires_audio=requires_audio,
         )
+
+    def _vision_extractor(self) -> tuple[str, tuple[str, ...]]:
+        """``(model, fallbacks)`` from the registry vision chain; ``("", ())`` when
+        no vision model is configured (the caller fails honestly)."""
+        from app.ai_router.resolve import ModelNotConfiguredError, resolve_vision
+
+        try:
+            res = resolve_vision()
+        except ModelNotConfiguredError:
+            return "", ()
+        chain = [res.model, *res.fallbacks]
+        healthy = [m for m in chain if not self._model_provider_open(m)]
+        ordered = healthy + [m for m in chain if m not in healthy]
+        return ordered[0], tuple(ordered[1:])
+
+    def _model_provider_open(self, model: str) -> bool:
+        provider = provider_for_model(model)
+        return provider != _UNKNOWN_PROVIDER and self._provider_open(provider)
 
     def provider_for_model(self, model: str) -> str:
         """Map a model name to its provider (``"unknown"`` when it cannot be told)."""
@@ -449,7 +469,8 @@ class ModelOrchestrator:
         if audio:
             return _PROVIDER_AUDIO_MODEL.get(provider)
         if vision:
-            return _PROVIDER_VISION_MODEL.get(provider)
+            # Vision failover is the registry vision chain (_vision_extractor).
+            return None
         return _PROVIDER_CHAT_MODEL.get(provider)
 
     def _with_failover(

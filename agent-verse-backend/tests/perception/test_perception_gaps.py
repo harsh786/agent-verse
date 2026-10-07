@@ -356,6 +356,7 @@ async def test_fill_and_submit_with_playwright(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("registry_vision")
 async def test_analyze_screenshot_with_playwright(monkeypatch):
     """analyze_screenshot calls the vision provider when one is configured."""
     from unittest.mock import AsyncMock, MagicMock
@@ -808,6 +809,7 @@ async def test_fill_and_submit_no_submit_selector(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("registry_vision")
 async def test_analyze_screenshot_vision_complete_exception(monkeypatch):
     """analyze_screenshot returns 'Vision analysis failed' when vision.complete raises."""
     from unittest.mock import AsyncMock, MagicMock

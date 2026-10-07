@@ -18,6 +18,7 @@ def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     not the SSRF guard (tested in tests/perception/test_perception_ssrf.py)."""
     monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda host: ["93.184.216.34"])
 from app.tenancy.context import PlanTier, TenantContext
+from tests.ai_router._vision_registry import registry_vision  # noqa: F401  (fixture)
 from app.tenancy.middleware import TenantMiddleware
 
 _CTX = TenantContext(tenant_id="perc-t1", plan=PlanTier.PROFESSIONAL, api_key_id="perc-key")
@@ -90,6 +91,7 @@ def test_get_status_no_vision_provider() -> None:
     assert resp.json()["vision_available"] is False
 
 
+@pytest.mark.usefixtures("registry_vision")
 def test_get_status_with_vision_provider() -> None:
     from app.perception.browser_agent import BrowserAgent
 
@@ -399,6 +401,7 @@ def test_batch_analyze_without_vision_is_501_not_fake_analysis() -> None:
     agent.take_screenshot.assert_not_called()
 
 
+@pytest.mark.usefixtures("registry_vision")
 def test_batch_analyze_vision_failure_marks_result_failed() -> None:
     class _FailingVision:
         def supports_vision(self) -> bool:

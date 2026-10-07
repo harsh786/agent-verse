@@ -166,6 +166,7 @@ def test_tenant_page_cap_is_shared_through_redis(monkeypatch: pytest.MonkeyPatch
         get_settings.cache_clear()
 
 
+@pytest.mark.usefixtures("registry_vision")
 def test_batch_larger_than_the_tenant_cap_is_429(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.api.perception as api
 

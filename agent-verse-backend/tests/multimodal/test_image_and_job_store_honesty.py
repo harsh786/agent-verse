@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import base64
 from typing import Any
 
@@ -50,6 +52,7 @@ async def test_image_with_no_provider_at_all_fails() -> None:
     assert job.spans == []
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_empty_vision_answer_fails_instead_of_storing_an_empty_span() -> None:
     job = await MultimodalPipeline().ingest_image(_PNG, "t1", provider=_EmptyVision())
     assert job.status == "failed"

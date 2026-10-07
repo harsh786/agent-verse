@@ -4,6 +4,8 @@ D-23 table/code modalities + planning-context injection helpers).
 
 from __future__ import annotations
 
+import pytest
+
 import base64
 from unittest.mock import Mock
 
@@ -74,6 +76,7 @@ async def test_ingest_video_calls_model_orchestrator_select_for_content_type() -
     orchestrator.select_for_content_type.assert_called_once_with(ContentType.VIDEO)
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_ingest_image_uses_router_selected_extractor_model() -> None:
     """The extractor model used in the real LLM call must come from the
     router, not a hardcoded literal."""
@@ -98,10 +101,11 @@ async def test_ingest_audio_records_router_selected_extractor_model_in_metadata(
     assert job.metadata["extractor_modality"] == "audio"
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_ingest_video_records_router_selected_extractor_model_in_metadata() -> None:
     pipeline = MultimodalPipeline()
     job = await pipeline.ingest_video(base64.b64encode(b"fake-video").decode(), "tenant-1")
-    assert job.metadata["extractor_model"]
+    assert job.metadata["extractor_model"] == "registry-vlm"  # the registry vision model
     assert job.metadata["extractor_modality"] == "video"
 
 
@@ -114,6 +118,7 @@ async def test_text_ingestion_labels_direct_text_embed() -> None:
     assert job.metadata["embedding_strategy"] == "direct_text_embed"
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_image_ingestion_is_labeled_caption_then_text_embed_not_multimodal() -> None:
     pipeline = MultimodalPipeline()
     pipeline.set_provider(_VisionProvider())
@@ -296,6 +301,7 @@ async def test_ingest_image_over_limit_is_rejected_before_any_llm_call() -> None
     assert provider.last_request is None
 
 
+@pytest.mark.usefixtures("registry_vision")
 async def test_ingest_image_at_or_under_limit_is_not_rejected() -> None:
     from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
 

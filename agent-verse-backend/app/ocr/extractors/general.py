@@ -27,6 +27,29 @@ Document text:
 JSON output:"""
 
 
+_EXTRACTION_ROLE = "ocr_extract"
+
+
+def _extraction_model(provider: Any) -> tuple[str, list[str]]:
+    """``(model, fallbacks)`` for structured field extraction.
+
+    The reasoning model for the extraction role (``role_preference``: the saved
+    reasoning order, then the env pin), restricted to a model *provider* can
+    serve; ``""`` keeps the provider's own default. Never a literal model id.
+    """
+    from app.ai_router.role_preference import (
+        preferred_model_and_fallbacks,
+        role_task_type,
+        servable_role_model,
+    )
+
+    model = servable_role_model(_EXTRACTION_ROLE, provider)
+    if not model:
+        return "", []
+    ranked, fallbacks = preferred_model_and_fallbacks(role_task_type(_EXTRACTION_ROLE), provider)
+    return model, (fallbacks if ranked == model else [])
+
+
 class GeneralExtractor:
     """Fallback extractor — returns empty fields for unrecognized documents."""
 
@@ -57,16 +80,20 @@ class LlmStructuredExtractor:
             )
 
             prompt = _EXTRACTION_PROMPT.format(raw_text=raw_text[:4000])  # limit context
+            model, fallbacks = _extraction_model(self._provider)
             req = CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
-                model="default",
+                # The reasoning model for the extraction role (Model Registry
+                # order / env pin) — it used to send the literal id "default".
+                model=model,
             )
             from app.providers.guarded_completion import complete_decision
 
             response = await complete_decision(
                 self._provider,
                 req,
-                role="ocr_extract",
+                role=_EXTRACTION_ROLE,
+                fallback_models=fallbacks,
             )
             return self._parse_response(response.content)
         except DecisionBudgetExceededError:

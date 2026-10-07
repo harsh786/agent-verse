@@ -7,6 +7,7 @@ import io
 import logging
 import re
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from app.ai_router.model_orchestrator import ModelOrchestrator
@@ -118,6 +119,7 @@ class MultimodalPipeline:
                 model=assignment.extractor_model,
                 provider=provider,
                 tenant_id=tenant_id,
+                fallbacks=assignment.extractor_fallbacks,
             )
             job.spans = [
                 ExtractedSpan(content=description, modality=Modality.IMAGE, confidence=0.9)
@@ -457,23 +459,39 @@ class MultimodalPipeline:
         *,
         provider: Any = None,
         tenant_id: str | None = None,
+        fallbacks: Sequence[str] = (),
     ) -> str:
         """Use LLM vision to describe an image.
 
-        ``model`` is the extractor model chosen by
-        ``ModelOrchestrator.select_for_content_type`` (D-14) -- callers no
-        longer hardcode a vision model name here.
+        ``model`` / ``fallbacks`` are the Model Registry's vision chain chosen by
+        ``ModelOrchestrator.select_for_content_type`` (D-14). Whether vision is
+        available is decided by the registry — not ``provider.supports_vision()``
+        — and every model runs at its own registry endpoint: the provider (the
+        tenant's, else the pipeline's, else the platform's) is wrapped in
+        ``ModelDispatchProvider``.
         """
-        vision = provider if provider is not None else self._provider
-        has_vision = (
-            vision is not None
-            and hasattr(vision, "supports_vision")
-            and vision.supports_vision()
-        )
-        if not has_vision:
+        from app.ai_router.resolve import ModelNotConfiguredError, dispatch_provider
+
+        if not model:
+            from app.ai_router.resolve import resolve_vision
+
+            try:
+                res = resolve_vision()
+            except ModelNotConfiguredError as exc:
+                raise ImageDescriptionError(
+                    f"Image could not be described: {exc}"
+                ) from exc
+            model, fallbacks = res.model, res.fallbacks
+        try:
+            vision = dispatch_provider(provider if provider is not None else self._provider)
+        except Exception as exc:
             raise ImageDescriptionError(
-                "Image could not be described: no vision-capable LLM provider is "
-                "configured for this tenant"
+                f"Image could not be described: no provider for the vision model ({exc})"
+            ) from exc
+        if vision is None:
+            raise ImageDescriptionError(
+                "Image could not be described: no LLM provider is available for the "
+                "vision model"
             )
 
         from app.providers.base import CompletionRequest, Message
@@ -508,6 +526,7 @@ class MultimodalPipeline:
             role="multimodal_vision",
             tenant_id=tenant_id,
             timeout_seconds=generation_timeout_seconds(),
+            fallback_models=list(fallbacks),
         )
         description = str(getattr(resp, "content", "") or "").strip()
         if not description:

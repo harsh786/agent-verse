@@ -101,6 +101,9 @@ ROLE_TASK_TYPES: dict[str, str] = {
     "ai_ops_judge": "judge",
     # ── memory ──
     "memory_consolidation": "classification",
+    # Structured field extraction from OCR'd text (app/ocr/extractors).
+    "ocr_extract": "classification",
+    "extraction": "classification",
     # ── guardrails / LLM classifiers ──
     "guardrail_judge": "judge",
     "guardrail_toxicity": "classification",

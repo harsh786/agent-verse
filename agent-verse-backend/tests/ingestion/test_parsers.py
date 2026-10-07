@@ -70,6 +70,12 @@ def test_audio_parse_result_to_chunks():
     assert all("start_time" in c for c in chunks)
 
 
+def _registry_vlm():
+    from app.ai_router.resolve import Resolution
+
+    return Resolution(capability="vision", model="registry-vlm", source="registry_cheapest")
+
+
 @pytest.mark.anyio
 async def test_vision_parser_uses_fallback():
     parser = VisionParser()
@@ -78,7 +84,10 @@ async def test_vision_parser_uses_fallback():
         b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
         b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
     )
-    with patch.object(parser, "_describe_with_openai", AsyncMock(return_value="A white image.")):
+    with (
+        patch("app.ingestion.parsers.vision_parser._resolve_vision", _registry_vlm),
+        patch.object(parser, "_describe_with_provider", AsyncMock(return_value="A white image.")),
+    ):
         result = await parser.parse_image_bytes(tiny_png, "test.png")
     assert isinstance(result, VisionParseResult)
     assert result.description
@@ -87,9 +96,12 @@ async def test_vision_parser_uses_fallback():
 @pytest.mark.anyio
 async def test_vision_parser_fallback_placeholder():
     parser = VisionParser()
-    with patch.object(parser, "_describe_with_openai", AsyncMock(side_effect=Exception("No key"))):
-        with patch.object(parser, "_describe_with_anthropic", AsyncMock(side_effect=Exception("No key"))):
-            result = await parser.parse_image_bytes(b"\x89PNG\r\n\x1a\n", "test.png")
+    with (
+        patch("app.ingestion.parsers.vision_parser._resolve_vision", _registry_vlm),
+        patch.object(parser, "_describe_with_provider", AsyncMock(side_effect=Exception("down"))),
+        patch("app.ingestion.parsers.vision_parser._VISION_MAX_ATTEMPTS", 1),
+    ):
+        result = await parser.parse_image_bytes(b"\x89PNG\r\n\x1a\n", "test.png")
     assert isinstance(result, VisionParseResult)
     assert "test.png" in result.description or result.description
 

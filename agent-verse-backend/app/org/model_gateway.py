@@ -101,15 +101,34 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         min_quality=0.65,
         latency_slo=5.0,
     ),
+    # The multimodal profile names no model: its primary and fallback are the
+    # Model Registry's vision chain, resolved per selection (resolve_vision).
     "vision": ModelProfile(
-        primary="gpt-4o",
-        fallback="claude-opus-4",
+        primary="",
+        fallback="",
         cost_tier="premium",
         vision=True,
         min_quality=0.88,
         latency_slo=20.0,
     ),
 }
+
+def _registry_vision_models() -> tuple[str, str] | None:
+    """``(primary, fallback)`` from the Model Registry vision chain, else None."""
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_vision
+
+    try:
+        res = resolve_vision()
+    except ModelNotConfiguredError:
+        return None
+    return res.model, (res.fallbacks[0] if res.fallbacks else "")
+
+
+def _with_models(profile: ModelProfile, primary: str, fallback: str) -> ModelProfile:
+    from dataclasses import replace
+
+    return replace(profile, primary=primary, fallback=fallback)
+
 
 # Cost tier score: higher = cheaper (better score for budget-constrained calls)
 _COST_TIER_SCORE: dict[str, float] = {
@@ -175,7 +194,26 @@ class ModelGateway:
             best_score = -1.0
             skip_reasons: list[str] = []
 
+            vision_models = _registry_vision_models()
+            # A vision (multimodal) request is only ever served by a vision
+            # profile — never silently by a text model.
+            require_vision = MODEL_PROFILES.get(role_profile, MODEL_PROFILES["smart"]).vision
+            if require_vision and vision_models is None:
+                from app.ai_router.resolve import ModelNotConfiguredError
+
+                raise ModelNotConfiguredError(
+                    "vision",
+                    "add a vision-capable model in the Model Registry or set "
+                    "VISION_MODEL / NVIDIA_VISION_MODEL",
+                )
             for name, profile in MODEL_PROFILES.items():
+                if require_vision and not profile.vision:
+                    continue
+                if profile.vision:
+                    if vision_models is None:
+                        skip_reasons.append(f"{name}: no vision model is configured")
+                        continue
+                    profile = _with_models(profile, *vision_models)
                 # Hard constraints
                 if quality_req > profile.min_quality + 0.05:
                     skip_reasons.append(
@@ -208,6 +246,8 @@ class ModelGateway:
                     best_profile_name = name
 
             profile = MODEL_PROFILES.get(best_profile_name, MODEL_PROFILES["smart"])
+            if profile.vision and vision_models is not None:
+                profile = _with_models(profile, *vision_models)
             reasoning = (
                 f"Selected '{best_profile_name}' (score={best_score:.3f}, "
                 f"model={profile.primary}). " + "; ".join(skip_reasons[:2])

@@ -1,12 +1,12 @@
-"""VisionParser — describes images using GPT-4o or Claude Vision.
+"""VisionParser — describes images with the Model Registry's vision model.
 
-Supports two modes:
-1. Protocol mode: inject an ``LLMProvider`` on construction; uses
-   ``provider.complete()`` with image_data — works with any provider that
-   implements ``supports_vision()``.
-2. Legacy SDK mode (default): falls back to direct OpenAI / Anthropic SDK
-   calls when no provider is injected.  The ``prefer_provider`` string
-   controls the attempt order.
+The model comes from :func:`app.ai_router.resolve.resolve_vision` (registry
+vision order → ``VISION_MODEL`` / ``NVIDIA_VISION_MODEL`` → an honest
+"not configured" error) and the call goes through
+:class:`~app.providers.model_dispatch.ModelDispatchProvider`: the injected
+provider (a tenant's BYOK one) or else the platform provider, so each model —
+the head and every failover model — runs at its own registry endpoint with its
+own key. No raw vendor SDK client, no vendor model literal.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import asyncio
 import base64
 import logging
 import os
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -37,17 +37,6 @@ _warmed_up = False
 _log = logging.getLogger(__name__)
 
 
-def _vision_fallback_models(primary: str) -> list[str]:
-    """Other configured vision models (Model Registry vision order, then OCR
-    models, then the env model) to fail over to after *primary*."""
-    try:
-        from app.ai_router.selection import resolve_vision_fallback_models
-
-        return resolve_vision_fallback_models(primary)
-    except Exception:  # pragma: no cover - never block the primary call
-        return []
-
-
 async def _retry_async(factory: Callable[[], Awaitable[str]]) -> str:
     """Run an awaitable factory with bounded retries (cold-start resilience).
 
@@ -67,31 +56,43 @@ async def _retry_async(factory: Callable[[], Awaitable[str]]) -> str:
 
 
 async def warm_up_vision_model() -> bool:
-    """Proactively spin up the configured OCR/vision model (once per process).
+    """Proactively spin up the configured vision model (once per process).
 
-    Sends a tiny text request so the model is loaded before the first real image
-    arrives, so a cold start never turns into a fallback. Best-effort and safe to
-    call from app startup; a failure here is swallowed (the retry path still
-    covers cold starts at request time).
+    Sends a tiny text request to the resolved vision model — through the
+    dispatch provider, so it reaches the model's own endpoint — so the model is
+    loaded before the first real image arrives. Best-effort and safe to call
+    from app startup; a failure here is swallowed (the retry path still covers
+    cold starts at request time). No-op when no vision model is configured.
     """
     global _warmed_up
     if _warmed_up:
         return True
     _warmed_up = True  # set first: never warm more than once, even on failure
     try:
-        from app.ai_router.selection import resolve_vision_model
-        from app.providers.openai_client import async_openai_client
-
-        model = resolve_vision_model("")
-        if not model:
-            return False
-        client = async_openai_client()
-        await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "ok"}],
-            max_tokens=1,
-            timeout=_VISION_TIMEOUT_S,
+        from app.ai_router.resolve import (
+            ModelNotConfiguredError,
+            dispatch_provider,
+            resolve_vision,
         )
+        from app.providers.base import CompletionRequest, Message
+        from app.providers.guarded_completion import complete_decision, uncharged_platform_call
+
+        try:
+            res = resolve_vision()
+        except ModelNotConfiguredError:
+            return False
+        # A model probe: an uncharged platform call, never billed to a tenant.
+        with uncharged_platform_call("model_probe"):
+            await complete_decision(
+                dispatch_provider(None),
+                CompletionRequest(
+                    messages=[Message(role="user", content="ok")],
+                    model=res.model,
+                    max_tokens=1,
+                ),
+                role="vision_warmup",
+                timeout_seconds=_VISION_TIMEOUT_S,
+            )
         return True
     except Exception:
         return False
@@ -133,21 +134,13 @@ def _detect_image_mime(image_bytes: bytes) -> str:
 class VisionParser:
     def __init__(
         self,
-        prefer_provider: str = "openai",
+        prefer_provider: str = "",
         provider: LLMProvider | None = None,
     ) -> None:
+        # ``prefer_provider`` is accepted for backwards compatibility and
+        # ignored: the Model Registry's vision order decides the model.
         self._prefer = prefer_provider
-        self._provider = provider  # injected LLMProvider Protocol (optional)
-
-        # Dispatch table eliminates if/elif chains over provider names.
-        # Keys match the strings in the preference list; values are bound methods.
-        self._sdk_dispatch: dict[
-            str,
-            Callable[[str, str, str], Coroutine[Any, Any, str]],
-        ] = {
-            "openai": self._describe_with_openai,
-            "anthropic": self._describe_with_anthropic,
-        }
+        self._provider = provider  # injected LLMProvider (e.g. a tenant's BYOK one)
 
     async def parse_image_bytes(
         self,
@@ -160,170 +153,92 @@ class VisionParser:
         mime_type = _detect_image_mime(image_bytes)
         b64_image = base64.standard_b64encode(image_bytes).decode()
 
-        # ── Protocol path: use the injected LLMProvider if available ──────────
-        provider = self._provider
-        if provider is not None:
-            try:
-                description = await _retry_async(
-                    lambda: self._describe_with_provider(
-                        provider, b64_image, mime_type, prompt
-                    )
-                )
-                return VisionParseResult(
-                    source_name=source_name,
-                    description=description,
-                    model_used="llm_provider",
-                )
-            except Exception as exc:
-                return VisionParseResult(
-                    source_name=source_name,
-                    description=f"[Image: {source_name}]",
-                    error=str(exc),
-                    model_used="fallback",
-                )
+        from app.ai_router.resolve import ModelNotConfiguredError, dispatch_provider
 
-        # ── Legacy SDK path: try providers in preference order via dispatch ───
-        providers = ["openai", "anthropic"] if self._prefer == "openai" else ["anthropic", "openai"]
-        last_error = ""
-        for provider_name in providers:
-            describe_fn = self._sdk_dispatch.get(provider_name)
-            if describe_fn is None:
-                continue
-            try:
-                description = await _retry_async(
-                    lambda fn=describe_fn: fn(b64_image, mime_type, prompt)
+        try:
+            resolution = _resolve_vision()
+            provider = dispatch_provider(self._provider)
+        except ModelNotConfiguredError as exc:
+            return VisionParseResult(
+                source_name=source_name,
+                description=f"[Image: {source_name}]",
+                error=str(exc),
+                model_used="fallback",
+            )
+        except Exception as exc:
+            return VisionParseResult(
+                source_name=source_name,
+                description=f"[Image: {source_name}]",
+                error=f"no provider for the vision model: {exc}",
+                model_used="fallback",
+            )
+        answered: list[str] = []
+        try:
+            description = await _retry_async(
+                lambda: self._describe_with_provider(
+                    provider, b64_image, mime_type, prompt,
+                    model=resolution.model,
+                    fallbacks=list(resolution.fallbacks),
+                    answered=answered,
                 )
-                return VisionParseResult(
-                    source_name=source_name,
-                    description=description,
-                    model_used=provider_name,
-                )
-            except Exception as exc:
-                last_error = str(exc)
+            )
+        except Exception as exc:
+            return VisionParseResult(
+                source_name=source_name,
+                description=f"[Image: {source_name}]",
+                error=str(exc),
+                model_used="fallback",
+            )
         return VisionParseResult(
             source_name=source_name,
-            description=f"[Image: {source_name}]",
-            error=last_error,
-            model_used="fallback",
+            description=description,
+            model_used=answered[-1] if answered else resolution.model,
+            metadata={"vision_model_source": resolution.source},
         )
 
     async def _describe_with_provider(
         self,
-        provider: LLMProvider,
+        provider: Any,
         b64_image: str,
         mime_type: str,
         prompt: str,
+        *,
+        model: str,
+        fallbacks: list[str],
+        answered: list[str] | None = None,
     ) -> str:
-        """Use the injected LLMProvider Protocol to describe the image.
+        """Describe the image with *model*, failing over across *fallbacks*.
 
-        Builds a CompletionRequest with the base64-encoded image in the
-        message content, delegating all provider-specific details to the
-        provider implementation.
+        *provider* is a dispatch provider: every model is sent to its own
+        registry endpoint / key (the model's ``base_url``).
         """
-        from app.ai_router.selection import resolve_vision_model
         from app.providers.base import CompletionRequest, Message
-
-        primary = resolve_vision_model("")
-        request = CompletionRequest(
-            messages=[
-                Message(
-                    role="user",
-                    content=prompt,
-                    image_data=b64_image,
-                )
-            ],
-            # Dedicated vision/OCR model; empty defers to the provider default.
-            model=primary,
-            system="You are an expert image analyst. Describe the image accurately.",
-            max_tokens=500,
-        )
         from app.providers.guarded_completion import (
             complete_decision,
             vision_timeout_seconds,
         )
 
+        request = CompletionRequest(
+            messages=[Message(role="user", content=prompt, image_data=b64_image)],
+            model=model,
+            system="You are an expert image analyst. Describe the image accurately.",
+            max_tokens=500,
+        )
         response = await complete_decision(
             provider,
             request,
             role="vision_parse",
             timeout_seconds=vision_timeout_seconds(),
             # A failing / timing-out vision model fails over to the next one in
-            # the Model Registry vision order (it used to be a single-model call).
-            fallback_models=_vision_fallback_models(primary),
+            # the Model Registry vision order.
+            fallback_models=fallbacks,
         )
+        if answered is not None:
+            answered.append(str(getattr(response, "model", "") or model))
         return response.content or ""
 
-    async def _describe_with_openai(self, b64_image: str, mime_type: str, prompt: str) -> str:
-        from app.providers.openai_client import async_openai_client
 
-        client = async_openai_client()
-        # Model comes from config, not a hardcoded slug: the dedicated vision/OCR
-        # model (VISION_MODEL/OCR_MODEL), else the reasoning model, resolved on the
-        # OpenAI-compatible endpoint configured via OPENAI_BASE_URL.
-        from app.ai_router.selection import resolve_vision_model
+def _resolve_vision() -> Any:
+    from app.ai_router.resolve import resolve_vision
 
-        ocr_model = resolve_vision_model("gpt-4o")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{b64_image}",
-                            "detail": "auto",
-                        },
-                    },
-                ],
-            }
-        ]
-        models = [ocr_model, *_vision_fallback_models(ocr_model)]
-        last_exc: Exception | None = None
-        for i, model in enumerate(models):
-            try:
-                response = await client.chat.completions.create(
-                    model=model,
-                    timeout=_VISION_TIMEOUT_S,
-                    messages=messages,
-                    max_tokens=500,
-                )
-                return response.choices[0].message.content or ""
-            except Exception as exc:
-                last_exc = exc
-                if i + 1 < len(models):
-                    _log.warning(
-                        "vision_model_failover from=%s to=%s error=%s",
-                        model, models[i + 1], str(exc)[:200],
-                    )
-        raise last_exc if last_exc else RuntimeError("vision call failed")
-
-    async def _describe_with_anthropic(self, b64_image: str, mime_type: str, prompt: str) -> str:
-        import anthropic  # type: ignore[import]
-
-        from app.ai_router.selection import resolve_vision_model
-
-        client = anthropic.AsyncAnthropic()
-        response = await client.messages.create(
-            model=os.getenv("ANTHROPIC_VISION_MODEL")
-            or resolve_vision_model("")
-            or "claude-3-5-sonnet-20241022",
-            max_tokens=500,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": b64_image,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-        )
-        return response.content[0].text if response.content else ""
+    return resolve_vision()

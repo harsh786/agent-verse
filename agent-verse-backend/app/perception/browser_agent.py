@@ -168,7 +168,7 @@ class BrowserAgent:
     def __init__(
         self,
         *,
-        vision_provider: Any = None,  # Optional LLMProvider with supports_vision()
+        vision_provider: Any = None,  # transport for vision calls; None = platform provider
         timeout_ms: int = 30_000,
         headless: bool = True,
     ) -> None:
@@ -327,28 +327,46 @@ class BrowserAgent:
 
     @property
     def has_vision(self) -> bool:
-        """True when a vision-capable provider is configured."""
-        return self._vision is not None and bool(self._vision.supports_vision())
+        """True when the Model Registry has a vision model (or an explicit
+        ``VISION_MODEL`` / ``NVIDIA_VISION_MODEL`` pin).
+
+        The registry decides — not ``provider.supports_vision()``: the call is
+        dispatched to the vision model's own endpoint, whatever the injected
+        provider is.
+        """
+        from app.ai_router.resolve import vision_configured
+
+        return vision_configured()
+
+    def _vision_provider(self) -> Any:
+        """The dispatch provider for vision calls (injected, else the platform's)."""
+        from app.ai_router.resolve import dispatch_provider
+
+        return dispatch_provider(self._vision)
 
     async def analyze_screenshot(
         self, screenshot_b64: str, question: str, *, raise_errors: bool = False
     ) -> str:
-        """Analyze a screenshot with a vision LLM.
+        """Analyze a screenshot with the Model Registry's vision model.
 
-        With ``raise_errors`` a missing provider or a provider failure raises
-        instead of being returned as if it were the analysis text (API callers
-        used to answer 200 with "No vision provider configured." as the result).
+        The model and its failover chain come from
+        :func:`app.ai_router.resolve.resolve_vision`; each runs at its own
+        registry endpoint (``ModelDispatchProvider``). With ``raise_errors`` a
+        missing vision model or a failure raises instead of being returned as if
+        it were the analysis text (API callers used to answer 200 with
+        "No vision provider configured." as the result).
         """
-        if not self.has_vision:
+        from app.ai_router.resolve import ModelNotConfiguredError, resolve_vision
+
+        try:
+            resolution = resolve_vision()
+        except ModelNotConfiguredError:
             if raise_errors:
-                raise RuntimeError("No vision provider configured.")
+                raise RuntimeError("No vision provider configured.") from None
             return "No vision provider configured."
 
         try:
             from app.providers.base import CompletionRequest, Message
-            from app.providers.model_defaults import (
-                configured_vision_model as _configured_vision_model,
-            )
 
             req = CompletionRequest(
                 messages=[
@@ -361,7 +379,7 @@ class BrowserAgent:
                         image_data=screenshot_b64,
                     ),
                 ],
-                model=_configured_vision_model("claude-opus-4-5"),
+                model=resolution.model,
             )
             from app.providers.guarded_completion import (
                 complete_decision,
@@ -369,10 +387,11 @@ class BrowserAgent:
             )
 
             resp = await complete_decision(
-                self._vision,
+                self._vision_provider(),
                 req,
                 role="browser_vision",
                 timeout_seconds=generation_timeout_seconds(),
+                fallback_models=list(resolution.fallbacks),
             )
             return resp.content  # type: ignore[no-any-return]
         except Exception as exc:

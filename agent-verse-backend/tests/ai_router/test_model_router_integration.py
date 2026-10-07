@@ -53,10 +53,13 @@ def test_budget_downgrade_reduces_tier(orchestrator):
     assert tier_order[degraded.quality_tier] <= tier_order[full.quality_tier]
 
 
-def test_all_content_types_get_valid_model_assignment(orchestrator):
+def test_all_content_types_get_valid_model_assignment(orchestrator, monkeypatch):
     from app.ingestion.content_classifier import ContentType
-    for ct in ContentType:
-        assignment = orchestrator.select_for_content_type(ct)
+    from tests.ai_router._vision_registry import vision_models
+
+    with vision_models(monkeypatch, ("openai", "registry-vlm")):
+        assignments = [orchestrator.select_for_content_type(ct) for ct in ContentType]
+    for ct, assignment in zip(ContentType, assignments, strict=True):
         assert assignment.extractor_model, f"{ct.value}: extractor_model is empty"
         assert assignment.reasoner_model, f"{ct.value}: reasoner_model is empty"
 

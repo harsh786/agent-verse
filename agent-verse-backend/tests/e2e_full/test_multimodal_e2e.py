@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 from app.providers.fake import FakeProvider
+from tests.ai_router._vision_registry import registry_vision  # noqa: F401  (fixture)
 
 pytestmark = [pytest.mark.e2e_full, pytest.mark.asyncio(loop_scope="session")]
 
@@ -60,13 +61,17 @@ def _tiny_wav_base64() -> str:
 
 
 @pytest.fixture
-def _vision_provider(app: Any) -> Any:
+def _vision_provider(app: Any, request: Any) -> Any:
     """Pin a deterministic vision-capable FakeProvider as the app-wide LLM.
+
+    The Model Registry holds the vision model (``registry_vision``, no own
+    endpoint), so the caption call is dispatched to this provider.
 
     ``/multimodal/ingest`` reads ``app.state._app_provider`` fresh on every
     request (``app/api/multimodal.py::_get_pipeline`` + ``ingest_asset``), so
     unlike the ingestion-pipeline case this is a plain ``app.state`` swap.
     """
+    request.getfixturevalue("registry_vision")
     fake = FakeProvider(responses=[_IMAGE_CAPTION], vision=True)
     prev = getattr(app.state, "_app_provider", None)
     app.state._app_provider = fake
