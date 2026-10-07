@@ -240,9 +240,15 @@ async def test_rollback_never_reaches_another_tenants_agent(
     assert await _prompt(admin, victim) == ("b current", "bounded-autonomous")
 
 
-async def test_a_fully_autonomous_agents_config_is_not_applied_behind_the_gate(
+async def test_a_fully_autonomous_agents_config_is_applied_and_the_agent_demoted(
     admin: Any, app_engine: Any
 ) -> None:
+    """Owner decision on a05-F095-04: applied, demoted in the same transaction (app role).
+
+    This agent has no eval suite, so nothing can re-validate it: the marker is
+    ``failed`` and says so (the end-to-end loop with a suite is in
+    tests/intelligence/test_autonomy_revalidation_pg.py).
+    """
     agent_id = await _agent(admin, TENANT_A, autonomy="fully-autonomous")
     exp_id = await _experiment(admin, TENANT_A, agent_id)
 
@@ -255,8 +261,15 @@ async def test_a_fully_autonomous_agents_config_is_not_applied_behind_the_gate(
         )
 
     result = await _optimizer(app_engine).apply_pending(TENANT_A, exp_id)
-    assert result == {
-        "applied": False, "agent_id": agent_id, "experiment_id": exp_id,
-        "reason": "rollout_gate",
-    }
-    assert await _prompt(admin, agent_id) == ("old prompt", "fully-autonomous")
+    assert result["applied"] is True and result["reason"] is None
+    assert result["revalidation"]["reason"] == "config_changed_pending_eval"
+    assert result["revalidation"]["state"] == "failed"
+    assert await _prompt(admin, agent_id) == ("new prompt", "bounded-autonomous")
+    async with admin() as s:
+        marker = (
+            await s.execute(
+                text("SELECT autonomy_revalidation FROM agents WHERE id = :id"),
+                {"id": agent_id},
+            )
+        ).scalar_one()
+    assert marker["source"] == f"self_optimizer_apply:{exp_id}"

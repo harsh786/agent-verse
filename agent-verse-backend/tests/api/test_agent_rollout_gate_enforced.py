@@ -227,21 +227,32 @@ def _fully_autonomous_agent(client: TestClient, ctx: TenantContext, suite: str) 
     return agent_id
 
 
-def test_changing_a_fully_autonomous_agents_behaviour_config_reruns_the_gate() -> None:
-    client, ctx = _client()
-    agent_id = _fully_autonomous_agent(client, ctx, "suite-pinned")
+def test_changing_a_fully_autonomous_agents_behaviour_config_demotes_it() -> None:
+    """Owner decision on a05-F095-04: accepted, demoted, re-validated (no more 409).
+
+    This harness has no goal service, so the re-validation run cannot start: the
+    agent stays bounded and the marker says why (see
+    tests/api/test_agent_autonomy_revalidation.py for the full loop).
+    """
     for change in (
         {"system_prompt": "an unvetted prompt"},
         {"model_override": "some-other-model"},
         {"connector_ids": ["conn-new"]},
         {"max_iterations": 40},
     ):
+        client, ctx = _client()
+        agent_id = _fully_autonomous_agent(client, ctx, f"suite-pinned-{uuid.uuid4().hex[:6]}")
         r = client.put(f"/agents/{agent_id}", json=change, headers=_h())
-        assert r.status_code == 409, (change, r.text)
-        assert r.json()["detail"]["code"] == "ROLLOUT_GATE_FAILED"
-    record = _record(client, agent_id)
-    assert record["system_prompt"] == "vetted prompt"
-    assert record["autonomy_mode"] == "fully-autonomous"
+        assert r.status_code == 200, (change, r.text)
+        body = r.json()
+        assert body["autonomy_mode"] == "bounded-autonomous", change
+        marker = body["autonomy_revalidation"]
+        assert marker["reason"] == "config_changed_pending_eval"
+        assert marker["from_mode"] == "fully-autonomous"
+        assert marker["state"] == "failed" and "Goal service" in marker["error"]
+        assert body["pending_promotion"] is False
+        key, value = next(iter(change.items()))
+        assert body[key] == value
 
 
 def test_a_non_behaviour_edit_of_a_fully_autonomous_agent_needs_no_new_run() -> None:

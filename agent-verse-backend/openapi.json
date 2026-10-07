@@ -13518,7 +13518,7 @@
         ]
       },
       "put": {
-        "description": "Update an agent's configuration. All fields are optional.",
+        "description": "Update an agent's configuration. All fields are optional.\n\nChanging the behaviour config (prompt, goal template, model, connectors,\npolicies, collections, limits, reasoning patterns) of a ``fully-autonomous``\nagent demotes it to ``bounded-autonomous`` and re-runs its eval suite\nagainst the new config; it returns to ``fully-autonomous`` automatically\nwhen that run passes the rollout gate. The response's\n``autonomy_revalidation`` / ``pending_promotion`` show that state.",
         "operationId": "update_agent_agents__agent_id__put",
         "parameters": [
           {

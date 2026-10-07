@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from typing import Any
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,6 +34,23 @@ from app.intelligence.self_optimizer_v2 import (
 # ---------------------------------------------------------------------------
 # Constants — Fix 4 & domain metrics
 # ---------------------------------------------------------------------------
+
+def _rollback_execute(control_config_json: str) -> Any:
+    """execute(): the experiment's control config, the agent's current config
+    columns (a bounded agent: no re-validation), anything else a no-op."""
+
+    async def _execute(stmt: Any, *_a: Any, **_k: Any) -> Any:
+        sql = str(stmt)
+        if "control_config FROM improvement_experiments" in sql:
+            return MagicMock(fetchone=MagicMock(return_value=(control_config_json,)))
+        if "FROM agents" in sql:
+            return MagicMock(
+                fetchone=MagicMock(return_value=("now", "", "", "bounded-autonomous", 15, 0))
+            )
+        return MagicMock(rowcount=1)
+
+    return AsyncMock(side_effect=_execute)
+
 
 
 def test_default_min_goals_is_5() -> None:
@@ -332,10 +350,7 @@ async def test_rollback_success_when_experiment_exists() -> None:
     control_config = {"system_prompt": "control prompt", "max_iterations": 10}
 
     mock_session = AsyncMock()
-    # first execute (SELECT control_config) returns the config
-    mock_session.execute = AsyncMock(return_value=MagicMock(
-        fetchone=MagicMock(return_value=(json.dumps(control_config),))
-    ))
+    mock_session.execute = _rollback_execute(json.dumps(control_config))
     mock_session.commit = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)

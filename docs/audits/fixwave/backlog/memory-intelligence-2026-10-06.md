@@ -18,7 +18,7 @@ before any change. No alembic migration was added.
 | a05-F092-01 | Verifier calibration | OPEN, fixed | The worker graph used the unbound `_default_calibration_store`, so worker verdicts were never persisted. `calibration_store_for(db_factory)` now feeds the worker and the GoalService. The verify node awaits the verdict INSERT. Feedback reports `calibration` = `recorded` / `no_verdict` / `failed` / `not_requested`. | `877c8ba86` | `tests/scaling/test_worker_calibration_store.py` (fails before the fix), `tests/api/test_goals_extra.py` (4 feedback tests) |
 | a05-F092-02 | Learning experiments | OPEN, fixed | `LearningExperimentService` was only assigned onto `app.state`; nothing registered, assigned or read an experiment. Removed with its wiring and tests. The `learning_experiments*` tables and the `ExperimentSpec` contract are left in place. | `5670dbc46` | `tests/memory/test_memory_learning_services.py`, `tests/integration/test_memory_learning_production_path.py` |
 | a05-F092-03 | Cost optimizer | OPEN, fixed | `false_confirm_rate` was already exposed. `app/intelligence/cost_optimizer.py` had no runtime caller. Registry `cost_optimisation` now points at `app.ai_router.selection:select_configured_model_id` (the cost-aware choice `ModelRouter.model_for` makes). The dead module and its tests are removed. Generated capability docs are unchanged (verified byte-identical). | `d3e9c5809` | `tests/orchestration/test_strategy_id_consistency.py::test_every_adapter_path_imports` |
-| a05-F095-04 | Eval suites / rollout gate | OPEN, fixed | PUT on an agent already fully-autonomous skipped the gate when the behaviour config changed. It now re-runs the gate for the config being written (409 until the suite has run against it). `SelfOptimizerV2.apply_suggestion` refuses with reason `rollout_gate` and never writes the snapshot's `autonomy_mode`. Rollback also never writes it (follow-up). | `291843f39`, `80a186c95` | `tests/api/test_agent_rollout_gate_enforced.py` (4 new, 1 fails before the fix), `tests/intelligence/test_self_optimizer_v2_agent_columns.py` (4 new), app-role integration test above |
+| a05-F095-04 | Eval suites / rollout gate | OPEN, fixed | PUT on an agent already fully-autonomous skipped the gate when the behaviour config changed. It now re-runs the gate for the config being written (409 until the suite has run against it). `SelfOptimizerV2.apply_suggestion` refuses with reason `rollout_gate` and never writes the snapshot's `autonomy_mode`. Rollback also never writes it (follow-up). The 409 / refusal was replaced on 2026-10-07 by owner decision 3 below (auto-demote, re-test, auto-promote). | `291843f39`, `80a186c95` | `tests/api/test_agent_rollout_gate_enforced.py` (4 new, 1 fails before the fix), `tests/intelligence/test_self_optimizer_v2_agent_columns.py` (4 new), app-role integration test above |
 
 ## Verification
 
@@ -44,7 +44,26 @@ before any change. No alembic migration was added.
    so that applying a suggestion cannot change governance for the whole tenant.
 2. **Unused tables**: `ab_test_results`, `learning_experiments` and `learning_experiment_outcomes`
    no longer have a writer. Dropping them needs a new migration.
-3. **a05-F095-04 workflow**: changing a fully-autonomous agent's behaviour config now takes
-   four steps: demote, change, re-run the suite, promote. A self-optimizer winner for a
-   fully-autonomous agent stays pending; `POST /intelligence/experiments/{id}/apply` returns 409
-   with these instructions. Auto-demoting the agent on such a change would be an alternative.
+3. **a05-F095-04 workflow** (DECIDED 2026-10-07: auto-demote, re-test, auto-promote).
+   A behaviour-config change to a `fully-autonomous` agent (PUT /agents/{id}, a
+   self-optimizer apply via `POST /intelligence/experiments/{id}/apply` or auto-apply, or a
+   self-optimizer rollback) is accepted: the agent is demoted to `bounded-autonomous` in the
+   same write, with a pending marker in the new `agents.autonomy_revalidation` column
+   (migration `c3e5a7b9d1f4`; audited as `agent.autonomy` / `demoted`, reason
+   `config_changed_pending_eval`), and a durable MEM-53 run of its rollout-gate eval suite is
+   enqueued against the new config and dispatched (Celery, or in-process without it). The
+   post-run hook (`eval_suite_post_run.on_run_completed`) evaluates the gate for the agent's
+   config: passed -> promoted back to `fully-autonomous` (audited `promoted`); failed -> stays
+   bounded, the marker records the pass rate and reason (audited `revalidation_failed`).
+   Promotion is a compare-and-set on mode + marker token + `pending`, so an operator's
+   autonomy change (which cancels the marker, audited `revalidation_cancelled`) or a newer
+   config change (new token; the older run is failed as superseded) is never overridden. The
+   `resume-stalled-eval-suite-runs` beat also reconciles pending markers whose run already
+   ended (lost hook, run `failed`). No demotion happens when a completed run already vouches
+   for the new config, or when the owner switched the gate off. `GET /agents/{id}` exposes
+   `autonomy_revalidation` and `pending_promotion`; the agent detail page shows
+   "Re-validating — will return to fully-autonomous if the eval suite passes" (or the failed
+   result). Tests: `tests/api/test_agent_autonomy_revalidation.py`,
+   `tests/intelligence/test_autonomy_revalidation.py`,
+   `tests/intelligence/test_autonomy_revalidation_pg.py` (app role),
+   `AutonomyRevalidationNotice.test.tsx`.

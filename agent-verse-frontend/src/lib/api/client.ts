@@ -551,6 +551,30 @@ export interface AgentResponse {
   /** Public card text shown in the A2A directory (never the prompt or tools). */
   a2a_description?: string;
   a2a_skills?: string[];
+  eval_suite_id?: string | null;
+  /**
+   * a05-F095-04 decision: a config change to a fully-autonomous agent demotes
+   * it and re-runs its eval suite; this is that re-validation (null = never).
+   */
+  autonomy_revalidation?: AutonomyRevalidation | null;
+  /** True while demoted and waiting for the eval suite run to pass. */
+  pending_promotion?: boolean;
+}
+
+/** The re-validation of a demoted fully-autonomous agent (agents.autonomy_revalidation). */
+export interface AutonomyRevalidation {
+  state: 'pending' | 'promoted' | 'failed' | 'cancelled';
+  reason: string;
+  source?: string;
+  from_mode?: string;
+  eval_suite_id?: string | null;
+  run_id?: string | null;
+  demoted_at?: string;
+  resolved_at?: string;
+  pass_rate?: number | null;
+  min_pass_rate_required?: number | null;
+  error?: string;
+  cancelled_reason?: string;
 }
 
 /** D3: the per-agent public A2A directory opt-in and its card text. */
