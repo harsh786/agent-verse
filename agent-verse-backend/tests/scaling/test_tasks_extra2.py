@@ -228,10 +228,25 @@ class TestDecrementAfterCompletion:
         mock_redis = AsyncMock()
         mock_redis.aclose = AsyncMock()
 
+        # The release is per goal (RATE-06): without a goal id it is a logged no-op,
+        # so pass one explicitly instead of relying on a ContextVar another test
+        # happened to leave set (the test only passed in full-suite order).
         with patch("redis.asyncio.from_url", return_value=mock_redis), \
              patch("app.tenancy.limits.decrement_concurrent_goals", AsyncMock()) as mock_dec:
-            await _decrement_after_completion("t1", "redis://localhost:6379/0")
+            await _decrement_after_completion("t1", "redis://localhost:6379/0", goal_id="g-1")
             mock_dec.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_without_a_goal_id_releases_nothing(self):
+        from app.scaling.tasks import _RUN_GOAL_ID, _decrement_after_completion
+
+        token = _RUN_GOAL_ID.set(None)
+        try:
+            with patch("app.tenancy.limits.decrement_concurrent_goals", AsyncMock()) as mock_dec:
+                await _decrement_after_completion("t1", "redis://localhost:6379/0")
+                mock_dec.assert_not_called()
+        finally:
+            _RUN_GOAL_ID.reset(token)
 
 
 class TestCheckEmailGoalsTask:

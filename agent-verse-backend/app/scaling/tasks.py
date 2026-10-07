@@ -66,7 +66,23 @@ def _setup_sigterm() -> None:
         _signal.signal(_signal.SIGTERM, _handler)
 
 
-_setup_sigterm()
+def _install_sigterm_in_worker_process(**_kwargs: Any) -> None:
+    """Install the shutdown handler in Celery worker processes only.
+
+    It used to be installed at IMPORT time, so every process importing this
+    module (the API, CLIs, pytest) had its own SIGTERM handling replaced by a
+    SystemExit — e.g. a test run turned a stray SIGTERM into an internal error
+    and hung. ``worker_process_init`` fires in each Celery pool process only.
+    """
+    _setup_sigterm()
+
+
+try:
+    from celery.signals import worker_process_init as _worker_process_init
+
+    _worker_process_init.connect(_install_sigterm_in_worker_process, weak=False)
+except Exception:  # pragma: no cover - celery is a core dependency
+    pass
 
 # Module-level Redis URL — read once at import time so tasks don't re-read env
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
