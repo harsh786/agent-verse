@@ -51,7 +51,23 @@ def _provenance(res: dict[str, Any]) -> dict[str, Any]:
         "degraded": bool(res.get("degraded", False)),
         "degradation_reason": res.get("degradation_reason"),
         "source_format": res.get("source_format"),
+        "empty_pages": [int(n) for n in res.get("empty_pages") or []],
+        "failed_pages": [int(n) for n in res.get("failed_pages") or []],
     }
+
+
+def _raise_if_unread(res: dict[str, Any]) -> None:
+    """a10-F243-03: a document whose every page the engine failed on (no LLM
+    provider, vision call failed, render failure) is a 502 with the reason — not
+    a 200 carrying empty text. Partly-read documents answer 200 with
+    ``degraded``, ``failed_pages`` and the reason."""
+    pages = int(res.get("page_count") or 0)
+    failed = res.get("failed_pages") or []
+    if pages > 0 and len(failed) >= pages:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OCR could not read the document: {res.get('degradation_reason') or ''}",
+        )
 
 
 class OcrResponse(BaseModel):
@@ -72,6 +88,9 @@ class OcrResponse(BaseModel):
     degraded: bool = False
     degradation_reason: str | None = None
     source_format: str | None = None
+    # a10-F243-03: 1-based pages with no text, and those the engine failed on.
+    empty_pages: list[int] = Field(default_factory=list)
+    failed_pages: list[int] = Field(default_factory=list)
     # WS-13: populated only when persist_to_kb was requested.
     kb_persisted: bool = False
     kb_deduplicated: bool = False
@@ -262,6 +281,8 @@ async def extract_document(
             status_code=500,
             detail="OCR extraction failed.",
         ) from exc
+
+    _raise_if_unread(result)
 
     kb_info: dict[str, Any] = {}
     if persist_requested:

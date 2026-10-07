@@ -56,3 +56,9 @@ class OcrResult:
     degraded: bool = False
     degradation_reason: str | None = None
     source_format: str | None = None
+    # a10-F243-03: 1-based page numbers that yielded no text, and the subset
+    # that yielded none because the OCR engine failed on them (no LLM provider,
+    # vision call failed, page could not be rendered) rather than being blank.
+    # Any failed page also sets ``degraded`` with the reasons.
+    empty_pages: list[int] = field(default_factory=list)
+    failed_pages: list[int] = field(default_factory=list)

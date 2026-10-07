@@ -95,6 +95,8 @@ class OcrDocumentTool:
             "source_format": result.source_format,
             "degraded": result.degraded,
             "degradation_reason": result.degradation_reason,
+            "empty_pages": list(result.empty_pages),
+            "failed_pages": list(result.failed_pages),
         }
 
     def _resolve_input(
