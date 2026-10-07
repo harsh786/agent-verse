@@ -491,10 +491,6 @@ class Settings(BaseSettings):
     # Master switch: start the long-running trigger consumers (chain/HITL/memory)
     # on app startup. Default on — consumers self-disable when Redis is absent.
     triggers_consumers_enabled: bool = True
-    # Gate the extended trigger families (data/monitoring/iot/advanced). These
-    # require external clients (MQTT/S3/etc.) that are not wired by default, so
-    # they stay off unless explicitly enabled.
-    triggers_extended_consumers_enabled: bool = False
 
     # --- Trigger event bus (TRG-18, app/triggers/bus.py) ---
     # One Redis Stream per event family; consumers read them through consumer

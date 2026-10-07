@@ -95,28 +95,36 @@ async def test_start_skips_when_dispatcher_missing() -> None:
         await sup.stop()
 
 
-async def test_extended_families_skipped_when_flag_off() -> None:
-    # Default: extended families are not built at all.
+def test_no_extended_consumer_stubs() -> None:
+    # a10-F247-01: the extended families had no runtime path (their types are
+    # UNSUPPORTED and refused at creation); the MQTT consumer was built with
+    # mqtt_client=None and always skipped. The flag and the stubs are gone.
+    import importlib.util
+    import inspect
+
+    assert "enable_extended" not in inspect.signature(TriggerConsumerSupervisor).parameters
+    for mod in (
+        "app.triggers.iot",
+        "app.triggers.data",
+        "app.triggers.monitoring",
+        "app.triggers.advanced",
+    ):
+        assert importlib.util.find_spec(mod) is None, mod
+
+
+async def test_only_core_consumers_are_built() -> None:
     sup = _full_supervisor()
     try:
         await sup.start()
-        names = {c.__class__.__name__ for c in sup.consumers}
-        assert "MQTTTriggerConsumer" not in names
-    finally:
-        await sup.stop()
-
-
-async def test_extended_families_mix_when_flag_on() -> None:
-    # With the flag on but no external clients wired, core consumers start
-    # while the extended (MQTT) consumer is skipped — a genuine mixed result.
-    sup = _full_supervisor(enable_extended=True)
-    try:
-        await sup.start()
-        started = {c.__class__.__name__ for c in sup.consumers}
-        assert "ChainTriggerConsumer" in started
-        assert len(sup.tasks) == 6
-        skipped_names = {name for name, _ in sup.skipped}
-        assert "MQTTTriggerConsumer" in skipped_names
+        assert {c.__class__.__name__ for c in sup.consumers} == {
+            "ChainTriggerConsumer",
+            "HITLTriggerConsumer",
+            "MemoryTriggerConsumer",
+            "EventTriggerConsumer",
+            "ConditionTriggerConsumer",
+            "ConversationalTriggerConsumer",
+        }
+        assert sup.skipped == []
     finally:
         await sup.stop()
 

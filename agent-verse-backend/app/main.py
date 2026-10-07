@@ -2760,9 +2760,6 @@ def create_app(
                         schedule_store=getattr(app.state, "schedule_store", None),
                         dispatcher=getattr(app.state, "trigger_dispatcher", None),
                         redis=redis_for_runtime,
-                        enable_extended=getattr(
-                            settings, "triggers_extended_consumers_enabled", False
-                        ),
                     )
                     app.state.trigger_consumers = _trigger_consumers
                     # Expose the runtime redis so POST /triggers/events/{channel}
