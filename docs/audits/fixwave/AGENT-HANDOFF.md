@@ -65,8 +65,17 @@ core services (`up -d --no-deps …`); restart launchd
 C1–C5 channels (Telegram/WhatsApp/Slack/Teams/generic webhook), org-collab, B9–B11, architecture docs 1–32/39
 (brief: `docs/world-class/_BRIEF.md`), the five capstone scenarios, the 149 out-of-scope backlog items.
 
-### 00.3 Code-level work still open (no redeploy needed)
-- Integration tests (testcontainers) and `tests/e2e_full` normal + `E2E_LEAST_PRIVILEGE=1` at zero failures.
+### 00.3 Code-level test status (2026-10-08, main `497875650`)
+- Backend unit (full, not integration/slow): **36,068 passed, 0 failed**.
+- Integration (testcontainers): 1,099 passed / 7 failed → all 7 fixed in `53f6e56ec` (tests violated the
+  duplicate-source rule; cross-encoder fallback test raced the model warm-up). Not yet re-run as a full tier.
+- `tests/e2e_full` (normal): 217 passed / 2 failed → cost-breakdown expectation fixed in `497875650`.
+  **Open:** `test_org_any_task_e2e.py::test_arbitrary_mission_executes_forms_team_completes_and_emits_events`
+  — the org mission goal ends `failed` (log shows `team_formation.llm_extract_failed`: the role model's reply is
+  not JSON). Org-collab is owner-PARKED; investigate when it is un-parked (likely the registry-only reasoning
+  change: the e2e harness's fake model output for team formation).
+- **Not run yet:** `E2E_LEAST_PRIVILEGE=1 uv run pytest tests/e2e_full`; a full integration re-run.
+- Frontend: typecheck clean, lint 0 errors, vitest 5,374/5,374.
 
 ### 00.4 Owner actions (cluster; real keys — an agent must not do these)
 - ONE `VAULT_MASTER_KEY` on every pod (`--set-string secrets.vaultMasterKey=…`, keep
