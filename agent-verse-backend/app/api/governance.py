@@ -672,11 +672,31 @@ async def simulate_policy_for_goal(
 # ---------------------------------------------------------------------------
 
 
+def _db_wired(request: Request) -> bool:
+    """True when this app has Postgres wired (the lifespan sets the factory).
+
+    The org-gate helpers read through the process-global session factory and
+    deliberately degrade (empty / "not an org gate") when no database is
+    configured or a query is invalid for this tenant (e.g. a non-UUID tenant id
+    in ``CAST(:t AS uuid)``). With a database wired, an OUTAGE must not degrade:
+    it would turn a live inbox into an empty 200 or a live gate into a 404.
+    """
+    return getattr(request.app.state, "db_session_factory", None) is not None
+
+
+def _raise_if_db_outage(exc: BaseException, *, db_wired: bool) -> None:
+    from app.db.availability import is_db_unavailable_error
+
+    if db_wired and is_db_unavailable_error(exc):
+        raise exc
+
+
 async def _org_gate_approvals(
     tenant_ctx: TenantContext,
     org_id: str | None,
     *,
     resolved: bool,
+    db_wired: bool = False,
 ) -> list[dict[str, Any]]:
     """Return org approval-gate tasks shaped like HITL approval requests.
 
@@ -709,7 +729,8 @@ async def _org_gate_approvals(
         db = get_session_factory()
         async with db() as sess:
             rows = (await sess.execute(sql, params)).mappings().all()
-    except Exception:
+    except Exception as exc:
+        _raise_if_db_outage(exc, db_wired=db_wired)
         return out
     for row in rows:
         approver: str | None = None
@@ -787,7 +808,9 @@ async def list_approvals(
                     ).first()
                 if _row and isinstance(_row[0], dict) and _row[0].get("org_id") == org_id:
                     scoped.append(r)
-            except Exception:
+            except Exception as exc:
+                # An outage is a 503, not "every approval is out of scope" (200 []).
+                _raise_if_db_outage(exc, db_wired=_db_wired(request))
                 continue
         pending = scoped
 
@@ -810,7 +833,11 @@ async def list_approvals(
     # Bridge durable org approval gates (OrgTasks) into the global inbox so they
     # show up with risk buckets/sort like any HITL request — the in-memory gateway
     # loses its requests on restart, but the gate tasks persist in the DB.
-    results.extend(await _org_gate_approvals(tenant_ctx, org_id, resolved=False))
+    results.extend(
+        await _org_gate_approvals(
+            tenant_ctx, org_id, resolved=False, db_wired=_db_wired(request)
+        )
+    )
 
     # Hide phantom approvals whose owning mission/goal already finished: once the
     # work is completed/failed/cancelled there is nothing left to approve, so the
@@ -898,10 +925,11 @@ async def _resolve_org_gate(
 
     tid = str(tenant_ctx.tenant_id)
     # `found` gates error handling: any failure while *looking up* the gate
-    # (no DB configured, an id that isn't a valid task, a connection error)
-    # means "this id is not a resolvable org gate" → return False so the caller
-    # can 404. Once a real gate is confirmed we re-raise, because a failure to
-    # apply the decision is a genuine 500 worth surfacing, not a silent no-op.
+    # (no DB configured, an id that isn't a valid task) means "this id is not a
+    # resolvable org gate" → return False so the caller can 404. A DB OUTAGE with
+    # a database wired is re-raised (→ 503): a 404 would tell the operator a live
+    # gate does not exist. Once a real gate is confirmed we re-raise, because a
+    # failure to apply the decision is a genuine 500 worth surfacing.
     found = False
     try:
         db = get_session_factory()
@@ -954,9 +982,10 @@ async def _resolve_org_gate(
                         await svc.update_mission_status(str(task.mission_id), "failed")
             await sess.commit()
             return True
-    except Exception:
+    except Exception as exc:
         if found:
             raise
+        _raise_if_db_outage(exc, db_wired=_db_wired(request))
         return False
 
 
@@ -2385,7 +2414,9 @@ async def list_approval_history(
         ) from exc
 
     # Include resolved org approval gates (durable OrgTasks) in the History tab.
-    gate_history = await _org_gate_approvals(tenant_ctx, None, resolved=True)
+    gate_history = await _org_gate_approvals(
+        tenant_ctx, None, resolved=True, db_wired=_db_wired(request)
+    )
     if status_filter:
         gate_history = [g for g in gate_history if g["status"] == status_filter]
     return (history + gate_history)[: min(limit, 200)]

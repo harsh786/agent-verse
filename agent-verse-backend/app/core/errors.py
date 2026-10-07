@@ -30,6 +30,8 @@ class PlatformError(Exception):
     http_status: int = 500
     retryable: bool = False
     default_severity: Severity = Severity.MEDIUM
+    #: Sent as the ``Retry-After`` header (seconds) when set.
+    retry_after_seconds: int | None = None
 
     def __init__(
         self,
@@ -155,6 +157,25 @@ class ServiceUnavailableError(PlatformError):
     http_status = 503
     retryable = True
     default_severity = Severity.HIGH
+    retry_after_seconds: int | None = 5
+
+
+class DatabaseUnavailableError(ServiceUnavailableError):
+    """Postgres / PgBouncer cannot serve the request right now (outage, failover,
+    pool exhausted). Answered as 503 with ``Retry-After`` — never a 500, and never
+    an empty 200 that looks like "no data". See ``app.db.availability``.
+    """
+
+    code = "DATABASE_UNAVAILABLE"
+
+    def __init__(
+        self,
+        message: str = "The database is temporarily unavailable; retry shortly.",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(message, **kwargs)
+        if self.retry_after_seconds is not None:
+            self.details.setdefault("retry_after_seconds", self.retry_after_seconds)
 
 
 class InternalError(PlatformError):

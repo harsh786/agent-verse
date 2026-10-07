@@ -437,9 +437,12 @@ class Settings(BaseSettings):
     # for every tenant of every deployment).
     data_region: str = ""
     data_backup_region: str = ""
-    # Hard cap on one OCR document (/ocr/extract upload or decoded base64, and
-    # each /ocr/batch document). The request body is also bounded before any
-    # route reads it (app/integrations/body_limit.py). a10-F243-05.
+    # Hard cap on one OCR document (/ocr/extract upload or decoded base64, each
+    # /ocr/batch document, and the agent-callable extract_document tool — the one
+    # OCR size limit, app/ocr/limits.py; the tool used to stop at a hardcoded
+    # 10 MiB). The request body is also bounded before any route reads it, at
+    # one base64-encoded document plus 1 MiB envelope (a /ocr/batch request's
+    # documents share that body): app/integrations/body_limit.py. a10-F243-05.
     ocr_max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     # OCR parallelism (OCR-PAR, app/ocr/concurrency.py). Every OCR caller in a
     # process (API requests, ZIP members, ingestion jobs) shares ONE pool:

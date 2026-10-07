@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.db.availability import DB_RETRY_AFTER_SECONDS
 from app.observability.health import HealthRegistry
 from app.observability.metrics import render_metrics
 
@@ -64,7 +65,12 @@ async def ready(request: Request) -> JSONResponse:
     payload: dict[str, Any] = {"status": "ready" if healthy else "unhealthy", "checks": checks}
     if tracker is not None:
         payload["startup_seconds"] = tracker.snapshot()["startup_seconds"]
-    return JSONResponse(payload, status_code=200 if healthy else 503)
+    if healthy:
+        return JSONResponse(payload, status_code=200)
+    # Same retry contract as the API's DB-outage 503 (app.db.availability).
+    return JSONResponse(
+        payload, status_code=503, headers={"Retry-After": str(DB_RETRY_AFTER_SECONDS)}
+    )
 
 
 def _embedder_capability(request: Request) -> dict[str, Any]:
