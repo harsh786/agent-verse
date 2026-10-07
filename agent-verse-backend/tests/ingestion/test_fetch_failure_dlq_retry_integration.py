@@ -87,6 +87,17 @@ def _site(status: Callable[[str], int]) -> Any:
 
 @pytest_asyncio.fixture
 async def world(pg_url: str) -> Any:
+    # The DLQ retry job walks EVERY tenant's due entries (at most 50 per run), so
+    # entries other tests left in the shared database changed its counts or
+    # crowded this test's entry out. Run on a database of its own.
+    from tests._test_backends import fresh_migrated_database
+
+    with fresh_migrated_database(pg_url) as isolated_url:
+        async for item in _world(isolated_url):
+            yield item
+
+
+async def _world(pg_url: str) -> Any:
     engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant = f"usr4-{uuid.uuid4().hex[:8]}"
