@@ -165,8 +165,8 @@ def _wire_proactive_engine(app: FastAPI) -> None:
 
     chat_service = app.state.chat_service
 
-    async def _deliver(signal: Any, proposal: Any) -> None:
-        await chat_service.deliver_proactive(
+    async def _deliver(signal: Any, proposal: Any) -> Any:
+        return await chat_service.deliver_proactive(
             principal_id=signal.principal_id,
             tenant_id=signal.tenant_id,
             message=proposal.message,
@@ -213,7 +213,20 @@ def _wire_proactive_engine(app: FastAPI) -> None:
                 "proactive_audit_write_failed", tenant_id=tenant_id, error=str(exc)
             )
 
-    app.state.proactive_engine = ProactiveEngine(deliver=_deliver, audit=_audit)
+    # Opt-in preferences (a10-F227-02) and the shared daily cap (a10-F227-01): both
+    # resolve app.state.db_session_factory / app.state._redis per call, so the
+    # lifespan's DB/Redis binding takes effect without rebuilding the engine.
+    from app.proactive.limits import AppStateDailyCap
+    from app.proactive.preferences import ProactivePreferencesStore
+
+    preferences = ProactivePreferencesStore(app.state)
+    app.state.proactive_preferences = preferences
+    app.state.proactive_engine = ProactiveEngine(
+        deliver=_deliver,
+        audit=_audit,
+        preferences_provider=preferences.get,
+        daily_cap=AppStateDailyCap(app.state),
+    )
 
 
 def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:

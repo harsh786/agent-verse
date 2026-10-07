@@ -12,9 +12,13 @@ consumer type (``app.triggers.bus``, TRG-18) and therefore need a
 ``redis`` client. A consumer whose dependencies are
 missing is skipped and recorded in :attr:`skipped` rather than crashing startup.
 
-The extended families (data / monitoring / IoT / advanced) require external
-clients (MQTT/S3/etc.) that are not wired by default, so they are only *built*
-when ``enable_extended`` is set and are skipped when their client is absent.
+The only other consumer is ``GoalNotificationConsumer`` (opt-in goal outcome
+notifications, a08-F196-05). The trigger types that would need an external
+client (S3 events, Sheets/SharePoint, log patterns, GraphQL/WebSocket streams,
+price feeds, MQTT, geofence, sensor thresholds) are UNSUPPORTED in
+``app.triggers.dispatch_map`` and refused at creation. The unwired consumer and
+evaluator stubs for those families, and the ``enable_extended`` flag that built
+an MQTT consumer with no client, were removed (a10-F247-01).
 """
 
 from __future__ import annotations
@@ -55,7 +59,6 @@ class TriggerConsumerSupervisor:
         redis: Any = None,
         notification_service: Any = None,
         db_session_factory: Any = None,
-        enable_extended: bool = False,
         restart_backoff_s: float = 1.0,
         restart_backoff_max_s: float = 60.0,
     ) -> None:
@@ -65,7 +68,6 @@ class TriggerConsumerSupervisor:
         # Opt-in goal outcome notifications (a08-F196-05) read the goal stream too.
         self._notification_service = notification_service
         self._db_session_factory = db_session_factory
-        self._enable_extended = enable_extended
         self._restart_backoff_s = restart_backoff_s
         self._restart_backoff_max_s = restart_backoff_max_s
 
@@ -275,29 +277,4 @@ class TriggerConsumerSupervisor:
                 },
             ),
         ]
-
-        if self._enable_extended:
-            specs.extend(self._extended_specs())
         return specs
-
-    def _extended_specs(self) -> list[_ConsumerSpec]:
-        """Extended families — gated behind a settings flag.
-
-        Their external clients (MQTT/S3/…) are not wired onto app.state, so each
-        declares that client as a required dependency and is skipped when it is
-        absent. Wire the client and pass it through to enable a family.
-        """
-        from app.triggers.iot.mqtt import MQTTTriggerConsumer
-
-        mqtt_client: Any = None  # not wired by default
-        return [
-            _ConsumerSpec(
-                name="MQTTTriggerConsumer",
-                factory=lambda: MQTTTriggerConsumer(
-                    trigger_store=self._schedule_store,
-                    dispatcher=self._dispatcher,
-                    mqtt_client=mqtt_client,
-                ),
-                required={"mqtt_client": mqtt_client},
-            ),
-        ]

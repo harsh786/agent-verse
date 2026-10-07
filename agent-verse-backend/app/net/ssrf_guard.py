@@ -426,6 +426,7 @@ async def request_public(
     max_redirects: int = 5,
     allowed_domains: list[str] | None = None,
     allowed_networks: list[IPNetwork] | None = None,
+    stream: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Send ``method url`` with ``client`` re-validating the URL at EVERY hop.
@@ -434,6 +435,10 @@ async def request_public(
     ``follow_redirects=False``: with automatic redirects a public URL can 302 to
     an internal address (169.254.169.254, 10.x, localhost) after the first check.
     Same pattern as app/tools/http_tool.py. Raises :class:`SSRFError`.
+
+    ``stream=True`` returns the final response unread (``client.send(...,
+    stream=True)``) so the caller can cap the body while reading it; the caller
+    must ``await resp.aclose()``. Redirect hops are closed here.
     """
     current_url, current_method = url, method.upper()
     for _hop in range(max_redirects + 1):
@@ -443,12 +448,19 @@ async def request_public(
             allowed_domains=allowed_domains,
             allowed_networks=allowed_networks,
         )
-        resp = await client.request(current_method, current_url, **kwargs)
+        if stream:
+            resp = await client.send(
+                client.build_request(current_method, current_url, **kwargs), stream=True
+            )
+        else:
+            resp = await client.request(current_method, current_url, **kwargs)
         if not resp.is_redirect:
             return resp
         location = resp.headers.get("location", "")
         if not location:
             return resp
+        if stream:
+            await resp.aclose()
         current_url = str(resp.url.join(location))
         if resp.status_code in (301, 302, 303) and current_method not in ("GET", "HEAD"):
             current_method = "GET"

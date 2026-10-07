@@ -55,11 +55,6 @@ _CONSUMER_FILES = [
     "app/triggers/consumers/hitl.py",
     "app/triggers/consumers/memory.py",
     "app/triggers/channels/gateway.py",
-    "app/triggers/data/consumers.py",
-    "app/triggers/iot/mqtt.py",
-    "app/triggers/iot/sensor.py",
-    "app/triggers/iot/geofence.py",
-    "app/triggers/advanced/consumers.py",
 ]
 
 

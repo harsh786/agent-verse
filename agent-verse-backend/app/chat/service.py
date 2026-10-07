@@ -24,6 +24,7 @@ from app.chat.clarify_store import ClarifyRoundStore, InMemoryClarifyRoundStore
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
 from app.chat.ownership import SYSTEM_SCOPE, ChatFolderNotFoundError, ChatScope
+from app.chat.proactive import ProactiveDelivery
 from app.observability.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -450,8 +451,11 @@ class ChatService:
         self._channel_session_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         # Phase 3 (cross-channel continuity): principal_id -> session_id, so a thread
         # started on one channel continues on another as the SAME conversation once
-        # identities are linked. Populated when an IdentityService is wired.
-        self._principal_sessions: dict[str, str] = {}
+        # identities are linked. Populated when an IdentityService is wired, and by
+        # proactive delivery. Keyed by (tenant_id, principal_id): an explicit
+        # principal id is only unique within its tenant (a10-F227-06). ONLY the
+        # no-DB fallback — with a repository wired it is chat_principal_sessions.
+        self._principal_sessions: dict[tuple[str, str], str] = {}
         self._identity: Any = None
         # Phase 2: acknowledge-now / deliver-later jobs (in-memory; durable later).
         self._async_jobs: dict[str, _ChatAsyncJob] = {}
@@ -1113,21 +1117,33 @@ class ChatService:
         message: str,
         channel: str | None = None,
         channel_user_id: str | None = None,
-    ) -> _Message | None:
+    ) -> ProactiveDelivery:
         """Deliver a proactive (agent-initiated) message into a principal's thread.
 
         Posts an assistant message into the principal's existing conversation
         (creating one if none is open yet) so a proactive nudge lands in the same
         place the user already talks to the assistant, and pushes to the origin
         channel when one is bound. Metadata marks it ``delivery=proactive`` so the UI
-        can badge it distinctly. Returns the delivered message (or None on failure).
+        can badge it distinctly.
+
+        The principal -> thread mapping is the same durable, tenant-scoped one the
+        channel path uses (``chat_principal_sessions`` when DB-backed), so every
+        replica — and the process after a restart — posts into ONE thread
+        (a10-F227-03/06). Writing the thread raises (the engine reports
+        ``delivery_failed``); the channel push outcome is reported, never swallowed:
+        ``channel_delivered`` is None for the web thread, True when the channel
+        push succeeded and False (with ``channel_error``) when it failed or no
+        channel push is wired (a10-F227-05).
         """
-        session_id = self._principal_sessions.get(principal_id)
+        session_id = await self._get_principal_session_id(tenant_id, principal_id)
         if session_id is None or await self.aget_session(session_id, tenant_id) is None:
             title = f"Proactive · {channel or 'assistant'}"
             session = await self.acreate_session(tenant_id, title=title)
-            session_id = session.id
-            self._principal_sessions[principal_id] = session_id
+            session_id = await self._claim_principal_session(tenant_id, principal_id, session.id)
+            if session_id != session.id:
+                # Another replica bound the principal first: post into its thread and
+                # drop the empty one this call created.
+                await self.adelete_session(session.id, tenant_id)
         msg = await self.asave_message(
             session_id=session_id,
             tenant_id=tenant_id,
@@ -1135,10 +1151,31 @@ class ChatService:
             content=message,
             metadata={"delivery": "proactive"},
         )
-        if channel and self._channel_deliver is not None:
-            with contextlib.suppress(Exception):
-                await self._channel_deliver(channel, channel_user_id, message)
-        return msg
+        channel_delivered: bool | None = None
+        channel_error: str | None = None
+        if channel and channel != "web":
+            if self._channel_deliver is None:
+                channel_delivered = False
+                channel_error = "channel_delivery_not_configured"
+            else:
+                try:
+                    await self._channel_deliver(channel, channel_user_id, message)
+                    channel_delivered = True
+                except Exception as exc:
+                    channel_delivered = False
+                    channel_error = type(exc).__name__
+                    _logger.warning(
+                        "proactive_channel_push_failed",
+                        tenant_id=tenant_id,
+                        channel=channel,
+                        error=str(exc)[:200],
+                    )
+        return ProactiveDelivery(
+            message=msg,
+            session_id=session_id,
+            channel_delivered=channel_delivered,
+            channel_error=channel_error,
+        )
 
     async def fail_async_job(self, *, job_id: str, tenant_id: str, error: str) -> None:
         job = self._async_jobs.get(job_id)
@@ -2064,23 +2101,25 @@ class ChatService:
         if self._repository is not None:
             found = await self._repository.get_principal_session(tenant_id, principal_id)
             return None if found is None else str(found)
-        return self._principal_sessions.get(principal_id)
+        return self._principal_sessions.get((tenant_id, principal_id))
 
     async def _claim_principal_session(
         self, tenant_id: str, principal_id: str, session_id: str
-    ) -> None:
+    ) -> str:
         """Bind the principal to ``session_id`` unless it already has a live thread.
 
-        Only reached when the principal had no (live) thread, so the in-memory
-        fallback may overwrite a stale entry; the DB path keeps the first claim
-        (``ON CONFLICT DO NOTHING``) — a deleted session cascades its row away.
+        Returns the session the principal is bound to afterwards. Only reached when
+        the principal had no (live) thread, so the in-memory fallback may overwrite a
+        stale entry; the DB path keeps the first claim (``ON CONFLICT DO NOTHING``)
+        — a deleted session cascades its row away.
         """
         if self._repository is not None:
-            await self._repository.claim_principal_session(
+            bound = await self._repository.claim_principal_session(
                 tenant_id=tenant_id, principal_id=principal_id, session_id=session_id
             )
-            return
-        self._principal_sessions[principal_id] = session_id
+            return str(bound) if bound else session_id
+        self._principal_sessions[(tenant_id, principal_id)] = session_id
+        return session_id
 
     async def ahandle_channel_message(
         self,

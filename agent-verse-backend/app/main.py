@@ -2770,9 +2770,6 @@ def create_app(
                         redis=redis_for_runtime,
                         notification_service=getattr(app.state, "notification_service", None),
                         db_session_factory=db_factory,
-                        enable_extended=getattr(
-                            settings, "triggers_extended_consumers_enabled", False
-                        ),
                     )
                     app.state.trigger_consumers = _trigger_consumers
                     # Expose the runtime redis so POST /triggers/events/{channel}

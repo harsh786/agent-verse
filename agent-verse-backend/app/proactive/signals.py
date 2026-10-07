@@ -1,15 +1,18 @@
-"""Proactive signals + a lightweight in-process signal bus (Phase 9).
+"""Proactive signals (Phase 9).
 
 A *signal* is an observation that might warrant the assistant reaching out:
 a calendar change, an inbound email, a stalled thread, a memory-derived
-follow-up, or a trigger fire. The bus fans signals out to registered async
-handlers (the engine subscribes). It is deliberately transport-agnostic — a
-Redis/Celery-backed bus can implement the same ``publish`` contract later.
+follow-up, or a trigger fire. A trusted producer posts it to
+``POST /v1/proactive/signals``, which hands it straight to the app's
+``ProactiveEngine`` (``app.state.proactive_engine``).
+
+There is no in-process signal bus: the one that lived here (``SignalBus``) had
+no producer or subscriber outside its own tests, and a per-process fan-out would
+not reach the engine on another replica anyway (a10-F227-04).
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -41,23 +44,3 @@ class ProactiveSignal:
     channel: str = "web"
     payload: dict[str, Any] = field(default_factory=dict)
     occurred_at: datetime = field(default_factory=_now)
-
-
-Handler = Callable[[ProactiveSignal], Awaitable[Any]]
-
-
-class SignalBus:
-    """In-process fan-out of signals to async handlers."""
-
-    def __init__(self) -> None:
-        self._handlers: list[Handler] = []
-
-    def subscribe(self, handler: Handler) -> None:
-        self._handlers.append(handler)
-
-    async def publish(self, signal: ProactiveSignal) -> list[Any]:
-        """Deliver a signal to every handler; returns each handler's result."""
-        results: list[Any] = []
-        for handler in self._handlers:
-            results.append(await handler(signal))
-        return results
