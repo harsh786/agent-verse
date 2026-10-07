@@ -17,7 +17,7 @@ test.describe('Eval Regression', () => {
     // Either 200 (ok), 401/403 (no auth but server is up), or 0 (connection refused in CI)
     expect([200, 401, 403, 0]).toContain(response.status());
   });
-  // /eval/golden-datasets is an honest 501 (nothing consumes it); the old
-  // "golden datasets page loads" case mocked a success payload for an endpoint
-  // no page calls, so it asserted nothing and is gone.
+  // The /eval/golden-datasets stub is retired: golden datasets are eval-suite
+  // golden tasks (/intelligence/eval-suites), and a goal is promoted into one
+  // from its detail page ("Promote to golden dataset").
 });

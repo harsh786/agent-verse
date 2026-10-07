@@ -195,8 +195,10 @@ def test_analysis_goal_not_found_returns_404() -> None:
 
 
 def test_analysis_goal_service_raises_returns_404() -> None:
+    from app.core.errors import NotFoundError
+
     mock_svc = MagicMock()
-    mock_svc.get_goal = AsyncMock(side_effect=RuntimeError("not found"))
+    mock_svc.get_goal = AsyncMock(side_effect=NotFoundError("Goal not found: error-goal"))
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.get("/insights/analysis/error-goal", headers=_HEADERS)
     assert resp.status_code == 404

@@ -1183,14 +1183,18 @@ async def get_benchmarks(
     system_db = getattr(request.app.state, "system_db_session_factory", None)
     if system_db is not None:
         from app.api.insights import (
+            benchmark_cache_for,
             compute_platform_benchmarks,
             compute_platform_eval_benchmarks,
         )
 
-        shared = await compute_platform_benchmarks(system_db)  # 503 on DB error
+        bench_cache = benchmark_cache_for(request.app.state)
+        shared = await compute_platform_benchmarks(system_db, cache=bench_cache)  # 503 on error
         platform_ok = shared.get("data_source") == "live_platform_data"
         if platform_ok:
-            evals = await compute_platform_eval_benchmarks(system_db, dim_names)
+            evals = await compute_platform_eval_benchmarks(
+                system_db, dim_names, cache=bench_cache
+            )
             platform = {
                 "success_rate": shared.get("platform_avg_success_rate"),
                 "cost_usd": shared.get("platform_avg_cost_usd"),
@@ -1269,10 +1273,14 @@ class AddGoldenTaskRequest(BaseModel):
     min_score: float = Field(default=0.8, ge=0.0, le=1.0)
     max_iterations: int = Field(default=15, ge=1, le=100)
     tags: list[str] = []
+    # Sources a run must cite (``citations[].source`` of its events).
+    expected_citations: list[str] = Field(default_factory=list, max_length=50)
 
     # Kept on import so a dataset round-trips; generated when absent.
     task_id: str | None = Field(default=None, min_length=1, max_length=64,
                                 pattern=r"^[A-Za-z0-9_.:-]+$")
+    # Provenance of a promoted task (kept on import so an export round-trips).
+    source_goal_id: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def _has_checks(self) -> AddGoldenTaskRequest:
@@ -1287,11 +1295,12 @@ def _require_checks(task: dict[str, Any]) -> None:
         task.get("expected_tools")
         or task.get("forbidden_tools")
         or [p for p in (task.get("expected_output_contains") or []) if str(p).strip()]
+        or [c for c in (task.get("expected_citations") or []) if str(c).strip()]
         or str(task.get("expected_output") or "").strip()
     ):
         raise ValueError(
             "a golden task needs at least one check: expected_tools, "
-            "forbidden_tools, expected_output_contains or expected_output"
+            "forbidden_tools, expected_output_contains, expected_citations or expected_output"
         )
 
 
@@ -1306,6 +1315,7 @@ class UpdateGoldenTaskRequest(BaseModel):
     min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     max_iterations: int | None = Field(default=None, ge=1, le=100)
     tags: list[str] | None = None
+    expected_citations: list[str] | None = Field(default=None, max_length=50)
 
 
 class ImportGoldenDatasetRequest(BaseModel):
@@ -1390,6 +1400,8 @@ async def add_golden_task(
         min_score=body.min_score,
         max_iterations=body.max_iterations,
         tags=body.tags,
+        expected_citations=body.expected_citations,
+        source_goal_id=body.source_goal_id,
     )
     try:
         version = await _eval_store(request).add_task(suite_id, task_to_dict(task))
@@ -1399,6 +1411,120 @@ async def add_golden_task(
         raise HTTPException(404, f"Eval suite {suite_id} not found")
     return {"task_id": task.task_id, "suite_id": suite_id, "goal": body.goal,
             "dataset_version": version}
+
+
+class PromoteGoalRequest(BaseModel):
+    """Options for promoting a completed goal to a golden task (a10-F235-01)."""
+
+    # Appended to the goal text as the task input ("Context: ...").
+    context: str = Field(default="", max_length=4000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    # Expect the tools the run called / the sources it cited.
+    include_tools: bool = True
+    include_citations: bool = True
+    expected_output_contains: list[str] = Field(default_factory=list, max_length=20)
+    min_score: float = Field(default=0.8, ge=0.0, le=1.0)
+    max_iterations: int = Field(default=15, ge=1, le=100)
+
+
+async def _promote_audit(
+    request: Request, ctx: Any, *, goal_id: str, outcome: str, note: str, durable: bool
+) -> None:
+    """Audit a promotion: the request row is durable (no unaudited write)."""
+    from app.governance.audit import AuditEvent, AuditWriteError
+    from app.governance.permissions import ActionLevel
+
+    audit = getattr(request.app.state, "audit_log", None)
+    event = AuditEvent(
+        goal_id=goal_id[:64],
+        tool_name="eval.golden_task.promote",
+        action_level=ActionLevel.ALLOW_LOG,
+        outcome=outcome,
+        api_key_id=getattr(ctx, "api_key_id", None) or None,
+        note=note[:2000],
+    )
+    if not durable:
+        if audit is not None:
+            try:
+                await audit.record_async(event, tenant_ctx=ctx)
+            except AuditWriteError as exc:
+                _mkt_logger.error("golden_promote_outcome_audit_failed", error=str(exc)[:200])
+        return
+    if audit is None:
+        raise HTTPException(503, "Audit log unavailable; the goal was not promoted")
+    try:
+        await audit.record_durable(event, tenant_ctx=ctx)
+    except AuditWriteError as exc:
+        raise HTTPException(503, "The promotion could not be audited; nothing was changed") from exc
+
+
+@intelligence_router.post("/eval-suites/{suite_id}/tasks/from-goal/{goal_id}", status_code=201)
+async def promote_goal_to_golden_task(
+    request: Request, suite_id: str, goal_id: str, body: PromoteGoalRequest | None = None
+) -> dict[str, Any]:
+    """Promote one of the caller's completed goals to a golden task of one of its suites.
+
+    The task's input is the goal text (plus ``context``); its expectation is the
+    goal's verified final answer, the tools the run called and the sources it
+    cited. It is added as a new dataset version. 404: goal or suite not the
+    caller's; 409: already promoted into this suite; 422: the goal is not a
+    completed, executed run with an answer. Audited (durably, before the write).
+    """
+    from app.core.errors import NotFoundError
+    from app.intelligence.golden_promotion import GoalNotPromotableError, golden_task_from_goal
+
+    _eval_runner(request)
+    ctx = _require_tenant(request)
+    opts = body or PromoteGoalRequest()
+    store = _eval_store(request)
+    if await store.get_meta(suite_id) is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        raise HTTPException(503, "Goal service not available")
+    try:
+        goal = await goal_service.get_goal(goal_id=goal_id, tenant_ctx=ctx)
+        events = await goal_service.get_events(goal_id=goal_id, tenant_ctx=ctx)
+    except NotFoundError as exc:
+        raise HTTPException(404, f"Goal {goal_id} not found") from exc
+    except Exception as exc:
+        _mkt_logger.warning("golden_promote_goal_read_failed", error=str(exc)[:200])
+        raise HTTPException(503, "The goal could not be read; try again") from exc
+    try:
+        task = golden_task_from_goal(
+            goal,
+            events,
+            context=opts.context,
+            tags=opts.tags,
+            include_tools=opts.include_tools,
+            include_citations=opts.include_citations,
+            expected_output_contains=opts.expected_output_contains,
+            min_score=opts.min_score,
+            max_iterations=opts.max_iterations,
+        )
+        _require_checks(task)
+    except GoalNotPromotableError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    note = f"suite={suite_id} task={task['task_id']}"
+    await _promote_audit(
+        request, ctx, goal_id=goal_id, outcome="golden_task_promoted", note=note, durable=True
+    )
+    try:
+        version = await store.add_task(suite_id, task)
+    except ValueError as exc:
+        await _promote_audit(request, ctx, goal_id=goal_id, outcome="golden_task_promote_refused",
+                             note=f"{note} already promoted", durable=False)
+        raise HTTPException(409, f"Goal {goal_id} is already a golden task of this suite") from exc
+    except Exception as exc:
+        await _promote_audit(request, ctx, goal_id=goal_id, outcome="golden_task_promote_failed",
+                             note=note, durable=False)
+        raise HTTPException(503, "The golden task could not be stored; try again") from exc
+    if version is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    public = {**task, "revision": version}
+    return {"suite_id": suite_id, "goal_id": goal_id, "task_id": task["task_id"],
+            "dataset_version": version, "task": public}
 
 
 @intelligence_router.get("/eval-suites/{suite_id}/tasks")

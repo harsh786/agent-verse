@@ -542,6 +542,28 @@ class NotificationService:
             except Exception as exc:
                 logger.warning("budget_alert_notification_failed", error=str(exc))
 
+    async def notify_cost_anomaly(self, alert: dict[str, Any]) -> int:
+        """Send a cost-anomaly alert to every channel of the tenant; returns deliveries."""
+        tenant_id = str(alert.get("tenant_id", ""))
+        await self.ensure_tenant_loaded(tenant_id)
+        who = f"agent `{alert['agent_id']}`" if alert.get("agent_id") else "tenant"
+        message = {
+            **alert,
+            "text": (
+                f"Cost anomaly ({alert.get('anomaly_type')}): {who} averages "
+                f"${alert.get('cost_actual_usd')} per LLM call, "
+                f"{alert.get('sigma_deviation')}x its usual variation"
+            ),
+        }
+        sent = 0
+        for channel in self.get_channels(tenant_id):
+            try:
+                await self._send(channel, message)
+                sent += 1
+            except Exception as exc:
+                logger.warning("cost_anomaly_notification_failed", error=str(exc))
+        return sent
+
     async def _send(self, channel: NotificationChannel, message: dict[str, Any]) -> None:
         """Deliver *message* to *channel*; raises when it was not delivered.
 

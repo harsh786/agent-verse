@@ -36,11 +36,15 @@ class _Result:
     def fetchall(self) -> list[Any]:
         return list(self._rows)
 
+    def scalar(self) -> Any:
+        return self._rows[0][0] if self._rows else None
+
 
 class _FakeLtmDb:
     def __init__(self, *, broken: bool = False) -> None:
         self.rows: dict[str, tuple[str, str]] = {}  # id -> (tenant_id, content)
         self.broken = broken
+        self.scans: list[int] = []  # LIMIT of every whole-tenant list read
 
     def __call__(self) -> _FakeSession:
         return _FakeSession(self)
@@ -85,6 +89,16 @@ class _FakeSession:
                 raise RuntimeError("value too long for type character varying(32)")
             self.db.rows[p["id"]] = (p["tid"], p["content"])
             return _Result([])
+        if sql.startswith("DELETE FROM long_term_memory"):
+            hit = self.db.rows.get(p["mid"])
+            if hit is None or hit[0] != p["tid"]:
+                return _Result([])
+            del self.db.rows[p["mid"]]
+            return _Result([(p["mid"],)])
+        if "memory_conflicts" in sql:
+            return _Result([])
+        if sql.startswith("SELECT count(*) FROM long_term_memory"):
+            return _Result([(sum(1 for t, _ in self.db.rows.values() if t == p["tid"]),)])
         if sql.startswith("UPDATE long_term_memory"):
             if p["id"] in self.db.rows:
                 self.db.rows[p["id"]] = (p["tid"], p["content"])
@@ -94,6 +108,7 @@ class _FakeSession:
                 hit = self.db.rows.get(p["mid"])
                 ok = hit is not None and hit[0] == p["tid"]
                 return _Result([(hit[1],)] if ok and hit else [])
+            self.db.scans.append(int(p.get("limit", 0)))
             return _Result(
                 [
                     (c,)
@@ -153,8 +168,8 @@ def test_delete_on_one_replica_is_honoured_by_another() -> None:
     memory_v2._memories.update(replica_b_process_state)  # now "running on B"
     assert b.get(f"/memory-v2/{mid}").status_code == 404
     assert b.patch(f"/memory-v2/{mid}", json={"content": "revived"}).status_code == 404
-    stored = [json.loads(c) for _, c in db.rows.values()]
-    assert stored and all(m["lifecycle_state"] == "deleted" for m in stored)
+    # The row is gone (a10-F238-05): a soft flag in the JSON was still recalled.
+    assert db.rows == {}
 
 
 @pytest.mark.parametrize(
@@ -173,3 +188,21 @@ def test_db_failure_is_503_not_fake_success(method: str, path: str, body: Any) -
     kwargs = {"json": body} if body is not None else {}
     resp = getattr(client, method)(path, **kwargs)
     assert resp.status_code == 503, (method, path, resp.status_code, resp.text)
+
+
+def test_create_without_negation_does_not_scan_the_tenant() -> None:
+    """a10-F238-03: every create used to load up to 5000 memories for the check."""
+    db = _FakeLtmDb()
+    client = _replica(db)
+    for i in range(3):
+        assert client.post("/memory-v2", json={"content": f"fact {i}"}).status_code == 200
+    assert db.scans == []
+    client.post("/memory-v2", json={"content": "fact 1 is not true"})
+    assert db.scans == [memory_v2._CONFLICT_SCAN_LIMIT]
+    assert memory_v2._CONFLICT_SCAN_LIMIT <= 500
+
+
+@pytest.mark.parametrize("days", [10**9, -1, "x", True])
+def test_mark_stale_rejects_unbounded_days(days: Any) -> None:
+    resp = _replica(_FakeLtmDb()).post("/memory-v2/lifecycle/mark-stale", json={"days_old": days})
+    assert resp.status_code == 422, resp.text

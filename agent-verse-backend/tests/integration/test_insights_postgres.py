@@ -244,3 +244,65 @@ async def test_benchmarks_run_on_real_schema(client_for: Any) -> None:
     assert resp.status_code == 200, resp.text
     # Two tenants, five goals: below the anonymity threshold -> honest nulls.
     assert resp.json()["data_source"] == "insufficient_data"
+
+
+async def test_estimate_and_cost_lookups_are_index_served(ins_postgres: tuple[str, str]) -> None:
+    """a10-F233-02/03: the trigram filter and the per-goal cost lookups use indexes."""
+    from sqlalchemy import text
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    _, admin_url = ins_postgres
+    conn = await asyncpg.connect(_dsn(admin_url))
+    try:
+        names = {
+            r["indexname"]
+            for r in await conn.fetch(
+                "SELECT indexname FROM pg_indexes WHERE tablename IN "
+                "('goals', 'goal_cost_breakdowns')"
+            )
+        }
+    finally:
+        await conn.close()
+    assert {"ix_goals_goal_text_trgm", "ix_goal_cost_breakdowns_goal_id"} <= names
+
+    engine = create_async_engine(admin_url)
+    dialect = postgresql.dialect(paramstyle="named")
+
+    def _literal(stmt: Any) -> str:
+        return str(stmt.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
+
+    async def _plan(sa_conn: Any, stmt: Any) -> str:
+        rows = await sa_conn.exec_driver_sql("EXPLAIN " + _literal(stmt))
+        return "\n".join(r[0] for r in rows)
+
+    try:
+        # On five rows the planner prefers the tenant b-tree; drop the other goals
+        # indexes inside a rolled-back transaction to prove the trigram index can
+        # serve the estimate on its own (it could not with similarity() >= x).
+        async with engine.connect() as sa_conn:
+            trans = await sa_conn.begin()
+            others = (
+                await sa_conn.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE tablename = 'goals' "
+                        "AND indexname <> 'ix_goals_goal_text_trgm' "
+                        "AND indexname NOT LIKE '%pkey'"
+                    )
+                )
+            ).scalars().all()
+            for name in others:
+                await sa_conn.execute(text(f'DROP INDEX "{name}"'))
+            await sa_conn.execute(text("SET LOCAL enable_seqscan = off"))
+            await sa_conn.execute(insights.estimate_setup_stmt())
+            est = insights.build_estimate_stmt(TENANT_A, "deploy the billing service", None)
+            plan = await _plan(sa_conn, est)
+            await trans.rollback()
+        assert "ix_goals_goal_text_trgm" in plan, plan
+
+        async with engine.begin() as sa_conn:
+            await sa_conn.execute(text("SET LOCAL enable_seqscan = off"))
+            plan = await _plan(sa_conn, insights.build_benchmark_stmt(NOW - timedelta(days=90)))
+        assert "ix_goal_cost_breakdowns_goal_id" in plan, plan
+    finally:
+        await engine.dispose()

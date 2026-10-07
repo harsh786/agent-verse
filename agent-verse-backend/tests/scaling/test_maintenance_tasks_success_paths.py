@@ -4,7 +4,7 @@ elsewhere (tests/scaling/test_celery_maintenance_real.py), never their actual
 execution paths:
 
  - enforce_hitl_sla, flush_audit_wal, scan_cost_anomalies
- - embed_marketplace_templates, conclude_stale_experiments, expire_stale_documents
+ - conclude_stale_experiments, expire_stale_documents
  - process_dpdp_erasures
 """
 
@@ -387,102 +387,46 @@ class TestFlushAuditWal:
         assert result == {"error": "no redis", "flushed": 0}
 
 
-# ── scan_cost_anomalies ───────────────────────────────────────────────────────
-
-
-class TestScanCostAnomalies:
-    def test_success_scans_tenants(self):
-        from app.scaling.tasks import scan_cost_anomalies
-
-        mock_redis = AsyncMock()
-        mock_redis.keys = AsyncMock(return_value=[b"cost:daily:t1:2024-01-01"])
-        mock_redis.aclose = AsyncMock(return_value=None)
-        mock_tracker = MagicMock()
-        mock_tracker.detect_anomaly = AsyncMock(return_value=[{"metric": "spend"}])
-
-        with (
-            patch("redis.asyncio.from_url", return_value=mock_redis),
-            patch("app.intelligence.cost_tracker.CostTracker", return_value=mock_tracker),
-        ):
-            result = scan_cost_anomalies.run()
-        assert result == {"tenants_scanned": 1, "anomalies_found": 1}
-
-    def test_per_tenant_error_is_swallowed(self):
-        from app.scaling.tasks import scan_cost_anomalies
-
-        mock_redis = AsyncMock()
-        mock_redis.keys = AsyncMock(return_value=["cost:daily:t1:2024-01-01"])
-        mock_redis.aclose = AsyncMock(return_value=None)
-        mock_tracker = MagicMock()
-        mock_tracker.detect_anomaly = AsyncMock(side_effect=RuntimeError("boom"))
-
-        with (
-            patch("redis.asyncio.from_url", return_value=mock_redis),
-            patch("app.intelligence.cost_tracker.CostTracker", return_value=mock_tracker),
-        ):
-            result = scan_cost_anomalies.run()
-        assert result == {"tenants_scanned": 1, "anomalies_found": 0}
-
-    def test_error_returns_error_dict(self):
-        from app.scaling.tasks import scan_cost_anomalies
-
-        with patch("redis.asyncio.from_url", side_effect=RuntimeError("no redis")):
-            result = scan_cost_anomalies.run()
-        assert result == {"error": "no redis", "anomalies_found": 0}
-
-
-# ── embed_marketplace_templates ───────────────────────────────────────────────
-
-
-class TestEmbedMarketplaceTemplates:
-    def test_success_returns_pending_count(self):
-        from app.scaling.tasks import embed_marketplace_templates
-
-        session = _session(execute_side_effect=[MagicMock(scalar=MagicMock(return_value=7))])
-        db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
-            result = embed_marketplace_templates.run()
-        assert result == {"status": "ok", "pending_embeddings": 7}
-
-    def test_error_returns_error_status(self):
-        from app.scaling.tasks import embed_marketplace_templates
-
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
-            result = embed_marketplace_templates.run()
-        assert result == {"status": "error", "error": "no db"}
+# ── scan_cost_anomalies: tests/scaling/test_scan_cost_anomalies.py (fakeredis) ──
 
 
 # ── conclude_stale_experiments ────────────────────────────────────────────────
 
 
 class TestConcludeStaleExperiments:
-    def test_success_returns_concluded_count(self):
+    # Real-Postgres coverage (promotion, retirement, RLS role):
+    # tests/scaling/test_conclude_stale_experiments_integration.py.
+    def test_nothing_stale_concludes_nothing(self):
         from app.scaling.tasks import conclude_stale_experiments
 
-        # system_session's SET LOCAL row_security = off, then the UPDATE (the
-        # cross-tenant sweep runs on the maintenance factory; real-Postgres
-        # coverage: test_conclude_stale_experiments_integration.py).
-        session = _session_with_begin(
-            execute_side_effect=[
-                MagicMock(),
-                MagicMock(fetchall=MagicMock(return_value=[(1,), (2,), (3,)])),
-            ]
-        )
+        # system_session's SET LOCAL row_security = off, then the stale SELECT.
+        empty = MagicMock()
+        empty.mappings.return_value.all.return_value = []
+        session = _session_with_begin(execute_side_effect=[MagicMock(), empty])
         db_factory = _db_factory(session)
         with patch("app.db.session.get_system_session_factory", return_value=db_factory):
             result = conclude_stale_experiments.run()
-        assert result == {"status": "ok", "concluded": 3}
+        assert result == {
+            "status": "ok",
+            "concluded": 0,
+            "promoted": 0,
+            "retired": 0,
+            "skipped_no_control": 0,
+        }
         sql = str(session.execute.call_args_list[1].args[0])
-        assert "win_count + loss_count" in sql
+        assert "win_count + loss_count >= 20" in sql and "NOT is_control" in sql
 
-    def test_error_returns_error_status(self):
+    def test_error_fails_the_task(self):
+        """a10-F246-04: an error used to be returned as a SUCCESS result."""
         from app.scaling.tasks import conclude_stale_experiments
 
-        with patch(
-            "app.db.session.get_system_session_factory", side_effect=RuntimeError("no db")
+        with (
+            patch(
+                "app.db.session.get_system_session_factory", side_effect=RuntimeError("no db")
+            ),
+            pytest.raises(RuntimeError, match="no db"),
         ):
-            result = conclude_stale_experiments.run()
-        assert result == {"status": "error", "error": "no db"}
+            conclude_stale_experiments.run()
 
 
 # ── expire_stale_documents ────────────────────────────────────────────────────

@@ -29,10 +29,13 @@ invents numbers.
 
 from __future__ import annotations
 
+import asyncio
+import math
 import re
 import statistics
+import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -40,7 +43,6 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import Select, case, extract, func, literal_column, select, true
 from sqlalchemy.sql.elements import ColumnElement
-from sqlalchemy.sql.selectable import Subquery
 
 from app.db.models.goal import Goal, GoalEvent
 from app.db.models.intelligence import Evaluation
@@ -94,14 +96,18 @@ def _duration_s() -> ColumnElement[Any]:
     return extract("epoch", _goals.c.completed_at - _goals.c.created_at)
 
 
-def _goal_cost_subquery(tenant_id: str | None) -> Subquery:
-    """Per-goal spend from the durable ledger (``tenant_id=None``: every tenant)."""
-    q = select(
-        _costs.c.goal_id.label("goal_id"), func.sum(_costs.c.cost_usd).label("goal_cost")
-    ).group_by(_costs.c.goal_id)
+def _goal_cost(tenant_id: str | None) -> ColumnElement[Any]:
+    """Spend of the goal on the current ``goals`` row (``tenant_id=None``: any tenant).
+
+    A correlated lookup of only the goals the outer query keeps (a10-F233-03): it
+    used to be a ``GROUP BY`` over the tenant's — for benchmarks every tenant's —
+    whole ledger, joined back. Tenant reads use the primary key
+    ``(tenant_id, goal_id, ...)``; the cross-tenant one ``ix_goal_cost_breakdowns_goal_id``.
+    """
+    q = select(func.sum(_costs.c.cost_usd)).where(_costs.c.goal_id == _goals.c.id)
     if tenant_id is not None:
         q = q.where(_costs.c.tenant_id == _tenant_uuid(tenant_id))
-    return q.subquery("goal_cost")
+    return q.correlate(_goals).scalar_subquery()
 
 
 def build_estimate_stmt(
@@ -114,20 +120,22 @@ def build_estimate_stmt(
     """The tenant's finished goals most similar to *goal_text* (pg_trgm)."""
     since = since or datetime.now(UTC) - timedelta(days=_ESTIMATE_WINDOW_DAYS)
     sim = func.similarity(_goals.c.goal_text, goal_text)
-    gc = _goal_cost_subquery(tenant_id)
     stmt = (
         select(
             _goals.c.status.label("status"),
             _goals.c.iterations.label("iterations"),
             _duration_s().label("duration_s"),
-            gc.c.goal_cost.label("cost_usd"),
+            _goal_cost(tenant_id).label("cost_usd"),
             sim.label("similarity"),
         )
-        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
         .where(
             _goals.c.tenant_id == tenant_id,
             _goals.c.status.in_(_TERMINAL),
             _goals.c.created_at >= since,
+            # ``%`` is what ix_goals_goal_text_trgm serves (a10-F233-02); its
+            # threshold is set to _ESTIMATE_MIN_SIMILARITY for the transaction
+            # (estimate_setup_stmt). The explicit bound keeps the result exact.
+            _goals.c.goal_text.op("%")(goal_text),
             sim >= _ESTIMATE_MIN_SIMILARITY,
         )
         .order_by(sim.desc(), _goals.c.created_at.desc())
@@ -138,19 +146,32 @@ def build_estimate_stmt(
     return stmt
 
 
+def estimate_setup_stmt() -> Select[Any]:
+    """Transaction-local pg_trgm threshold for the estimator's ``%`` filter."""
+    return select(
+        func.set_config(
+            "pg_trgm.similarity_threshold", str(_ESTIMATE_MIN_SIMILARITY), true()
+        )
+    )
+
+
 def build_agent_goal_summary_stmt(tenant_id: str, agent_id: str) -> Select[Any]:
     """Run counts, mean successful-run duration and mean per-goal cost of one agent."""
-    gc = _goal_cost_subquery(tenant_id)
-    return (
+    per_goal = (
         select(
-            func.count().label("total"),
-            func.count().filter(_goals.c.status.in_(_SUCCESS)).label("completed"),
-            func.count().filter(_goals.c.status.in_(_TERMINAL)).label("finished"),
-            func.avg(_duration_s()).filter(_goals.c.status.in_(_SUCCESS)).label("avg_duration_s"),
-            func.avg(gc.c.goal_cost).label("avg_cost_usd"),
+            _goals.c.status.label("status"),
+            _duration_s().label("dur"),
+            _goal_cost(tenant_id).label("cost"),
         )
-        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
         .where(_goals.c.tenant_id == tenant_id, _goals.c.agent_id == agent_id)
+        .subquery("agent_goals")
+    )
+    return select(
+        func.count().label("total"),
+        func.count().filter(per_goal.c.status.in_(_SUCCESS)).label("completed"),
+        func.count().filter(per_goal.c.status.in_(_TERMINAL)).label("finished"),
+        func.avg(per_goal.c.dur).filter(per_goal.c.status.in_(_SUCCESS)).label("avg_duration_s"),
+        func.avg(per_goal.c.cost).label("avg_cost_usd"),
     )
 
 
@@ -193,18 +214,16 @@ def build_benchmark_stmt(since: datetime) -> Select[Any]:
     cost), which is what "where does my tenant sit" needs — a percentile over
     per-goal 0/1 outcomes is meaningless. Only aggregates leave the database.
     """
-    gc = _goal_cost_subquery(None)
     # Literal constants (not binds): an all-parameter CASE would type as text.
     ok = case((_goals.c.status.in_(_SUCCESS), literal_column("1.0")), else_=literal_column("0.0"))
     per_goal = (
         select(
             _goals.c.tenant_id.label("tenant_id"),
             ok.label("ok"),
-            gc.c.goal_cost.label("cost"),
+            _goal_cost(None).label("cost"),
             _duration_s().label("dur"),
             _goals.c.iterations.label("iters"),
         )
-        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
         .where(_goals.c.status.in_(_TERMINAL), _goals.c.created_at >= since)
         .cte("bench_goals")
     )
@@ -245,7 +264,7 @@ def build_goal_query_stmt(
     limit: int,
 ) -> Select[Any]:
     """A tenant's goals with time/status/cost filters and LIMIT pushed into SQL."""
-    gc = _goal_cost_subquery(tenant_id)
+    goal_cost = _goal_cost(tenant_id)
     stmt = (
         select(
             _goals.c.id,
@@ -256,9 +275,8 @@ def build_goal_query_stmt(
             _goals.c.agent_id,
             _goals.c.workflow_mode,
             _goals.c.created_at,
-            gc.c.goal_cost.label("cost_usd"),
+            goal_cost.label("cost_usd"),
         )
-        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
         .where(_goals.c.tenant_id == tenant_id, _goals.c.created_at > since)
         .order_by(_goals.c.created_at.desc())
         .limit(limit)
@@ -266,7 +284,7 @@ def build_goal_query_stmt(
     if status_filter:
         stmt = stmt.where(func.lower(_goals.c.status) == status_filter.lower())
     if cost_min is not None:
-        stmt = stmt.where(gc.c.goal_cost >= cost_min)
+        stmt = stmt.where(goal_cost >= cost_min)
     return stmt
 
 
@@ -287,12 +305,14 @@ def _tenant_db(request: Request, what: str) -> Any:
 
 
 async def _run_tenant(
-    db: Any, tenant_id: str, what: str, *stmts: Select[Any]
+    db: Any, tenant_id: str, what: str, *stmts: Select[Any], setup: Select[Any] | None = None
 ) -> list[Sequence[Mapping[str, Any]]]:
     from app.db.rls import sqlalchemy_rls_context
 
     try:
         async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            if setup is not None:
+                await session.execute(setup)
             return [(await session.execute(s)).mappings().all() for s in stmts]
     except Exception as exc:
         logger.warning("insights_query_failed", what=what, error=str(exc)[:200])
@@ -333,7 +353,9 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
     tenant = _require_tenant(request)
     db = _tenant_db(request, "Goal estimate")
     stmt = build_estimate_stmt(tenant.tenant_id, body.goal, body.agent_id)
-    (rows,) = await _run_tenant(db, tenant.tenant_id, "Goal estimate", stmt)
+    (rows,) = await _run_tenant(
+        db, tenant.tenant_id, "Goal estimate", stmt, setup=estimate_setup_stmt()
+    )
 
     n = len(rows)
     if n == 0:
@@ -364,6 +386,23 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
 # ── Execution Graph ───────────────────────────────────────────────────────────
 
 
+async def _load_goal[T](call: Awaitable[T], what: str) -> T:
+    """Await a goal-service read: unknown goal -> 404, any other failure -> 503."""
+    from app.core.errors import NotFoundError
+
+    try:
+        return await call
+    except NotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Goal not found") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("insights_goal_read_failed", what=what, error=str(exc)[:200])
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"{what} unavailable: goal store failed"
+        ) from exc
+
+
 @router.get("/graph/{goal_id}")
 async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
     """Return the goal execution as a graph of tool calls and data flows."""
@@ -373,11 +412,12 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(503, "Goal service not available")
 
     # Load goal events.  get_events() has a DB fallback so it works even after
-    # a server restart or when the goal was run by a Celery worker.
-    try:
-        events: list[dict[str, Any]] = await goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception:
-        events = []
+    # a server restart or when the goal was run by a Celery worker. An unknown
+    # (or another tenant's) goal is a 404 and a store failure a 503: both used to
+    # be swallowed into a 200 "start-only" graph that looked like an empty run.
+    events: list[dict[str, Any]] = await _load_goal(
+        goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant), "Execution graph"
+    )
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -534,11 +574,9 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
     if goal_svc is None:
         raise HTTPException(503, "Goal service not available")
 
-    try:
-        goal = await goal_svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception as _b904_exc:
-        raise HTTPException(404, "Goal not found") from _b904_exc
-
+    goal = await _load_goal(
+        goal_svc.get_goal(goal_id=goal_id, tenant_ctx=tenant), "Failure analysis"
+    )
     if not goal:
         raise HTTPException(404, "Goal not found")
 
@@ -661,6 +699,27 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
 # ── Natural Language Query ────────────────────────────────────────────────────
 
 
+# The LLM's ``days`` is model output: bound it before it reaches timedelta (a huge
+# value raised OverflowError -> 500; a negative one put the cutoff in the future).
+_QUERY_MAX_DAYS = 3650
+
+
+def _clamp_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 30
+    return max(1, min(days, _QUERY_MAX_DAYS))
+
+
+def _finite_or_none(value: Any) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 class NLQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     entity: str = Field(default="goals", pattern="^(goals|agents|connectors)$")
@@ -717,9 +776,9 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
             import json as _json
 
             parsed = _json.loads(resp.content.strip())
-            days = int(parsed.get("days", 30))
+            days = _clamp_days(parsed.get("days", 30))
             status_filter = parsed.get("status") or None
-            cost_min = float(parsed["cost_min"]) if parsed.get("cost_min") else None
+            cost_min = _finite_or_none(parsed["cost_min"]) if parsed.get("cost_min") else None
             llm_parsed = True
         except DecisionBudgetExceededError:
             raise  # 429 via the app's handler: a budget refusal is not an LLM outage
@@ -746,7 +805,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
             r"cost(?:s?)?\s+(?:more|over|greater)\s+than\s+\$?([\d.]+)", query_lower
         )
         if cost_match:
-            cost_min = float(cost_match.group(1))
+            cost_min = _finite_or_none(cost_match.group(1))
 
     query_parsed = {
         "days": days,
@@ -916,6 +975,46 @@ def _round(v: Any, digits: int) -> float | None:
     return None if v is None else round(float(v), digits)
 
 
+# The platform aggregate scans every tenant's goals of the last 90 days. It moves
+# slowly, so each process serves it from a short TTL cache (a10-F233-03): one
+# query per TTL, however many dashboards poll it. Errors are never cached.
+BENCHMARK_CACHE_TTL_S = 300.0
+
+
+class BenchmarkCache:
+    """Per-process TTL cache with single-flight refresh, keyed by a hashable key."""
+
+    def __init__(self, ttl_s: float = BENCHMARK_CACHE_TTL_S) -> None:
+        self._ttl = ttl_s
+        self._entries: dict[Any, tuple[float, dict[str, Any]]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get_or_compute(
+        self, key: Any, compute: Callable[[], Awaitable[dict[str, Any]]]
+    ) -> dict[str, Any]:
+        hit = self._entries.get(key)
+        if hit is not None and time.monotonic() - hit[0] < self._ttl:
+            return hit[1]
+        async with self._lock:  # one refresh at a time; waiters reuse its result
+            hit = self._entries.get(key)
+            if hit is not None and time.monotonic() - hit[0] < self._ttl:
+                return hit[1]
+            value = await compute()
+            if len(self._entries) > 64:
+                self._entries.clear()
+            self._entries[key] = (time.monotonic(), value)
+            return value
+
+
+def benchmark_cache_for(state: Any) -> BenchmarkCache:
+    """The app's benchmark cache (created on first use, one per app)."""
+    cache = getattr(state, "insights_benchmark_cache", None)
+    if not isinstance(cache, BenchmarkCache):
+        cache = BenchmarkCache()
+        state.insights_benchmark_cache = cache
+    return cache
+
+
 @router.get("/benchmarks")
 async def get_benchmarks(request: Request) -> dict[str, Any]:
     """Anonymised platform-wide benchmarks, or all-null ``insufficient_data``."""
@@ -926,15 +1025,24 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Platform benchmarks are computed in Postgres and need a database",
         )
-    return await compute_platform_benchmarks(system_db)
+    return await compute_platform_benchmarks(
+        system_db, cache=benchmark_cache_for(request.app.state)
+    )
 
 
-async def compute_platform_benchmarks(system_db: Any) -> dict[str, Any]:
+async def compute_platform_benchmarks(
+    system_db: Any, *, cache: BenchmarkCache | None = None
+) -> dict[str, Any]:
     """The platform benchmark figures (system session, k-anonymity); 503 on a DB error.
 
     Shared by ``/insights/benchmarks`` and the legacy ``/intelligence/benchmarks``
-    so the two pages that show platform averages report the same numbers.
+    so the two pages that show platform averages report the same numbers. With
+    *cache* the figures are reused for :data:`BENCHMARK_CACHE_TTL_S`.
     """
+    if cache is not None:
+        return await cache.get_or_compute(
+            "platform", lambda: compute_platform_benchmarks(system_db)
+        )
     from app.db.rls import system_session
 
     since = datetime.now(UTC) - timedelta(days=_BENCHMARK_WINDOW_DAYS)
@@ -974,7 +1082,7 @@ async def compute_platform_benchmarks(system_db: Any) -> dict[str, Any]:
 
 
 async def compute_platform_eval_benchmarks(
-    system_db: Any, dimensions: Sequence[str]
+    system_db: Any, dimensions: Sequence[str], *, cache: BenchmarkCache | None = None
 ) -> dict[str, Any]:
     """Platform mean eval score and per-dimension means over the benchmark window.
 
@@ -982,6 +1090,11 @@ async def compute_platform_eval_benchmarks(
     :func:`compute_platform_benchmarks`; ``None`` / ``{}`` when too few tenants
     contributed. A DB error is a 503.
     """
+    if cache is not None:
+        dims = tuple(dimensions)
+        return await cache.get_or_compute(
+            ("evals", dims), lambda: compute_platform_eval_benchmarks(system_db, dims)
+        )
     from sqlalchemy import Float, cast
 
     from app.db.rls import system_session

@@ -8865,97 +8865,222 @@ def cancel_goals_for_emergency_stop(
     return result
 
 
+# Tenants evaluated per hourly run; past it a random subset is taken (and the
+# rest reported as skipped), so every tenant is reached across runs.
+_COST_ANOMALY_MAX_TENANTS = 1000
+_COST_ANOMALY_ALERT_TIMEOUT_S = 5.0
+
+
+async def _alert_cost_anomaly(redis: Any, db_factory: Any, anomaly: Any) -> bool:
+    """Raise one anomaly once per UTC day: log, publish, notify the tenant's channels.
+
+    Returns True when this run raised it (False: already raised today).
+    """
+    import json as _json
+
+    day = datetime.datetime.now(UTC).strftime("%Y-%m-%d")
+    key = (
+        f"cost_anomaly_alert:{anomaly.tenant_id}:{anomaly.agent_id or 'tenant'}:"
+        f"{anomaly.anomaly_type}:{day}"
+    )
+    if not await redis.set(key, "1", nx=True, ex=2 * 86_400):
+        return False
+    alert = {
+        "type": "cost_anomaly_alert",
+        "tenant_id": anomaly.tenant_id,
+        "agent_id": anomaly.agent_id or "",
+        "anomaly_type": anomaly.anomaly_type,
+        "cost_actual_usd": round(float(anomaly.cost_actual_usd), 6),
+        "cost_baseline_usd": round(float(anomaly.cost_baseline_usd), 6),
+        "sigma_deviation": round(float(anomaly.sigma_deviation), 3),
+        "detected_at": anomaly.detected_at,
+    }
+    logger.warning("cost_anomaly_detected %s", _json.dumps(alert, sort_keys=True))
+    await redis.publish(f"cost:anomaly:{anomaly.tenant_id}", _json.dumps(alert))
+    if db_factory is not None:
+        from app.services.notification_service import NotificationService
+
+        svc = NotificationService()
+        svc.set_db(db_factory)
+        try:
+            await asyncio.wait_for(svc.notify_cost_anomaly(alert), _COST_ANOMALY_ALERT_TIMEOUT_S)
+        except Exception as exc:  # the alert is logged + published; delivery is best effort
+            logger.warning("cost_anomaly_delivery_failed: %s", type(exc).__name__)
+    return True
+
+
+async def _scan_cost_anomalies_async(redis: Any, db_factory: Any) -> dict[str, int]:
+    """Find tenants with cost activity (non-blocking SCAN), detect, and raise anomalies.
+
+    a10-F246-01..03/06: the scan used the blocking ``KEYS cost:daily:*``, kept an
+    arbitrary 50 tenants while reporting all of them as scanned, swallowed each
+    tenant's error, only *counted* anomalies (nothing persisted or alerted), and
+    returned errors as a SUCCESS result.
+    """
+    import random
+
+    from app.intelligence.cost_tracker import CostTracker
+
+    tenant_ids: set[str] = set()
+    async for key in redis.scan_iter(match="cost:daily:*", count=500):
+        name = key.decode() if isinstance(key, bytes) else str(key)
+        parts = name.split(":")  # cost:daily:{tenant}:{YYYY-MM-DD}
+        if len(parts) >= 4 and parts[2]:
+            tenant_ids.add(parts[2])
+    chosen = tenant_ids
+    if len(tenant_ids) > _COST_ANOMALY_MAX_TENANTS:
+        chosen = set(random.sample(sorted(tenant_ids), _COST_ANOMALY_MAX_TENANTS))
+    found = await CostTracker(redis=redis).detect_anomalies_for(chosen)
+    anomalies = [a for tid in sorted(found) for a in found[tid]]
+    alerted = 0
+    for anomaly in anomalies:
+        if await _alert_cost_anomaly(redis, db_factory, anomaly):
+            alerted += 1
+    return {
+        "tenants_found": len(tenant_ids),
+        "tenants_scanned": len(chosen),
+        "tenants_skipped": len(tenant_ids) - len(chosen),
+        "anomalies_found": len(anomalies),
+        "alerts_raised": alerted,
+    }
+
+
 @celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
 def scan_cost_anomalies() -> dict:
-    """Hourly anomaly scan for all tenants with recent cost activity."""
+    """Hourly anomaly scan for all tenants with recent cost activity.
+
+    A Redis failure raises, so Celery records the run as FAILED.
+    """
 
     async def _run() -> dict:
+        import redis.asyncio as aioredis
+
+        from app.db.session import get_session_factory
+
+        r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
         try:
-            import redis.asyncio as aioredis
-
-            r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
-            from app.intelligence.cost_tracker import CostTracker
-
-            tracker = CostTracker(redis=r)
-            anomalies_found = 0
-
-            # Discover tenants with recent cost activity via Redis key scan
-            keys = await r.keys("cost:daily:*")
-            tenant_ids: set[str] = set()
-            for key in keys:
-                parts = key.decode().split(":") if isinstance(key, bytes) else key.split(":")
-                if len(parts) >= 3:
-                    tenant_ids.add(parts[2])
-
-            for tenant_id in list(tenant_ids)[:50]:  # cap at 50 tenants per run
-                try:
-                    anomalies = await tracker.detect_anomaly(tenant_id)
-                    anomalies_found += len(anomalies)
-                except Exception:
-                    pass
-
-            await r.aclose()
-            return {"tenants_scanned": len(tenant_ids), "anomalies_found": anomalies_found}
-        except Exception as exc:
-            return {"error": str(exc), "anomalies_found": 0}
+            return await _scan_cost_anomalies_async(r, get_session_factory())
+        finally:
+            with contextlib.suppress(Exception):
+                await r.aclose()
 
     return _run_async(_run())
 
 
-@celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
-def embed_marketplace_templates() -> dict:
-    """Embed new unembedded marketplace templates for semantic search."""
+_STALE_EXPERIMENT_BATCH = 1000
 
-    async def _run() -> dict:
-        try:
-            from sqlalchemy import text
 
-            from app.db.session import get_session_factory as _get_fresh_db
+async def _conclude_stale_experiments_async(db: Any) -> dict[str, Any]:
+    """Conclude A/B prompt experiments whose challengers stopped getting evidence.
 
-            db = _get_fresh_db()
-            async with db() as session:
-                result = await session.execute(
-                    text("SELECT COUNT(*) FROM marketplace_templates WHERE embedding IS NULL")
+    A challenger is stale when it is active, not the control, owned by a tenant
+    (never the shared ``global`` rows), had no outcome for 30 days and has at
+    least 20 trials. For each (tenant, prompt key) the promotion decision runs
+    one last time against the control (``PromptOptimizer.decide_promotion``:
+    significance + RegressionGate): a winner becomes the control, and every
+    other stale challenger is retired (``is_active = false``), so traffic stops
+    being split to it. Keys without a control are left alone.
+
+    a10-F246-04: the sweep only bumped ``updated_at`` — nothing was concluded.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+    from app.intelligence.prompt_optimizer import PromptOptimizer, VariantStats
+
+    opt = PromptOptimizer()
+    cols = PromptOptimizer._COLUMNS
+    promoted = retired = skipped = 0
+    async with db() as session, session.begin(), system_session(session):
+        rows = (
+            (
+                await session.execute(
+                    text(
+                        f"SELECT {cols} FROM prompt_variants "
+                        "WHERE is_active AND NOT is_control AND tenant_id <> 'global' "
+                        "AND updated_at < NOW() - INTERVAL '30 days' "
+                        "AND win_count + loss_count >= 20 "
+                        "ORDER BY tenant_id, prompt_key, id LIMIT :lim FOR UPDATE"
+                    ),
+                    {"lim": _STALE_EXPERIMENT_BATCH},
                 )
-                pending = result.scalar() or 0
-                return {"status": "ok", "pending_embeddings": pending}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
-
-    return _run_async(_run())
+            )
+            .mappings()
+            .all()
+        )
+        groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for row in rows:
+            tenant_id, variant = PromptOptimizer._from_row(row)
+            groups[(tenant_id, variant.prompt_key)].append(variant)
+        for (tenant_id, key), stale in groups.items():
+            control_row = (
+                (
+                    await session.execute(
+                        text(
+                            f"SELECT {cols} FROM prompt_variants WHERE tenant_id = :tid "
+                            "AND prompt_key = :key AND is_control AND is_active "
+                            "LIMIT 1 FOR UPDATE"
+                        ),
+                        {"tid": tenant_id, "key": key},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if control_row is None:
+                skipped += len(stale)
+                continue
+            _, control = PromptOptimizer._from_row(control_row)
+            verdict = opt.decide_promotion(
+                VariantStats.of(control),
+                [VariantStats.of(v) for v in stale],
+                tenant_id=tenant_id,
+                prompt_key=key,
+            )
+            winner = verdict.promoted_variant_id
+            if winner is not None:
+                await PromptOptimizer._swap_control(session, tenant_id, key, winner)
+                promoted += 1
+            losers = [v.variant_id for v in stale if v.variant_id != winner]
+            if losers:
+                await session.execute(
+                    text(
+                        "UPDATE prompt_variants SET is_active = FALSE, updated_at = NOW() "
+                        "WHERE tenant_id = :tid AND id = ANY(CAST(:ids AS text[]))"
+                    ),
+                    {"tid": tenant_id, "ids": losers},
+                )
+                retired += len(losers)
+            logger.info(
+                "prompt_experiment_concluded tenant=%s key=%s promoted=%s retired=%d",
+                tenant_id,
+                key,
+                winner,
+                len(losers),
+            )
+    return {
+        "status": "ok",
+        "concluded": promoted + retired,
+        "promoted": promoted,
+        "retired": retired,
+        "skipped_no_control": skipped,
+    }
 
 
 @celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
 def conclude_stale_experiments() -> dict:
-    """Conclude A/B optimization experiments older than 30 days."""
+    """Conclude A/B optimization experiments with no evidence for 30 days.
 
-    async def _run() -> dict:
-        try:
-            from sqlalchemy import text
+    prompt_variants is FORCE RLS and this sweep is cross-tenant: it runs on the
+    maintenance (BYPASSRLS) factory under system_session (which fails loudly on
+    a NOBYPASSRLS role instead of matching no rows). A failure raises, so Celery
+    records it (it used to return {"status": "error"} as a SUCCESS).
+    """
+    from app.db.session import get_system_session_factory
 
-            from app.db.rls import system_session
-            from app.db.session import get_system_session_factory
-
-            # prompt_variants is FORCE RLS and this sweep is cross-tenant: it runs
-            # on the maintenance (BYPASSRLS) factory under system_session (which
-            # fails loudly on a NOBYPASSRLS role instead of matching no rows).
-            # The trial counters are win_count / loss_count (migration 0029);
-            # the query used "wins + losses" and failed on every run.
-            db = get_system_session_factory()
-            async with db() as session, session.begin(), system_session(session):
-                result = await session.execute(
-                    text(
-                        "UPDATE prompt_variants SET updated_at = NOW() "
-                        "WHERE updated_at < NOW() - INTERVAL '30 days' "
-                        "AND win_count + loss_count >= 20 RETURNING id"
-                    )
-                )
-                concluded = len(result.fetchall())
-            return {"status": "ok", "concluded": concluded}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
-
-    return _run_async(_run())
+    return _run_async(_conclude_stale_experiments_async(get_system_session_factory()))
 
 
 @celery_app.task(

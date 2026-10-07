@@ -52,7 +52,6 @@ from app.api.enterprise import (
 )
 from app.api.enterprise import router as enterprise_router
 from app.api.goals import router as goals_router
-from app.api.golden_datasets import router as golden_datasets_router
 from app.api.governance import router as governance_router
 from app.api.grants import router as grants_router
 from app.api.guardrails import router as guardrails_router
@@ -410,9 +409,10 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Builder (site/app generation — Phase 9)
     app.include_router(builder_router)
     logger.info("builder_router_registered")
-    # Golden Datasets (eval promotion — Phase M11)
-    app.include_router(golden_datasets_router)
-    logger.info("golden_datasets_router_registered")
+    # Golden datasets are the versioned golden tasks of eval suites
+    # (/intelligence/eval-suites/...); a goal is promoted into one with
+    # POST /intelligence/eval-suites/{id}/tasks/from-goal/{goal_id}. The 501
+    # /eval/golden-datasets stub was retired (a10-F235-01).
 
     # MFA (TOTP-based 2FA)
     from app.api.mfa import router as mfa_router
