@@ -1,0 +1,158 @@
+{{- if .Values.codeSandbox.enabled }}
+{{- /*
+  Code-sandbox runner (app/sandbox/runner.py; docs/ops/code-sandbox.md): runs
+  tenant code for the API and the workers, which reach it with
+  agentverse.codeSandboxEnv. Root in the container ONLY to give every execution
+  its own unprivileged UID: every capability but SETUID/SETGID/KILL is dropped,
+  no privilege escalation, read-only root FS, no service-account token (it would
+  be readable by the programs), egress denied by the NetworkPolicy below.
+  Rendered + checked by tests/infra/test_code_sandbox_deploy.py.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-code-sandbox
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: code-sandbox
+spec:
+  replicas: {{ .Values.codeSandbox.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: code-sandbox
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: code-sandbox
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
+      containers:
+      - name: code-sandbox
+        image: "{{ .Values.codeSandbox.image.repository }}:{{ .Values.codeSandbox.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        {{- with .Values.codeSandbox.command }}
+        command:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: CODE_SANDBOX_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: CODE_SANDBOX_TOKEN
+        - name: CODE_SANDBOX_PORT
+          value: "8080"
+        - name: CODE_SANDBOX_WORKDIR
+          value: /sandbox
+        - name: CODE_SANDBOX_MAX_CONCURRENCY
+          value: {{ .Values.codeSandbox.maxConcurrency | quote }}
+        - name: CODE_SANDBOX_MEMORY_MB
+          value: {{ .Values.codeSandbox.memoryMb | quote }}
+        - name: CODE_SANDBOX_MAX_TIMEOUT_SECONDS
+          value: {{ .Values.codeSandbox.maxTimeoutSeconds | quote }}
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - SETUID
+            - SETGID
+            - KILL
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          {{- toYaml .Values.codeSandbox.resources | nindent 10 }}
+        volumeMounts:
+        - name: workdirs
+          mountPath: /sandbox
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: workdirs
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.codeSandbox.workdirSizeLimit }}
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentverse.fullname" . }}-code-sandbox
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: code-sandbox
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: {{ .Values.codeSandbox.service.port }}
+    targetPort: http
+  selector:
+    {{- include "agentverse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: code-sandbox
+---
+{{- /*
+  Programs in the sandbox reach nothing: no egress at all (not even DNS), and
+  only the pods that send code (API, worker, sub-goal worker) may connect in.
+  Needs a CNI that enforces NetworkPolicy (Calico, Cilium, ...).
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentverse.fullname" . }}-code-sandbox
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: code-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: code-sandbox
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          {{- include "agentverse.selectorLabels" . | nindent 10 }}
+        matchExpressions:
+        - key: app.kubernetes.io/component
+          operator: In
+          values:
+          - backend
+          - worker
+          - subgoal-worker
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress: []
+{{- end }}

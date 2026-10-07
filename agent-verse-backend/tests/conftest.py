@@ -81,6 +81,10 @@ if not _ALLOW_LIVE_INFRA:
 # Allow subprocess execution in test environments (not production).
 # The CodeInterpreter uses subprocess as Docker fallback in dev/CI.
 os.environ.setdefault("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
+# A remote code-sandbox runner configured in the developer's shell would route
+# every test's code execution to it; tests that use one start their own.
+os.environ.pop("CODE_SANDBOX_URL", None)
+os.environ.pop("CODE_SANDBOX_TOKEN", None)
 # Ensure tests run in development mode (not production fail-closed)
 os.environ.setdefault("ENVIRONMENT", "development")
 # The beat reads Postgres by default (TRG-15); unit tests must never reach a

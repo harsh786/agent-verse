@@ -58,6 +58,7 @@ spec:
               name: {{ include "agentverse.secretName" . }}
               key: A2A_SHARED_SECRET
               optional: true
+        {{- include "agentverse.codeSandboxEnv" . | nindent 8 }}
         readinessProbe:
           httpGet:
             path: /health/ready
@@ -184,6 +185,7 @@ spec:
         {{- include "agentverse.appSecretEnv" . | nindent 8 }}
         - name: WORKER_PRELOAD_RETRIEVAL_MODELS
           value: {{ .Values.worker.preloadRetrievalModels | quote }}
+        {{- include "agentverse.codeSandboxEnv" . | nindent 8 }}
         resources:
           {{- toYaml .Values.worker.resources | nindent 10 }}
 {{- end }}
@@ -236,6 +238,7 @@ spec:
         {{- include "agentverse.appSecretEnv" . | nindent 8 }}
         - name: WORKER_PRELOAD_RETRIEVAL_MODELS
           value: {{ .Values.subgoalWorker.preloadRetrievalModels | quote }}
+        {{- include "agentverse.codeSandboxEnv" . | nindent 8 }}
         resources:
           {{- toYaml .Values.subgoalWorker.resources | nindent 10 }}
 {{- end }}

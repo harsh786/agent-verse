@@ -79,6 +79,12 @@ async def execute_code(request: Request, body: ExecuteCodeRequest) -> ExecuteCod
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Code execution could not be audited; result withheld.",
         ) from exc
+    except RuntimeError as exc:
+        # No sandbox at all (production without a runner or Docker): say how to
+        # enable one instead of a bare 500.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     return ExecuteCodeResponse(**result.to_dict())
 
 

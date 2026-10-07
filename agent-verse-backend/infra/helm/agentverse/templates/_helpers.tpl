@@ -162,6 +162,25 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       optional: true
 {{- end -}}
 
+{{- /*
+  The code-sandbox runner (templates/code-sandbox.yaml) for the workloads that
+  execute tenant code: the API (/tools/execute-code, chat) and the goal/workflow
+  workers (workflow code steps, the code tool). They have no Docker daemon and
+  must never get the node's socket; with this they send code to the runner.
+  Enforced by tests/infra/test_code_sandbox_deploy.py.
+*/}}
+{{- define "agentverse.codeSandboxEnv" -}}
+{{- if .Values.codeSandbox.enabled }}
+- name: CODE_SANDBOX_URL
+  value: "http://{{ include "agentverse.fullname" . }}-code-sandbox:{{ .Values.codeSandbox.service.port }}"
+- name: CODE_SANDBOX_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: CODE_SANDBOX_TOKEN
+{{- end }}
+{{- end -}}
+
 {{- define "agentverse.maintenanceUsername" -}}
 {{- default .Values.postgresql.username .Values.postgresql.maintenanceUsername -}}
 {{- end -}}

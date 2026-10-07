@@ -31,6 +31,18 @@ from app.workflow.state import (
 
 _log = get_logger(__name__)
 
+
+def _meaningful_error(text: Any) -> str:
+    """``text`` unless it carries no information.
+
+    ``str(KeyError(''))`` is ``"''"``: a run once recorded exactly that as its
+    error while its failed step row held the real message. Empty, whitespace and
+    bare quote characters count as no error, so the step's message is used.
+    """
+    value = str(text or "").strip()
+    return value if value.strip("'\" ") else ""
+
+
 MAX_TRIGGER_PAYLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
@@ -674,10 +686,19 @@ class WorkflowRunner:
         the failed step row supplies the step (and the error, when the exception
         has no message) — a failed run must never show an empty error.
         """
-        error = str(getattr(exc, "workflow_run_error", None) or exc)
+        error = _meaningful_error(str(getattr(exc, "workflow_run_error", None) or exc))
         step_id = getattr(exc, "workflow_step_id", None)
         if step_id is None or not error:
             row_error, row_step = await self._failed_step(run_id, tenant_id)
+            if step_id is None and row_step and row_error:
+                # The run died after a step failed, with an exception that is not
+                # the step's own (a framework error, or a bare ``KeyError('')``
+                # whose text is just ``''`` — what the run banner used to show):
+                # the run carries the failing step's message, the rest as context.
+                if error and row_error not in error:
+                    error = f"{row_error} (then: {type(exc).__name__}: {error})"
+                else:
+                    error = row_error
             step_id = step_id or row_step
             error = error or row_error or ""
         return error or type(exc).__name__, step_id
@@ -725,7 +746,8 @@ class WorkflowRunner:
         error_detail = _fs.get("error_detail")
         if status not in (WorkflowRunStatus.FAILED, WorkflowRunStatus.PAUSED):
             error_detail = None
-        if status in (WorkflowRunStatus.FAILED, WorkflowRunStatus.PAUSED) and not error:
+        stopped = status in (WorkflowRunStatus.FAILED, WorkflowRunStatus.PAUSED)
+        if stopped and not _meaningful_error(error):
             # A failed/paused run must name its failing step: fall back to the
             # failed step row when the state carries no error.
             row_error, row_step = await self._failed_step(run_id, tenant_id)

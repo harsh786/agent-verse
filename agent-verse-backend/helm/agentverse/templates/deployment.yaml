@@ -58,6 +58,7 @@ spec:
             {{- /* Legacy: the image CMD migrates on start, so the API needs the owner DSN. */}}
             {{- include "agentverse.migrationEnv" . | nindent 12 }}
             {{- end }}
+            {{- include "agentverse.codeSandboxEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:

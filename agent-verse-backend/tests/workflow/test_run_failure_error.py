@@ -258,3 +258,60 @@ async def test_run_with_an_inner_timeout_reports_the_inner_cause() -> None:
     assert "exceeded timeout" not in error, error
     assert "LLM call timed out after 0.05s" in error
     assert "the 30s step deadline was not reached" in error
+
+
+def _store_with_failed_step(error: str = _SANDBOX_ERR) -> tuple[_Store, WorkflowRunner]:
+    store = _Store(_definition(policy="abort", parallel=False))
+    store.steps["create_message"] = {
+        "step_id": "create_message",
+        "status": "failed",
+        "error": error,
+    }
+    runner = WorkflowRunner(
+        compiler=WorkflowCompiler(ContextResolver(), run_store=store), run_store=store
+    )
+    return store, runner
+
+
+@pytest.mark.asyncio
+async def test_a_bare_keyerror_never_becomes_the_run_error() -> None:
+    """Owner report: the run banner showed just ``''`` — ``str(KeyError(''))`` —
+    while the code step row held "Docker sandbox unavailable ...". The run must
+    carry the failing step's message."""
+    store, runner = _store_with_failed_step()
+    await runner._fail_run(_RUN, "t-1", KeyError(""), {}, None)
+
+    assert store.run["status"] == "failed"
+    assert store.run["error"] == _SANDBOX_ERR
+    assert store.run["error_step_id"] == "create_message"
+
+
+@pytest.mark.asyncio
+async def test_an_untagged_run_exception_keeps_the_step_error_first() -> None:
+    store, runner = _store_with_failed_step()
+    await runner._fail_run(_RUN, "t-1", RuntimeError("graph aborted"), {}, None)
+
+    assert store.run["error"].startswith(_SANDBOX_ERR)
+    assert "RuntimeError: graph aborted" in store.run["error"]
+    assert store.run["error_step_id"] == "create_message"
+
+
+@pytest.mark.asyncio
+async def test_a_quotes_only_state_error_falls_back_to_the_step_row() -> None:
+    store, runner = _store_with_failed_step()
+    await runner._finalize_status(_RUN, "t-1", {"status": "paused", "error": "''"})
+
+    assert store.run["status"] == "paused"
+    assert store.run["error"] == _SANDBOX_ERR
+    assert store.run["error_step_id"] == "create_message"
+
+
+@pytest.mark.asyncio
+async def test_without_a_step_row_the_run_names_the_exception_type() -> None:
+    store = _Store(_definition(policy="abort", parallel=False))
+    runner = WorkflowRunner(
+        compiler=WorkflowCompiler(ContextResolver(), run_store=store), run_store=store
+    )
+    await runner._fail_run(_RUN, "t-1", KeyError(""), {}, None)
+
+    assert store.run["error"] == "KeyError"

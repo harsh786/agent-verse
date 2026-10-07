@@ -1,0 +1,155 @@
+{{- if .Values.codeSandbox.enabled }}
+{{- /*
+  Code-sandbox runner (app/sandbox/runner.py; docs/ops/code-sandbox.md): runs
+  tenant code for the API and the workers, which reach it with
+  agentverse.codeSandboxEnv. Root in the container ONLY to give every execution
+  its own unprivileged UID: every capability but SETUID/SETGID/KILL is dropped,
+  no privilege escalation, read-only root FS, no service-account token (it would
+  be readable by the programs), egress denied by the NetworkPolicy below.
+  Rendered + checked by tests/infra/test_code_sandbox_deploy.py.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-code-sandbox
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-code-sandbox
+    component: code-sandbox
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.codeSandbox.replicas }}
+  selector:
+    matchLabels:
+      app: agentverse-code-sandbox
+  template:
+    metadata:
+      labels:
+        app: agentverse-code-sandbox
+        component: code-sandbox
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: code-sandbox
+          image: {{ include "agentverse.codeSandboxImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- with .Values.codeSandbox.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: CODE_SANDBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: code-sandbox-token
+            - name: CODE_SANDBOX_PORT
+              value: "8080"
+            - name: CODE_SANDBOX_WORKDIR
+              value: /sandbox
+            - name: CODE_SANDBOX_MAX_CONCURRENCY
+              value: {{ .Values.codeSandbox.maxConcurrency | quote }}
+            - name: CODE_SANDBOX_MEMORY_MB
+              value: {{ .Values.codeSandbox.memoryMb | quote }}
+            - name: CODE_SANDBOX_MAX_TIMEOUT_SECONDS
+              value: {{ .Values.codeSandbox.maxTimeoutSeconds | quote }}
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - SETUID
+                - SETGID
+                - KILL
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.codeSandbox.resources | nindent 12 }}
+          volumeMounts:
+            - name: workdirs
+              mountPath: /sandbox
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workdirs
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.codeSandbox.workdirSizeLimit }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentverse-code-sandbox
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-code-sandbox
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: agentverse-code-sandbox
+  ports:
+    - name: http
+      port: {{ .Values.codeSandbox.service.port }}
+      targetPort: http
+---
+{{- /*
+  Programs in the sandbox reach nothing: no egress at all (not even DNS), and
+  only the pods that send code (API, worker, sub-goal worker) may connect in.
+  Needs a CNI that enforces NetworkPolicy (Calico, Cilium, ...).
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentverse-code-sandbox
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-code-sandbox
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: agentverse-code-sandbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - agentverse-backend
+                  - agentverse-worker
+                  - agentverse-subgoal-worker
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress: []
+{{- end }}

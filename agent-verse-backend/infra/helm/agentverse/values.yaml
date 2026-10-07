@@ -53,6 +53,9 @@ secrets:
   embeddingApiKey: ""
   smtpUser: ""
   smtpPassword: ""
+  # Shared secret of the code-sandbox runner (codeSandbox below): the runner, the
+  # API and the workers get it. At least 16 characters; set your own.
+  codeSandboxToken: change-me-code-sandbox-token
 
 # DEF-NEW-1: public HTTPS base URL of the messaging gateway (GATEWAY_PUBLIC_BASE_URL),
 # e.g. "https://agents.example.com" (optional path prefix). With it the server
@@ -278,6 +281,42 @@ beat:
     limits:
       cpu: 500m
       memory: 512Mi
+
+# Code-sandbox runner (app/sandbox/runner.py; docs/ops/code-sandbox.md). Workflow
+# code steps, /tools/execute-code and chat code blocks run here: the API and the
+# workers have no Docker daemon and must never get the node's socket (host root).
+# A Deployment + Service + NetworkPolicy that denies ALL egress and admits only
+# the API / worker / sub-goal worker pods; the token is secrets.codeSandboxToken.
+# Every execution: fresh process, its own unprivileged UID, rlimits (CPU, memory,
+# files, processes), wall-clock timeout, output cap, private tmpfs workdir.
+# Image (from agent-verse-backend/):
+#   docker build -f Dockerfile.sandbox -t agentverse/code-sandbox:local .
+# Or run it from the backend image: image = backend image, command =
+# ["python", "-m", "app.sandbox.runner"] (adds the app's files to what a
+# program can read; the dedicated image has nothing but Python and the runner).
+codeSandbox:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: agentverse/code-sandbox
+    tag: local
+  # Empty = the image's CMD.
+  command: []
+  service:
+    port: 8080
+  # Concurrent executions per pod (each gets its own UID); more queue up to 10 s.
+  maxConcurrency: 4
+  # Address-space limit per execution.
+  memoryMb: 256
+  maxTimeoutSeconds: 120
+  workdirSizeLimit: 256Mi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "2"
+      memory: 1536Mi  # maxConcurrency x memoryMb + the runner
 
 postgresql:
   enabled: true

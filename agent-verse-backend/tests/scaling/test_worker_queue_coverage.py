@@ -182,9 +182,11 @@ def test_dev_compose_subgoal_worker_mirrors_the_goal_worker() -> None:
     doc = yaml.safe_load((INFRA / "docker-compose.yml").read_text())
     worker, sub = doc["services"]["worker"], doc["services"]["subgoal-worker"]
     assert sub["build"] == worker["build"]
-    # Code steps run in sandbox containers on the host daemon, like the goal worker.
-    assert "/var/run/docker.sock:/var/run/docker.sock" in sub["volumes"]
-    assert sub["group_add"] == worker["group_add"]
+    # Code runs in the code-sandbox runner, like the goal worker's (never the
+    # host Docker socket: tests/infra/test_code_sandbox_deploy.py).
+    for key in ("CODE_SANDBOX_URL", "CODE_SANDBOX_TOKEN"):
+        assert sub["environment"][key] == worker["environment"][key]
+    assert set(sub["networks"]) == set(worker["networks"])
 
 
 def test_k8s_runs_subgoals_on_a_dedicated_pool() -> None:

@@ -157,3 +157,29 @@ can be that least-privilege role (unset = the previous single-role behaviour).
       key: app-db-password
       optional: true
 {{- end }}
+
+{{/*
+The code-sandbox runner (code-sandbox.yaml) for the workloads that execute tenant
+code: the API (/tools/execute-code, chat) and the goal/workflow workers (workflow
+code steps, the code tool). They have no Docker daemon and must never get the
+node's socket; with this they send code to the runner. The token is optional here
+so the app still starts without it (code execution then fails saying why); the
+runner itself refuses to start without it. Enforced by
+tests/infra/test_code_sandbox_deploy.py.
+*/}}
+{{- define "agentverse.codeSandboxEnv" -}}
+{{- if .Values.codeSandbox.enabled }}
+- name: CODE_SANDBOX_URL
+  value: "http://agentverse-code-sandbox.{{ .Values.global.namespace }}.svc:{{ .Values.codeSandbox.service.port }}"
+- name: CODE_SANDBOX_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: code-sandbox-token
+      optional: true
+{{- end }}
+{{- end }}
+
+{{- define "agentverse.codeSandboxImage" -}}
+{{ .Values.global.imageRegistry }}/{{ .Values.codeSandbox.image.name }}:{{ .Values.codeSandbox.image.tag }}
+{{- end }}

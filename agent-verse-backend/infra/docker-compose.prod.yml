@@ -72,6 +72,12 @@ x-common-env: &common-env
   # Documents one connector sync ingests at once (cursor still advances in order).
   INGESTION_SYNC_DOC_CONCURRENCY: ${INGESTION_SYNC_DOC_CONCURRENCY:-4}
 
+  # Code execution (workflow code steps, /tools/execute-code, chat) runs in the
+  # code-sandbox runner over the internal network (docs/ops/code-sandbox.md); the
+  # app containers have no Docker daemon and must never get the host socket.
+  CODE_SANDBOX_URL: ${CODE_SANDBOX_URL:-http://code-sandbox:8080}
+  CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:?set CODE_SANDBOX_TOKEN (the same value on the app and code-sandbox)}
+
   # Observability — export traces/metrics to the in-stack otel-collector.
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
 
@@ -140,6 +146,9 @@ services:
     restart: unless-stopped
     environment:
       <<: *common-env
+    networks:
+      - default
+      - code-sandbox
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -177,6 +186,9 @@ services:
               "--concurrency=4", "--max-tasks-per-child=100", "--max-memory-per-child=700000"]
     environment:
       <<: *common-env
+    networks:
+      - default
+      - code-sandbox
     healthcheck:
       test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME", "--timeout=5"]
       interval: 30s
@@ -277,6 +289,9 @@ services:
               "--concurrency=4", "--max-tasks-per-child=100", "--max-memory-per-child=700000"]
     environment:
       <<: *common-env
+    networks:
+      - default
+      - code-sandbox
     healthcheck:
       test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME", "--timeout=5"]
       interval: 30s
@@ -294,6 +309,48 @@ services:
         limits:
           # L-03 budget: parent ~300 MB + 4 children x (700 MB cap + ~100 MB growth).
           memory: 3584M
+
+  # Runs untrusted code for the API and the workers (app/sandbox/runner.py;
+  # docs/ops/code-sandbox.md): internal network only, read-only root FS, root
+  # only to give each execution its own unprivileged UID (all other caps dropped).
+  code-sandbox:
+    build:
+      context: ..
+      dockerfile: Dockerfile.sandbox
+    restart: unless-stopped
+    environment:
+      CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:?set CODE_SANDBOX_TOKEN (the same value on the app and code-sandbox)}
+      CODE_SANDBOX_MAX_CONCURRENCY: ${CODE_SANDBOX_MAX_CONCURRENCY:-4}
+      CODE_SANDBOX_MEMORY_MB: ${CODE_SANDBOX_MEMORY_MB:-256}
+      CODE_SANDBOX_MAX_TIMEOUT_SECONDS: ${CODE_SANDBOX_MAX_TIMEOUT_SECONDS:-120}
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /sandbox:size=256m,mode=1733,noexec,nosuid,nodev
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - KILL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2"
+          pids: 512
+          memory: 1536M
+    networks:
+      - code-sandbox
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   beat:
     build:
@@ -586,3 +643,7 @@ volumes:
 networks:
   agentverse:
     driver: bridge
+  # The code-sandbox runner's only network: no route out (internal); only the
+  # API and the workers that send it code are attached.
+  code-sandbox:
+    internal: true

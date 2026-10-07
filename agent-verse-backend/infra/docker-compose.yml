@@ -257,6 +257,10 @@ services:
       # SMTP_PASSWORD: ""
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
+      # Code execution (workflow code steps, /tools/execute-code, chat) runs in the
+      # code-sandbox runner over the internal network (docs/ops/code-sandbox.md).
+      CODE_SANDBOX_URL: http://code-sandbox:8080
+      CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:-dev-code-sandbox-token-change-me}
       EMBEDDING_DIM: "${EMBEDDING_DIM:-1536}"
       FAKE_LLM_WARNING: "WARNING: No LLM API keys set. Agent goals will use FakeProvider and return dummy responses. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
     volumes:
@@ -283,6 +287,10 @@ services:
       - "com.agentverse.note=Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real LLM execution"
     ports:
       - "8000:8000"
+    # The API runs /tools/execute-code and chat code blocks in the runner too.
+    networks:
+      - default
+      - code-sandbox
     depends_on:
       postgres:
         condition: service_healthy
@@ -357,6 +365,10 @@ services:
       SMTP_PORT: "1025"
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
+      # Code execution (workflow code steps, /tools/execute-code, chat) runs in the
+      # code-sandbox runner over the internal network (docs/ops/code-sandbox.md).
+      CODE_SANDBOX_URL: http://code-sandbox:8080
+      CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:-dev-code-sandbox-token-change-me}
       # L-03: this pool runs goals' knowledge searches, so its children warm the
       # reranker at start; workflow-worker / subgoal-worker load it lazily.
       WORKER_PRELOAD_RETRIEVAL_MODELS: "true"
@@ -371,12 +383,11 @@ services:
       # DATADOG_TENANT_ID: ""
     volumes:
       - ../app/db/migrations:/app/app/db/migrations:ro
-      # Code steps run in throwaway sandbox containers (app/tools/code_interpreter.py)
-      # on the host daemon. Local dev only: this grants control of Docker here.
-      - /var/run/docker.sock:/var/run/docker.sock
-    # The socket is root:docker 0660 in the colima VM; the image runs as "app".
-    group_add:
-      - "${DOCKER_SOCKET_GID:-991}"
+    # Code runs in the `code-sandbox` runner (CODE_SANDBOX_URL) — the host Docker
+    # socket is NOT mounted: it would give every tenant's code root on the host.
+    networks:
+      - default
+      - code-sandbox
     deploy:
       resources:
         limits:
@@ -423,18 +434,21 @@ services:
       SMTP_PORT: "1025"
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
+      # Code execution (workflow code steps, /tools/execute-code, chat) runs in the
+      # code-sandbox runner over the internal network (docs/ops/code-sandbox.md).
+      CODE_SANDBOX_URL: http://code-sandbox:8080
+      CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:-dev-code-sandbox-token-change-me}
       # ── LLM providers — set at least one for real goal execution ──
       # ANTHROPIC_API_KEY: sk-ant-...
       # OPENAI_API_KEY: sk-...
       # VOYAGE_API_KEY: pa-...
     volumes:
       - ../app/db/migrations:/app/app/db/migrations:ro
-      # Code steps run in throwaway sandbox containers (app/tools/code_interpreter.py)
-      # on the host daemon. Local dev only: this grants control of Docker here.
-      - /var/run/docker.sock:/var/run/docker.sock
-    # The socket is root:docker 0660 in the colima VM; the image runs as "app".
-    group_add:
-      - "${DOCKER_SOCKET_GID:-991}"
+    # Code runs in the `code-sandbox` runner (CODE_SANDBOX_URL) — the host Docker
+    # socket is NOT mounted: it would give every tenant's code root on the host.
+    networks:
+      - default
+      - code-sandbox
     deploy:
       resources:
         limits:
@@ -625,18 +639,21 @@ services:
       SMTP_PORT: "1025"
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
+      # Code execution (workflow code steps, /tools/execute-code, chat) runs in the
+      # code-sandbox runner over the internal network (docs/ops/code-sandbox.md).
+      CODE_SANDBOX_URL: http://code-sandbox:8080
+      CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:-dev-code-sandbox-token-change-me}
       # ── LLM providers — set at least one for real workflow execution ──
       # ANTHROPIC_API_KEY: sk-ant-...
       # OPENAI_API_KEY: sk-...
       # VOYAGE_API_KEY: pa-...
     volumes:
       - ../app/db/migrations:/app/app/db/migrations:ro
-      # Code steps run in throwaway sandbox containers (app/tools/code_interpreter.py)
-      # on the host daemon. Local dev only: this grants control of Docker here.
-      - /var/run/docker.sock:/var/run/docker.sock
-    # The socket is root:docker 0660 in the colima VM; the image runs as "app".
-    group_add:
-      - "${DOCKER_SOCKET_GID:-991}"
+    # Code runs in the `code-sandbox` runner (CODE_SANDBOX_URL) — the host Docker
+    # socket is NOT mounted: it would give every tenant's code root on the host.
+    networks:
+      - default
+      - code-sandbox
     deploy:
       resources:
         limits:
@@ -658,6 +675,54 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # Runs untrusted code — workflow code steps, /tools/execute-code, chat code
+  # blocks — for the API and the workers (app/sandbox/runner.py; see
+  # docs/ops/code-sandbox.md). Its own tiny image (Dockerfile.sandbox:
+  # python:3.12-slim + one stdlib file), attached ONLY to the internal
+  # `code-sandbox` network: no route out, no database, no Redis, no secret but its
+  # own token. It starts as root only to give every execution its own
+  # unprivileged UID; all other capabilities are dropped and the root FS is
+  # read-only (executions write to their private dir on the /sandbox tmpfs).
+  code-sandbox:
+    build:
+      context: ..
+      dockerfile: Dockerfile.sandbox
+    image: agentverse/code-sandbox:local
+    restart: unless-stopped
+    environment:
+      CODE_SANDBOX_TOKEN: ${CODE_SANDBOX_TOKEN:-dev-code-sandbox-token-change-me}
+      CODE_SANDBOX_MAX_CONCURRENCY: "4"
+      CODE_SANDBOX_MEMORY_MB: "256"
+      CODE_SANDBOX_MAX_TIMEOUT_SECONDS: "120"
+    user: "0:0"
+    read_only: true
+    tmpfs:
+      - /sandbox:size=256m,mode=1733,noexec,nosuid,nodev
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - KILL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          pids: 512
+          # 4 slots x 256 MB address space + the runner.
+          memory: 1536M
+    networks:
+      - code-sandbox
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   minio:
     image: minio/minio:latest
@@ -1005,6 +1070,12 @@ services:
       timeout: 5s
       retries: 10
       start_period: 40s
+
+networks:
+  # The code-sandbox runner's only network. internal: no route to the host or the
+  # internet; only the API and the workers that send it code are attached.
+  code-sandbox:
+    internal: true
 
 volumes:
   # driver_opts driver=local with no options = named volume (data persists across

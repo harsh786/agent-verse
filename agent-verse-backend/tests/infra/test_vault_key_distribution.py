@@ -582,6 +582,10 @@ def _is_app_service(svc: dict[str, Any]) -> bool:
     context = build.get("context") if isinstance(build, dict) else build
     if context != "..":
         return False
+    if isinstance(build, dict) and build.get("dockerfile") == "Dockerfile.sandbox":
+        # The code-sandbox runner: deliberately holds no platform secret at all
+        # (tests/infra/test_code_sandbox_deploy.py).
+        return False
     command = svc.get("command") or []
     joined = command if isinstance(command, str) else " ".join(map(str, command))
     # Alembic migrations do not touch the vault (no migration calls get_vault()).

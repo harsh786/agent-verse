@@ -1,6 +1,21 @@
-"""Sandboxed code execution via Docker.
+"""Sandboxed code execution: the remote sandbox runner, else Docker.
 
-Execution constraints:
+Where a program runs (decided per call, in this order):
+
+1. **Remote sandbox runner** — ``CODE_SANDBOX_URL`` (+ ``CODE_SANDBOX_TOKEN``) is
+   set: the program is sent to :mod:`app.sandbox.runner` (compose service
+   ``code-sandbox``, the Helm charts' code-sandbox Deployment) over the internal
+   network. This is the production path: the workers have no Docker daemon, and
+   mounting the host Docker socket into them would be a host-root escape. A
+   configured runner is authoritative — when it fails, the execution fails with
+   that reason (never a fall-through to Docker or the host).
+2. **Docker** — a Docker daemon is reachable (local development, or hosts that
+   deliberately provide one): a throw-away container per execution.
+3. **Host subprocess** — development/test only, and only with
+   ``AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true`` (NOT sandboxed; scrubbed env).
+4. Otherwise the execution is refused with an error saying how to enable a sandbox.
+
+Docker execution constraints:
 - No network access (--network none)
 - No filesystem writes outside /tmp (read-only root, tmpfs on /tmp)
 - 256MB memory limit
@@ -8,7 +23,7 @@ Execution constraints:
 - 30 second default timeout
 - Runs as non-root user (uid=1000)
 
-Supported languages:
+Supported languages (Docker images):
 - python (python:3.12-slim)
 - javascript (node:20-alpine)
 - bash (alpine:latest)
@@ -74,6 +89,12 @@ _FILE_EXTENSIONS: dict[str, str] = {
 _PIDS_LIMIT = 64
 # The only environments where AGENTVERSE_ALLOW_SUBPROCESS_EXEC may run host code.
 _UNSANDBOXED_ALLOWED_ENVIRONMENTS = frozenset({"development", "test"})
+# How to get a sandbox, for the "no sandbox" errors.
+_ENABLE_SANDBOX_HELP = (
+    "To run code, deploy the code-sandbox runner and set CODE_SANDBOX_URL and "
+    "CODE_SANDBOX_TOKEN on this service (compose service `code-sandbox`, Helm "
+    "`codeSandbox.enabled`; see docs/ops/code-sandbox.md)"
+)
 # Per-stream output cap returned to the caller (the API used to return whatever
 # the program printed — a ``print('x' * 10**9)`` was buffered whole into memory).
 _MAX_OUTPUT_CHARS = 1_000_000
@@ -228,6 +249,8 @@ class CodeInterpreter:
     the container immediately after completion. Containers have no network access
     and no persistent filesystem.
 
+    With ``CODE_SANDBOX_URL`` configured every execution goes to the remote
+    sandbox runner instead (see the module docstring for the selection order).
     Falls back to subprocess execution (unsandboxed) when Docker is unavailable.
     Subprocess requires AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true (blocked by default).
     """
@@ -256,9 +279,10 @@ class CodeInterpreter:
         *,
         tenant_id: str | None = None,  # for audit/scoping; not used in sandbox
     ) -> CodeResult:
-        """Execute code in a sandboxed Docker container.
+        """Execute code in the remote sandbox runner (CODE_SANDBOX_URL) or Docker.
 
-        Falls back to restricted subprocess execution if Docker unavailable.
+        Falls back to restricted subprocess execution (dev opt-in only) if
+        neither is available.
         """
         if language not in _DOCKER_IMAGES:
             return CodeResult(
@@ -266,6 +290,13 @@ class CodeInterpreter:
                 stderr=f"Unsupported language: {language!r}. Supported: {list(_DOCKER_IMAGES)}",
                 exit_code=1,
             )
+
+        from app.sandbox.client import RemoteSandboxClient, remote_sandbox_config
+
+        remote = remote_sandbox_config()
+        if remote is not None:
+            effective_timeout = timeout if timeout is not None else self._timeout
+            return await RemoteSandboxClient(remote).execute(code, language, effective_timeout)
 
         if not await asyncio.to_thread(_docker_available):
             return await self._execute_subprocess_fallback(code, language, timeout)
@@ -438,19 +469,21 @@ class CodeInterpreter:
         environment = os.getenv("ENVIRONMENT", "development").strip().lower()
         if environment not in _UNSANDBOXED_ALLOWED_ENVIRONMENTS:
             raise RuntimeError(
-                f"Docker sandbox unavailable ({_docker_unavailable_reason()}); "
-                f"unsandboxed subprocess execution is disabled in {environment or 'this'} "
-                "environment (development/test only). "
-                "Start the Docker sandbox (colima start + docker pull python:3.12-slim)."
+                "No code sandbox available: CODE_SANDBOX_URL is not set and Docker sandbox "
+                f"unavailable ({_docker_unavailable_reason()}); unsandboxed subprocess "
+                f"execution is disabled in {environment or 'this'} environment "
+                f"(development/test only). {_ENABLE_SANDBOX_HELP}."
             )
 
         if os.getenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "false").lower() != "true":
             return CodeResult(
                 stdout="",
                 stderr=(
-                    f"Docker sandbox unavailable ({_docker_unavailable_reason()}). "
+                    "No code sandbox available: CODE_SANDBOX_URL is not set and Docker sandbox "
+                    f"unavailable ({_docker_unavailable_reason()}). "
                     "Subprocess execution is disabled. "
-                    "Set AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true to enable "
+                    f"{_ENABLE_SANDBOX_HELP}, or start Docker; "
+                    "AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true enables unsandboxed execution "
                     "(testing/development only -- not sandboxed)."
                 ),
                 exit_code=1,

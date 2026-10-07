@@ -171,6 +171,41 @@ beat:
       cpu: 200m
       memory: 256Mi
 
+# ── Code-sandbox runner ───────────────────────────────────────────────────────
+# app/sandbox/runner.py; docs/ops/code-sandbox.md. Workflow code steps,
+# /tools/execute-code and chat code blocks run here: the API and the workers have
+# no Docker daemon and must never get the node's socket (host root). A Deployment
+# + Service + NetworkPolicy that denies ALL egress and admits only the API /
+# worker / sub-goal worker pods; the token is externalSecrets codeSandboxToken.
+# Every execution: fresh process, its own unprivileged UID, rlimits (CPU, memory,
+# files, processes), wall-clock timeout, output cap, private tmpfs workdir.
+# Image: docker build -f Dockerfile.sandbox (agent-verse-backend/), pushed as
+# <imageRegistry>/code-sandbox. Or the backend image with
+# command: ["python", "-m", "app.sandbox.runner"].
+codeSandbox:
+  enabled: true
+  image:
+    name: code-sandbox
+    tag: "latest"
+  # Empty = the image's CMD.
+  command: []
+  replicas: 2
+  service:
+    port: 8080
+  # Concurrent executions per pod (each gets its own UID); more queue up to 10 s.
+  maxConcurrency: 4
+  # Address-space limit per execution.
+  memoryMb: 256
+  maxTimeoutSeconds: 120
+  workdirSizeLimit: 256Mi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 2000m
+      memory: 1536Mi  # maxConcurrency x memoryMb + the runner
+
 # ── Frontend ──────────────────────────────────────────────────────────────────
 frontend:
   image:
@@ -236,6 +271,11 @@ externalSecrets:
     appDbPassword:
       remoteRef:
         key: agentverse/app-db-password
+    # Shared secret of the code-sandbox runner (codeSandbox below), at least 16
+    # characters. The runner refuses to start without it.
+    codeSandboxToken:
+      remoteRef:
+        key: agentverse/code-sandbox-token
 
 # DEF-NEW-1: public HTTPS base URL of the messaging gateway (GATEWAY_PUBLIC_BASE_URL),
 # e.g. "https://agents.example.com" (optional path prefix). With it the server

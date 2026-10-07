@@ -1,0 +1,34 @@
+# Code-sandbox runner image (app/sandbox/runner.py; docs/ops/code-sandbox.md).
+#
+# Deliberately tiny: the stock Python image plus ONE stdlib-only file. No pip
+# install, no platform code, no secrets — programs run here cannot import the
+# app, read its configuration or reach its databases. Build from the backend
+# directory:
+#   docker build -f Dockerfile.sandbox -t agentverse/code-sandbox:local .
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    CODE_SANDBOX_WORKDIR=/sandbox \
+    CODE_SANDBOX_PORT=8080
+
+# Root-only (0700): execution users (uid 20000+, one per slot) cannot read the
+# runner. /sandbox is the tmpfs mount point for per-execution workdirs.
+RUN mkdir -p /opt/code-sandbox /sandbox \
+    && chmod 0700 /opt/code-sandbox \
+    && chmod 1733 /sandbox
+# (No COPY --chmod: it needs BuildKit; Minikube/colima daemons may lack buildx.)
+COPY app/sandbox/runner.py /opt/code-sandbox/runner.py
+RUN chown root:root /opt/code-sandbox/runner.py && chmod 0600 /opt/code-sandbox/runner.py
+
+# The runner starts as root ONLY to hand every execution its own unprivileged
+# UID/GID; deployments drop every capability except SETUID, SETGID and KILL and
+# set no-new-privileges (compose `code-sandbox`, Helm code-sandbox Deployment).
+USER root
+WORKDIR /
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).status==200 else 1)"
+
+CMD ["python", "-I", "/opt/code-sandbox/runner.py"]

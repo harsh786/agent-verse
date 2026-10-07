@@ -511,6 +511,13 @@ class Settings(BaseSettings):
     # workers (Redis lease set), and per process (each holds a dedicated thread).
     code_exec_max_concurrent_per_tenant: int = 4
     code_exec_max_concurrent_per_host: int = 8
+    # Remote code-sandbox runner (app/sandbox/runner.py; compose `code-sandbox`,
+    # the Helm charts' code-sandbox Deployment). When set, every code execution
+    # (workflow code steps, /tools/execute-code, chat) runs there — never in
+    # Docker or a host subprocess. e.g. http://code-sandbox:8080
+    code_sandbox_url: str = ""
+    # Shared secret the runner authenticates every execution request with.
+    code_sandbox_token: str = Field(default="", repr=False)
 
     # --- RPA browser sessions (app/rpa/session_manager.py) ---
     # Live browsers one tenant may hold across ALL replicas/workers (Redis lease set).
