@@ -173,6 +173,31 @@ async def env(pg_url: str, redis_url: str) -> Any:
     await redis.set(f"llm_config:{T2}", json.dumps({"encrypted_key": old.encrypt("sk-t2")}))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield {"factory": factory, "redis": redis, "engine": engine, "tenant_vault": tenant_vault}
+    # Remove everything seeded for T1/T2: the session database is shared, and a
+    # later rotation (e.g. the connector-registry rotation test) walks every
+    # tenant — values left under this test's keys made it report "failed".
+    async with engine.begin() as conn:
+        await conn.execute(text("SET session_replication_role = replica"))
+        tables = (
+            await conn.execute(
+                text(
+                    "SELECT c.table_name FROM information_schema.columns c "
+                    "JOIN information_schema.tables t USING (table_schema, table_name) "
+                    "WHERE c.table_schema = 'public' AND c.column_name = 'tenant_id' "
+                    "AND t.table_type = 'BASE TABLE'"
+                )
+            )
+        ).scalars()
+        for table in tables:
+            await conn.execute(
+                # tenant_id is TEXT in most tables, UUID in a few: compare as text.
+                text(f'DELETE FROM "{table}" WHERE tenant_id::text IN (:a, :b)'),
+                {"a": T1, "b": T2},
+            )
+        await conn.execute(text("DELETE FROM tenants WHERE id IN (:a, :b)"), {"a": T1, "b": T2})
+    for pattern in (f"*{T1}*", f"*{T2}*"):
+        async for key in redis.scan_iter(match=pattern):
+            await redis.delete(key)
     await redis.aclose()
     await engine.dispose()
 

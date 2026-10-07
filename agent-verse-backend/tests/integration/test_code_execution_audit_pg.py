@@ -45,11 +45,18 @@ def app_role_url(pg_url: str) -> Iterator[str]:
         _run(
             f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS",
             f"GRANT SELECT, INSERT ON audit_log TO {role}",
+            # NATIVE-01/04: the durable workspace (files + per-tenant usage quota).
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON workspace_files, workspace_usage TO {role}",
         )
     )
     head, tail = pg_url.split("://", 1)
     yield f"{head}://{role}:{password}@{tail.split('@', 1)[1]}"
-    asyncio.run(_run(f"REVOKE ALL ON audit_log FROM {role}", f"DROP ROLE IF EXISTS {role}"))
+    asyncio.run(
+        _run(
+            f"REVOKE ALL ON audit_log, workspace_files, workspace_usage FROM {role}",
+            f"DROP ROLE IF EXISTS {role}",
+        )
+    )
 
 
 class _Interp:
@@ -158,6 +165,11 @@ def test_native_tool_side_effects_commit_tenant_scoped_rows(
 
     app.include_router(tools_router)
     app.state.audit_log = AuditLog(db_session_factory=_factory(app_role_url))
+    # NATIVE-01: the workspace is the durable Postgres store (the route refuses a
+    # missing / non-durable one with 503).
+    from app.tools.workspace_store import PostgresWorkspaceStore
+
+    app.state.workspace_store = PostgresWorkspaceStore(_factory(app_role_url))
     client = TestClient(app)
     assert client.post("/tools/files/n.txt", json={"content": "x"}).status_code == 201
     assert client.delete("/tools/files/n.txt").status_code == 204
