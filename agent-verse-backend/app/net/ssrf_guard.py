@@ -1,10 +1,14 @@
 """SSRF egress guard — prevents Server-Side Request Forgery.
 
 `assert_public_url(url)` resolves DNS and rejects:
-- Loopback addresses (127.x.x.x, ::1)
-- RFC-1918 private ranges (10/8, 172.16/12, 192.168/16)
-- Link-local (169.254/16, fe80::/10)
-- AWS/GCP/Azure metadata endpoints (169.254.169.254, metadata.google.internal)
+- Loopback (127/8, ::1), RFC-1918 (10/8, 172.16/12, 192.168/16), CGNAT, ULA and
+  other non-global ranges — only while ALLOW_PRIVATE_NETWORK_ACCESS is off
+  (default on: private / internal hosts are reachable for every caller)
+- Link-local (169.254/16, fe80::/10) — always (opt-in ALLOW_LINK_LOCAL_NETWORK_ACCESS)
+- AWS/GCP/Azure/Alibaba metadata endpoints (169.254.169.254, metadata.google.internal,
+  fd00:ec2::254, 100.100.100.200), also embedded in NAT64 / 6to4 / Teredo /
+  IPv4-compatible IPv6 forms — always
+- 0.0.0.0 / :: and multicast — always
 - Non-http/https schemes
 - Empty or malformed URLs
 
@@ -205,6 +209,30 @@ def _in_allowed_networks(ip_str: str, networks: list[IPNetwork] | None) -> bool:
     return any(addr.version == net.version and addr in net for net in networks)
 
 
+# IPv6 forms that carry an IPv4 address in their low 32 bits. With private access
+# on, ``::/0`` is reachable, so ``64:ff9b::a9fe:a9fe`` (NAT64 of 169.254.169.254)
+# or ``::ffff:0:a9fe:a9fe`` would otherwise reach the metadata service through a
+# translator. (IPv4-mapped ``::ffff:0:0/96`` is unwrapped separately.)
+_EMBEDS_IPV4_LOW32 = [
+    ipaddress.ip_network("::/96"),  # IPv4-compatible (deprecated)
+    ipaddress.ip_network("::ffff:0:0:0/96"),  # SIIT IPv4-translated
+    ipaddress.ip_network("64:ff9b::/96"),  # NAT64 well-known prefix
+    ipaddress.ip_network("64:ff9b:1::/48"),  # NAT64 local-use prefix
+]
+
+
+def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
+    """The IPv4 addresses an IPv6 address may be translated / tunnelled to."""
+    found: list[ipaddress.IPv4Address] = []
+    if any(addr in net for net in _EMBEDS_IPV4_LOW32) and int(addr) > 1:
+        found.append(ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF))
+    if addr.sixtofour is not None:  # 2002::/16
+        found.append(addr.sixtofour)
+    if addr.teredo is not None:  # 2001::/32 -> (server, client)
+        found.extend(addr.teredo)
+    return found
+
+
 def _is_always_blocked_ip(ip_str: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip_str)
@@ -214,8 +242,12 @@ def _is_always_blocked_ip(ip_str: str) -> bool:
     if mapped is not None:
         addr = mapped
     blocked = _ALWAYS_BLOCKED_NO_LINK_LOCAL if link_local_access_enabled() else _ALWAYS_BLOCKED
-    return addr.is_multicast or any(
-        addr.version == net.version and addr in net for net in blocked
+    candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [addr]
+    if isinstance(addr, ipaddress.IPv6Address):
+        candidates.extend(_embedded_ipv4(addr))
+    return any(
+        cand.is_multicast or any(cand.version == net.version and cand in net for net in blocked)
+        for cand in candidates
     )
 
 

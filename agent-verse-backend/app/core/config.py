@@ -833,8 +833,15 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _refuse_ip_ranges_in_production(self) -> Settings:
         # EGRESS-NET: opening whole private ranges is a testing aid. Production
-        # keeps SSRF protection and names its internal services instead.
-        if self.environment == "production" and "/" in self.ingestion_internal_source_allowlist:
+        # keeps SSRF protection and names its internal services instead. With
+        # ALLOW_PRIVATE_NETWORK_ACCESS on (owner decision: every environment) every
+        # private range is open anyway and the CIDR entries are moot, so they no
+        # longer stop startup; off restores the refusal.
+        if (
+            self.environment == "production"
+            and not self.allow_private_network_access
+            and "/" in self.ingestion_internal_source_allowlist
+        ):
             raise ValueError(
                 "INGESTION_INTERNAL_SOURCE_ALLOWLIST: IP ranges (CIDR) are refused in "
                 "production; allowlist service hostnames instead"

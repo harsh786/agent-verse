@@ -796,7 +796,7 @@ function RpaConfig({ data, onUpdate, nodeId }: PanelProps) {
         value={s('url')}
         onChange={(v) => setInput({ url: v })}
         placeholder="{{inputs.website_url}}"
-        description="Page to open. Internal/loopback hosts are blocked (SSRF guard)."
+        description="Page to open. Cloud-metadata and link-local addresses are always blocked (SSRF guard); private hosts follow the server's private network access setting."
       />
       <TextField
         label="Title (optional)"

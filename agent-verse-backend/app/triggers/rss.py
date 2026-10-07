@@ -81,7 +81,8 @@ def fetch_rss_entries(url: str, *, timeout: float = 10.0) -> list[FeedEntry]:
     the caller). This is the seam tests monkeypatch to avoid real network.
 
     The URL is tenant-controlled, so it is SSRF-guarded before the request
-    (public host only; loopback/private/link-local/metadata blocked, fail-closed)
+    (ALLOW_PRIVATE_NETWORK_ACCESS policy: private hosts allowed when on;
+    metadata/link-local/0.0.0.0/multicast always blocked; fail-closed)
     and redirects are disabled so a public URL cannot bounce to an internal one.
     """
     from app.net.ssrf_guard import assert_public_url, public_client

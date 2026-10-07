@@ -7,8 +7,8 @@ Provides web automation capabilities when no API is available:
 - Extract text content
 
 Egress: every navigation target AND every request the page makes (redirect hops,
-subresources) is checked with the DNS-resolving SSRF guard; non-public hosts
-(loopback, RFC-1918, link-local/metadata) are refused. Previously only an
+subresources) is checked with the DNS-resolving SSRF guard: cloud metadata /
+link-local are refused, private hosts follow ALLOW_PRIVATE_NETWORK_ACCESS. Previously only an
 ``http(s)://`` prefix was checked, so a caller could screenshot/extract
 http://169.254.169.254/ or an internal service, directly or via a redirect.
 Automatic cleanup after each session and timeout enforcement (default 30s

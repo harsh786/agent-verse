@@ -96,7 +96,8 @@ def _is_blocked_literal(url: str) -> bool:
 class HttpRequestTool:
     """Make HTTP requests to external APIs.
 
-    Security: blocks requests to localhost, metadata endpoints, RFC-1918 ranges.
+    Security: cloud-metadata / link-local / 0.0.0.0 / multicast are always blocked;
+    localhost and RFC-1918 follow ALLOW_PRIVATE_NETWORK_ACCESS (blocked when off).
     """
 
     name = "http_request"

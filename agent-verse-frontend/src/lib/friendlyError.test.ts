@@ -8,6 +8,13 @@ const TOPOLOGY_REFUSED =
   "[<ServerDescription ('127.0.0.1', 10) server_type: Unknown, rtt: None, error=AutoReconnect('127.0.0.1:10: [Errno 61] Connection refused')>]>";
 
 describe('friendlyConnectionError (mongo re-audit A9/B6)', () => {
+  test('DEC-SSRF: a refusal names the egress policy, not a blanket private-host ban', () => {
+    const f = friendlyConnectionError("SSRF guard [connector test]: IP address '169.254.169.254' is in a blocked range");
+    expect(f.message).toMatch(/address is blocked/i);
+    expect(f.message).toMatch(/cloud-metadata/i);
+    expect(f.message).not.toMatch(/private, internal or loopback hosts are not allowed/i);
+  });
+
   test.each([
     [TOPOLOGY_REFUSED, /refused the connection/i],
     ["Authentication failed., full error: {'ok': 0.0, 'errmsg': 'Authentication failed.', 'code': 18, 'codeName': 'AuthenticationFailed'}", /authentication failed/i],

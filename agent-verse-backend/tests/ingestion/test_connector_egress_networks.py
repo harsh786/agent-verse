@@ -216,3 +216,26 @@ def connector_client_backend() -> object:
 
     client = http_connector.source_client()
     return client._transport._pool._network_backend
+
+
+# ── DEC-SSRF: with ALLOW_PRIVATE_NETWORK_ACCESS on, CIDR entries are moot ────
+
+
+def test_production_accepts_ip_ranges_while_private_access_is_on() -> None:
+    s = Settings(
+        environment="production",
+        allow_private_network_access=True,
+        ingestion_allow_internal_sources=True,
+        ingestion_internal_source_allowlist="mongo-svc,192.168.0.0/16",
+    )
+    assert "192.168.0.0/16" in s.ingestion_internal_source_allowlist
+
+
+def test_production_refuses_ip_ranges_while_private_access_is_off() -> None:
+    with pytest.raises(ValueError, match="service hostnames"):
+        Settings(
+            environment="production",
+            allow_private_network_access=False,
+            ingestion_allow_internal_sources=True,
+            ingestion_internal_source_allowlist="mongo-svc,192.168.0.0/16",
+        )
