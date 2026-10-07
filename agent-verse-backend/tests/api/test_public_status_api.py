@@ -83,3 +83,75 @@ def test_status_is_mounted_and_public_on_the_real_app() -> None:
     resp = TestClient(app).get("/status")  # no API key
     assert resp.status_code == 200
     assert resp.json()["status"] in {"operational", "degraded", "unknown"}
+
+
+# ── a10-F244-01: anonymous GET /status does not run every check every time ──
+
+
+def test_status_checks_are_cached_and_single_flight(monkeypatch) -> None:
+    import asyncio
+
+    import httpx
+
+    monkeypatch.setenv("PUBLIC_STATUS_CACHE_SECONDS", "60")
+    runs = 0
+
+    async def _slow_ok() -> None:
+        nonlocal runs
+        runs += 1
+        await asyncio.sleep(0.05)
+
+    reg = HealthRegistry()
+    reg.register(HealthCheck("postgres", _slow_ok))
+    app = _make_app(reg)
+
+    async def _burst() -> list[dict]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            resps = await asyncio.gather(*(c.get("/status") for _ in range(20)))
+            resps.append(await c.get("/status"))
+        return [r.json() for r in resps]
+
+    bodies = asyncio.run(_burst())
+    assert runs == 1
+    assert all(b["status"] == "operational" for b in bodies)
+    assert len({b["timestamp"] for b in bodies}) == 1
+
+
+def test_status_cache_expires(monkeypatch) -> None:
+    monkeypatch.setenv("PUBLIC_STATUS_CACHE_SECONDS", "0")
+    runs = 0
+
+    async def _count() -> None:
+        nonlocal runs
+        runs += 1
+
+    reg = HealthRegistry()
+    reg.register(HealthCheck("redis", _count))
+    client = TestClient(_make_app(reg))
+    client.get("/status")
+    client.get("/status")
+    assert runs == 2  # cache disabled: every request checks
+
+
+def test_status_cache_reflects_a_new_failure_after_the_window(monkeypatch) -> None:
+    import app.api.public_status as ps
+
+    monkeypatch.setenv("PUBLIC_STATUS_CACHE_SECONDS", "5")
+    now = [1000.0]
+    monkeypatch.setattr(ps, "_now", lambda: now[0])
+    healthy = [True]
+
+    async def _flip() -> None:
+        if not healthy[0]:
+            raise RuntimeError("down")
+
+    reg = HealthRegistry()
+    reg.register(HealthCheck("postgres", _flip))
+    client = TestClient(_make_app(reg))
+    assert client.get("/status").json()["status"] == "operational"
+    healthy[0] = False
+    now[0] += 4
+    assert client.get("/status").json()["status"] == "operational"  # still cached
+    now[0] += 2
+    assert client.get("/status").json()["status"] == "degraded"
