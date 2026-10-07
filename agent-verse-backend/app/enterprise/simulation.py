@@ -125,6 +125,64 @@ def _real_provider(provider: Any) -> Any:
     return None if isinstance(provider, FakeProvider) else provider
 
 
+def _graph_cost(result: Any) -> float:
+    """The USD the AgentGraph actually metered for this run (0.0 when none)."""
+    context = getattr(result, "context", None)
+    if not isinstance(context, dict):
+        return 0.0
+    try:
+        return round(float(context.get("total_cost_usd", 0.0) or 0.0), 6)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _completion_cost(resp: Any) -> float:
+    """USD cost of one provider completion, from its reported token usage."""
+    try:
+        from app.agent.nodes.llm_cost import llm_call_tokens
+        from app.intelligence.cost_tracker import calculate_cost
+
+        prompt_tokens, completion_tokens = llm_call_tokens(resp)
+        if prompt_tokens <= 0 and completion_tokens <= 0:
+            return 0.0
+        model = str(getattr(resp, "model", "") or "")
+        return round(float(calculate_cost(model, prompt_tokens, completion_tokens)), 6)
+    except Exception:
+        return 0.0
+
+
+def _failed_run(
+    *, run_id: str, goal: str, mock_tools: dict[str, Any], error: str
+) -> SimulationRun:
+    """A run whose pipeline raised — reported as failed, never as a stub success."""
+    return SimulationRun(
+        run_id=run_id,
+        goal=goal,
+        mock_tools=mock_tools,
+        status="failed",
+        mock_tools_used=list(mock_tools.keys()),
+        cost_estimate=0.0,
+        used_real_llm=False,
+        risk_level="simulated",
+        result={
+            "goal": goal,
+            "status": "failed",
+            "error": error,
+            "steps": [],
+            "cost_usd": 0.0,
+            "iterations": 0,
+            "message": f"Simulation failed: {error}",
+            "planner": "agent_graph",
+            "simulated_steps": [],
+            "outcome": "failed (simulated)",
+            "side_effects": [],
+            "mock_tools_used": list(mock_tools.keys()),
+            "note": "The agent pipeline raised; no fallback plan was substituted",
+            "used_real_llm": False,
+        },
+    )
+
+
 class SimulationRunner:
     """Runs goals in a mock-tool sandbox environment."""
 
@@ -173,19 +231,19 @@ class SimulationRunner:
             or self._provider
         )
 
-        # Try full AgentGraph pipeline
+        if _provider is None:
+            # No LLM available — the labelled keyword stub (used_real_llm=False).
+            return await self._stub_simulation(
+                goal=goal,
+                run_id=run_id,
+                mock_tools=_mock_tools,
+                tenant_ctx=tenant_ctx,
+                provider=None,
+            )
+
+        # Full AgentGraph pipeline
         try:
             from app.agent.graph import AgentGraph
-
-            if _provider is None:
-                # No LLM available — use stub simulation
-                return await self._stub_simulation(
-                    goal=goal,
-                    run_id=run_id,
-                    mock_tools=_mock_tools,
-                    tenant_ctx=tenant_ctx,
-                    provider=None,
-                )
 
             graph = AgentGraph(
                 planner=_provider,
@@ -230,6 +288,9 @@ class SimulationRunner:
             # Report the pipeline's real outcome — this was hardcoded "complete"
             # / "success (simulated)" even when the graph failed.
             _final = str(getattr(result, "status", "") or "")
+            # Real LLM spend the graph metered (llm_cost.charge_llm_call accumulates
+            # context["total_cost_usd"]); it used to be fabricated as steps * 0.001.
+            _cost = _graph_cost(result)
             _ok = _final == "complete"
             run = SimulationRun(
                 run_id=run_id,
@@ -239,7 +300,7 @@ class SimulationRunner:
                 steps_executed=steps_executed,
                 tools_called=tools_called,
                 mock_tools_used=list(_mock_tools.keys()),
-                cost_estimate=round(len(steps_raw) * 0.001, 4),
+                cost_estimate=_cost,
                 used_real_llm=True,
                 risk_level="simulated",
                 result={
@@ -250,9 +311,10 @@ class SimulationRunner:
                         {"step": s["description"], "tool": s["tool"], "output": s["output"]}
                         for s in steps_executed
                     ],
-                    "cost_usd": round(len(steps_raw) * 0.001, 4),
+                    "cost_usd": _cost,
                     "iterations": len(steps_raw),
                     "message": f"Simulation complete: {len(steps_raw)} steps",
+                    "planner": "agent_graph",
                     "simulated_steps": [s["description"] for s in steps_executed],
                     "outcome": "success (simulated)" if _ok else "failed (simulated)",
                     "side_effects": [],
@@ -263,16 +325,17 @@ class SimulationRunner:
             )
 
         except Exception as exc:
+            # The pipeline raised (budget refusal, provider outage, graph bug...).
+            # This used to silently re-run the goal through the keyword stub, which
+            # reported completed / "success (simulated)" for a run that failed.
             logger.warning("simulation_full_pipeline_failed: %s", exc)
-            return await self._stub_simulation(
-                goal=goal,
+            run = _failed_run(
                 run_id=run_id,
+                goal=goal,
                 mock_tools=_mock_tools,
-                tenant_ctx=tenant_ctx,
-                provider=provider,
+                error=f"{type(exc).__name__}: {exc}"[:500],
             )
-        # Saved outside the try: a persistence failure must surface, not silently
-        # re-run the goal through the stub planner.
+        # Saved outside the try: a persistence failure must surface.
         await self._save(run, tenant_ctx)
         return run
 
@@ -288,6 +351,10 @@ class SimulationRunner:
         """Stub simulation using keyword-based planning (no real LLM required)."""
         run = SimulationRun(run_id=run_id, goal=goal, mock_tools=mock_tools)
         run.status = "running"
+        # Whether a real LLM actually produced the plan (not merely "a provider was
+        # passed"): a failed completion falls back to the keyword plan.
+        used_real_llm = False
+        llm_cost = 0.0
 
         if provider is not None:
             try:
@@ -306,7 +373,6 @@ class SimulationRunner:
                     ],
                     model="",
                 )
-                used_real_llm = False
                 resp = None
                 try:
                     from app.providers.guarded_completion import (
@@ -321,12 +387,13 @@ class SimulationRunner:
                         tenant_ctx=tenant_ctx,
                         timeout_seconds=generation_timeout_seconds(),
                     )
-                    used_real_llm = True
+                    used_real_llm = resp is not None
                 except Exception as exc:
                     logger.warning("simulation_llm_failed: %s", exc)
                     resp = None
 
                 if used_real_llm and resp is not None:
+                    llm_cost = _completion_cost(resp)
                     plan_text = resp.content
                     step_lines = [
                         line.strip().lstrip("0123456789.-) ")
@@ -350,6 +417,8 @@ class SimulationRunner:
                 else:
                     steps_with_tools = self._build_plan(goal, mock_tools)
             except Exception:
+                used_real_llm = False
+                llm_cost = 0.0
                 steps_with_tools = self._build_plan(goal, mock_tools)
         else:
             steps_with_tools = self._build_plan(goal, mock_tools)
@@ -382,23 +451,26 @@ class SimulationRunner:
         ]
         run.tools_called = [s["tool"] for s in executed_steps if s.get("tool")]
         run.mock_tools_used = list(mock_tools.keys())
-        run.cost_estimate = round(len(executed_steps) * 0.001, 4)
-        run.used_real_llm = provider is not None
+        # Real spend only: the one planning completion when an LLM planned, else
+        # nothing (the keyword stub makes no paid calls). Was steps * 0.001.
+        run.cost_estimate = llm_cost
+        run.used_real_llm = used_real_llm
         run.result = {
             # New fields (frontend)
             "goal": goal,
             "status": "completed",
             "steps": executed_steps,
-            "cost_usd": round(len(executed_steps) * 0.001, 4),
+            "cost_usd": llm_cost,
             "iterations": len(executed_steps),
             "message": f"Simulation complete: {len(executed_steps)} steps",
+            "planner": "llm" if used_real_llm else "keyword_stub",
             # Backward-compatible fields (existing tests)
             "simulated_steps": [s["step"] for s in executed_steps],
             "outcome": "success (simulated)",
             "side_effects": [],
             "mock_tools_used": list(mock_tools.keys()),
             "note": "Simulation complete — no real tools were called",
-            "used_real_llm": provider is not None,
+            "used_real_llm": used_real_llm,
         }
         await self._save(run, tenant_ctx)
         return run
@@ -458,13 +530,14 @@ class SimulationRunner:
                     "output": mock_output,
                     "tool_called": tool_name,
                     "mock_hit": mock_hit,
-                    "cost_increment": 0.001,
+                    # The keyword stub makes no paid calls (was a fabricated 0.001).
+                    "cost_increment": 0.0,
                 }
             yield {
                 "type": "simulation_complete",
                 "run_id": run_id,
                 "total_steps": len(stub_plan[:max_steps]),
-                "total_cost": len(stub_plan[:max_steps]) * 0.001,
+                "total_cost": 0.0,
                 "used_real_llm": False,
                 "final_status": "complete",
             }
@@ -477,6 +550,7 @@ class SimulationRunner:
             step_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
             step_counter: list[int] = [0]
             total_cost: list[float] = [0.0]
+            step_open: list[bool] = [False]
 
             async def step_callback(event_type: str, data: dict[str, Any]) -> None:
                 await step_events.put({"type": event_type, **data})
@@ -503,10 +577,18 @@ class SimulationRunner:
                     event = await asyncio.wait_for(step_events.get(), timeout=0.1)
                     if event.get("type") == "step_started":
                         step_counter[0] += 1
+                        step_open[0] = True
                         event["step_number"] = step_counter[0]
                     elif event.get("type") == "step_completed":
-                        cost_inc = event.get("cost_increment", 0.0)
-                        total_cost[0] += cost_inc
+                        if not step_open[0]:
+                            # The executor only calls back on completion.
+                            step_counter[0] += 1
+                        step_open[0] = False
+                        # The executor reports the goal's running metered spend;
+                        # the increment is the delta since the previous step.
+                        running = float(event.pop("total_cost_usd", total_cost[0]) or 0.0)
+                        event["cost_increment"] = round(max(0.0, running - total_cost[0]), 6)
+                        total_cost[0] = max(total_cost[0], running)
                         event["step_number"] = step_counter[0]
                         event.setdefault("mock_hit", mock_client.was_hit(event.get("tool_called")))
                     yield event
@@ -518,7 +600,7 @@ class SimulationRunner:
                 "type": "simulation_complete",
                 "run_id": run_id,
                 "total_steps": step_counter[0],
-                "total_cost": total_cost[0],
+                "total_cost": max(total_cost[0], _graph_cost(final_state)),
                 "used_real_llm": True,
                 "final_status": (
                     final_state.status.value
