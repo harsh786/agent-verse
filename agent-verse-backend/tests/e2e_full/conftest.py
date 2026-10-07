@@ -239,6 +239,26 @@ def _least_privilege_url(
 # ── The booted application ────────────────────────────────────────────────────
 
 
+def _point_celery_at(redis_url: str) -> Any:
+    """Point the (possibly already imported) Celery app at *redis_url*; returns a
+    function that restores its previous broker / result backend."""
+    from app.scaling.celery_app import celery_app
+
+    previous = (celery_app.conf.broker_url, celery_app.conf.result_backend)
+
+    def _apply(broker: Any, backend: Any) -> None:
+        celery_app.conf.broker_url = broker
+        celery_app.conf.result_backend = backend
+        # Forget the pools built for the old URL (rebuilt for the new one on next
+        # use). Not closed: kombu keeps them in a process-wide registry, and
+        # closing one there broke later acquires ("Acquire on closed pool").
+        celery_app._pool = None
+        celery_app.amqp._producer_pool = None
+
+    _apply(redis_url, redis_url)
+    return lambda: _apply(*previous)
+
+
 @pytest_asyncio.fixture(scope="package", loop_scope="session")
 async def app(_migrated_backends: tuple[str, str]) -> AsyncIterator[Any]:
     """Boot ``create_app(manage_pools=True)`` with its real lifespan running.
@@ -257,6 +277,8 @@ async def app(_migrated_backends: tuple[str, str]) -> AsyncIterator[Any]:
 
     # Point the whole process at the test backends and drop the cached Settings so
     # any deep code path that calls get_settings() sees the same URLs the pools use.
+    _env_keys = ("DATABASE_URL", "REDIS_URL", "ENVIRONMENT")
+    previous_env = {k: os.environ.get(k) for k in _env_keys}
     os.environ["DATABASE_URL"] = database_url
     os.environ["REDIS_URL"] = redis_url
     os.environ["ENVIRONMENT"] = "development"
@@ -264,6 +286,12 @@ async def app(_migrated_backends: tuple[str, str]) -> AsyncIterator[Any]:
     from app.core.config import Settings, get_settings
 
     get_settings.cache_clear()
+    # The Celery app reads REDIS_URL once, when app.scaling.celery_app is first
+    # imported. If an earlier test imported it, it is still pointed at the
+    # unit-test sentinel (127.0.0.1:1) and every dispatch here failed with
+    # "Trigger failed" / "Connection refused" — only when this package ran after
+    # other tests. Re-target it at the test Redis for this package.
+    restore_celery = _point_celery_at(redis_url)
 
     from app.main import create_app
 
@@ -276,8 +304,19 @@ async def app(_migrated_backends: tuple[str, str]) -> AsyncIterator[Any]:
 
     # Generous startup timeout: the lifespan wires many subsystems (pools,
     # checkpointer, pub/sub, sync_from_db) on first boot.
-    async with LifespanManager(fastapi_app, startup_timeout=120, shutdown_timeout=60):
-        yield fastapi_app
+    try:
+        async with LifespanManager(fastapi_app, startup_timeout=120, shutdown_timeout=60):
+            yield fastapi_app
+    finally:
+        restore_celery()
+        # Tests collected after this package must see the unit-test environment
+        # again (the sentinel URLs), not this package's containers.
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
 
 
 @pytest_asyncio.fixture(scope="package", loop_scope="session")
