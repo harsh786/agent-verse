@@ -202,3 +202,38 @@ def trigger_run(api: LiveAPI, cleanup: Any, wf_id: str,
 
 def output_of(steps: dict[str, dict[str, Any]], sid: str) -> Any:
     return step_output(steps.get(sid)) or {}
+
+
+def pending_for_run(api: LiveAPI, run_id: str) -> list[dict[str, Any]]:
+    """Open approvals of one run (the explicit HITL gates and platform-gated tool calls)."""
+    from tests.real_world.helpers import same_id
+
+    body = api.json_ok("GET", f"{V1}/approvals", params={"per_page": 100})
+    return [i for i in body.get("items", []) if same_id(i.get("run_id"), run_id)]
+
+
+def drive_approvals(api: LiveAPI, run_id: str, decisions: dict[str, tuple[str, str]],
+                    timeout: float, *, until: set[str] | None = None,
+                    default: tuple[str, str] = ("approve", "Verified by the rw suite.")
+                    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Decide every approval the run raises (by step id; ``default`` otherwise) until it
+    reaches a terminal status (or one of ``until``); returns (run, decisions taken)."""
+    taken: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    stop = TERMINAL | (until or set())
+
+    def step() -> dict[str, Any]:
+        for item in pending_for_run(api, run_id):
+            rid = str(item.get("request_id"))
+            if rid in seen:
+                continue
+            action, note = decisions.get(str(item.get("step_id")), default)
+            resp = api.post(f"{V1}/approvals/{rid}/decide", json={"action": action, "note": note})
+            seen.add(rid)
+            taken.append({"request_id": rid, "step_id": item.get("step_id"), "action": action,
+                          "http": resp.status_code})
+        return get_run(api, run_id)
+
+    run = wait_until(step, timeout=timeout, interval=4, desc=f"run {run_id} to reach {sorted(stop)}",
+                     done=lambda r: str(r.get("status")) in stop)
+    return dict(run), taken
