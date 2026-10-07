@@ -193,14 +193,15 @@ class MultimodalPipeline:
 
         try:
             job.status = "processing"
-            transcript = await self._transcribe_audio(audio_base64)
+            transcript, stt_model = await self._transcribe_audio(audio_base64)
             if transcript.strip():
+                job.metadata["transcription_model"] = stt_model
                 job.spans = [
                     ExtractedSpan(
                         content=transcript,
                         modality=Modality.AUDIO,
                         confidence=0.85,
-                        metadata={"extractor": "whisper-1"},
+                        metadata={"extractor": stt_model},
                     )
                 ]
                 # D-11: same honesty requirement as images -- the *transcript*
@@ -239,14 +240,15 @@ class MultimodalPipeline:
             job.status = "processing"
             spans = []
             # Transcript -- the audio track is transcribed for real (Whisper).
-            transcript = await self._transcribe_audio(video_base64)
+            transcript, stt_model = await self._transcribe_audio(video_base64)
             if transcript.strip():
+                job.metadata["transcription_model"] = stt_model
                 spans.append(
                     ExtractedSpan(
                         content=f"[Transcript] {transcript}",
                         modality=Modality.AUDIO,
                         timestamp_start=0.0,
-                        metadata={"extractor": "whisper-1"},
+                        metadata={"extractor": stt_model},
                     )
                 )
             # Visual/scene analysis is NOT implemented -- gate it honestly
@@ -579,11 +581,13 @@ class MultimodalPipeline:
             )
         return spans
 
-    async def _transcribe_audio(self, audio_base64: str) -> str:
-        """Transcribe audio to text via the real Whisper-backed AudioParser.
+    async def _transcribe_audio(self, audio_base64: str) -> tuple[str, str]:
+        """Transcribe audio with the Model Registry's speech-to-text model.
 
-        Returns an empty string on failure rather than a fabricated stub, so
-        callers never persist placeholder text as if it were a transcript.
+        Returns ``(transcript, model)`` — *model* is the model that produced it
+        (resolved by ``resolve_stt``), recorded as the span's ``extractor``. An
+        empty transcript on failure rather than a fabricated stub, so callers
+        never persist placeholder text as if it were a transcript.
         """
         import base64
 
@@ -593,12 +597,12 @@ class MultimodalPipeline:
             audio_bytes = base64.b64decode(audio_base64)
         except Exception as exc:
             _log.warning("audio_decode_failed: %s", exc)
-            return ""
+            return "", ""
         result = await AudioParser().parse_bytes(audio_bytes, "audio", "audio/mpeg")
         if result.error:
             _log.warning("audio_transcription_failed: %s", result.error)
-            return ""
-        return result.transcript
+            return "", ""
+        return result.transcript, result.model
 
     async def get_job(self, job_id: str, tenant_id: str) -> AssetIngestionJob | None:
         return await self._job_store.get(job_id, tenant_id)

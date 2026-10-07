@@ -8,11 +8,19 @@ from pydantic import BaseModel, Field
 class VoiceStatusResponse(BaseModel):
     stt_status: str  # "ready" | "idle" | "error"
     tts_status: str  # "ready" | "idle" | "error"
-    stt_model: str = "large-v3-turbo"
-    tts_model: str = "k2-fsa/OmniVoice"
+    # The models that actually run (resolved from the Model Registry → env pins →
+    # local engines) and where each choice came from: registry_preference |
+    # registry_cheapest | env_pin | local_default | degraded | not_configured.
+    stt_model: str = ""
+    tts_model: str = ""
+    stt_source: str = ""
+    tts_source: str = ""
     device: str = "cpu"
-    stt_provider: str = "faster_whisper"
-    tts_provider: str = "kokoro"
+    stt_provider: str = ""
+    tts_provider: str = ""
+    # Why a capability has no model (the resolver's configuration hint).
+    stt_error: str | None = None
+    tts_error: str | None = None
 
 
 class TranscribeResponse(BaseModel):

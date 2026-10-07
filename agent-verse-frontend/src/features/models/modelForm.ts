@@ -7,6 +7,8 @@ export const CAPABILITY_CHIPS = [
   { key: 'vision', label: 'Vision' },
   { key: 'ocr', label: 'OCR' },
   { key: 'rerank', label: 'Reranker' },
+  { key: 'speech_to_text', label: 'Speech-to-text' },
+  { key: 'text_to_speech', label: 'Text-to-speech' },
 ] as const;
 
 /** Providers the backend accepts on POST /models/configured. */

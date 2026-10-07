@@ -134,13 +134,16 @@ async def test_image_ingestion_is_labeled_caption_then_text_embed_not_multimodal
 async def test_audio_ingestion_with_transcript_is_labeled_transcript_then_text_embed() -> None:
     pipeline = MultimodalPipeline()
 
-    async def _fake_transcribe(_audio_b64: str) -> str:
-        return "hello from the recording"
+    async def _fake_transcribe(_audio_b64: str) -> tuple[str, str]:
+        return "hello from the recording", "registry-whisper"
 
     pipeline._transcribe_audio = _fake_transcribe  # type: ignore[method-assign]
     job = await pipeline.ingest_audio(base64.b64encode(b"fake-audio").decode(), "tenant-1")
 
     assert job.spans[0].content == "hello from the recording"
+    # The span names the model that actually transcribed, not a vendor literal.
+    assert job.spans[0].metadata["extractor"] == "registry-whisper"
+    assert job.metadata["transcription_model"] == "registry-whisper"
     assert job.metadata["embedding_strategy"] == "transcript_then_text_embed"
     assert job.metadata["real_multimodal_embedding"] is False
 

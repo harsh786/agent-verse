@@ -29,6 +29,11 @@ from app.providers.embedder_factory import (
     resolve_embedder,
 )
 
+# Strip ambient provider env AND clear the cached Settings (tests/conftest.py
+# isolate_provider_env): an earlier test's cached get_settings() — e.g. one built
+# while OPENAI_API_KEY was set — must not leak a key into "nothing configured".
+_ISOLATE_PROVIDER_ENV = True
+
 _EMBED_ENV = (
     "OPENAI_API_KEY",
     "VOYAGE_API_KEY",

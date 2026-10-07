@@ -122,17 +122,19 @@ async def test_tts_engine_streaming_shim():
 
 @pytest.mark.asyncio
 async def test_tts_fallback_chain():
-    """Provider registry falls back kokoro→browser when omnivoice not installed."""
+    """A pinned engine that is not installed is skipped: the next tier answers
+    (a local engine present here — macOS say / Kokoro — else the browser)."""
+    import importlib.util
     import os
     os.environ['VOICE_TTS_PROVIDER'] = 'omnivoice'
     from app.voice.providers import get_tts, reset_providers
     reset_providers()
-    # omnivoice not installed → should fall back to kokoro or browser
     try:
         p = await get_tts()
-        assert p.provider_name in ('omnivoice', 'kokoro', 'browser')
-    except RuntimeError:
-        pass  # acceptable if all fallbacks fail
+        allowed = {'kokoro', 'macos_say', 'browser'}
+        if importlib.util.find_spec('omnivoice') is not None:
+            allowed.add('omnivoice')
+        assert p.provider_name in allowed
     finally:
         reset_providers()
         os.environ['VOICE_TTS_PROVIDER'] = 'browser'

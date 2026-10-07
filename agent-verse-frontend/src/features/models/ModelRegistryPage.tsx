@@ -26,6 +26,8 @@ const CAPABILITIES: readonly CapabilityMeta[] = [
   { key: 'vision', label: 'Vision', hint: 'Image understanding', noun: 'vision model' },
   { key: 'ocr', label: 'OCR', hint: 'Document text extraction', noun: 'OCR model' },
   { key: 'rerank', label: 'Reranker', hint: 'Retrieval reranking', noun: 'reranker' },
+  { key: 'speech_to_text', label: 'Speech-to-text', hint: 'Transcription (voice input, audio / video)', noun: 'speech-to-text model' },
+  { key: 'text_to_speech', label: 'Text-to-speech', hint: 'Voice output', noun: 'text-to-speech model' },
 ];
 
 const errorText = (e: unknown, fallback: string) =>

@@ -28,6 +28,11 @@ VISION_OCR_MODULES = (
     "rpa/executor.py",
     "workflow/steps/rpa_step.py",
     "ocr/**/*.py",
+    # Speech-to-text / text-to-speech call sites (resolve_stt / resolve_tts).
+    "ai_router/speech.py",
+    "ingestion/parsers/audio_parser.py",
+    "voice/providers/stt/*.py",
+    "voice/providers/tts/*.py",
 )
 
 _VENDOR = (
@@ -48,14 +53,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 # (relative path, pattern name, substring of the line) → reason.
-ALLOWLIST: dict[tuple[str, str, str], str] = {
-    ("multimodal/pipeline.py", "vendor model literal", '"extractor": "whisper-1"'): (
-        "speech-to-text metadata label (STT resolver is a separate capability/branch)"
-    ),
-    ("providers/model_defaults.py", "vendor model literal", 'configured_audio_model(fallback'): (
-        "speech-to-text env default (STT resolver is a separate capability/branch)"
-    ),
-}
+# (The speech-to-text entries are gone: transcription resolves via resolve_stt.)
+ALLOWLIST: dict[tuple[str, str, str], str] = {}
 
 
 def _files() -> list[Path]:

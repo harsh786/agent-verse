@@ -1,8 +1,16 @@
-"""AudioParser — transcribes audio using OpenAI Whisper API with timestamp chunking."""
+"""AudioParser — transcribes audio with the Model Registry's speech-to-text model
+(timestamp chunking).
+
+The model chain comes from :func:`app.ai_router.resolve.resolve_stt` (registry
+preference order → env pins → local faster-whisper); each model runs where it is
+configured — an OpenAI-compatible ``/audio/transcriptions`` endpoint at the
+model's own ``base_url`` with its own key, or an in-process engine — and the next
+one is tried when it fails. Used by the multimodal pipeline, the parser registry
+and the video parser.
+"""
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +29,11 @@ class AudioParseResult:
     segments: list[AudioSegment] = field(default_factory=list)
     error: str | None = None
     language: str = "en"
+    # The speech-to-text model that produced the transcript, its provider label
+    # and where the choice came from (registry_preference / env_pin / …).
+    model: str = ""
+    provider: str = ""
+    model_source: str = ""
 
     def to_chunks(self, chunk_duration_seconds: float = 60.0) -> list[dict[str, Any]]:
         if not self.segments:
@@ -79,6 +92,35 @@ def _fmt(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+@dataclass
+class Transcription:
+    """A normalised transcription and the model that produced it."""
+
+    text: str
+    segments: list[AudioSegment] = field(default_factory=list)
+    language: str = "en"
+    model: str = ""
+    provider: str = ""
+    source: str = ""
+
+
+def _segments(raw: Any) -> list[AudioSegment]:
+    out: list[AudioSegment] = []
+    for seg in raw or []:
+        get = seg.get if isinstance(seg, dict) else (lambda k, s=seg: getattr(s, k, None))
+        try:
+            out.append(
+                AudioSegment(
+                    start=float(get("start") or 0.0),
+                    end=float(get("end") or 0.0),
+                    text=str(get("text") or ""),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 class AudioParser:
     def __init__(self, chunk_duration_seconds: float = 60.0) -> None:
         self._chunk_duration = chunk_duration_seconds
@@ -92,35 +134,35 @@ class AudioParser:
         if not audio_bytes:
             return AudioParseResult(source_name=source_name, error="empty audio")
         try:
-            transcription = await self._transcribe_with_whisper(audio_bytes, source_name, mime_type)
-            raw_segments = getattr(transcription, "segments", None) or []
-            segments = [
-                AudioSegment(start=seg.start, end=seg.end, text=seg.text) for seg in raw_segments
-            ]
+            transcription = await self._transcribe(audio_bytes, source_name, mime_type)
             return AudioParseResult(
                 source_name=source_name,
-                transcript=getattr(transcription, "text", ""),
-                segments=segments,
-                language=getattr(transcription, "language", "en"),
+                transcript=str(getattr(transcription, "text", "") or ""),
+                segments=_segments(getattr(transcription, "segments", None)),
+                language=str(getattr(transcription, "language", "") or "en"),
+                model=str(getattr(transcription, "model", "") or ""),
+                provider=str(getattr(transcription, "provider", "") or ""),
+                model_source=str(getattr(transcription, "source", "") or ""),
             )
         except Exception as exc:
             return AudioParseResult(source_name=source_name, error=str(exc))
 
-    async def _transcribe_with_whisper(
-        self, audio_bytes: bytes, filename: str, mime_type: str
-    ) -> Any:
-        from app.providers.model_defaults import configured_audio_model
-        from app.providers.openai_client import async_openai_client
+    async def _transcribe(self, audio_bytes: bytes, filename: str, mime_type: str) -> Transcription:
+        """Transcribe with the resolved speech-to-text chain, failing over in order.
 
-        client = async_openai_client()
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = filename  # type: ignore[attr-defined]
-        return await client.audio.transcriptions.create(
-            model=configured_audio_model("whisper-1"),
-            file=audio_file,
-            response_format="verbose_json",
-            timestamp_granularities=["segment"],
-        )
+        Raises ``ModelNotConfiguredError`` (with a hint) when no model is
+        configured, or ``RuntimeError`` naming every model's failure.
+        """
+        from app.ai_router.resolve import resolve_stt
+
+        resolution = resolve_stt()
+        errors: list[str] = []
+        for target in resolution.targets:
+            try:
+                return await _transcribe_with(target, audio_bytes, filename, mime_type)
+            except Exception as exc:
+                errors.append(f"{target.label}: {type(exc).__name__}: {str(exc)[:200]}")
+        raise RuntimeError("every speech-to-text model failed: " + "; ".join(errors))
 
     async def parse_file_path(self, file_path: str) -> AudioParseResult:
         try:
@@ -141,3 +183,41 @@ class AudioParser:
             return await self.parse_bytes(audio_bytes, source_name, mime_type)
         except Exception as exc:
             return AudioParseResult(source_name=file_path, error=str(exc))
+
+
+async def _transcribe_with(
+    target: Any, audio_bytes: bytes, filename: str, mime_type: str
+) -> Transcription:
+    """One speech-to-text model: an OpenAI-compatible endpoint (segment
+    timestamps via ``verbose_json``) or an in-process / vendor engine."""
+    if target.kind == "endpoint":
+        from app.ai_router.speech import speech_api_key, transcribe_via_endpoint
+
+        data = await transcribe_via_endpoint(
+            base_url=str(target.base_url),
+            api_key=speech_api_key(target.provider, target.entry),
+            model=target.model,
+            audio=audio_bytes,
+            filename=filename,
+            mime_type=mime_type,
+            timestamps=True,
+        )
+        return Transcription(
+            text=str(data.get("text") or ""),
+            segments=_segments(data.get("segments")),
+            language=str(data.get("language") or "en"),
+            model=target.model,
+            provider=target.provider,
+            source=target.source,
+        )
+    from app.voice.providers import stt_provider_for
+
+    result = await stt_provider_for(target).transcribe(audio_bytes, mime_type)
+    return Transcription(
+        text=result.transcript,
+        segments=_segments(result.segments),
+        language=result.language or "en",
+        model=target.model,
+        provider=target.provider,
+        source=target.source,
+    )

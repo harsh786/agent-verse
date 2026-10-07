@@ -71,6 +71,8 @@ ALLOWED_FILES: dict[str, str] = {
     "perception/": "vision resolver branch",
     "multimodal/": "vision / speech resolver branch",
     "voice/": "speech resolver branch",
+    "ai_router/speech.py": "the speech (STT/TTS) resolver itself: its env-pin tier and "
+    "local model cache dir",
     "ocr/": "vision/OCR resolver branch",
     "rag/cross_encoder.py": "rerank resolver branch (local cross-encoder asset)",
     "rag_platform/hosted_reranker.py": "rerank resolver branch",

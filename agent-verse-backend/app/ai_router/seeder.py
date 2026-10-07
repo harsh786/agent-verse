@@ -37,6 +37,8 @@ _VI = ModelCapability.VISION
 _OC = ModelCapability.OCR
 _EM = ModelCapability.EMBEDDING
 _RR = ModelCapability.RERANK
+_STT = ModelCapability.SPEECH_TO_TEXT
+_TTS = ModelCapability.TEXT_TO_SPEECH
 
 
 def _provider_for_model(model_id: str) -> str:
@@ -195,6 +197,17 @@ def _reranker_models() -> list[tuple[str, str | None]]:
     return out
 
 
+def _speech_models(capability: ModelCapability) -> list[tuple[str, str]]:
+    """``(model_id, provider)`` of the speech models env / Settings pin."""
+    try:
+        from app.ai_router.speech import env_speech_models
+
+        return env_speech_models(capability.value)
+    except Exception as exc:  # pragma: no cover - never block seeding
+        logger.warning("model_registry_speech_seed_failed error=%s", str(exc)[:120])
+        return []
+
+
 def _override_extra(e: dict[str, Any], *, from_env: bool, origin: str) -> dict[str, Any]:
     """``ModelEndpoint.extra`` of a persisted override.
 
@@ -302,6 +315,13 @@ def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
         # (ONPREM_RERANKER_URL/MODEL, e.g. a vLLM Qwen3-Reranker).
         for _rr, _rr_provider in _reranker_models():
             _register(reg, _rr, [_RR], provider=_rr_provider)
+        # Speech models the env / Settings pin (AUDIO_MODEL / TRANSCRIPTION_MODEL /
+        # NVIDIA_AUDIO_MODEL, VOICE_STT_PROVIDER + VOICE_STT_MODEL,
+        # VOICE_TTS_PROVIDER + VOICE_TTS_MODEL). Merged into an existing entry of
+        # the same model (it gains the capability), never replacing it.
+        for _cap in (_STT, _TTS):
+            for _sp_model, _sp_provider in _speech_models(_cap):
+                _register(reg, _sp_model, [_cap], provider=_sp_provider)
         # Overlay user-registered overrides from the persistent store (UI/API).
         # These win over env-seeded models with the same provider/model_id.
         _load_overrides(reg)

@@ -13,7 +13,7 @@ Two real assets are generated in-test (no opaque binary fixtures):
 * a short silent WAV (via the stdlib ``wave`` module) sent through the audio
   path, where the pipeline delegates to the real
   ``app.ingestion.parsers.audio_parser.AudioParser``. Only the actual network
-  call inside ``AudioParser._transcribe_with_whisper`` (OpenAI Whisper) is
+  call inside ``AudioParser._transcribe`` (the registry speech-to-text model) is
   patched to a deterministic fake — every other line of the real parser,
   pipeline, and API runs unmodified.
 
@@ -101,7 +101,7 @@ def _fake_whisper(monkeypatch: Any) -> None:
             language="en",
         )
 
-    monkeypatch.setattr(AudioParser, "_transcribe_with_whisper", _fake_transcribe)
+    monkeypatch.setattr(AudioParser, "_transcribe", _fake_transcribe)
 
 
 async def test_image_asset_ingested_and_captioned(

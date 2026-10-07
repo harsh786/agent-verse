@@ -1,5 +1,5 @@
 # tests/ingestion/test_audio_parser.py
-"""Audio parser must transcribe audio using Whisper API and chunk by timestamps."""
+"""Audio parser transcribes with the registry speech-to-text model; chunks by timestamp."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,7 +28,7 @@ def mock_transcription():
 async def test_audio_parser_transcribes_with_whisper(mock_transcription):
     """AudioParser must call Whisper API and return transcript with timestamps."""
     parser = AudioParser()
-    with patch.object(parser, "_transcribe_with_whisper",
+    with patch.object(parser, "_transcribe",
                       AsyncMock(return_value=mock_transcription)):
         result = await parser.parse_bytes(
             audio_bytes=b"fake_audio_content",
@@ -44,7 +44,7 @@ async def test_audio_parser_transcribes_with_whisper(mock_transcription):
 async def test_audio_parser_chunks_by_timestamp(mock_transcription):
     """Chunks must include start/end timestamps from Whisper segments."""
     parser = AudioParser(chunk_duration_seconds=5.0)
-    with patch.object(parser, "_transcribe_with_whisper",
+    with patch.object(parser, "_transcribe",
                       AsyncMock(return_value=mock_transcription)):
         result = await parser.parse_bytes(b"fake", "test.mp3", "audio/mpeg")
     chunks = result.to_chunks()
@@ -59,7 +59,7 @@ async def test_audio_parser_chunks_by_timestamp(mock_transcription):
 async def test_audio_parser_fallback_without_openai_key():
     """Parser must gracefully degrade without OpenAI key."""
     parser = AudioParser()
-    with patch.object(parser, "_transcribe_with_whisper",
+    with patch.object(parser, "_transcribe",
                       AsyncMock(side_effect=Exception("No API key"))):
         result = await parser.parse_bytes(b"fake", "test.mp3", "audio/mpeg")
     assert isinstance(result, AudioParseResult)
@@ -98,7 +98,7 @@ async def test_audio_parser_corrupted_file_sets_error_not_crash():
     parser = AudioParser()
     with patch.object(
         parser,
-        "_transcribe_with_whisper",
+        "_transcribe",
         AsyncMock(side_effect=Exception("Invalid file format: could not decode audio stream")),
     ):
         result = await parser.parse_bytes(b"\x00\x01garbage-not-real-audio", "corrupted.mp3", "audio/mpeg")
@@ -117,7 +117,7 @@ async def test_audio_parser_unsupported_codec_sets_error_not_crash():
     parser = AudioParser()
     with patch.object(
         parser,
-        "_transcribe_with_whisper",
+        "_transcribe",
         AsyncMock(side_effect=Exception("Unsupported file type: audio/x-unknown-codec")),
     ):
         result = await parser.parse_bytes(
@@ -137,7 +137,7 @@ async def test_audio_parser_zero_duration_audio_produces_no_chunks():
     fabricate a chunk out of nothing."""
     parser = AudioParser()
     zero_duration = MagicMock(text="", segments=[], language="en")
-    with patch.object(parser, "_transcribe_with_whisper", AsyncMock(return_value=zero_duration)):
+    with patch.object(parser, "_transcribe", AsyncMock(return_value=zero_duration)):
         result = await parser.parse_bytes(b"real-but-silent-audio-bytes", "silence.wav", "audio/wav")
     assert result.error is None
     assert result.transcript == ""
@@ -164,7 +164,7 @@ async def test_audio_parser_extremely_long_audio_chunks_across_many_windows():
     )
     parser = AudioParser(chunk_duration_seconds=60.0)
     with patch.object(
-        parser, "_transcribe_with_whisper", AsyncMock(return_value=long_transcription)
+        parser, "_transcribe", AsyncMock(return_value=long_transcription)
     ):
         result = await parser.parse_bytes(b"very-long-audio-bytes", "lecture.mp3", "audio/mpeg")
 
@@ -204,7 +204,7 @@ async def test_audio_parser_file_path_unknown_extension_falls_back_to_default_mi
         path = f.name
     try:
         with patch.object(
-            parser, "_transcribe_with_whisper", AsyncMock(return_value=mock_transcription)
+            parser, "_transcribe", AsyncMock(return_value=mock_transcription)
         ) as mock_transcribe:
             result = await parser.parse_file_path(path)
         assert result.error is None

@@ -12,6 +12,8 @@ the choice came from (``source``), so callers and logs can say why a model ran.
 Capabilities resolved here:
 
 * ``rerank`` — :func:`resolve_reranker`.
+* ``speech_to_text`` — :func:`resolve_stt`.
+* ``text_to_speech`` — :func:`resolve_tts`.
 * ``vision`` — :func:`resolve_vision`.
 * ``ocr`` — :func:`resolve_ocr`.
 * ``reasoning`` — :func:`resolve_reasoning` (every LLM role: agent graph,
@@ -77,6 +79,9 @@ class Resolution:
     # ``onprem/<model>``), model ids for vision / OCR (each dispatched to its own
     # registry endpoint).
     fallbacks: tuple[str, ...] = ()
+    # The whole ordered chain for capabilities that carry one (speech: one
+    # :class:`SpeechTarget` per model, head first).
+    targets: tuple[Any, ...] = field(default=(), compare=False, repr=False)
 
 
 # ── rerank ───────────────────────────────────────────────────────────────────
@@ -227,6 +232,319 @@ def resolve_reranker(
     return RerankerResolution(
         tier="degraded",
         resolution=Resolution(capability="rerank", model="", source="degraded"),
+    )
+
+
+# ── speech (speech_to_text / text_to_speech) ─────────────────────────────────
+
+SpeechKind = Literal["endpoint", "engine"]
+
+_STT_HINT = (
+    "add a speech_to_text model in the Model Registry (an OpenAI-compatible "
+    "/audio/transcriptions endpoint, or provider 'local' for faster-whisper), set "
+    "AUDIO_MODEL / TRANSCRIPTION_MODEL / NVIDIA_AUDIO_MODEL (served at OPENAI_BASE_URL), "
+    "VOICE_STT_PROVIDER=whisper_api with VOICE_STT_MODEL, or install faster-whisper "
+    "for the local tier (VOICE_STT_MODEL, default 'tiny')"
+)
+_TTS_HINT = (
+    "add a text_to_speech model in the Model Registry (an OpenAI-compatible "
+    "/audio/speech endpoint, provider 'elevenlabs', or provider 'local' with kokoro-v1.0 / "
+    "macos-say / an OmniVoice checkpoint), set VOICE_TTS_PROVIDER (+ VOICE_TTS_MODEL "
+    "for openai_tts / elevenlabs), or install a local engine (macOS say, or kokoro-onnx "
+    "with its model files in MODEL_CACHE_DIR)"
+)
+
+
+@dataclass(frozen=True)
+class SpeechTarget:
+    """One speech model the chain may run, and how to reach it.
+
+    * ``endpoint`` — an OpenAI-compatible ``/audio`` API at ``base_url``
+      (credential: the registry ``entry``'s saved key, else the provider's env key);
+    * ``engine`` — an in-process engine or vendor protocol named by ``engine``
+      (``faster_whisper`` / ``assemblyai`` for STT; ``kokoro`` / ``macos_say`` /
+      ``omnivoice`` / ``browser`` / ``elevenlabs`` / ``azure_tts`` for TTS).
+    """
+
+    capability: str
+    kind: SpeechKind
+    provider: str
+    model: str
+    source: ResolutionSource
+    engine: str = ""
+    base_url: str | None = None
+    entry: Any = field(default=None, compare=False, repr=False)
+
+    @property
+    def label(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (_speech_provider_key(self.provider), self.model)
+
+
+def _speech_provider_key(provider: str) -> str:
+    p = (provider or "").strip().lower()
+    return {"openai_compatible": "openai", "google": "gemini"}.get(p, p)
+
+
+class _PreferenceShim:
+    def __init__(self, preferences: Sequence[str]) -> None:
+        self._prefs = list(preferences)
+
+    def preference_order(self, _capability: Any) -> list[str]:
+        return list(self._prefs)
+
+
+def _speech_task(capability: str) -> Any:
+    from app.ai_router.models import TaskType
+
+    return TaskType.SPEECH_TO_TEXT if capability == "speech_to_text" else TaskType.TEXT_TO_SPEECH
+
+
+def _speech_registry_models(
+    capability: str, models: Sequence[Any] | None, preferences: Sequence[str] | None
+) -> tuple[list[Any], list[str]]:
+    """Registry models for the speech *capability* in execution order, and the
+    preference order used to label their source."""
+    from app.ai_router.models import ModelCapability
+
+    cap = ModelCapability(capability)
+    if models is not None:
+        from app.ai_router.selection import order_models
+
+        prefs = list(preferences or [])
+        wanted = [m for m in models if cap in (getattr(m, "capabilities", None) or [])]
+        return order_models(wanted, cap, _PreferenceShim(prefs)), prefs
+    try:
+        from app.ai_router.registry import model_registry
+        from app.ai_router.selection import ordered_configured_models
+
+        ordered = ordered_configured_models(_speech_task(capability))
+        prefs = (
+            list(preferences) if preferences is not None else model_registry.preference_order(cap)
+        )
+        return ordered, prefs
+    except Exception:  # pragma: no cover - never block speech on the registry
+        return [], list(preferences or [])
+
+
+def _engine_target(
+    capability: str, provider: str, model: str, source: ResolutionSource, entry: Any = None
+) -> SpeechTarget | None:
+    """A target for an engine provider (``local`` / vendor protocol), or None
+    when the local engine is not installed here."""
+    from app.ai_router import speech
+
+    p = (provider or "").strip().lower()
+    if p == speech.LOCAL_PROVIDER:
+        if not speech.local_engine_available(capability, model):
+            return None
+        engine = "faster_whisper" if capability == speech.STT else speech.local_tts_engine(model)
+    elif p == "assemblyai" and capability == speech.STT:
+        engine = "assemblyai"
+    elif p in ("elevenlabs", "azure_tts") and capability == speech.TTS:
+        engine = p
+    else:
+        return None
+    return SpeechTarget(
+        capability=capability,
+        kind="engine",
+        provider=p,
+        model=model,
+        source=source,
+        engine=engine,
+        entry=entry,
+    )
+
+
+def _registry_speech_target(
+    capability: str, m: Any, prefs: Sequence[str]
+) -> SpeechTarget | None:
+    from app.ai_router import speech
+
+    provider = str(getattr(m, "provider", "") or "")
+    model = str(getattr(m, "model_id", "") or "")
+    if not model:
+        return None
+    source = _registry_source(m, prefs)
+    if provider.strip().lower() in speech.ENGINE_PROVIDERS:
+        return _engine_target(capability, provider, model, source, entry=m)
+    base = speech.speech_endpoint_base(m)
+    if not base:
+        return None  # no /audio endpoint for this provider and no base_url of its own
+    return SpeechTarget(
+        capability=capability,
+        kind="endpoint",
+        provider=provider,
+        model=model,
+        source=source,
+        base_url=base,
+        entry=m,
+    )
+
+
+def _env_speech_targets(capability: str, settings: Any) -> list[SpeechTarget]:
+    from app.ai_router import speech
+
+    out: list[SpeechTarget] = []
+    for model, provider in speech.env_speech_models(capability, settings):
+        if provider in speech.ENGINE_PROVIDERS:
+            target = _engine_target(capability, provider, model, "env_pin")
+        else:
+            base = speech.default_speech_base_url(provider)
+            target = (
+                SpeechTarget(
+                    capability=capability,
+                    kind="endpoint",
+                    provider=provider,
+                    model=model,
+                    source="env_pin",
+                    base_url=base,
+                )
+                if base
+                else None
+            )
+        if target is not None:
+            out.append(target)
+    return out
+
+
+def _local_speech_targets(
+    capability: str, settings: Any, local_available: bool | None
+) -> list[SpeechTarget]:
+    """The local default tier: faster-whisper (``VOICE_STT_MODEL``, default
+    ``tiny``) for STT; macOS ``say`` then Kokoro (model files present) for TTS."""
+    from app.ai_router import speech
+
+    if capability == speech.STT:
+        available = speech.local_stt_available() if local_available is None else local_available
+        if not available:
+            return []
+        model = speech.voice_setting("voice_stt_model", settings) or speech.LOCAL_STT_DEFAULT
+        return [
+            SpeechTarget(
+                capability=capability,
+                kind="engine",
+                provider=speech.LOCAL_PROVIDER,
+                model=model,
+                source="local_default",
+                engine="faster_whisper",
+            )
+        ]
+    out: list[SpeechTarget] = []
+    for model, engine in ((speech.MACOS_SAY_MODEL, "macos_say"), (speech.KOKORO_MODEL, "kokoro")):
+        if local_available is None:
+            available = speech.local_tts_engine_available(engine)
+        else:
+            available = local_available
+        if available:
+            out.append(
+                SpeechTarget(
+                    capability=capability,
+                    kind="engine",
+                    provider=speech.LOCAL_PROVIDER,
+                    model=model,
+                    source="local_default",
+                    engine=engine,
+                )
+            )
+    return out
+
+
+def _resolve_speech(
+    capability: str,
+    hint: str,
+    settings: Any,
+    models: Sequence[Any] | None,
+    preferences: Sequence[str] | None,
+    local_available: bool | None,
+) -> Resolution:
+    if settings is None:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    ordered, prefs = _speech_registry_models(capability, models, preferences)
+    targets: list[SpeechTarget] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(target: SpeechTarget | None) -> None:
+        if target is not None and target.key not in seen:
+            seen.add(target.key)
+            targets.append(target)
+
+    for m in ordered:
+        _add(_registry_speech_target(capability, m, prefs))
+    for target in _env_speech_targets(capability, settings):
+        _add(target)
+    for target in _local_speech_targets(capability, settings, local_available):
+        _add(target)
+    if not targets:
+        raise ModelNotConfiguredError(capability, hint)
+    head = targets[0]
+    return Resolution(
+        capability=capability,
+        model=head.model,
+        source=head.source,
+        provider=head.provider,
+        base_url=head.base_url,
+        fallbacks=tuple(t.label for t in targets[1:]),
+        targets=tuple(targets),
+    )
+
+
+def resolve_stt(
+    settings: Any = None,
+    *,
+    models: Sequence[Any] | None = None,
+    preferences: Sequence[str] | None = None,
+    local_available: bool | None = None,
+) -> Resolution:
+    """The speech-to-text model chain, in order:
+
+    1. the Model Registry ``speech_to_text`` models in preference order (then
+       cheapest): an OpenAI-compatible ``/audio/transcriptions`` endpoint at the
+       model's own ``base_url`` (else its provider's API) with its own key, a
+       ``local`` faster-whisper size, or ``assemblyai``;
+    2. the env / settings pins (``VOICE_STT_PROVIDER`` + ``VOICE_STT_MODEL``,
+       ``AUDIO_MODEL`` / ``TRANSCRIPTION_MODEL`` / ``NVIDIA_AUDIO_MODEL``) — the
+       seeder also registers these, so they normally appear in tier 1 with
+       ``source="env_pin"``;
+    3. the local faster-whisper engine (``VOICE_STT_MODEL``, default ``tiny``)
+       when it is installed;
+    4. :class:`ModelNotConfiguredError` with a configuration hint.
+
+    ``Resolution.targets`` is the whole chain (:class:`SpeechTarget`), head first.
+    *models* / *preferences* / *local_available* override the registry and the
+    installation lookups (tests, previews).
+    """
+    return _resolve_speech(
+        "speech_to_text", _STT_HINT, settings, models, preferences, local_available
+    )
+
+
+def resolve_tts(
+    settings: Any = None,
+    *,
+    models: Sequence[Any] | None = None,
+    preferences: Sequence[str] | None = None,
+    local_available: bool | None = None,
+) -> Resolution:
+    """The text-to-speech model chain, in order:
+
+    1. the Model Registry ``text_to_speech`` models in preference order (then
+       cheapest): an OpenAI-compatible ``/audio/speech`` endpoint, ``elevenlabs``,
+       ``azure_tts``, or a ``local`` engine (``kokoro-v1.0`` / ``macos-say`` /
+       ``browser`` / an OmniVoice checkpoint) that is installed here;
+    2. the env / settings pins (``VOICE_TTS_PROVIDER`` + ``VOICE_TTS_MODEL``);
+    3. the local engines already present: macOS ``say``, then Kokoro when its
+       model files are in ``MODEL_CACHE_DIR`` (nothing is downloaded);
+    4. :class:`ModelNotConfiguredError` with a configuration hint (the voice
+       layer then degrades to the browser's own speech synthesis, flagged).
+    """
+    return _resolve_speech(
+        "text_to_speech", _TTS_HINT, settings, models, preferences, local_available
     )
 
 
@@ -746,6 +1064,7 @@ __all__ = [
     "RerankerResolution",
     "Resolution",
     "ResolutionSource",
+    "SpeechTarget",
     "cheapest_reasoning_model",
     "current_llm_role",
     "dispatch_provider",
@@ -758,6 +1077,8 @@ __all__ = [
     "resolve_ocr",
     "resolve_reasoning",
     "resolve_reranker",
+    "resolve_stt",
+    "resolve_tts",
     "resolve_vision",
     "validated_preference",
     "vision_chain",

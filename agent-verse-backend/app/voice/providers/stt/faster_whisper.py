@@ -22,7 +22,10 @@ class FasterWhisperSTT:
     provider_name: str = "faster_whisper"
     supports_streaming: bool = False
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str | None = None) -> None:
+        # The Whisper size resolved from the Model Registry (provider "local"),
+        # else VOICE_STT_MODEL, else the local default "tiny".
+        self.model_name = model_name or _configured_model_name()
         self._model: Any | None = None
         self._lock = asyncio.Lock()
 
@@ -35,8 +38,10 @@ class FasterWhisperSTT:
     async def transcribe(self, audio_bytes: bytes, content_type: str) -> TranscriptResult:
         with tracer.start_as_current_span("stt.faster_whisper.transcribe") as span:
             span.set_attribute("audio_bytes", len(audio_bytes))
-            model = await self._get_model()
+            span.set_attribute("model", self.model_name)
+            # Decode first: undecodable input fails fast, before a model load.
             audio = await _decode_audio(audio_bytes, content_type)
+            model = await self._get_model()
             loop = asyncio.get_event_loop()
             segs_gen, info = await loop.run_in_executor(
                 None,
@@ -69,24 +74,33 @@ class FasterWhisperSTT:
                 return self._model
             # Model construction (and the first-run download) is blocking: run it in
             # a worker thread so it never stalls the API's event loop.
-            self._model = await asyncio.to_thread(_build_whisper_model)
+            self._model = await asyncio.to_thread(_build_whisper_model, self.model_name)
             return self._model
 
 
-def _build_whisper_model() -> Any:
+def _configured_model_name() -> str:
+    from app.ai_router.speech import LOCAL_STT_DEFAULT, voice_setting
+
+    return voice_setting("voice_stt_model") or LOCAL_STT_DEFAULT
+
+
+def _build_whisper_model(model_name: str | None = None) -> Any:
     import pathlib as _pl
 
     from faster_whisper import WhisperModel
 
-    device = os.getenv("VOICE_DEVICE", "cpu")
+    from app.ai_router.speech import voice_setting
+
+    device = voice_setting("voice_device") or "cpu"
     compute = "float16" if device == "cuda" else "int8"
     # Use a writable local cache — /app/models is Docker-only, read-only on macOS
     cache_dir = os.getenv("MODEL_CACHE_DIR") or str(
         _pl.Path.home() / ".cache" / "agentverse" / "models"
     )
     _pl.Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production  # noqa: E501
-    model_name = os.getenv("VOICE_STT_MODEL", "tiny")
+    # 'tiny' by default for local dev; VOICE_STT_MODEL (or a registry "local"
+    # speech_to_text model such as large-v3-turbo) picks another size.
+    model_name = model_name or _configured_model_name()
     return WhisperModel(
         model_name,
         device=device,

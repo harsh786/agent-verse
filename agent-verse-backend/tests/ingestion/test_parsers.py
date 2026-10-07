@@ -41,7 +41,7 @@ async def test_audio_parser_with_mock_whisper():
         segments=[MagicMock(start=0.0, end=3.5, text="Hello this is a test.")],
     )
     parser = AudioParser()
-    with patch.object(parser, "_transcribe_with_whisper", AsyncMock(return_value=mock_transcription)):
+    with patch.object(parser, "_transcribe", AsyncMock(return_value=mock_transcription)):
         result = await parser.parse_bytes(b"fake_audio", "test.mp3", "audio/mpeg")
     assert isinstance(result, AudioParseResult)
     assert result.transcript is not None
@@ -51,7 +51,7 @@ async def test_audio_parser_with_mock_whisper():
 @pytest.mark.anyio
 async def test_audio_parser_fallback_without_key():
     parser = AudioParser()
-    with patch.object(parser, "_transcribe_with_whisper", AsyncMock(side_effect=Exception("No key"))):
+    with patch.object(parser, "_transcribe", AsyncMock(side_effect=Exception("No key"))):
         result = await parser.parse_bytes(b"fake", "test.mp3", "audio/mpeg")
     assert isinstance(result, AudioParseResult)
 

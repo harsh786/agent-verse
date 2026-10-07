@@ -7,6 +7,12 @@ export interface VoiceStatusResponse {
   device:       'cpu' | 'cuda';
   stt_provider: string;
   tts_provider: string;
+  /** Where each resolved speech model came from (Model Registry → env pin → local engine). */
+  stt_source?:  string;
+  tts_source?:  string;
+  /** Why a capability has no model (the resolver's configuration hint). */
+  stt_error?:   string | null;
+  tts_error?:   string | null;
 }
 
 export interface TranscribeResponse {

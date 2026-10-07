@@ -71,31 +71,69 @@ def _request_id() -> str:
     return str(uuid4())
 
 
+def _resolved_speech(capability: str) -> tuple[str, str, str, str | None]:
+    """``(model, source, provider, error)`` the resolver picks for *capability*."""
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_stt, resolve_tts
+
+    try:
+        res = resolve_stt() if capability == "speech_to_text" else resolve_tts()
+    except ModelNotConfiguredError as exc:
+        if capability == "text_to_speech":
+            return "", "degraded", "browser", str(exc)
+        return "", "not_configured", "", str(exc)
+    return res.model, res.source, res.provider, None
+
+
 @router.get("/status", operation_id="voice_status", response_model=VoiceStatusResponse)
 async def voice_status(request: Request) -> VoiceStatusResponse:
+    """Provider readiness and the speech models that actually run (and why).
+
+    ``stt_model`` / ``tts_model`` are the resolved models (Model Registry →
+    env pins → local engines), not a configured default that may never load.
+    """
     _require_tenant(request)
+    from app.ai_router.speech import voice_setting
+
+    device = voice_setting("voice_device") or "cpu"
     try:
         from app.voice.providers import get_capabilities
 
         caps = await get_capabilities()
+        stt, tts = caps["stt"], caps["tts"]
+        stt_model, stt_source = stt.get("model") or "", stt.get("source") or ""
+        tts_model, tts_source = tts.get("model") or "", tts.get("source") or ""
+        if not stt_source:
+            stt_model, stt_source, _p, _e = _resolved_speech("speech_to_text")
+        if not tts_source:
+            tts_model, tts_source, _p, _e = _resolved_speech("text_to_speech")
         return VoiceStatusResponse(
-            stt_status=("ready" if caps["stt"]["ready"] else "idle"),
-            tts_status=("ready" if caps["tts"]["ready"] else "idle"),
-            stt_provider=caps["stt"]["provider"],
-            tts_provider=caps["tts"]["provider"],
-            stt_model=os.getenv("VOICE_STT_MODEL", "large-v3-turbo"),
-            tts_model=os.getenv("VOICE_TTS_MODEL", "k2-fsa/OmniVoice"),
-            device=os.getenv("VOICE_DEVICE", "cpu"),
+            stt_status=("ready" if stt["ready"] else "idle"),
+            tts_status=("ready" if tts["ready"] else "idle"),
+            stt_provider=stt["provider"],
+            tts_provider=tts["provider"],
+            stt_model=stt_model,
+            tts_model=tts_model,
+            stt_source=stt_source,
+            tts_source=tts_source,
+            device=device,
         )
     except Exception:
         from app.voice import stt_engine, tts_engine
 
+        stt_model, stt_source, stt_provider, stt_error = _resolved_speech("speech_to_text")
+        tts_model, tts_source, tts_provider, tts_error = _resolved_speech("text_to_speech")
         return VoiceStatusResponse(
-            stt_status="ready" if stt_engine._model else "idle",
+            stt_status=("error" if stt_error else "ready" if stt_engine._model else "idle"),
             tts_status="ready" if tts_engine._model else "idle",
-            stt_model=os.getenv("VOICE_STT_MODEL", "large-v3-turbo"),
-            tts_model=os.getenv("VOICE_TTS_MODEL", "k2-fsa/OmniVoice"),
-            device=os.getenv("VOICE_DEVICE", "cpu"),
+            stt_model=stt_model,
+            tts_model=tts_model,
+            stt_source=stt_source,
+            tts_source=tts_source,
+            stt_provider=stt_provider,
+            tts_provider=tts_provider,
+            stt_error=stt_error,
+            tts_error=tts_error,
+            device=device,
         )
 
 

@@ -80,10 +80,12 @@ def configured_ocr_model(fallback: str = "") -> str:
     return fallback
 
 
-def configured_audio_model(fallback: str = "whisper-1") -> str:
+def configured_audio_model(fallback: str = "") -> str:
     """Return the system-configured audio transcription model, else ``fallback``.
 
     Priority: ``AUDIO_MODEL`` → ``TRANSCRIPTION_MODEL`` → ``NVIDIA_AUDIO_MODEL``.
+    This is only the env-pin tier: transcription resolves through the Model
+    Registry first (``app.ai_router.resolve.resolve_stt``), never a vendor default.
     """
     for var in _AUDIO_ENV_VARS:
         value = (os.getenv(var) or "").strip()

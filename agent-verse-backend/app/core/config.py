@@ -422,10 +422,21 @@ class Settings(BaseSettings):
     # --- Voice OS configuration ---
     voice_enabled: bool = True
     voice_device: str = "cpu"  # "cpu" | "cuda"
-    voice_stt_provider: str = "faster_whisper"
-    voice_tts_provider: str = "kokoro"  # kokoro | omnivoice | elevenlabs | openai_tts | azure_tts
-    voice_stt_model: str = "large-v3-turbo"
-    voice_tts_model: str = "k2-fsa/OmniVoice"
+    # Speech models come from the Model Registry (capabilities speech_to_text /
+    # text_to_speech, app.ai_router.resolve.resolve_stt / resolve_tts). These are
+    # the env-pin tier after it (read via app.ai_router.speech.voice_setting: the
+    # process env first, then these values / .env), and are seeded into the
+    # registry. Empty = not pinned:
+    #   voice_stt_provider: faster_whisper | whisper_api | assemblyai
+    #   voice_tts_provider: macos_say | kokoro | omnivoice | browser | elevenlabs |
+    #                       openai_tts | azure_tts
+    #   voice_stt_model: the Whisper size for faster-whisper (local default "tiny"),
+    #                    or the /audio model for whisper_api
+    #   voice_tts_model: the OmniVoice checkpoint, or the openai_tts / elevenlabs model
+    voice_stt_provider: str = ""
+    voice_tts_provider: str = ""
+    voice_stt_model: str = ""
+    voice_tts_model: str = ""
     model_cache_dir: str = "/app/models"
     # Root under which each tenant's DuckDB databases / data files must live
     # (``<root>/<tenant_id>/``). The DuckDB ingestion connector refuses any

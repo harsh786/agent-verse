@@ -10687,28 +10687,60 @@
             "title": "Device",
             "type": "string"
           },
+          "stt_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stt Error"
+          },
           "stt_model": {
-            "default": "large-v3-turbo",
+            "default": "",
             "title": "Stt Model",
             "type": "string"
           },
           "stt_provider": {
-            "default": "faster_whisper",
+            "default": "",
             "title": "Stt Provider",
+            "type": "string"
+          },
+          "stt_source": {
+            "default": "",
+            "title": "Stt Source",
             "type": "string"
           },
           "stt_status": {
             "title": "Stt Status",
             "type": "string"
           },
+          "tts_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Error"
+          },
           "tts_model": {
-            "default": "k2-fsa/OmniVoice",
+            "default": "",
             "title": "Tts Model",
             "type": "string"
           },
           "tts_provider": {
-            "default": "kokoro",
+            "default": "",
             "title": "Tts Provider",
+            "type": "string"
+          },
+          "tts_source": {
+            "default": "",
+            "title": "Tts Source",
             "type": "string"
           },
           "tts_status": {
@@ -40471,7 +40503,7 @@
     },
     "/models/active": {
       "get": {
-        "description": "Return the model the platform will actually run goals with.\n\nReflects the *configured* default provider/model (env-driven, via the\nprovider registry) rather than the top of the static quality-ranked\ncatalogue \u2014 so the UI shows the real active model (e.g. the configured\nNVIDIA model) instead of a hardcoded-looking default.",
+        "description": "Return the model the platform will actually run goals with.\n\nThe head of the reasoning resolution (``resolve_reasoning``: the Model\nRegistry's saved order, env pins, role map, env default, registry models) \u2014\nthe same model a goal's planner runs on, not an env-only value. ``source``\nsays where the choice came from; ``configured`` is false (and ``hint`` says\nhow to fix it) when nothing is configured.",
         "operationId": "get_active_model_models_active_get",
         "responses": {
           "200": {
@@ -54448,6 +54480,7 @@
     },
     "/v1/voice/status": {
       "get": {
+        "description": "Provider readiness and the speech models that actually run (and why).\n\n``stt_model`` / ``tts_model`` are the resolved models (Model Registry \u2192\nenv pins \u2192 local engines), not a configured default that may never load.",
         "operationId": "voice_status",
         "responses": {
           "200": {

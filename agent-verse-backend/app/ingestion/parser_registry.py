@@ -601,6 +601,10 @@ class ParserRegistry:
         if result.error:
             meta["audio_degraded"] = result.error
             return "", meta
+        if result.model:
+            meta["transcription_model"] = result.model
+            meta["transcription_provider"] = result.provider
+            meta["transcription_source"] = result.model_source
         return result.transcript, meta
 
     async def _parse_video(

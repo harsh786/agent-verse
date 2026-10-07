@@ -229,4 +229,7 @@ export const PROBE_LABEL: Record<string, string> = {
   vision: 'Vision / OCR (image)',
   embedding: 'Embeddings',
   rerank: 'Rerank',
+  speech_to_text: 'Speech-to-text (audio)',
+  text_to_speech: 'Text-to-speech (audio)',
 };
+

@@ -29,7 +29,12 @@ class OmniVoiceTTS:
     supports_nonverbal: bool = True
     max_text_length: int = 4096
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str | None = None) -> None:
+        from app.ai_router.speech import OMNIVOICE_DEFAULT, voice_setting
+
+        # The checkpoint resolved from the Model Registry (provider "local"),
+        # else VOICE_TTS_MODEL, else the OmniVoice release checkpoint.
+        self.model_name = model_name or voice_setting("voice_tts_model") or OMNIVOICE_DEFAULT
         self._model: Any | None = None
         self._lock = asyncio.Lock()
 
@@ -102,10 +107,12 @@ class OmniVoiceTTS:
             import torch
             from omnivoice import OmniVoice  # raises ImportError if not installed
 
-            device = os.getenv("VOICE_DEVICE", "cpu")
+            from app.ai_router.speech import voice_setting
+
+            device = voice_setting("voice_device") or "cpu"
             dtype = torch.float16 if device == "cuda" else torch.float32
             self._model = OmniVoice.from_pretrained(
-                os.getenv("VOICE_TTS_MODEL", "k2-fsa/OmniVoice"),
+                self.model_name,
                 device_map=device,
                 dtype=dtype,
                 cache_dir=os.getenv("MODEL_CACHE_DIR", "/app/models"),

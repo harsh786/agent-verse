@@ -15,7 +15,10 @@ shows the truth rather than a re-implementation:
 * vision / OCR / rerank — the single-resolver facade ``app.ai_router.resolve``
   (``resolve_vision`` / ``resolve_ocr`` / ``resolve_reranker``): registry order,
   then env pins, then a local tier (Tesseract OCR, the local cross-encoder),
-  else nothing — vision never falls back to the reasoning model.
+  else nothing — vision never falls back to the reasoning model;
+* speech-to-text / text-to-speech — ``resolve_stt`` / ``resolve_tts``: registry
+  order, then the env pins (``VOICE_*`` / ``AUDIO_MODEL``), then the installed
+  local engines (faster-whisper; macOS say / Kokoro).
 
 A capability whose call sites are not routed through the registry would be
 reported with ``routed: false``; every capability listed here is routed on this
@@ -380,6 +383,47 @@ def _rerank(request: Any, index: dict[str, list[Any]]) -> dict[str, Any]:
     )
 
 
+def _speech(capability: str, index: dict[str, list[Any]]) -> dict[str, Any]:
+    """Speech-to-text / text-to-speech, from ``resolve_stt`` / ``resolve_tts``."""
+    from app.ai_router import resolve
+
+    stt = capability == ModelCapability.SPEECH_TO_TEXT.value
+    label = "Speech-to-text" if stt else "Text-to-speech"
+    try:
+        res = resolve.resolve_stt() if stt else resolve.resolve_tts()
+    except resolve.ModelNotConfiguredError as exc:
+        impact = (
+            "voice input and audio / video transcription are unavailable"
+            if stt
+            else "voice output falls back to the browser's own speech synthesis"
+        )
+        return _capability(
+            capability, label, model=None, source="none",
+            warning=f"No {label} model: {impact} — {exc.hint}.",
+        )
+    model = _describe(res.model, index)
+    if model is not None and not model.get("provider") and res.provider:
+        model["provider"] = res.provider
+    fallbacks = [
+        {"model_id": str(lbl), "provider": None, "servable": None} for lbl in res.fallbacks
+    ]
+    head = res.targets[0] if res.targets else None
+    note = (
+        f"In-process {head.engine.replace('_', '-')} engine."
+        if head is not None and head.kind == "engine" and head.provider == "local"
+        else None
+    )
+    return _capability(
+        capability,
+        label,
+        model=model,
+        source=_FACADE_SOURCES.get(res.source, res.source),
+        fallbacks=fallbacks,
+        warning=_not_servable_warning(model, label),
+        note=note,
+    )
+
+
 # ── roles ────────────────────────────────────────────────────────────────────
 
 
@@ -473,6 +517,8 @@ def build_resolution(request: Any, tenant_id: str) -> dict[str, Any]:
         lambda: _vision_like("vision", index),
         lambda: _vision_like("ocr", index),
         lambda: _rerank(request, index),
+        lambda: _speech(ModelCapability.SPEECH_TO_TEXT.value, index),
+        lambda: _speech(ModelCapability.TEXT_TO_SPEECH.value, index),
     ):
         capabilities.append(build())
     warnings = [str(c["warning"]) for c in capabilities if c.get("warning")]

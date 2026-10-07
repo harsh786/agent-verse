@@ -1,9 +1,15 @@
-"""OpenAI TTS — requires OPENAI_API_KEY."""
+"""OpenAI-compatible ``/audio/speech`` TTS (OpenAI, speaches, LocalAI, vLLM …).
+
+The model, endpoint and credential come from the resolved Model Registry entry
+(:func:`app.ai_router.resolve.resolve_tts`). Built with no arguments it uses the
+env pin ``VOICE_TTS_MODEL`` on the OpenAI endpoint (``OPENAI_BASE_URL``, else the
+official API) and refuses to guess a model when none is configured.
+"""
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator
+from typing import Any
 
 SAMPLE_RATE = 24_000
 
@@ -15,14 +21,41 @@ class OpenAITTS:
     supports_nonverbal: bool = False
     max_text_length: int = 4096
 
-    def __init__(self) -> None:
-        self._key = os.getenv("OPENAI_API_KEY", "")
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+        provider: str = "openai",
+        entry: Any = None,
+    ) -> None:
+        from app.ai_router.speech import voice_setting
+
+        self.model = model or voice_setting("voice_tts_model")
+        self._base_url = base_url
+        self._provider = provider or "openai"
+        self._entry = entry
+
+    def _base(self) -> str | None:
+        if self._base_url:
+            return self._base_url.rstrip("/")
+        from app.ai_router.speech import default_speech_base_url
+
+        return default_speech_base_url(self._provider)
+
+    def _api_key(self) -> str:
+        from app.ai_router.speech import speech_api_key
+
+        return speech_api_key(self._provider, self._entry)
 
     async def warmup(self) -> None:
         pass
 
     async def is_ready(self) -> bool:
-        return bool(self._key)
+        from app.ai_router.speech import has_real_key
+
+        return bool(self.model and self._base()) and (
+            bool(self._base_url) or has_real_key(self._api_key())
+        )
 
     async def synthesize(
         self,
@@ -34,26 +67,25 @@ class OpenAITTS:
         speed: float = 1.0,
         voice_id: str | None = None,
     ) -> bytes:
-        import httpx
+        from app.ai_router.resolve import ModelNotConfiguredError
+        from app.ai_router.speech import synthesize_via_endpoint, tts_voice
 
-        voice = voice_id or os.getenv("OPENAI_TTS_VOICE", "nova")
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(
-                "https://api.openai.com/v1/audio/speech",
-                headers={
-                    "Authorization": f"Bearer {self._key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "tts-1",
-                    "input": text,
-                    "voice": voice,
-                    "response_format": "wav",
-                    "speed": speed,
-                },
+        base = self._base()
+        if not self.model or not base:
+            raise ModelNotConfiguredError(
+                "text_to_speech",
+                "set VOICE_TTS_MODEL for the openai_tts provider, or add a text_to_speech "
+                "model in the Model Registry",
             )
-            r.raise_for_status()
-            return r.content
+        return await synthesize_via_endpoint(
+            base_url=base,
+            api_key=self._api_key(),
+            model=self.model,
+            text=text,
+            voice=tts_voice(voice_id),
+            response_format="wav",
+            speed=speed,
+        )
 
     async def synthesize_streaming(
         self,

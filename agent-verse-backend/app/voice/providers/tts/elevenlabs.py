@@ -1,10 +1,16 @@
-"""ElevenLabs TTS — paid API, voice cloning. Requires ELEVENLABS_API_KEY."""
+"""ElevenLabs TTS — paid API, voice cloning.
+
+The model is the resolved Model Registry entry's (provider ``elevenlabs``,
+capability ``text_to_speech``), else ``VOICE_TTS_MODEL`` / ``ELEVENLABS_MODEL_ID``;
+the key is the entry's saved key, else ``ELEVENLABS_API_KEY``.
+"""
 
 from __future__ import annotations
 
 import io
 import os
 from collections.abc import AsyncGenerator
+from typing import Any
 
 SAMPLE_RATE = 44_100
 
@@ -16,8 +22,13 @@ class ElevenLabsTTS:
     supports_nonverbal: bool = False
     max_text_length: int = 5000
 
-    def __init__(self) -> None:
-        self._key = os.getenv("ELEVENLABS_API_KEY", "")
+    def __init__(self, model: str | None = None, entry: Any = None) -> None:
+        from app.ai_router.speech import voice_setting
+
+        self.model = (
+            model or voice_setting("voice_tts_model") or os.getenv("ELEVENLABS_MODEL_ID", "")
+        ).strip()
+        self._key = _saved_key(entry) or os.getenv("ELEVENLABS_API_KEY", "")
 
     async def warmup(self) -> None:
         pass
@@ -37,6 +48,14 @@ class ElevenLabsTTS:
     ) -> bytes:
         import httpx
 
+        if not self.model:
+            from app.ai_router.resolve import ModelNotConfiguredError
+
+            raise ModelNotConfiguredError(
+                "text_to_speech",
+                "add an elevenlabs text_to_speech model in the Model Registry or set "
+                "VOICE_TTS_MODEL / ELEVENLABS_MODEL_ID",
+            )
         vid = voice_id or os.getenv("ELEVENLABS_VOICE_ID", "rachel")
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(
@@ -44,7 +63,7 @@ class ElevenLabsTTS:
                 headers={"xi-api-key": self._key, "Content-Type": "application/json"},
                 json={
                     "text": text,
-                    "model_id": "eleven_turbo_v2_5",
+                    "model_id": self.model,
                     "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
                 },
             )
@@ -73,3 +92,12 @@ class ElevenLabsTTS:
         chunk = 9600
         for pos in range(0, len(wav), chunk):
             yield wav[pos : pos + chunk]
+
+
+def _saved_key(entry: Any) -> str:
+    """The registry entry's own (vault-encrypted) key, decrypted, or ""."""
+    if not str(((getattr(entry, "extra", None) or {}).get("api_key_encrypted")) or ""):
+        return ""
+    from app.ai_router.model_endpoints import endpoint_api_key
+
+    return endpoint_api_key("elevenlabs", entry)

@@ -41,7 +41,9 @@ class TaskType(StrEnum):
     RERANK = "rerank"
     OCR = "ocr"
     VISION = "vision"
-    SPEECH = "speech"
+    SPEECH = "speech"  # speech-to-text (kept for older callers)
+    SPEECH_TO_TEXT = "speech_to_text"
+    TEXT_TO_SPEECH = "text_to_speech"
     VIDEO = "video"
     TEXT_GENERATION = "text_generation"
 

@@ -21,6 +21,9 @@ _ALLOWED_PROVIDERS = frozenset(
         "anthropic", "openai", "openai_compatible", "azure_openai", "nvidia",
         "gemini", "google", "voyage", "groq", "xai", "ollama", "onprem", "openrouter",
         "bedrock", "vertex", "mistral", "cohere", "custom",
+        # Speech models: in-process engines (faster-whisper / kokoro / macOS say /
+        # OmniVoice) and vendor speech APIs with their own protocol.
+        "local", "elevenlabs", "assemblyai", "azure_tts",
     }
 )
 
@@ -270,6 +273,17 @@ async def test_model(request: Request) -> dict[str, Any]:
     configured = model_registry.get_configured(provider, model_id)
     if configured is not None and _is_embedding_only(configured.capabilities):
         return await _probe_configured_embedder(request, configured)
+    configured_caps = {
+        str(getattr(c, "value", c)) for c in (configured.capabilities if configured else [])
+    }
+    if (
+        configured is not None
+        and _speech_probe_kind(configured_caps)
+        and not (configured_caps & _CHAT_CAPABILITIES)
+    ):
+        # A speech model is tested with a real transcription / synthesis on the
+        # endpoint it is configured with (a chat ping proves nothing about /audio).
+        return await _probe_configured_speech(configured)
 
     model = model_registry.get_model(provider, model_id)
     if model is None:
@@ -367,6 +381,17 @@ _CHAT_CAPABILITIES = frozenset(
 )
 
 
+def _speech_probe_kind(capabilities: Any) -> str | None:
+    """``speech_to_text`` / ``text_to_speech`` for a speech model (STT first when
+    it has both), ``None`` otherwise."""
+    caps = {str(getattr(c, "value", c)) for c in capabilities or []}
+    if ModelCapability.SPEECH_TO_TEXT.value in caps:
+        return ModelCapability.SPEECH_TO_TEXT.value
+    if ModelCapability.TEXT_TO_SPEECH.value in caps:
+        return ModelCapability.TEXT_TO_SPEECH.value
+    return None
+
+
 def _is_embedding_only(capabilities: Any) -> bool:
     caps = {str(getattr(c, "value", c)) for c in capabilities or []}
     return ModelCapability.EMBEDDING.value in caps and not (caps & _CHAT_CAPABILITIES)
@@ -447,6 +472,59 @@ async def _probe_configured_embedder(request: Request, model: Any) -> dict[str, 
     }
 
 
+async def _probe_configured_speech(model: Any) -> dict[str, Any]:
+    """POST /models/test for a speech model: one real ``/audio`` call at the
+    endpoint the model is configured with (its own base_url, else its
+    provider's API), or the local engine's installation check."""
+    import time
+
+    import httpx
+
+    from app.ai_router import speech
+    from app.ai_router.model_endpoints import ModelEndpointError, endpoint_http_client
+
+    kind = _speech_probe_kind(model.capabilities) or speech.STT
+    provider = str(getattr(model, "provider", "") or "").strip().lower()
+    base_out: dict[str, Any] = {"probe": kind, "model": model.model_id}
+    if provider == speech.LOCAL_PROVIDER:
+        local = speech.probe_local_engine(kind, model.model_id)
+        return {**base_out, "status": "ok" if local["ok"] else "error", **local}
+    if provider in speech.ENGINE_PROVIDERS:
+        return {
+            **base_out,
+            "status": "skipped",
+            "reason": f"{provider} uses its own API; it is checked on first use",
+        }
+    base = speech.speech_endpoint_base(model)
+    if not base:
+        return {
+            **base_out,
+            "status": "error",
+            "error": f"provider {provider!r} has no /audio API: give the model its endpoint URL",
+        }
+    start = time.monotonic()
+    try:
+        headers = {"Authorization": f"Bearer {speech.speech_api_key(provider, model)}"}
+        async with endpoint_http_client(timeout=_PROBE_TIMEOUT_S) as client:
+            result = (
+                await speech.probe_speech_to_text(
+                    client, base=base, headers=headers, model_id=model.model_id
+                )
+                if kind == speech.STT
+                else await speech.probe_text_to_speech(
+                    client, base=base, headers=headers, model_id=model.model_id
+                )
+            )
+    except (httpx.HTTPError, ModelEndpointError, ValueError) as exc:
+        result = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    return {
+        **base_out,
+        "status": "ok" if result.get("ok") else "error",
+        "latency_ms": round((time.monotonic() - start) * 1000, 1),
+        **result,
+    }
+
+
 # ── Configured registry (the models selection actually picks from) ─────────────
 
 # Capability → the task used to compute which model is currently SELECTED (the
@@ -457,7 +535,13 @@ _CAPABILITY_SELECT_TASK = {
     ModelCapability.VISION: TaskType.VISION,
     ModelCapability.OCR: TaskType.OCR,
     ModelCapability.RERANK: TaskType.RERANK,
+    ModelCapability.SPEECH_TO_TEXT: TaskType.SPEECH_TO_TEXT,
+    ModelCapability.TEXT_TO_SPEECH: TaskType.TEXT_TO_SPEECH,
 }
+
+_SPEECH_CAPABILITIES = frozenset(
+    {ModelCapability.SPEECH_TO_TEXT.value, ModelCapability.TEXT_TO_SPEECH.value}
+)
 
 
 _CAPABILITY_NOTES = {
@@ -474,6 +558,19 @@ _CAPABILITY_NOTES = {
     ModelCapability.RERANK: (
         "The reranker endpoint serves one provider: the first model of that "
         "provider in this order is used."
+    ),
+    ModelCapability.SPEECH_TO_TEXT: (
+        "Transcription (voice input, audio/video ingestion) uses the first model in this "
+        "order: an OpenAI-compatible /audio/transcriptions endpoint at the model's own URL "
+        "(else its provider's API), or provider 'local' for faster-whisper (model id = "
+        "Whisper size). The next ones are the failover chain; without any, the local "
+        "faster-whisper engine (VOICE_STT_MODEL, default 'tiny') is used when installed."
+    ),
+    ModelCapability.TEXT_TO_SPEECH: (
+        "Voice output uses the first model in this order: an OpenAI-compatible "
+        "/audio/speech endpoint, ElevenLabs, or provider 'local' (kokoro-v1.0, macos-say, "
+        "an OmniVoice checkpoint). Without any, macOS say / Kokoro are used when present, "
+        "else the browser's own speech synthesis."
     ),
 }
 
@@ -495,11 +592,18 @@ def _row_servable(m: Any) -> bool:
 
     if not is_eligible(m):
         return False
+    provider = str(getattr(m, "provider", "") or "").strip().lower()
+    if provider == "local":
+        # An in-process speech engine: servable when it is installed here.
+        from app.ai_router.speech import STT, local_engine_available
+
+        caps = {str(getattr(c, "value", c)) for c in m.capabilities}
+        capability = STT if STT in caps else "text_to_speech"
+        return local_engine_available(capability, str(m.model_id))
     if (m.extra or {}).get("source") == "override":
         return True
     if getattr(m, "base_url", None) or keyed_endpoint_usable(m):
         return True
-    provider = str(getattr(m, "provider", "") or "").strip().lower()
     if provider in ("openai", "openai_compatible") and (os.getenv("OPENAI_BASE_URL") or "").strip():
         return True  # a self-hosted OpenAI-compatible endpoint (key optional)
     return provider_ready(provider)
@@ -1097,6 +1201,31 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     model_id = str(body.get("model_id", "") or "").strip()
     provider = str(body.get("provider", "") or "").strip() or "custom"
     caps = {str(c) for c in (body.get("capabilities") or []) if c}
+    chat = bool(caps & _CHAT_CAPABILITIES)
+    speech_probe = _speech_probe_kind(caps) if not chat else None
+    if speech_probe and provider == "local" and model_id:
+        # An in-process engine: no endpoint to call; report whether it is installed.
+        from app.ai_router.speech import probe_local_engine
+        from app.api import model_registry_probes as local_probes
+
+        local_checks = []
+        for kind, kind_caps in _probe_plan(caps):
+            check = local_probes.check_result(kind, kind_caps)
+            check.update(probe_local_engine(kind, model_id))
+            check["error_kind"] = "unsupported" if not check["ok"] else None
+            local_checks.append(check)
+        failed_local = next((c for c in local_checks if not c["ok"]), None)
+        return {
+            "ok": failed_local is None,
+            "latency_ms": 0.0,
+            "probe": speech_probe,
+            "model_listed": None,
+            "served_models": [],
+            "detail": local_checks[0]["detail"],
+            "error": failed_local["error"] if failed_local else None,
+            "error_kind": failed_local["error_kind"] if failed_local else None,
+            "checks": local_checks,
+        }
     base = _checked_base_url(body.get("base_url"))
     if not model_id or not base:
         raise HTTPException(400, "model_id and base_url are required")
@@ -1204,6 +1333,11 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
                             request, client, base=base, headers=headers, model_id=model_id,
                             requested_dims=requested_dims, capabilities=kind_caps,
                         )
+                    elif kind in _SPEECH_CAPABILITIES:
+                        check = await _probe_speech(
+                            client, kind, base=base, headers=headers, model_id=model_id,
+                            capabilities=kind_caps,
+                        )
                     else:
                         check = await probes.probe_rerank(
                             client, base=base, headers=headers, model_id=model_id,
@@ -1269,7 +1403,36 @@ def _probe_plan(caps: set[str]) -> list[tuple[str, list[str]]]:
         plan.append(("embedding", [ModelCapability.EMBEDDING.value]))
     if ModelCapability.RERANK.value in caps:
         plan.append(("rerank", [ModelCapability.RERANK.value]))
+    # Speech: a real /audio/transcriptions (generated WAV) / /audio/speech call.
+    for speech_cap in (ModelCapability.SPEECH_TO_TEXT.value, ModelCapability.TEXT_TO_SPEECH.value):
+        if speech_cap in caps:
+            plan.append((speech_cap, [speech_cap]))
     return plan or [("chat", [ModelCapability.TEXT_GENERATION.value])]
+
+
+async def _probe_speech(
+    client: Any,
+    kind: str,
+    *,
+    base: str,
+    headers: dict[str, str],
+    model_id: str,
+    capabilities: list[str],
+) -> dict[str, Any]:
+    """One speech check: transcribe a generated WAV tone (``speech_to_text``) or
+    synthesize a phrase and require audio bytes back (``text_to_speech``)."""
+    import time
+
+    from app.ai_router.speech import STT, probe_speech_to_text, probe_text_to_speech
+    from app.api import model_registry_probes as probes
+
+    out = probes.check_result(kind, capabilities)
+    start = time.monotonic()
+    probe_fn = probe_speech_to_text if kind == STT else probe_text_to_speech
+    out.update(await probe_fn(client, base=base, headers=headers, model_id=model_id))
+    out["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+    out["error_kind"] = probes.error_kind(out.get("error"))
+    return out
 
 
 async def _probe_embedding(

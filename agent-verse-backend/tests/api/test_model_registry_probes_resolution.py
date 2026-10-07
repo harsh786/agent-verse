@@ -299,10 +299,15 @@ def _add(client: TestClient, model_id: str, caps: list[str], **extra: Any) -> No
     assert r.status_code == 200, r.text
 
 
-def test_resolution_with_nothing_configured_warns_per_capability() -> None:
+def test_resolution_with_nothing_configured_warns_per_capability(monkeypatch) -> None:
+    from app.ai_router import speech
+
+    # No local speech engine either (faster-whisper / macOS say may be installed here).
+    monkeypatch.setattr(speech, "local_stt_available", lambda: False)
+    monkeypatch.setattr(speech, "local_tts_engine_available", lambda engine: False)
     out = _resolution(_client())
     assert [c["capability"] for c in out["capabilities"]] == [
-        "reasoning", "embedding", "vision", "ocr", "rerank",
+        "reasoning", "embedding", "vision", "ocr", "rerank", "speech_to_text", "text_to_speech",
     ]
     for c in out["capabilities"]:
         assert c["routed"] is True

@@ -1067,7 +1067,8 @@ export type ProbeErrorKind =
   | 'invalid_response'
   | 'http_error';
 
-export type ProbeKind = 'chat' | 'vision' | 'embedding' | 'rerank';
+export type ProbeKind =
+  | 'chat' | 'vision' | 'embedding' | 'rerank' | 'speech_to_text' | 'text_to_speech';
 
 /** One capability probe of Test connection (one real call). */
 export interface ModelProbeCheck {
@@ -1094,6 +1095,11 @@ export interface ModelProbeCheck {
   dimension_mismatch?: boolean;
   requested_dimensions?: number | null;
   dimensions_ignored?: boolean;
+  /** speech_to_text: what the endpoint transcribed from the generated test tone. */
+  transcript?: string;
+  /** text_to_speech: size and type of the audio that came back. */
+  audio_bytes?: number;
+  audio_content_type?: string;
 }
 
 /** `ok: false` still arrives as HTTP 200 with `error` set; a refused URL is a 400. */

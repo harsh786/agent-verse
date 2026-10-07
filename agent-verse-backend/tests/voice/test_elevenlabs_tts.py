@@ -17,6 +17,13 @@ import pytest
 from app.voice.providers.tts.elevenlabs import ElevenLabsTTS
 
 
+@pytest.fixture(autouse=True)
+def _elevenlabs_model(monkeypatch):
+    """The model is configuration (registry / VOICE_TTS_MODEL / ELEVENLABS_MODEL_ID)."""
+    monkeypatch.delenv("VOICE_TTS_MODEL", raising=False)
+    monkeypatch.setenv("ELEVENLABS_MODEL_ID", "eleven-configured")
+
+
 def _patch_httpx_post(content: bytes = b"fake-mp3-bytes", status: int = 200):
     def _factory(*args, **kwargs):
         ctx = AsyncMock()
@@ -145,6 +152,25 @@ async def test_synthesize_uses_voice_id_override(monkeypatch):
     assert captured["url"].endswith("/custom-voice")
     assert captured["headers"]["xi-api-key"] == "secret-key"
     assert captured["json"]["text"] == "hi"
+    # The configured model is sent, never a hardcoded vendor model.
+    assert captured["json"]["model_id"] == "eleven-configured"
+
+
+@pytest.mark.asyncio
+async def test_resolved_registry_model_wins_over_env(monkeypatch):
+    tts = ElevenLabsTTS(model="eleven-from-registry")
+    assert tts.model == "eleven-from-registry"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_without_a_configured_model_is_an_honest_error(monkeypatch):
+    from app.ai_router.resolve import ModelNotConfiguredError
+
+    monkeypatch.delenv("ELEVENLABS_MODEL_ID", raising=False)
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "secret-key")
+    tts = ElevenLabsTTS()
+    with pytest.raises(ModelNotConfiguredError, match="text_to_speech"):
+        await tts.synthesize("hello")
 
 
 @pytest.mark.asyncio

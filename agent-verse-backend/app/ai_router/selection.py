@@ -31,6 +31,9 @@ _TASK_CAPABILITY: dict[TaskType, ModelCapability] = {
     TaskType.RERANK: ModelCapability.RERANK,
     TaskType.OCR: ModelCapability.OCR,
     TaskType.VISION: ModelCapability.VISION,
+    TaskType.SPEECH: ModelCapability.SPEECH_TO_TEXT,
+    TaskType.SPEECH_TO_TEXT: ModelCapability.SPEECH_TO_TEXT,
+    TaskType.TEXT_TO_SPEECH: ModelCapability.TEXT_TO_SPEECH,
 }
 
 # Capabilities a task needs ON TOP of its base capability.
@@ -55,6 +58,12 @@ _TASK_ALIASES: dict[str, TaskType] = {
     "rerank": TaskType.RERANK,
     "ocr": TaskType.OCR,
     "vision": TaskType.VISION,
+    "speech": TaskType.SPEECH_TO_TEXT,
+    "speech_to_text": TaskType.SPEECH_TO_TEXT,
+    "stt": TaskType.SPEECH_TO_TEXT,
+    "transcription": TaskType.SPEECH_TO_TEXT,
+    "text_to_speech": TaskType.TEXT_TO_SPEECH,
+    "tts": TaskType.TEXT_TO_SPEECH,
 }
 
 

@@ -63,7 +63,7 @@ async def test_audio_parser_fallback_no_key():
     from app.ingestion.parsers.audio_parser import AudioParser
 
     parser = AudioParser()
-    with patch.object(parser, "_transcribe_with_whisper", AsyncMock(side_effect=Exception("No key"))):
+    with patch.object(parser, "_transcribe", AsyncMock(side_effect=Exception("No key"))):
         result = await parser.parse_bytes(b"fake_audio", "test.mp3", "audio/mpeg")
     # Graceful fallback — must not crash
     assert result is not None

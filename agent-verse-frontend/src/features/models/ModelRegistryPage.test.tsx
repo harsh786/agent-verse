@@ -356,7 +356,7 @@ describe('ModelRegistryPage', () => {
     mockFetch({ registry: { total: 0, capabilities: [] } });
     renderPage();
     await waitFor(() =>
-      expect(screen.getAllByText(/yet — add one/i)).toHaveLength(5),
+      expect(screen.getAllByText(/yet — add one/i)).toHaveLength(7),
     );
     expect(screen.getByTestId('empty-embedding')).toHaveTextContent('No embedding model yet — add one');
     expect(screen.getByTestId('empty-ocr')).toHaveTextContent('No OCR model yet — add one');
@@ -368,7 +368,7 @@ describe('ModelRegistryPage', () => {
     const spy = mockFetch();
     renderPage();
     await waitFor(() =>
-      expect(screen.getAllByText(/yet — add one/i)).toHaveLength(5),
+      expect(screen.getAllByText(/yet — add one/i)).toHaveLength(7),
     );
     expect(spy.mock.calls.some(([u]) => String(u).includes('/models/configured'))).toBe(false);
   });
