@@ -18,6 +18,9 @@ class GoalStatus(enum.StrEnum):
     EXECUTING = "executing"
     VERIFYING = "verifying"
     WAITING_HUMAN = "waiting_human"
+    # A fan-out parent that released its worker while its sub-goals run; the
+    # last sub-goal to finish re-queues it (a01-F006-05).
+    WAITING_CHILDREN = "waiting_children"
     COMPLETE = "complete"
     FAILED = "failed"
     CANCELLED = "cancelled"

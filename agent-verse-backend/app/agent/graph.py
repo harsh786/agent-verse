@@ -3,6 +3,8 @@
 Graph topology:
   START → initialize → rag_retrieval → plan → execute → verify →
           (complete → END | replan → plan | max_iter → END | waiting_human → END)
+          supervisor / execute → END while a fan-out parent waits for its sub-goals
+          (waiting_children; the last sub-goal re-queues it)
 
 Five nodes, each is an async function receiving the graph state dict and returning updates.
 LangGraph merges the returned dict into the running state (reducer pattern).
@@ -528,7 +530,16 @@ class AgentGraph(
             pre_plan_chain.append("debate")
         pre_plan_chain.append("plan")
         for _src, _dst in itertools.pairwise(pre_plan_chain):
-            g.add_edge(_src, _dst)
+            if _src == "supervisor":
+                # A supervisor that parked for its sub-goals ends the run here
+                # (waiting_children); its re-entry continues from the ledger.
+                g.add_conditional_edges(
+                    "supervisor",
+                    self._route_after_fanout,
+                    {"parked": END, "continue": _dst},
+                )
+            else:
+                g.add_edge(_src, _dst)
         g.add_edge("plan", "execute")
         # H1 + H7: execute → [refine] → [self_consistency] → verify
         _post_exec_target = "verify"
@@ -539,14 +550,14 @@ class AgentGraph(
             g.add_conditional_edges(
                 "execute",
                 self._route_after_execute,
-                {"failed": END, "continue": "refine"},
+                {"failed": END, "parked": END, "continue": "refine"},
             )
             g.add_edge("refine", _post_exec_target)
         else:
             g.add_conditional_edges(
                 "execute",
                 self._route_after_execute,
-                {"failed": END, "continue": _post_exec_target},
+                {"failed": END, "parked": END, "continue": _post_exec_target},
             )
         # Reflection: reflect → plan edge so re-plan follows reflection
         if self._enable_reflection:

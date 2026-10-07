@@ -25,7 +25,7 @@ from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: 
 
 
 class RoutingMixin:
-    """Mixin: _max_reflection_rounds, _route, _route_after_execute."""
+    """Mixin: _max_reflection_rounds, _route, _route_after_execute, _route_after_fanout."""
 
     def _max_reflection_rounds(self) -> int:
         return max(
@@ -212,9 +212,20 @@ class RoutingMixin:
 
     def _route_after_execute(self, state: GraphState) -> str:
         agent_state: AgentState = state["agent_state"]
+        if agent_state.status is GoalStatus.WAITING_CHILDREN:
+            # A goal tree dispatched its children: end this run (the worker
+            # releases its slot; the last child re-queues the goal).
+            return "parked"
         if self._fail_if_budget_exhausted(agent_state):
             return "failed"
         return "failed" if agent_state.status is GoalStatus.FAILED else "continue"
+
+    def _route_after_fanout(self, state: GraphState) -> str:
+        """After the supervisor node: end the run when it parked for its sub-goals."""
+        agent_state: AgentState | None = state.get("agent_state")
+        if agent_state is not None and agent_state.status is GoalStatus.WAITING_CHILDREN:
+            return "parked"
+        return "continue"
 
     # ------------------------------------------------------------------
     # Public interface

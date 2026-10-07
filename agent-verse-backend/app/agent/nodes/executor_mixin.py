@@ -911,9 +911,20 @@ class ExecutorMixin:
 
         ledger_for(self).reset()
 
-        # Goal-tree decomposition: delegate large plans to parallel sub-agents
-        if self._enable_goal_tree and len(plan) >= self._goal_tree_threshold:
-            from app.agent.goal_tree import execute_goal_tree
+        # Goal-tree decomposition: delegate large plans to parallel sub-agents.
+        # A parent re-queued by its last goal-tree child resumes the tree whatever
+        # its re-plan's length; a goal-tree child never builds a tree itself.
+        from app.agent.fanout_ledger import FANOUT_KIND_KEY, FANOUT_WAIT_KEY
+
+        _fanout_wait = agent_state.context.get(FANOUT_WAIT_KEY)
+        _resume_tree = isinstance(_fanout_wait, dict) and _fanout_wait.get("kind") == "goal_tree"
+        _tree_child = agent_state.context.get(FANOUT_KIND_KEY) == "goal_tree"
+        if (
+            self._enable_goal_tree
+            and not _tree_child
+            and (len(plan) >= self._goal_tree_threshold or _resume_tree)
+        ):
+            from app.agent.goal_tree import advance_goal_tree, execute_goal_tree
 
             def _sub_graph_factory() -> Any:
                 from opentelemetry import context as otel_context
@@ -978,32 +989,87 @@ class ExecutorMixin:
                 if self._model_router is not None:
                     with contextlib.suppress(Exception):
                         _tree_model = self._model_router.model_for("planning") or ""
+                from app.agent.fanout_ledger import goal_child_timeout_default
                 from app.agent.fanout_ledger import ledger_for as fanout_ledger_for
+                from app.agent.supervisor import SUBGOAL_MARKER
                 from app.providers.guarded_completion import GuardedDecisionProvider
 
-                sub_goals: list[SubGoal] = await execute_goal_tree(
-                    agent_state.goal,
-                    # Decomposition through the guarded path: circuit breaker,
-                    # timeout and a charge to the parent goal's budget (it called
-                    # planner.complete directly — uncharged, no circuit).
-                    planner=GuardedDecisionProvider(
-                        self._planner,
-                        role="goal_tree",
-                        tenant_ctx=tenant_ctx,
-                        goal_id=agent_state.goal_id,
-                    ),
+                # Decomposition through the guarded path: circuit breaker,
+                # timeout and a charge to the parent goal's budget (it called
+                # planner.complete directly — uncharged, no circuit).
+                _tree_planner = GuardedDecisionProvider(
+                    self._planner,
+                    role="goal_tree",
                     tenant_ctx=tenant_ctx,
-                    parent_goal_id=agent_state.goal_id,
-                    graph_factory=_sub_graph_factory,
-                    event_callback=self._event_callback,
-                    model=_tree_model,
-                    ledger=fanout_ledger_for(
-                        getattr(self, "_db_session_factory", None),
-                        tenant_id=getattr(tenant_ctx, "tenant_id", None),
-                        parent_goal_id=agent_state.goal_id,
-                        kind="goal_tree",
-                    ),
+                    goal_id=agent_state.goal_id,
                 )
+                _tree_ledger = fanout_ledger_for(
+                    getattr(self, "_db_session_factory", None),
+                    tenant_id=getattr(tenant_ctx, "tenant_id", None),
+                    parent_goal_id=agent_state.goal_id,
+                    kind="goal_tree",
+                )
+                _tree_goal_service = getattr(self, "_goal_service", None)
+                # a01-F007-01 / F006-05: on a worker, children are real goals and
+                # the parent parks between waves instead of holding its slot.
+                _durable_tree = (
+                    _tree_ledger is not None
+                    and _tree_goal_service is not None
+                    and bool(getattr(self, "_fanout_continuations", False))
+                    and not agent_state.context.get(SUBGOAL_MARKER)
+                )
+                sub_goals: list[SubGoal]
+                if _durable_tree:
+                    assert _tree_ledger is not None
+                    try:
+                        _advance = await advance_goal_tree(
+                            agent_state.goal,
+                            planner=_tree_planner,
+                            tenant_ctx=tenant_ctx,
+                            parent_goal_id=agent_state.goal_id,
+                            goal_service=_tree_goal_service,
+                            ledger=_tree_ledger,
+                            agent_id=getattr(self, "_agent_id", None),
+                            event_callback=self._event_callback,
+                            model=_tree_model,
+                            child_timeout_s=goal_child_timeout_default(
+                                agent_state.context, getattr(self, "_subgoal_timeout_s", None)
+                            ),
+                        )
+                    except Exception as tree_exc:
+                        # Children may already run as goals: never fall through to
+                        # executing the same plan in-process next to them.
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = (
+                            f"goal tree could not continue: {type(tree_exc).__name__}"
+                        )
+                        await self._emit(
+                            {"type": "goal_tree_error", "error": type(tree_exc).__name__}
+                        )
+                        return {"agent_state": agent_state}
+                    if _advance.parked:
+                        agent_state.status = GoalStatus.WAITING_CHILDREN
+                        agent_state.context["fanout_parked"] = "goal_tree"
+                        await self._emit(
+                            {
+                                "type": "goal_waiting_children",
+                                "pattern": "goal_tree",
+                                "pending": _advance.pending,
+                            }
+                        )
+                        return {"agent_state": agent_state}
+                    sub_goals = _advance.sub_goals
+                else:
+                    sub_goals = await execute_goal_tree(
+                        agent_state.goal,
+                        planner=_tree_planner,
+                        tenant_ctx=tenant_ctx,
+                        parent_goal_id=agent_state.goal_id,
+                        graph_factory=_sub_graph_factory,
+                        event_callback=self._event_callback,
+                        model=_tree_model,
+                        ledger=_tree_ledger,
+                    )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:
                     child_failures = [

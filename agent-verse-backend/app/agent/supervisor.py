@@ -2,6 +2,19 @@
 
 Pattern: decompose goal → spawn sub-agents → monitor → synthesize results.
 Each sub-agent runs with full governance, memory, and tool context inheritance.
+
+Two ways to wait for the sub-goals:
+
+* **continuation** (a worker parent with a durable ledger, a01-F006-05): every
+  sub-goal is a real goal with a per-child timeout; the parent dispatches up to
+  ``max_parallel`` of them and returns ``parked=True`` instead of waiting. The
+  worker releases its Celery slot (goal status ``waiting_children``) and the last
+  sub-goal to finish re-queues it; the next run re-attaches to the ledger,
+  folds the finished children in (from their goal rows / persisted events),
+  dispatches the rest, and synthesizes once every child is terminal. A child
+  past its timeout is cancelled by the fan-out sweeper.
+* **in-slot** (in-process runs, no ledger): the parent streams each sub-goal's
+  events under that child's timeout and cancels a child it gives up on.
 """
 
 from __future__ import annotations
@@ -13,7 +26,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from app.agent.fanout_ledger import FANOUT_TASK_KEY, FanoutLedger, LedgerEntry
+from app.agent.fanout_ledger import (
+    FANOUT_KIND_KEY,
+    FANOUT_TASK_KEY,
+    FanoutLedger,
+    LedgerEntry,
+    child_timeout_seconds,
+    failure_reason,
+    reconcile_children,
+)
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -46,6 +67,31 @@ def _final_answer(event: dict[str, Any], step_outputs: list[str]) -> str:
     return "\n\n".join(o for o in step_outputs if o.strip())
 
 
+def supervisor_child_outcome(
+    goal_status: str, error_message: str, events: list[dict[str, Any]]
+) -> tuple[str, str, str]:
+    """(status, result, error) of a finished sub-goal, from its row + persisted events.
+
+    The same reading the in-slot stream applied: the answer on ``goal_complete``,
+    else the outputs of the steps it executed; a completed sub-goal with no real
+    output is a failure, never the literal string 'completed'.
+    """
+    if goal_status == "complete":
+        step_outputs: list[str] = []
+        answer = ""
+        for raw in events:
+            evt = _unwrap_bridged_event(raw)
+            etype = evt.get("type")
+            if etype == "step_complete" and evt.get("output"):
+                step_outputs.append(str(evt["output"]))
+            elif etype == "goal_complete":
+                answer = _final_answer(evt, step_outputs) or answer
+        answer = answer or _final_answer({}, step_outputs)
+        if answer:
+            return "complete", answer, ""
+        return "failed", "", "sub-goal completed without producing any output"
+    return "failed", "", failure_reason(goal_status, error_message, events)
+
 
 # execution_context / agent-state context key set on goals a supervisor spawned.
 SUBGOAL_MARKER = "_supervisor_parent_goal_id"
@@ -63,16 +109,32 @@ class SubAgentTask:
     error: str = ""
     started_at: str = ""
     completed_at: str = ""
+    # The plan's own timeout for this sub-task (decomposition ``timeout_seconds``).
+    timeout_s: float | None = None
 
 
-def _task_from_entry(entry: LedgerEntry) -> SubAgentTask:
+def _spec_timeout(spec: dict[str, Any]) -> float | None:
+    value = spec.get("timeout_seconds")
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if value > 0 else None
+
+
+def _task_from_entry(entry: LedgerEntry, *, live: bool = False) -> SubAgentTask:
+    if entry.finished:
+        status = entry.status
+    elif live and entry.status == "dispatched":
+        status = "running"
+    else:
+        status = "pending"
     return SubAgentTask(
         task_id=entry.task_key,
         goal=str(entry.spec.get("goal", "")),
         goal_id=entry.child_goal_id or "",
-        status=entry.status if entry.finished else "pending",
+        status=status,
         result=entry.result,
         error=entry.error,
+        timeout_s=_spec_timeout(entry.spec),
     )
 
 
@@ -82,6 +144,9 @@ class SupervisionResult:
     tasks: list[SubAgentTask]
     synthesized_result: str = ""
     total_cost_usd: float = 0.0
+    # Continuation: the parent dispatched its sub-goals and must wait for them
+    # outside its worker slot (status ``waiting_children``); nothing synthesized.
+    parked: bool = False
 
 
 class SupervisorAgent:
@@ -103,13 +168,29 @@ class SupervisorAgent:
         goal_service: Any,
         agent_router: Any = None,
         max_parallel: int = 5,
-        timeout_per_subtask: float = 300.0,
+        timeout_per_subtask: float | None = None,
+        continuation: bool = False,
+        child_timeout_seconds: float | None = None,
     ) -> None:
         self._planner = planner_provider
         self._goal_service = goal_service
         self._router = agent_router
-        self._max_parallel = max_parallel
+        self._max_parallel = max(1, int(max_parallel))
+        # An explicit per-sub-task timeout overrides the per-child resolution.
         self._timeout = timeout_per_subtask
+        # Park instead of waiting in the slot (needs a ledger; worker runs only).
+        self._continuation = continuation
+        # The goal's default child timeout (subgoal_timeout_seconds / the parent's
+        # effective goal timeout); per-task plan timeouts win over it.
+        self._child_timeout_default = child_timeout_seconds
+
+    def _task_timeout(self, task: SubAgentTask, tenant_ctx: Any) -> float:
+        """This sub-task's timeout: the plan's, else the goal's/agent's, else the plan tier's."""
+        if self._timeout is not None:
+            return float(self._timeout)
+        return child_timeout_seconds(
+            requested=task.timeout_s, default=self._child_timeout_default, tenant_ctx=tenant_ctx
+        )
 
     async def _cancel_abandoned(self, task: SubAgentTask, tenant_ctx: Any) -> None:
         cancel = getattr(self._goal_service, "cancel_goal", None)
@@ -137,6 +218,8 @@ class SupervisorAgent:
         With a ``ledger`` (the parent is a persisted goal and Postgres is wired)
         the decomposition and every child's goal id / outcome are durable, so a
         parent redelivered after a crash re-attaches instead of re-dispatching.
+        In continuation mode (``continuation=True`` + a ledger) it never waits:
+        the result is ``parked`` until every child is terminal (see module doc).
         """
 
         async def emit(event: dict) -> None:
@@ -145,7 +228,8 @@ class SupervisorAgent:
                     await event_callback(event)
 
         # Step 1: Decompose goal into sub-tasks — or, when this parent was already
-        # here before a crash/redelivery, re-attach to the durable plan (CORE-31).
+        # here before a crash/redelivery (or a continuation re-entry), re-attach to
+        # the durable plan (CORE-31).
         entries = await ledger.load() if ledger is not None else []
         if entries:
             sub_tasks = [_task_from_entry(e) for e in entries]
@@ -174,13 +258,26 @@ class SupervisorAgent:
                 # Durable BEFORE any dispatch; raises (no fan-out) when it cannot
                 # be written. First writer wins, so a concurrent redelivery of the
                 # same parent converges on one plan.
-                planned = await ledger.plan(
+                entries = await ledger.plan(
                     [
-                        LedgerEntry(task_key=t.task_id, position=i, spec={"goal": t.goal})
+                        LedgerEntry(
+                            task_key=t.task_id,
+                            position=i,
+                            spec={
+                                "goal": t.goal,
+                                **({"timeout_seconds": t.timeout_s} if t.timeout_s else {}),
+                            },
+                        )
                         for i, t in enumerate(sub_tasks)
                     ]
                 )
-                sub_tasks = [_task_from_entry(e) for e in planned]
+                sub_tasks = [_task_from_entry(e) for e in entries]
+
+        if self._continuation and ledger is not None:
+            return await self._advance(
+                goal, tenant_ctx, emit, parent_goal_id=parent_goal_id, ledger=ledger,
+                entries=entries,
+            )
 
         # Step 2: Execute sub-tasks in parallel batches
         semaphore = asyncio.Semaphore(self._max_parallel)
@@ -188,6 +285,8 @@ class SupervisorAgent:
         async def run_task(task: SubAgentTask) -> None:
             if task.status in ("complete", "failed"):
                 return  # finished before a crash: reuse its recorded result
+            # Per child (the plan's / agent's timeout) — no longer a fixed 300 s.
+            _timeout = self._task_timeout(task, tenant_ctx)
             async with semaphore:
                 task.status = "running"
                 task.started_at = datetime.now(UTC).isoformat()
@@ -266,7 +365,7 @@ class SupervisorAgent:
                     # goal_complete event carries no "output" key, so the result used to
                     # be the literal string 'completed' for every sub-task.
                     step_outputs: list[str] = []
-                    async with asyncio.timeout(self._timeout):
+                    async with asyncio.timeout(_timeout):
                         async for raw_evt in self._goal_service.subscribe_events(
                             goal_id=goal_id, tenant_ctx=tenant_ctx
                         ):
@@ -292,7 +391,7 @@ class SupervisorAgent:
                         task.error = "event stream ended before the sub-goal finished"
                 except TimeoutError:
                     task.status = "failed"
-                    task.error = f"Timeout after {self._timeout}s"
+                    task.error = f"Timeout after {_timeout:g}s"
                     # The parent gives up on it: stop the sub-goal too, or it keeps
                     # running (and spending) with a result nobody will read.
                     await self._cancel_abandoned(task, tenant_ctx)
@@ -325,8 +424,129 @@ class SupervisorAgent:
                     )
 
         await asyncio.gather(*[run_task(t) for t in sub_tasks])
+        return await self._finish(goal, sub_tasks, tenant_ctx, emit)
 
-        # Step 3: Synthesize results
+    async def _advance(
+        self,
+        goal: str,
+        tenant_ctx: Any,
+        emit: Any,
+        *,
+        parent_goal_id: str | None,
+        ledger: FanoutLedger,
+        entries: list[LedgerEntry],
+    ) -> SupervisionResult:
+        """Continuation step: fold finished children in, dispatch more, park or finish.
+
+        Never waits on a child. Idempotent on re-entry: finished children are read
+        from the ledger, dispatched ones are re-attached (never resubmitted).
+        """
+        for done in await reconcile_children(ledger, entries, supervisor_child_outcome):
+            await emit(
+                {
+                    "type": "supervisor_task_complete",
+                    "task_id": done.task_key,
+                    "status": done.status,
+                    "error": done.error[:100] if done.error else None,
+                }
+            )
+        in_flight = sum(1 for e in entries if e.status == "dispatched")
+        free = max(0, self._max_parallel - in_flight)
+        for entry in [e for e in entries if e.status == "planned"][:free]:
+            await self._dispatch_entry(entry, tenant_ctx, emit, parent_goal_id, ledger)
+        tasks = [_task_from_entry(e, live=True) for e in entries]
+        pending = [e for e in entries if not e.finished]
+        if pending:
+            await emit(
+                {
+                    "type": "supervisor_waiting_children",
+                    "task_count": len(entries),
+                    "pending": len(pending),
+                    "goal_ids": [e.child_goal_id for e in pending if e.child_goal_id],
+                }
+            )
+            return SupervisionResult(success=False, tasks=tasks, parked=True)
+        return await self._finish(goal, tasks, tenant_ctx, emit)
+
+    async def _dispatch_entry(
+        self,
+        entry: LedgerEntry,
+        tenant_ctx: Any,
+        emit: Any,
+        parent_goal_id: str | None,
+        ledger: FanoutLedger,
+    ) -> None:
+        """Submit (or re-attach) one planned child as a real goal with its deadline."""
+        task = _task_from_entry(entry)
+        await emit(
+            {"type": "supervisor_task_started", "task_id": task.task_id, "goal": task.goal[:100]}
+        )
+        goal_id: str = ""
+        try:
+            found = entry.child_goal_id or await ledger.find_child_goal(entry.task_key)
+            if found:
+                goal_id = str(found)
+                await emit(
+                    {
+                        "type": "supervisor_task_reattached",
+                        "task_id": task.task_id,
+                        "goal_id": goal_id,
+                    }
+                )
+            else:
+                sub = await self._goal_service.submit_goal(
+                    goal=task.goal,
+                    priority="normal",
+                    dry_run=False,
+                    tenant_ctx=tenant_ctx,
+                    agent_id=task.agent_id,
+                    execution_context={
+                        SUBGOAL_MARKER: parent_goal_id or "supervisor",
+                        FANOUT_TASK_KEY: task.task_id,
+                        FANOUT_KIND_KEY: "supervisor",
+                    },
+                )
+                goal_id = str(sub["goal_id"])
+                if parent_goal_id and goal_id == str(parent_goal_id):
+                    raise RuntimeError("sub-goal resolved to the parent goal")
+                await emit(
+                    {
+                        "type": "supervisor_task_goal_created",
+                        "task_id": task.task_id,
+                        "goal_id": goal_id,
+                    }
+                )
+        except Exception as exc:
+            entry.status, entry.error = "failed", str(exc)[:2000]
+            try:
+                await ledger.mark_finished(entry.task_key, status="failed", error=entry.error)
+            except Exception as write_exc:
+                logger.warning(
+                    "supervisor_ledger_finish_write_failed", error=type(write_exc).__name__
+                )
+            await emit(
+                {
+                    "type": "supervisor_task_complete",
+                    "task_id": task.task_id,
+                    "status": "failed",
+                    "error": entry.error[:100],
+                }
+            )
+            return
+        entry.child_goal_id, entry.status = goal_id, "dispatched"
+        try:
+            await ledger.mark_dispatched(
+                entry.task_key, goal_id, timeout_s=self._task_timeout(task, tenant_ctx)
+            )
+        except Exception as exc:
+            # The goals row (parent + task key) still finds it on re-entry, and the
+            # parent is woken by the row reaching a terminal status.
+            logger.warning("supervisor_ledger_dispatch_write_failed", error=type(exc).__name__)
+
+    async def _finish(
+        self, goal: str, sub_tasks: list[SubAgentTask], tenant_ctx: Any, emit: Any
+    ) -> SupervisionResult:
+        # Step 3: Synthesize results (in plan order)
         completed = [t for t in sub_tasks if t.status == "complete"]
         failed = [t for t in sub_tasks if t.status == "failed"]
 
@@ -360,7 +580,8 @@ class SupervisorAgent:
             "Each sub-task should be self-contained and achievable by a single agent.\n\n"
             "Goal: {goal}\n\n"
             'Return JSON only:\n{{"sub_tasks": [{{"goal": "specific sub-task description",'
-            ' "optional": false}}]}}'
+            ' "optional": false, "timeout_seconds": 600}}]}}\n'
+            "timeout_seconds is optional: how long that sub-task may take."
         )
 
         req = CompletionRequest(
@@ -384,7 +605,12 @@ class SupervisorAgent:
                 data = json.loads(m.group())
                 tasks = []
                 for t in data.get("sub_tasks", [])[:6]:
-                    tasks.append(SubAgentTask(goal=t.get("goal", "")))
+                    tasks.append(
+                        SubAgentTask(
+                            goal=t.get("goal", ""),
+                            timeout_s=_spec_timeout(t) if isinstance(t, dict) else None,
+                        )
+                    )
                 if tasks:
                     return tasks
         except Exception as exc:

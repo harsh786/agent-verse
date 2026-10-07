@@ -1317,6 +1317,16 @@ async def _lookup_worker_agent_config(
     )
 
 
+def _worker_goal_timeout(plan: Any, agent_timeout_seconds: int | None) -> float:
+    """The goal's effective timeout: the plan's, shortened by the agent's own."""
+    from app.tenancy.context import PLAN_LIMITS
+    from app.tenancy.limits import effective_goal_timeout
+
+    plan_timeout = getattr(PLAN_LIMITS.get(plan), "goal_timeout_seconds", 1800)
+    timeout, _source = effective_goal_timeout(plan_timeout, agent_timeout_seconds)
+    return float(timeout)
+
+
 def _timed_out_goal_state(goal: str, tenant_ctx: Any, goal_id: str, timeout_s: Any) -> Any:
     from app.agent.state import AgentState, GoalStatus
 
@@ -1381,6 +1391,7 @@ class _PersistentWorkerRunner:
         event_callback: Any = None,
         goal_id: str | None = None,
     ) -> Any:
+        from app.agent.fanout_ledger import FanoutParked
         from app.agent.persistence import GoalPersistenceEngine
         from app.agent.state import AgentState, GoalStatus
 
@@ -1406,18 +1417,24 @@ class _PersistentWorkerRunner:
                     attempt=attempt,
                 )
                 last["state"] = state
+                if getattr(state, "status", None) == GoalStatus.WAITING_CHILDREN:
+                    # Parked for its sub-goals: not a failed attempt to retry.
+                    raise FanoutParked(state)
                 return state
 
         engine = GoalPersistenceEngine(
             config=self._config, db=self._db, redis=self._redis, hitl_gateway=self._hitl
         )
-        success, attempts = await engine.run(
-            goal=goal,
-            agent_factory=_Attempt(),
-            tenant_ctx=tenant_ctx,
-            event_callback=event_callback,
-            goal_id=goal_id or "",
-        )
+        try:
+            success, attempts = await engine.run(
+                goal=goal,
+                agent_factory=_Attempt(),
+                tenant_ctx=tenant_ctx,
+                event_callback=event_callback,
+                goal_id=goal_id or "",
+            )
+        except FanoutParked as parked:
+            return parked.state
         final = last.get("state")
         if success and final is not None:
             return final
@@ -2165,6 +2182,7 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
     """
     import json as _json
 
+    from app.agent.fanout_ledger import FANOUT_KIND_KEY, FANOUT_WAIT_KEY
     from app.agent.supervisor import SUBGOAL_MARKER
     from app.services.goal_service import graph_context_from_execution_context
 
@@ -2194,7 +2212,40 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
     out = graph_context_from_execution_context(ctx)
     if ctx.get(SUBGOAL_MARKER):
         out[SUBGOAL_MARKER] = ctx[SUBGOAL_MARKER]
+        if ctx.get(FANOUT_KIND_KEY):
+            out[FANOUT_KIND_KEY] = ctx[FANOUT_KIND_KEY]
+        # A fan-out child spends its PARENT's budget (a goal-tree child always
+        # did): the parent is the validated goals.parent_goal_id column (same
+        # tenant, set by _db_persist_goal), never a context value a caller wrote.
+        parent = await _goal_parent_id(goal_id, tenant_id)
+        if parent:
+            out["_budget_goal_id"] = parent
+    if isinstance(ctx.get(FANOUT_WAIT_KEY), dict):
+        # A parent re-queued by its last sub-goal: which fan-out it resumes.
+        out[FANOUT_WAIT_KEY] = ctx[FANOUT_WAIT_KEY]
     return out or None
+
+
+async def _goal_parent_id(goal_id: str, tenant_id: str) -> str | None:
+    """The goal row's ``parent_goal_id`` (None: none / unreadable)."""
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+            parent = (
+                await session.execute(
+                    text("SELECT parent_goal_id FROM goals WHERE id = :g AND tenant_id = :t"),
+                    {"g": goal_id, "t": tenant_id},
+                )
+            ).scalar()
+    except Exception as exc:
+        logger.warning("goal_parent_lookup_failed goal=%s: %s", goal_id, exc)
+        return None
+    return parent if isinstance(parent, str) and parent else None
 
 
 async def _goal_execution_context(goal_id: str, tenant_id: str) -> dict[str, Any]:
@@ -2364,6 +2415,11 @@ def _worker_tenant_policy_roles(tenant_id: str, real_provider: Any) -> dict[str,
 _TERMINAL_GOAL_STATUSES = ("complete", "failed", "cancelled")
 # Paused for a human: resumable only through resume_goal, never by a redelivery.
 _WAITING_HUMAN_STATUS = "waiting_human"
+# A fan-out parent parked while its sub-goals run (a01-F006-05): re-queued only
+# by the wake of its last sub-goal (which moves it to planning first), never by
+# a redelivered / stale message.
+_WAITING_CHILDREN_STATUS = "waiting_children"
+_PARKED_STATUSES = (_WAITING_HUMAN_STATUS, _WAITING_CHILDREN_STATUS)
 
 
 async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> bool:
@@ -2410,6 +2466,8 @@ async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
     A goal ``waiting_human`` is NOT claimable (WF-18): a redelivered or stale
     message must not un-pause a goal awaiting a human. resume_goal moves the row
     to ``executing`` before it re-enqueues run_goal, so a real relaunch claims.
+    Likewise a parent ``waiting_children``: the wake of its last sub-goal moves
+    it to ``planning`` before it re-enqueues run_goal (a01-F006-05).
     """
     from sqlalchemy import select, update
 
@@ -2425,7 +2483,7 @@ async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
                 .where(
                     Goal.id == goal_id,
                     Goal.tenant_id == tenant_id,
-                    Goal.status.notin_((*_TERMINAL_GOAL_STATUSES, _WAITING_HUMAN_STATUS)),
+                    Goal.status.notin_((*_TERMINAL_GOAL_STATUSES, *_PARKED_STATUSES)),
                 )
                 .values(status="executing")
                 .returning(Goal.id)
@@ -3029,7 +3087,6 @@ def run_goal(
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "failed", "goal_id": goal_id, "reason": "goal_claim_unavailable"}
         if _claim != "claimed":
-            _waiting = _claim == _WAITING_HUMAN_STATUS
             logger.warning(
                 "goal_not_claimable_skipping goal_id=%s status=%s", goal_id, _claim
             )
@@ -3037,11 +3094,15 @@ def run_goal(
                 with contextlib.suppress(Exception):
                     _lock.release(goal_id)
             # No counter decrement: the run that finished it released the slot,
-            # and a goal waiting for a human released it when it was suspended.
+            # a goal waiting for a human released it when it was suspended, and a
+            # parent waiting for its sub-goals still holds it for them.
             return {
                 "status": "skipped",
                 "goal_id": goal_id,
-                "reason": "waiting_for_human" if _waiting else "already_terminal",
+                "reason": {
+                    _WAITING_HUMAN_STATUS: "waiting_for_human",
+                    _WAITING_CHILDREN_STATUS: "waiting_for_children",
+                }.get(_claim, "already_terminal"),
                 "goal_status": _claim,
             }
 
@@ -3738,6 +3799,13 @@ def run_goal(
                 if _subgoal_gs is not None:
                     _subgoal_gs._redis_url_for_pubsub = REDIS_URL
                     _agent_runner._goal_service = _WorkerSubgoalService(_subgoal_gs)
+                    # a01-F006-05: a fan-out parent parks (waiting_children) and is
+                    # re-queued by its last sub-goal instead of holding this slot;
+                    # a child's default timeout is this goal's effective timeout.
+                    _agent_runner._fanout_continuations = db_factory is not None
+                    _agent_runner._subgoal_timeout_s = _worker_goal_timeout(
+                        plan, _agent_timeout_seconds
+                    )
             except Exception as _sgs_exc:
                 logger.warning("worker_subgoal_service_wire_failed: %s", _sgs_exc)
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
@@ -4178,6 +4246,43 @@ def run_goal(
                 "reason": f"timeout after {goal_timeout_s}s{_timeout_note}",
                 "result_scope": "worker_only",
             }
+        if state.status.value == _WAITING_CHILDREN_STATUS:
+            # a01-F006-05: the parent dispatched its sub-goals and ended this run
+            # instead of waiting for them in this slot. Not terminal: no
+            # worker_complete, no metering / mission finalize / learning, and the
+            # tenant concurrency slot stays held (its sub-goals run under it).
+            _terminal_recorded = _WAITING_CHILDREN_STATUS
+            # Release this run's lock BEFORE the park is visible: the last child's
+            # wake may re-enqueue the parent at once, and its run must be able to
+            # take the lock (a held lock would make it skip as already executing).
+            if _heartbeat is not None:
+                with contextlib.suppress(Exception):
+                    _heartbeat.stop()
+            if _lock:
+                with contextlib.suppress(Exception):
+                    _lock.release(goal_id)
+            _park = _run_async(
+                _park_fanout_parent(
+                    goal_id,
+                    tenant_id,
+                    kind=str(state.context.get("fanout_parked") or "fanout"),
+                    plan=getattr(plan, "value", str(plan)),
+                    connector_ids=connector_ids,
+                    trigger_chain_depth=trigger_chain_depth,
+                    source_trigger_id=source_trigger_id,
+                )
+            )
+            return {
+                "status": _WAITING_CHILDREN_STATUS if _park in ("parked", "requeued") else _park,
+                "goal_id": goal_id,
+                "agent_id": agent_id,
+                "workflow_mode": workflow_mode,
+                "priority": priority,
+                "dry_run": dry_run,
+                "iterations": state.iterations,
+                "park": _park,
+                "result_scope": "submitted_goal" if goal_bridge is not None else "worker_only",
+            }
         _run_async(
             mark_worker_complete(
                 state.status.value,
@@ -4310,7 +4415,7 @@ def run_goal(
                     "goal_status_unreadable_after_error goal_id=%s: %s", goal_id, _status_exc
                 )
             else:
-                if _seen in (*_TERMINAL_GOAL_STATUSES, _WAITING_HUMAN_STATUS):
+                if _seen in (*_TERMINAL_GOAL_STATUSES, *_PARKED_STATUSES):
                     _final_status = _seen
         if _final_status is not None:
             logger.error(
@@ -4319,7 +4424,11 @@ def run_goal(
                 _final_status,
                 _redacted_error(exc),
             )
-            if _terminal_recorded is not None and not _slot_released:
+            if (
+                _terminal_recorded not in (None, _WAITING_CHILDREN_STATUS)
+                and not _slot_released
+            ):
+                # (A parked parent keeps its slot for its sub-goals.)
                 _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
                 "status": _final_status,
@@ -4409,6 +4518,72 @@ def run_goal(
         if _lock:
             with contextlib.suppress(Exception):
                 _lock.release(goal_id)
+        if subgoal and goal_bridge is not None:
+            # A fan-out child that just ended re-queues its parked parent when it
+            # was the last one running (exactly once: a conditional UPDATE). A
+            # no-op while siblings run, for a non-terminal (retrying) child, or
+            # when the parent is not parked. The fan-out sweeper is the backstop.
+            with contextlib.suppress(Exception):
+                _run_async(_wake_fanout_parent_of(goal_id, tenant_id))
+
+
+async def _park_fanout_parent(
+    goal_id: str,
+    tenant_id: str,
+    *,
+    kind: str,
+    plan: str,
+    connector_ids: list[str] | None,
+    trigger_chain_depth: int,
+    source_trigger_id: str,
+) -> str:
+    """Park a fan-out parent in ``waiting_children``, then wake it at once if every
+    child already finished (one finished before the park was visible, so its own
+    wake found the parent still running). Returns ``parked`` / ``requeued`` / the
+    row's real status (e.g. cancelled meanwhile) / ``unrecorded`` (DB error: the
+    row stays active with no heartbeat, so the stale-runner reaper re-runs it).
+    """
+    from app.db.session import get_session_factory
+    from app.services.fanout_continuation import park_parent, wake_parent
+
+    factory = get_session_factory()
+    try:
+        outcome = await park_parent(
+            factory,
+            tenant_id=tenant_id,
+            goal_id=goal_id,
+            kind=kind,
+            plan=plan,
+            connector_ids=connector_ids,
+            trigger_chain_depth=trigger_chain_depth,
+            source_trigger_id=source_trigger_id,
+        )
+    except Exception as exc:
+        logger.error("fanout_park_failed goal_id=%s: %s", goal_id, _redacted_error(exc))
+        return "unrecorded"
+    if outcome != "parked":
+        logger.warning("fanout_park_skipped goal_id=%s status=%s", goal_id, outcome)
+        return outcome
+    logger.info("fanout_parent_parked goal_id=%s kind=%s", goal_id, kind)
+    # The parked parent keeps its concurrency slot for its sub-goals: a fresh run
+    # window covers the wait (every child is cancelled by its deadline, which
+    # never exceeds the plan's goal timeout).
+    await _renew_slot_lease(tenant_id, goal_id, plan, REDIS_URL)
+    try:
+        if await wake_parent(factory, tenant_id=tenant_id, parent_goal_id=goal_id):
+            return "requeued"
+    except Exception as exc:  # the sweeper wakes it
+        logger.warning("fanout_post_park_wake_failed goal_id=%s: %s", goal_id, exc)
+    return "parked"
+
+
+async def _wake_fanout_parent_of(goal_id: str, tenant_id: str) -> bool:
+    from app.db.session import get_session_factory
+    from app.services.fanout_continuation import wake_parent_of
+
+    return await wake_parent_of(
+        get_session_factory(), tenant_id=tenant_id, child_goal_id=goal_id
+    )
 
 
 @celery_app.task(name="app.scaling.tasks.run_scheduled_goal", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
@@ -6911,6 +7086,10 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 def reap_stale_goal_runners(self: Any) -> dict[str, Any]:
     """GOAL-STALL: requeue / fail goals whose runner heartbeat went stale.
 
+    Also sweeps fan-out continuations (a01-F006-05): a sub-goal past its
+    per-child timeout is cancelled and every parent parked in
+    ``waiting_children`` whose sub-goals all finished is re-queued.
+
     Unlike ``detect_stuck_goals`` (plan goal timeout, 1-24 h) this catches a
     dead or wedged worker within ``goal_heartbeat_stale_seconds``. Errors are
     raised, so a reaper that cannot run is a FAILED task, never a quiet success.
@@ -6973,7 +7152,7 @@ async def _reap_stale_goal_runners() -> dict[str, Any]:
             )
 
     try:
-        return await _reap(
+        result = await _reap(
             factory,
             redis_client=redis_client,
             enqueue=_enqueue,
@@ -6981,6 +7160,17 @@ async def _reap_stale_goal_runners() -> dict[str, Any]:
             publish=_publish,
             on_failed=_publish_goal_failed_chain,
         )
+        # a01-F006-05: cancel fan-out children past their per-child timeout and
+        # re-queue every parked parent with nothing left to wait on.
+        from app.services.fanout_continuation import sweep_fanout
+
+        result["fanout"] = await sweep_fanout(
+            factory,
+            redis_client=redis_client,
+            release_slot=_release_slot,
+            publish=_publish,
+        )
+        return result
     finally:
         await engine.dispose()
 

@@ -27,10 +27,12 @@ class GoalTransition(StrEnum):
 # Valid state machine transitions
 _VALID_TRANSITIONS: dict[str, list[str]] = {
     "pending": ["planning"],
-    "planning": ["executing", "failed", "cancelled"],
-    "executing": ["verifying", "failed", "cancelled", "waiting_human"],
+    "planning": ["executing", "failed", "cancelled", "waiting_children"],
+    "executing": ["verifying", "failed", "cancelled", "waiting_human", "waiting_children"],
     "verifying": ["complete", "failed", "executing"],  # re-execute on verify fail
     "waiting_human": ["executing", "cancelled"],
+    # A fan-out parent: re-queued (planning) by its last sub-goal, or cancelled.
+    "waiting_children": ["planning", "cancelled"],
     "complete": [],  # terminal
     "failed": [],  # terminal
     "cancelled": [],  # terminal
