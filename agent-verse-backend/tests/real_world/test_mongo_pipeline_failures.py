@@ -97,10 +97,15 @@ def test_connect_failures_are_honest_and_bounded(api: LiveAPI, cleanup: Any,
                             "database": "shop", "collections": ["orders"]},
                            ("timed out", "timeout", "could not connect", "unreachable"), 150),
     }
-    cid = srcs.create_collection(api, cleanup, "rw-mongo-fail-connect")
     soft: list[str] = []
     out: dict[str, Any] = {}
+    cids: list[str] = []
     for name, (cfg, words, bound) in cases.items():
+        # One KB collection per case: the cases differ only in credentials, and the
+        # platform (rightly) refuses a second Source for the same target in the same
+        # collection (credentials are not part of a Source's identity).
+        cid = srcs.create_collection(api, cleanup, f"rw-mongo-fail-connect-{name[:12]}")
+        cids.append(cid)
         started = time.monotonic()
         v = sj.validate(api, family=lm.FAMILY, source_type="mongodb", config=cfg)
         validate_s = round(time.monotonic() - started, 1)
@@ -126,8 +131,8 @@ def test_connect_failures_are_honest_and_bounded(api: LiveAPI, cleanup: Any,
         if int(job.get("docs_indexed") or 0):
             soft.append(f"{name}: indexed {job.get('docs_indexed')} documents")
     evidence["cases"] = out
-    if kb.documents_page(api, cid, 1, 0).get("total"):
-        soft.append("documents reached the collection through a failing Source")
+    if any(kb.documents_page(api, c, 1, 0).get("total") for c in cids):
+        soft.append("documents reached a collection through a failing Source")
     record(evidence, cases=len(cases))
     assert not soft, "; ".join(soft)
 
