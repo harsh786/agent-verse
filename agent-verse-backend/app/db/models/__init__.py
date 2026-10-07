@@ -59,7 +59,6 @@ from app.db.models.raft import (  # noqa: E402
     RAFTFineTuneJob,
     RAFTModelDeployment,
 )
-from app.db.models.routing import RoutingDecisionRow, RoutingOutcomeRow  # noqa: E402
 from app.db.models.runtime_records import (  # noqa: E402
     A2ARemoteAgentRow,
     GoalCostBreakdownRow,
@@ -150,9 +149,7 @@ __all__ = [  # noqa: RUF022
     "RAFTConfirmationGrant",
     "StrategyCertificationEvidence",
     "COORDINATION_TABLES",
-    "RoutingDecisionRow",
     "GoalCostBreakdownRow",
     "SimulationRunRow",
     "A2ARemoteAgentRow",
-    "RoutingOutcomeRow",
 ]

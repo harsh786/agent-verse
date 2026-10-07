@@ -506,6 +506,9 @@ async def test_submit_goal_accepts_agent_loaded_from_db_sync() -> None:
         def all(self) -> list[Any]:
             return self._rows
 
+        def scalar_one_or_none(self) -> Any:
+            return self._rows[0] if self._rows else None
+
     class _Session:
         async def __aenter__(self) -> _Session:
             return self

@@ -117,27 +117,25 @@ describe('BuilderPage — build flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /Build Project/i }));
   }
 
-  test('a successful JSON build shows the result card and generated files', async () => {
+  test('a successful build shows the result card pointing at the goal (no preview/download)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
-          name: 'My Landing',
+          project_id: 'p1',
+          workspace_id: 'w1',
+          status: 'submitted',
+          description: 'My Landing',
           goal_id: 'g1',
-          download_url: 'https://example.com/dl.zip',
-          files: [{ path: 'src/App.tsx', size: '2kb' }, { path: 'index.html' }],
-          summary: 'A tidy landing page.',
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
     await fillAndBuild();
     expect(await screen.findByText('Build started')).toBeInTheDocument();
-    expect(screen.getByText('My Landing')).toBeInTheDocument();
-    expect(screen.getByText('src/App.tsx')).toBeInTheDocument();
-    expect(screen.getByText('index.html')).toBeInTheDocument();
-    expect(screen.getByText('A tidy landing page.')).toBeInTheDocument();
-    // The download link (result.download_url) is rendered.
-    expect(screen.getByRole('link', { name: /Download/i })).toHaveAttribute('href', 'https://example.com/dl.zip');
+    expect(screen.getByText(/runs as a goal/i)).toBeInTheDocument();
+    // a10-F229-01: the builder serves no live preview, download or file list.
+    expect(screen.queryByRole('link', { name: /Download/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Generated Files/i)).not.toBeInTheDocument();
   });
 
   test('the "View Execution" action navigates to the generated goal', async () => {

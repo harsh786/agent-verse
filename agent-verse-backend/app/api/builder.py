@@ -1,13 +1,13 @@
 """
 Builder API — site and app generation experience.
 
-The builder orchestrates a specialized agent with:
-- persistent project workspace (artifact store)
-- code tools (CodeInterpreter)
-- frontend-design skill
-- live preview via artifact serving
+A builder project is an ordinary code-generation goal: POST /builder/projects
+submits it, GET /builder/projects/{id} resolves the project's build goal, and the
+goal page shows its progress and output.
 
-Phase 9 V1: static sites/SPAs built in sandbox (npm build)
+There is no live preview / asset serving (owner decision, a10-F229-01): serving
+agent-written HTML/JS needs a per-project artifact binding and a separate sandbox
+origin, so the always-501 /builder/preview and /builder/assets routes were removed.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.errors import PlatformError
@@ -39,7 +38,6 @@ class BuilderProject(BaseModel):
     workspace_id: str
     status: str
     description: str
-    preview_url: str | None = None
     goal_id: str | None = None
 
 
@@ -95,56 +93,49 @@ async def create_builder_project(
     if goal_id is None:
         # No goal service → nothing was started; do not claim "building".
         raise HTTPException(status_code=503, detail="Builder is unavailable (no goal service)")
-    # The build is an ordinary goal: track it via GET /goals/{goal_id}. There is
-    # no live preview (see serve_preview), so no preview_url is advertised.
+    # The build is an ordinary goal: track it via GET /builder/projects/{id} or
+    # GET /goals/{goal_id}. There is no live preview.
     return BuilderProject(
         project_id=project_id,
         workspace_id=workspace_id,
         status="submitted",
         description=body.description,
-        preview_url=None,
         goal_id=goal_id,
     )
 
 
-_NOT_IMPLEMENTED = (
-    "Builder project status and live preview are NOT IMPLEMENTED: builds run as "
-    "ordinary goals (track them via GET /goals/{goal_id}); nothing records a "
-    "project's artifacts per workspace or scopes them to a tenant, so no preview "
-    "can be served."
-)
-
-
 @router.get("/projects/{project_id}")
 async def get_builder_project(project_id: str, request: Request) -> dict[str, Any]:
-    """NOT IMPLEMENTED (501).
+    """The project's build goal and its status (a10-F229-02).
 
-    This was a stub that answered ``status: building, artifacts: []`` for any id
-    (including ones that never existed), forever.
+    The ``project_id`` POST /builder/projects returns is persisted on the build
+    goal (``execution_context.builder_project_id``) and resolved from it, on any
+    replica, under the caller's tenant. This route used to be a 501 (and before
+    that a stub answering "building" for any id), so the id led nowhere.
     """
-    if getattr(request.state, "tenant", None) is None:
+    tenant_ctx = getattr(request.state, "tenant", None)
+    if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED)
-
-
-@router.get("/preview/{workspace_id}")
-async def serve_preview(workspace_id: str, request: Request) -> Response:
-    """NOT IMPLEMENTED (501).
-
-    The old handler listed artifacts by a workspace-id substring across ALL
-    tenants (no tenant scoping), called ``read_bytes`` positionally although it
-    is keyword-only (a TypeError swallowed by a bare except), and so always
-    showed a "Building..." page that refreshed forever.
-    """
-    if getattr(request.state, "tenant", None) is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED)
-
-
-@router.get("/assets/{workspace_id}/{file_path:path}")
-async def serve_asset(workspace_id: str, file_path: str, request: Request) -> Response:
-    """NOT IMPLEMENTED (501) — same reasons as :func:`serve_preview` (it also
-    returned ``str(exc)`` in a 500 body)."""
-    if getattr(request.state, "tenant", None) is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED)
+    goal_svc = getattr(request.app.state, "goal_service", None)
+    if goal_svc is None:
+        raise HTTPException(status_code=503, detail="Builder is unavailable (no goal service)")
+    try:
+        found = await goal_svc.find_goals_by_context(
+            tenant_ctx, "builder_project_id", project_id, limit=10
+        )
+    except Exception as exc:
+        logger.warning("builder_project_lookup_failed error=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Builder project status temporarily unavailable; retry"
+        ) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="Builder project not found")
+    build = found[0]
+    return {
+        "project_id": project_id,
+        "goal_id": build["goal_id"],
+        "status": build["status"],
+        "created_at": build["created_at"],
+        # Multi-agent routing can fan one build out to several goals.
+        "goal_ids": [g["goal_id"] for g in found],
+    }

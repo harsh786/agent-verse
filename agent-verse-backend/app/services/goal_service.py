@@ -144,6 +144,9 @@ _NOT_RECOVERABLE_STATUSES = {
     GoalStatus.WAITING_HUMAN,
     GoalStatus.WAITING_CHILDREN,
 }
+# execution_context keys GoalService.find_goals_by_context can resolve; each has a
+# partial expression index on goals (migrations c4e8a2f6b1d3, a8d2f6c4e1b9).
+CONTEXT_LOOKUP_KEYS = frozenset({"batch_id", "builder_project_id", "agent_runtime_trace_id"})
 
 
 def _agent_grants_enforced() -> bool:
@@ -2484,6 +2487,7 @@ class GoalService:
         tenant_ctx: TenantContext,
         priority: str,
         dry_run: bool,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Submit a goal for a specific agent, bypassing routing (used by multi-agent mode)."""
         return await self.submit_goal(
@@ -2492,6 +2496,7 @@ class GoalService:
             dry_run=dry_run,
             tenant_ctx=tenant_ctx,
             agent_id=agent_id,
+            execution_context=execution_context,
         )
 
     def _routing_agent_store(self) -> Any:
@@ -2606,8 +2611,14 @@ class GoalService:
         *,
         priority: str,
         dry_run: bool,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Fan a ``multi_agent`` routing decision out to up to 3 agents, else None."""
+        """Fan a ``multi_agent`` routing decision out to up to 3 agents, else None.
+
+        Each child keeps the caller's execution context (its own copy: submit_goal
+        keeps and mutates the dict) — a batch id, builder project id or chat
+        origin used to be dropped on fan-out.
+        """
         if routing.get("mode") != "multi_agent":
             return None
         tasks = [
@@ -2617,6 +2628,7 @@ class GoalService:
                 tenant_ctx=tenant_ctx,
                 priority=priority,
                 dry_run=dry_run,
+                execution_context=dict(execution_context or {}),
             )
             for cand in (routing.get("candidate_agents") or [])[:3]
             if isinstance(cand, dict) and cand.get("agent_id")
@@ -3254,20 +3266,8 @@ class GoalService:
             self._record_terminal_goal_metrics(record, "completed")
             # Phase 2: post the result back into the originating chat conversation.
             await self._deliver_completion_to_chat(record, sanitized_event)
-            # Agent Runtime: mark trace success
-            try:
-                from app.agent_runtime.store import agent_runtime_store
-
-                _t_id = record.execution_context.get("agent_runtime_trace_id")
-                if _t_id:
-                    await agent_runtime_store.update_trace(
-                        record.tenant_id,
-                        str(_t_id),
-                        success=True,
-                        duration_ms=(_monotonic() - record.started_monotonic) * 1000,
-                    )
-            except Exception:
-                pass
+            # Agent Runtime traces derive their outcome from the goal record
+            # (GET /agent-runtime/traces/{id}); nothing to update here.
             # Persist status update to PostgreSQL in the background.
             if self._db is not None:
                 self._track_db_task(
@@ -3364,21 +3364,6 @@ class GoalService:
             record.status = GoalStatus.FAILED
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "failed")
-            # Agent Runtime: mark trace failed
-            try:
-                from app.agent_runtime.store import agent_runtime_store
-
-                _t_id = record.execution_context.get("agent_runtime_trace_id")
-                if _t_id:
-                    await agent_runtime_store.update_trace(
-                        record.tenant_id,
-                        str(_t_id),
-                        success=False,
-                        error=sanitized_event.get("reason", "goal_failed"),
-                        duration_ms=(_monotonic() - record.started_monotonic) * 1000,
-                    )
-            except Exception:
-                pass
             if self._db is not None:
                 self._track_db_task(
                     self._db_update_goal_status(
@@ -4552,7 +4537,12 @@ class GoalService:
                 if _routing is not None:
                     execution_context = {**(execution_context or {}), "routing_decision": _routing}
                     _fanout = await self._submit_multi_agent_routing(
-                        goal, _routing, tenant_ctx, priority=priority, dry_run=dry_run
+                        goal,
+                        _routing,
+                        tenant_ctx,
+                        priority=priority,
+                        dry_run=dry_run,
+                        execution_context=execution_context,
                     )
                     if _fanout is not None:
                         return _fanout
@@ -5106,6 +5096,34 @@ class GoalService:
         ]
         return out
 
+    async def get_goal_outcome(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+        """The goal's lifecycle outcome from its canonical record (any replica / worker).
+
+        ``status``, ``created_at``, ``completed_at`` (None until terminal) and the
+        sanitized ``failure_reason``. Used to derive Agent Runtime traces instead
+        of a shadow copy that only the API process that ran the goal updated.
+        Raises NotFoundError for an unknown / foreign goal.
+        """
+        record = self._goals.get(goal_id)
+        if record is None or record.tenant_id != tenant_ctx.tenant_id:
+            record = await self._db_get_goal_record(goal_id, tenant_ctx)
+        else:
+            record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
+        if record is None:
+            raise NotFoundError(f"Goal not found: {goal_id}")
+        status = record.status.value
+        return {
+            "goal_id": record.goal_id,
+            "status": status,
+            "created_at": record.created_at,
+            "completed_at": record.completed_at if record.status in _TERMINAL_STATUSES else None,
+            "failure_reason": (
+                public_failure_reason(record.error_message)
+                if status in {"failed", "cancelled"}
+                else None
+            ),
+        }
+
     async def get_pattern_selection(
         self, goal_id: str, tenant_ctx: TenantContext
     ) -> dict[str, Any]:
@@ -5234,6 +5252,74 @@ class GoalService:
                 }
             )
         return {"goals": responses}
+
+    async def find_goals_by_context(
+        self, tenant_ctx: TenantContext, key: str, value: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """The tenant's goals whose ``execution_context[key] == value``, oldest first.
+
+        Resolves ids that only live in the goal's execution context (a batch id,
+        a builder project id) on any replica: Postgres when wired (explicit tenant
+        predicate + RLS, served by the partial expression indexes of migration
+        ``c4e8a2f6b1d3`` / ``a8d2f6c4e1b9``), else this process's records. *key* must be one of
+        :data:`CONTEXT_LOOKUP_KEYS` (it is spliced into SQL as a literal so the
+        planner can use the index). Returns ``goal_id`` / ``status`` / ``created_at``;
+        a DB error propagates.
+        """
+        if key not in CONTEXT_LOOKUP_KEYS:
+            raise ValueError(f"unsupported execution_context lookup key: {key!r}")
+        limit = max(1, min(int(limit), 1000))
+        found: list[dict[str, Any]] = []
+        if self._db is not None:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT id, status, created_at FROM goals "
+                            f"WHERE tenant_id = :tid AND (execution_context ->> '{key}') = :v "
+                            "ORDER BY created_at ASC, id ASC LIMIT :lim"
+                        ),
+                        {"tid": tenant_ctx.tenant_id, "v": value, "lim": limit},
+                    )
+                ).fetchall()
+            for gid, status, created_at in rows:
+                mem = self._goals.get(gid)
+                # This pod's record can be ahead of the background status write.
+                if (
+                    mem is not None
+                    and mem.tenant_id == tenant_ctx.tenant_id
+                    and mem.status in _TERMINAL_STATUSES
+                ):
+                    status = mem.status.value
+                found.append(
+                    {
+                        "goal_id": gid,
+                        "status": status,
+                        "created_at": created_at.isoformat() if created_at else "",
+                    }
+                )
+            return found
+        records = sorted(
+            (
+                rec
+                for rec in self._goals.values()
+                if rec.tenant_id == tenant_ctx.tenant_id
+                and str((rec.execution_context or {}).get(key, "")) == value
+            ),
+            key=lambda rec: (rec.created_at, rec.goal_id),
+        )
+        return [
+            {"goal_id": r.goal_id, "status": r.status.value, "created_at": r.created_at}
+            for r in records[:limit]
+        ]
 
     async def get_metrics(self, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Return aggregated metrics for the tenant's goals — reads from DB when available."""

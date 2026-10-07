@@ -235,8 +235,10 @@ def test_sync_from_db_with_failing_db() -> None:
     assert count == 0
 
 
-def test_agent_store_get_async_db_exception_falls_back() -> None:
-    """Lines 244-248: get_async catches DB exception and falls back to memory."""
+def test_agent_store_get_async_db_exception_is_unavailable() -> None:
+    """a10-F236-03: a DB error is a 503, never this replica's cached copy."""
+    from fastapi import HTTPException
+
     async def _run():
         session = AsyncMock()
         session.execute = AsyncMock(side_effect=Exception("DB down"))
@@ -248,15 +250,17 @@ def test_agent_store_get_async_db_exception_falls_back() -> None:
         store = AgentStore(db_session_factory=db)
         # Pre-populate memory cache
         store._data[(_CTX.tenant_id, "agent-mem")] = {"agent_id": "agent-mem", "name": "Cached"}
-        result = await store.get_async("agent-mem", tenant_ctx=_CTX)
-        return result
+        return await store.get_async("agent-mem", tenant_ctx=_CTX)
 
-    result = asyncio.run(_run())
-    assert result is not None
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(_run())
+    assert exc.value.status_code == 503
 
 
-def test_agent_store_list_async_db_exception_falls_back() -> None:
-    """Lines 277-281: list_async catches DB exception and falls back to memory."""
+def test_agent_store_list_async_db_exception_is_unavailable() -> None:
+    """a10-F236-05: a DB error is a 503, never this replica's cached subset."""
+    from fastapi import HTTPException
+
     async def _run():
         session = AsyncMock()
         session.execute = AsyncMock(side_effect=Exception("DB down"))
@@ -269,8 +273,9 @@ def test_agent_store_list_async_db_exception_falls_back() -> None:
         store._data[(_CTX.tenant_id, "agent-1")] = {"agent_id": "agent-1", "name": "A"}
         return await store.list_async(tenant_ctx=_CTX)
 
-    result = asyncio.run(_run())
-    assert len(result) >= 1
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(_run())
+    assert exc.value.status_code == 503
 
 
 def test_agent_store_delete_async_db_exception() -> None:
@@ -468,9 +473,6 @@ def test_get_permissions_with_db_returns_rows() -> None:
     ]
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=[
-        mock_ok,                       # SET LOCAL (rls_context setup for get_async)
-        Exception("Force fallback"),   # SELECT Agent → falls back to memory
-        mock_ok,                       # SET LOCAL '' (rls_context cleanup, swallowed)
         mock_perm,                     # SELECT agent_permissions
     ])
     cm = AsyncMock()
@@ -478,6 +480,9 @@ def test_get_permissions_with_db_returns_rows() -> None:
     cm.__aexit__ = AsyncMock(return_value=False)
     db = MagicMock(return_value=cm)
     store._db = db  # type: ignore[attr-defined]
+    # The agent lookup is served from the record (get_async no longer falls back
+    # to the cache on a DB error, a10-F236-03); the session serves permissions.
+    store.get_async = AsyncMock(return_value=store.get(agent_id, tenant_ctx=_CTX))  # type: ignore[method-assign]
 
     client = TestClient(_make_app(agent_store=store), raise_server_exceptions=False)
     resp = client.get(f"/agents/{agent_id}/permissions", headers=H)
@@ -496,9 +501,6 @@ def test_get_permissions_db_exception_falls_back() -> None:
     mock_ok = MagicMock()
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=[
-        mock_ok,                     # SET LOCAL for get_async
-        Exception("Fallback"),       # SELECT Agent → fallback to memory
-        mock_ok,                     # SET LOCAL cleanup
         Exception("Perm DB fail"),   # SELECT permissions → falls back to in-memory
     ])
     cm = AsyncMock()
@@ -506,6 +508,9 @@ def test_get_permissions_db_exception_falls_back() -> None:
     cm.__aexit__ = AsyncMock(return_value=False)
     db = MagicMock(return_value=cm)
     store._db = db  # type: ignore[attr-defined]
+    # The agent lookup is served from the record (get_async no longer falls back
+    # to the cache on a DB error, a10-F236-03); the session serves permissions.
+    store.get_async = AsyncMock(return_value=store.get(agent_id, tenant_ctx=_CTX))  # type: ignore[method-assign]
 
     client = TestClient(_make_app(agent_store=store), raise_server_exceptions=False)
     resp = client.get(f"/agents/{agent_id}/permissions", headers=H)
@@ -578,9 +583,6 @@ def test_update_permissions_db_exception_is_503() -> None:
     begin_cm.__aexit__ = AsyncMock(return_value=False)
     session.begin = MagicMock(return_value=begin_cm)
     session.execute = AsyncMock(side_effect=[
-        mock_ok,                         # SET LOCAL for get_async
-        Exception("Agent lookup fail"),  # SELECT Agent → fallback
-        mock_ok,                         # cleanup
         Exception("Perm write fail"),    # DELETE + INSERT permissions
     ])
     cm = AsyncMock()
@@ -588,6 +590,7 @@ def test_update_permissions_db_exception_is_503() -> None:
     cm.__aexit__ = AsyncMock(return_value=False)
     db = MagicMock(return_value=cm)
     store._db = db  # type: ignore[attr-defined]
+    store.get_async = AsyncMock(return_value=store.get(agent_id, tenant_ctx=_CTX))  # type: ignore[method-assign]
 
     client = TestClient(_make_app(agent_store=store), raise_server_exceptions=False)
     resp = client.put(

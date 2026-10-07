@@ -6,7 +6,7 @@ timeline from persisted goal_events in the database.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -15,6 +15,12 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/goals", tags=["replay"])
 
+# One replay page. goal_events / goal_steps / decision_traces used to be read
+# with no LIMIT: a long-running goal's replay loaded its whole history into one
+# response. Each list is now bounded; events page with ``after_sequence``.
+_DEFAULT_PAGE = 1000
+_MAX_PAGE = 5000
+
 
 @router.get("/{goal_id}/replay")
 async def replay_goal(
@@ -22,8 +28,20 @@ async def replay_goal(
     goal_id: str,
     include_raw_output: bool = Query(True, description="Include raw LLM output per step"),
     include_tool_calls: bool = Query(True, description="Include tool call details"),
+    # Annotated so a direct call (tests, the timeline route) gets real ints.
+    limit: Annotated[
+        int, Query(ge=1, le=_MAX_PAGE, description="Max events / steps / traces returned")
+    ] = _DEFAULT_PAGE,
+    after_sequence: Annotated[
+        int, Query(ge=-1, description="Return events with sequence > this (next_after_sequence)")
+    ] = -1,
 ) -> dict[str, Any]:
-    """Reconstruct the full execution timeline of a completed goal.
+    """Reconstruct the execution timeline of a goal, one bounded page at a time.
+
+    Events are ordered by sequence; when more exist ``events_truncated`` is true
+    and ``next_after_sequence`` is the cursor for the next page. Steps and
+    decision traces are capped at *limit* too (``steps_truncated`` /
+    ``decision_traces_truncated``).
 
     Returns a chronologically ordered list of events with:
     - Plan steps and their descriptions
@@ -64,12 +82,20 @@ async def replay_goal(
                     text("""
                     SELECT sequence, event_type, payload, created_at
                     FROM goal_events
-                    WHERE goal_id=:gid AND tenant_id=:tid
+                    WHERE goal_id=:gid AND tenant_id=:tid AND sequence > :after
                     ORDER BY sequence ASC
+                    LIMIT :lim
                 """),
-                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                    {
+                        "gid": goal_id,
+                        "tid": tenant_ctx.tenant_id,
+                        "after": after_sequence,
+                        "lim": limit + 1,
+                    },
                 )
             ).fetchall()
+            events_truncated = len(events) > limit
+            events = events[:limit]
 
             # Load goal steps
             steps = (
@@ -79,10 +105,13 @@ async def replay_goal(
                     FROM goal_steps
                     WHERE goal_id=:gid AND tenant_id=:tid
                     ORDER BY step_index ASC
+                    LIMIT :lim
                 """),
-                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id, "lim": limit + 1},
                 )
             ).fetchall()
+            steps_truncated = len(steps) > limit
+            steps = steps[:limit]
 
             # Load decision traces
             traces = (
@@ -92,10 +121,13 @@ async def replay_goal(
                     FROM decision_traces
                     WHERE goal_id=:gid AND tenant_id=:tid
                     ORDER BY created_at ASC
+                    LIMIT :lim
                 """),
-                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id, "lim": limit + 1},
                 )
             ).fetchall()
+            traces_truncated = len(traces) > limit
+            traces = traces[:limit]
 
             # Load eval results
             evals = (
@@ -130,14 +162,15 @@ async def replay_goal(
         # Build timeline
         timeline = []
 
-        # Add plan creation event
-        timeline.append(
-            {
-                "type": "goal_created",
-                "ts": goal_row[3].isoformat() if goal_row[3] else "",
-                "data": {"goal_text": goal_row[1], "status": goal_row[2]},
-            }
-        )
+        # Add plan creation event (first page only)
+        if after_sequence < 0:
+            timeline.append(
+                {
+                    "type": "goal_created",
+                    "ts": goal_row[3].isoformat() if goal_row[3] else "",
+                    "data": {"goal_text": goal_row[1], "status": goal_row[2]},
+                }
+            )
 
         # Add goal events
         import json as _json
@@ -229,6 +262,11 @@ async def replay_goal(
             "retention_days": _retention_days,
             "event_count": len(events),
             "step_count": len(steps),
+            "limit": limit,
+            "events_truncated": events_truncated,
+            "next_after_sequence": events[-1][0] if events_truncated and events else None,
+            "steps_truncated": steps_truncated,
+            "decision_traces_truncated": traces_truncated,
             "timeline": timeline,
             "steps": step_summaries,
             "decision_traces": trace_summaries,
@@ -250,8 +288,16 @@ async def replay_goal(
 @router.get("/{goal_id}/timeline")
 async def goal_timeline(request: Request, goal_id: str) -> list[dict[str, Any]]:
     """Get a compact chronological timeline of goal events for visualization."""
-    result = await replay_goal(request, goal_id, include_raw_output=False, include_tool_calls=False)
-    return result["timeline"]
+    result = await replay_goal(
+        request,
+        goal_id,
+        include_raw_output=False,
+        include_tool_calls=False,
+        limit=_DEFAULT_PAGE,
+        after_sequence=-1,
+    )
+    timeline: list[dict[str, Any]] = result["timeline"]
+    return timeline
 
 
 def _require_tenant(request: Request) -> Any:

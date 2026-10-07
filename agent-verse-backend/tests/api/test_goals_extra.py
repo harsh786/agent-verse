@@ -184,8 +184,9 @@ def test_goal_attempts_requires_auth() -> None:
 
 
 def test_goal_lineage_returns_fallback_when_no_db() -> None:
-    """FIX 3: lineage returns graceful fallback when DB is unavailable."""
+    """No database wired (in-memory build): root-only lineage."""
     svc = AsyncMock()
+    svc._db = None
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
 
     with patch("app.db.session.get_session_factory", return_value=None, create=True):
@@ -201,8 +202,9 @@ def test_goal_lineage_returns_fallback_when_no_db() -> None:
 
 
 def test_goal_attempts_returns_empty_when_no_db() -> None:
-    """FIX 3: attempts returns [] gracefully when DB is unavailable."""
+    """No database wired (in-memory build): no attempts."""
     svc = AsyncMock()
+    svc._db = None
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
 
     with patch("app.db.session.get_session_factory", return_value=None, create=True):

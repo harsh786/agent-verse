@@ -579,6 +579,7 @@ def test_get_batch_status() -> None:
 
 def test_get_goal_traces_no_db() -> None:
     svc = AsyncMock()
+    svc._db = None  # in-memory build: nothing persisted
     svc.get_goal.return_value = _make_goal()
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.get("/goals/gid-1/traces", headers={"X-API-Key": _VALID_KEY})
@@ -599,7 +600,9 @@ def test_get_goal_traces_not_found() -> None:
 # ---------------------------------------------------------------------------
 
 def test_get_goal_lineage_no_db() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    svc = AsyncMock()
+    svc._db = None  # in-memory build: nothing persisted
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.get("/goals/gid-1/lineage", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     body = resp.json()
@@ -611,7 +614,9 @@ def test_get_goal_lineage_no_db() -> None:
 # ---------------------------------------------------------------------------
 
 def test_get_goal_attempts_no_db() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    svc = AsyncMock()
+    svc._db = None  # in-memory build: nothing persisted
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.get("/goals/gid-1/attempts", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     assert resp.json() == []

@@ -1055,43 +1055,54 @@ class BatchGoalRequest(BaseModel):
     goals: list[str] = Field(..., min_length=1, max_length=100)
     priority: str = "normal"
     agent_id: str | None = None
+    # How many submissions run at once (each is a full submit: validation,
+    # limits, persistence, enqueue). It used to be accepted and ignored.
     max_parallel: int = Field(default=10, ge=1, le=50)
+
+
+# Batch ids carry a prefix so GET /goals/batch/{id}/status can tell a batch id
+# (resolved from the goals' execution_context) from the legacy comma-separated
+# list of goal ids (goal ids are bare 32-hex uuids too).
+_BATCH_ID_PREFIX = "batch_"
+_BATCH_TERMINAL = ("complete", "failed", "cancelled")
 
 
 @router.post("/batch", status_code=status.HTTP_202_ACCEPTED)
 async def submit_batch_goals(request: Request, body: BatchGoalRequest) -> dict[str, Any]:
-    """Submit multiple goals as a batch for parallel processing."""
+    """Submit multiple goals as one batch, at most ``max_parallel`` submissions at once.
+
+    Every goal carries ``execution_context.batch_id`` (persisted with the goal),
+    so ``GET /goals/batch/{batch_id}/status`` finds the batch's goals on any
+    replica. The response lists the goals in request order.
+    """
     tenant = _require_tenant(request)
     svc = _goal_service(request)
 
-    batch_id = uuid.uuid4().hex
-    submitted = []
+    batch_id = f"{_BATCH_ID_PREFIX}{uuid.uuid4().hex}"
+    gate = asyncio.Semaphore(body.max_parallel)
 
-    for goal_text in body.goals:
-        try:
-            result = await svc.submit_goal(
-                goal=goal_text,
-                priority=body.priority,
-                dry_run=False,
-                tenant_ctx=tenant,
-                agent_id=body.agent_id,
-            )
-            submitted.append(
-                {
-                    "goal_id": result.get("goal_id"),
-                    "goal": goal_text[:100],
-                    "status": "queued",
-                }
-            )
-        except Exception as exc:
-            submitted.append(
-                {
+    async def _submit_one(goal_text: str) -> dict[str, Any]:
+        async with gate:
+            try:
+                result = await svc.submit_goal(
+                    goal=goal_text,
+                    priority=body.priority,
+                    dry_run=False,
+                    tenant_ctx=tenant,
+                    agent_id=body.agent_id,
+                    # A fresh dict per goal: submit_goal keeps and mutates it.
+                    execution_context={"batch_id": batch_id},
+                )
+            except Exception as exc:
+                return {
                     "goal_id": None,
                     "goal": goal_text[:100],
                     "status": "error",
                     "error": _public_error(exc),
                 }
-            )
+            return {"goal_id": result.get("goal_id"), "goal": goal_text[:100], "status": "queued"}
+
+    submitted = list(await asyncio.gather(*(_submit_one(g) for g in body.goals)))
 
     return {
         "batch_id": batch_id,
@@ -1104,28 +1115,50 @@ async def submit_batch_goals(request: Request, body: BatchGoalRequest) -> dict[s
 
 @router.get("/batch/{batch_id}/status")
 async def get_batch_status(request: Request, batch_id: str) -> dict[str, Any]:
-    """Get status summary for a batch submission."""
+    """Status summary of a batch.
+
+    *batch_id* is the id ``POST /goals/batch`` returned (resolved from the
+    goals' persisted ``execution_context``; an unknown batch is 404) or, for
+    backward compatibility, a comma-separated list of goal ids. The old code
+    only knew the second form, so a real batch id resolved to one "not_found"
+    goal that counted as done: ``all_complete`` was true at once.
+    """
     tenant_ctx = _require_tenant(request)
     svc = _goal_service(request)
 
-    # batch_id is a comma-separated list of goal_ids
-    goal_ids = [g.strip() for g in batch_id.split(",") if g.strip()]
-
-    statuses = []
-    for gid in goal_ids[:50]:  # cap at 50 to prevent abuse
+    statuses: list[dict[str, Any]] = []
+    if batch_id.startswith(_BATCH_ID_PREFIX):
         try:
-            goal = await svc.get_goal(goal_id=gid, tenant_ctx=tenant_ctx)
-            statuses.append({"goal_id": gid, "status": goal.get("status"), "error": None})
-        except NotFoundError:
-            statuses.append({"goal_id": gid, "status": "not_found", "error": "not found"})
+            found = await svc.find_goals_by_context(tenant_ctx, "batch_id", batch_id, limit=100)
         except Exception as exc:
-            # A lookup failure is NOT "not found": it used to be, and counted
-            # toward all_complete=true while the goal might still be running.
-            statuses.append({"goal_id": gid, "status": "unknown", "error": _public_error(exc)})
-
-    all_done = bool(statuses) and all(
-        s["status"] in ("complete", "failed", "cancelled", "not_found") for s in statuses
-    )
+            _logger.warning("batch_status_lookup_failed", error=type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Batch status temporarily unavailable; retry",
+            ) from exc
+        if not found:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch not found")
+        statuses = [
+            {"goal_id": g["goal_id"], "status": g["status"], "error": None} for g in found
+        ]
+        all_done = all(s["status"] in _BATCH_TERMINAL for s in statuses)
+    else:
+        goal_ids = [g.strip() for g in batch_id.split(",") if g.strip()]
+        for gid in goal_ids[:50]:  # cap at 50 to prevent abuse
+            try:
+                goal = await svc.get_goal(goal_id=gid, tenant_ctx=tenant_ctx)
+                statuses.append({"goal_id": gid, "status": goal.get("status"), "error": None})
+            except NotFoundError:
+                statuses.append({"goal_id": gid, "status": "not_found", "error": "not found"})
+            except Exception as exc:
+                # A lookup failure is NOT "not found": it used to be, and counted
+                # toward all_complete=true while the goal might still be running.
+                statuses.append(
+                    {"goal_id": gid, "status": "unknown", "error": _public_error(exc)}
+                )
+        all_done = bool(statuses) and all(
+            s["status"] in (*_BATCH_TERMINAL, "not_found") for s in statuses
+        )
     return {
         "batch_id": batch_id,
         "goals": statuses,
@@ -1134,23 +1167,41 @@ async def get_batch_status(request: Request, batch_id: str) -> dict[str, Any]:
     }
 
 
-@router.get("/{goal_id}/traces")
-async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]]:
-    """Return decision trace records for this goal."""
-    tenant = _require_tenant(request)
-    svc = _goal_service(request)
-    # Verify goal exists and belongs to tenant
+async def _require_goal(request: Request, goal_id: str, tenant: TenantContext) -> None:
+    """404 unless *goal_id* is one of the tenant's goals (sanitized detail)."""
     try:
-        await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
+        await _goal_service(request).get_goal(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
         raise _not_found_response(request, exc) from exc
-    # Query DB for traces
-    # db_session_factory is not on app.state — get it from the session module
-    from app.db.session import get_session_factory
 
-    db = get_session_factory()
+
+def _history_db(request: Request) -> Any:
+    """The goal service's database, or None for the in-memory build.
+
+    ``get_session_factory()`` always builds a factory from ``DATABASE_URL``, so
+    its ``None`` check never fired: without a database the routes depended on
+    swallowing the connection error. The goal service is the wired DB.
+    """
+    return getattr(_goal_service(request), "_db", None)
+
+
+def _history_unavailable(kind: str, goal_id: str, exc: Exception) -> HTTPException:
+    """A failed history read is a retryable 503, never an empty / root-only 200."""
+    _logger.warning(f"goal_{kind}_read_failed", goal_id=goal_id, error=type(exc).__name__)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=f"Goal {kind} temporarily unavailable; retry",
+    )
+
+
+@router.get("/{goal_id}/traces")
+async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]]:
+    """Return decision trace records for this goal (404 unknown goal, 503 DB error)."""
+    tenant = _require_tenant(request)
+    await _require_goal(request, goal_id, tenant)
+    db = _history_db(request)
     if db is None:
-        # Fall back to in-memory context
+        # No database (in-memory dev/test build): nothing is persisted.
         return []
     try:
         from sqlalchemy import text
@@ -1168,37 +1219,37 @@ async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]
                 {"gid": goal_id, "tid": tenant.tenant_id},
             )
             rows = result.fetchall()
-        return [
-            {
-                "trace_id": r[0],
-                "action": r[1],
-                "reasoning": r[2],
-                "confidence": float(r[3]) if r[3] else 0.5,
-                "at": r[4].isoformat() if r[4] else "",
-            }
-            for r in rows
-        ]
-    except Exception:
-        return []
+    except Exception as exc:
+        raise _history_unavailable("traces", goal_id, exc) from exc
+    return [
+        {
+            "trace_id": r[0],
+            "action": r[1],
+            "reasoning": r[2],
+            # A stored 0.0 is a real (no-confidence) verdict, not "unknown".
+            "confidence": float(r[3]) if r[3] is not None else 0.5,
+            "at": r[4].isoformat() if r[4] else "",
+        }
+        for r in rows
+    ]
 
 
 @router.get("/{goal_id}/lineage")
 async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
-    """Return the parent→child spawn tree for a goal."""
+    """Return the parent→child spawn tree for a goal (404 unknown goal, 503 DB error)."""
     tenant = _require_tenant(request)
+    await _require_goal(request, goal_id, tenant)
+    db = _history_db(request)
+    if db is None:
+        return {
+            "root_goal_id": goal_id,
+            "nodes": [{"goal_id": goal_id, "depth": 0}],
+            "edges": [],
+        }
     try:
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
-        from app.db.session import get_session_factory
-
-        db = get_session_factory()
-        if db is None:
-            return {
-                "root_goal_id": goal_id,
-                "nodes": [{"goal_id": goal_id, "depth": 0}],
-                "edges": [],
-            }
 
         async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             rows = (
@@ -1228,8 +1279,8 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
                     {"root_id": goal_id, "tid": tenant.tenant_id},
                 )
             ).fetchall()
-    except Exception:
-        return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
+    except Exception as exc:
+        raise _history_unavailable("lineage", goal_id, exc) from exc
 
     nodes = []
     edges = []
@@ -1284,17 +1335,16 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
 
 @router.get("/{goal_id}/attempts")
 async def get_goal_attempts(request: Request, goal_id: str) -> list[dict[str, Any]]:
-    """Return persistence attempt history for a goal."""
+    """Return persistence attempt history for a goal (404 unknown goal, 503 DB error)."""
     tenant = _require_tenant(request)
+    await _require_goal(request, goal_id, tenant)
+    db = _history_db(request)
+    if db is None:
+        return []
     try:
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
-        from app.db.session import get_session_factory
-
-        db = get_session_factory()
-        if db is None:
-            return []
 
         async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             rows = (
@@ -1310,8 +1360,8 @@ async def get_goal_attempts(request: Request, goal_id: str) -> list[dict[str, An
                     {"gid": goal_id, "tid": tenant.tenant_id},
                 )
             ).fetchall()
-    except Exception:
-        return []
+    except Exception as exc:
+        raise _history_unavailable("attempts", goal_id, exc) from exc
 
     return [
         {
