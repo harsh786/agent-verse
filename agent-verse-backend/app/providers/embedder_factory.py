@@ -56,6 +56,7 @@ __all__ = [
     "embedder_model_name",
     "resolve_embedder",
     "target_embedding_dim",
+    "watch_for_late_registry_embedder",
 ]
 
 
@@ -90,9 +91,13 @@ class EmbedderResolution:
             return ""
         if not self.errors:
             return (
-                "embedding provider not configured (set EMBEDDING_BASE_URL, "
-                "VOYAGE_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, NVIDIA_EMBED_MODEL or "
-                "SENTENCE_TRANSFORMERS_MODEL)"
+                "embedding provider not configured. Either set it on every pod (API and "
+                "workers): NVIDIA_API_KEY + NVIDIA_EMBED_MODEL (e.g. "
+                "nvidia/nemotron-3-embed-1b, 2048-d), or EMBEDDING_BASE_URL + "
+                "EMBEDDING_MODEL (+ EMBEDDING_API_KEY), or VOYAGE_API_KEY / OPENAI_API_KEY / "
+                "GOOGLE_API_KEY / SENTENCE_TRANSFORMERS_MODEL; or, without cluster access, "
+                "register an embedding model with its own base URL and API key in the "
+                "Model Registry (the Models page), whose width matches EMBEDDING_DIM"
             )
         return "; ".join(f"{p} failed to load ({r})" for p, r in self.errors)
 
@@ -519,6 +524,51 @@ class RegistryReloadingEmbedder:
         if name == "_resolution":  # pragma: no cover - only while unpickling
             raise AttributeError(name)
         return getattr(self._resolution.embedder, name)
+
+
+_LATE_BIND_INTERVAL_S = 15.0
+
+
+async def watch_for_late_registry_embedder(
+    rebind: Callable[[], None],
+    *,
+    is_bound: Callable[[], bool],
+    version: Callable[[], int | None] = _registry_version,
+    interval_s: float = _LATE_BIND_INTERVAL_S,
+) -> None:
+    """Bind an embedder registered in the Model Registry AFTER the API started.
+
+    A process that started with NO embedder (nothing in env, nothing in the
+    registry yet) has no :class:`RegistryReloadingEmbedder` to notice a change,
+    so an operator who fixes "embedding provider not configured" by registering
+    an embedding model in the UI — the no-cluster-access path — would still get
+    503s from this API until a restart (the workers resolve per task and pick it
+    up at once). This polls the shared registry's version every ``interval_s``
+    and calls ``rebind`` (off the event loop: resolution may do DNS) whenever it
+    changed, until ``is_bound()`` reports an embedder. Never raises.
+    """
+    import asyncio
+
+    def _version() -> int | None:
+        try:
+            return version()
+        except Exception as exc:  # never die on a registry read
+            logger.warning("embedder_late_bind_version_unreadable", error=str(exc)[:200])
+            return None
+
+    last = _version()  # the caller just resolved against this version
+    while not is_bound():
+        await asyncio.sleep(interval_s)
+        current = _version()
+        if current is None or current == last:
+            continue
+        last = current
+        try:
+            await asyncio.to_thread(rebind)
+        except Exception as exc:
+            logger.warning("embedder_late_bind_failed", error=str(exc)[:200])
+        if is_bound():
+            logger.info("embedder_late_bound_from_registry")
 
 
 def _wire_worker_registry_store() -> None:

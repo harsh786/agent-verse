@@ -92,6 +92,36 @@ tests/infra/test_vault_key_distribution.py.
     secretKeyRef:
       name: agentverse-secrets
       key: master-encryption-key
+- name: NVIDIA_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: nvidia-api-key
+      optional: true
+- name: EMBEDDING_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: embedding-api-key
+      optional: true
+- name: OPENAI_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: openai-api-key
+      optional: true
+- name: VOYAGE_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: voyage-api-key
+      optional: true
+- name: GOOGLE_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: google-api-key
+      optional: true
 - name: MAINTENANCE_DATABASE_URL
   valueFrom:
     secretKeyRef:
