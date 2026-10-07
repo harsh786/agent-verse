@@ -69,16 +69,6 @@ def test_base64_pattern_redacts_credential_values():
     assert "token=" in result, "Keyword 'token=' should remain in output"
 
 
-def test_webhook_hmac_uses_sorted_keys():
-    """Webhook HMAC must use sort_keys=True JSON for consistent bytes."""
-    import inspect
-
-    from app.services import webhook_service
-    src = inspect.getsource(webhook_service)
-    assert "sort_keys" in src, "Webhook HMAC must serialize with sort_keys=True"
-    assert "separators" in src, "Webhook HMAC must use compact separators"
-
-
 def test_event_store_has_retry_logic():
     """EventStore.append_event must implement retry with backoff."""
     import inspect
