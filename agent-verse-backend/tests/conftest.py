@@ -487,6 +487,32 @@ _PROVIDER_ENV_VARS = (
 )
 
 
+def _cached_settings_environment() -> str | None:
+    from app.core.config import get_settings
+
+    if not get_settings.cache_info().currsize:
+        return None
+    return str(get_settings().environment)
+
+
+@pytest.fixture(autouse=True)
+def _reset_leaked_settings_environment():
+    """Drop a cached Settings whose ENVIRONMENT a test changed.
+
+    A test that monkeypatches ENVIRONMENT=production and calls get_settings()
+    caches a production Settings; monkeypatch restores the env var but not the
+    lru_cache, so every later test silently ran as production (durable-audit
+    refusals, FakeProvider refusals) — order-dependent failures.
+    """
+    before = _cached_settings_environment()
+    yield
+    after = _cached_settings_environment()
+    if after is not None and after != before:
+        from app.core.config import get_settings
+
+        get_settings.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def isolate_provider_env(request, monkeypatch):
     """Strip ambient provider/model env for tests that opt in.

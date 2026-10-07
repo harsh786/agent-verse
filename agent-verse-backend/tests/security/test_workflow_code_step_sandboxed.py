@@ -8,6 +8,7 @@ workflow author could run code on the control plane with its env secrets.
 from __future__ import annotations
 
 import builtins
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -51,11 +52,21 @@ def _no_exec(source: Any, *a: Any, **k: Any) -> Any:
 
 
 @pytest.fixture(autouse=True)
-def audit_log(monkeypatch: pytest.MonkeyPatch) -> AuditLog:
-    """Code executions are durably audited; unit tests use the in-memory log."""
+def audit_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[AuditLog]:
+    """Code executions are durably audited; unit tests use the in-memory log.
+
+    The in-memory log only counts in development (record_durable refuses it
+    elsewhere), so pin the environment: a Settings cached as production by an
+    earlier test must not decide these tests.
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    get_settings.cache_clear()
     log = AuditLog()
     monkeypatch.setattr("app.tools.code_execution._default_audit_log", log)
-    return log
+    yield log
+    get_settings.cache_clear()
 
 
 def _state() -> Any:
