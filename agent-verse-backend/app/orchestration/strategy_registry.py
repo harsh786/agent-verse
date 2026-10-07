@@ -1439,7 +1439,7 @@ def build_default_registry(
             "sandbox",
             S,
             PLAN,
-            "app.sandbox_runtime.executor",
+            "",  # PLANNED: no implementation (a10-F252-01 removed the orphan scaffold)
             "Isolated execution",
             [],
             [],
@@ -1451,7 +1451,7 @@ def build_default_registry(
             "plan_verification",
             S,
             PLAN,
-            "app.plan_runtime.plan_verifier",
+            "",  # PLANNED: no implementation (a10-F252-01 removed the orphan scaffold)
             "Verify plan before exec",
             [],
             [],
@@ -1475,7 +1475,7 @@ def build_default_registry(
             "provenance_verification",
             S,
             PLAN,
-            "app.provenance.ledger",
+            "",  # PLANNED: no implementation (a10-F252-01 removed the orphan scaffold)
             "Claim-level provenance",
             [],
             [],

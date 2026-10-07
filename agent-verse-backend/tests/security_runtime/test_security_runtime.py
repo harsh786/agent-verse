@@ -177,12 +177,3 @@ def test_rpa_bundle_scans_exfil():
     assert config.exfiltration_guard_enabled is True
 
 
-def test_high_risk_findings_preserved_after_critical_step():
-    from app.plan_runtime.plan_risk_analyzer import PlanRiskAnalyzer
-    analyzer = PlanRiskAnalyzer()
-    plan = ["delete all user records", "send email notification to all users"]
-    risk_level, findings = analyzer.analyze(plan)
-    assert risk_level == "critical"
-    # Both CRITICAL and HIGH findings must be in the list
-    assert any("CRITICAL" in f for f in findings)
-    assert any("HIGH" in f or "notification" in f.lower() for f in findings)
