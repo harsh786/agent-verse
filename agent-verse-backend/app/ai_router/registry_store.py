@@ -55,6 +55,11 @@ _FIELDS = (
     # An embedding model's REAL output width, probed by "Test connection" or on
     # first use (app.providers.registry_embedder) — the dimension-safety input.
     "dimensions",
+    # Thinking-model control (app.providers.openai_compatible): "auto" (default
+    # when absent), "off" or "on", plus an optional reasoning-token budget used
+    # with "on".
+    "thinking",
+    "thinking_budget_tokens",
 )
 # Embedding widths probed before the model was saved: {"model_id|base_url": dims}.
 _PROBED_DIMS_KEY = "model_registry:probed_dimensions"

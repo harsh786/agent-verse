@@ -11,6 +11,15 @@
 # than the 60s default — a 6000-token planner generation can exceed it. Raise it:
 AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS=300
 
+# Thinking models (Qwen3.x with a vLLM reasoning parser) can spend the whole
+# max_tokens reasoning and return content=null. Set the model's "thinking" in the
+# Model Registry (POST /models/configured): "off" sends
+# chat_template_kwargs={"enable_thinking": false} on every call; "auto" (default)
+# retries a reasoning-only reply once with thinking off and remembers it per
+# endpoint; "on" keeps reasoning (+ "thinking_budget_tokens"). "Test connection"
+# (POST /models/configured/test-endpoint) reports whether the model thinks and
+# whether turning it off works.
+
 # ── Reasoning / chat LLM (planner, executor, verifier) ── Qwen3.5-4B @ :30080 ──
 DEFAULT_LLM_PROVIDER=openai_compatible
 OPENAI_BASE_URL=http://192.168.63.104:30080/v1

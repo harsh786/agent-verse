@@ -326,11 +326,21 @@ async def test_model(request: Request) -> dict[str, Any]:
             "latency_ms": round(latency_ms, 1),
             "model": model_id,
             "response": resp.content[:50],
+            # A thinking model: reasoning observed on any attempt; whether the
+            # answer came with thinking off (configured, or auto-disabled).
+            "thinking": {
+                "thinking_model": bool(getattr(resp, "thinking_observed", False)),
+                "reasoning_tokens": int(getattr(resp, "reasoning_tokens", 0) or 0),
+                "thinking_disabled": bool(getattr(resp, "thinking_disabled", False)),
+            },
         }
     except Exception as exc:
         if attributable is None:
             model_registry.update_health(provider, error=True, error_msg=str(exc))
-        return {"status": "error", "error": str(exc), "model": model_id}
+        out: dict[str, Any] = {"status": "error", "error": str(exc), "model": model_id}
+        if "reasoning only" in str(exc):
+            out["thinking"] = {"thinking_model": True, "thinking_disabled": False}
+        return out
 
 
 # Capabilities answered by a chat completion; a model with none of them (and
@@ -482,6 +492,10 @@ def _configured_dict(m: Any, *, rank: int = 0) -> dict[str, Any]:
         # Whether the entry carries its own (vault-encrypted) endpoint credential.
         # Neither the key nor its ciphertext is ever returned.
         "has_api_key": bool((m.extra or {}).get("api_key_encrypted")),
+        # Thinking-model control: "auto" (default, also for entries saved before
+        # the setting existed), "off" or "on"; budget used with "on".
+        "thinking": (m.extra or {}).get("thinking") or "auto",
+        "thinking_budget_tokens": (m.extra or {}).get("thinking_budget_tokens"),
         "rank": rank,
     }
 
@@ -747,17 +761,176 @@ def _checked_base_url(raw: Any) -> str:
 
 
 _PROBE_TIMEOUT_S = 30.0
+_PROBE_CHAT_MAX_TOKENS = 16
+
+
+def _chat_reply(resp: Any) -> dict[str, Any]:
+    """Answer text and reasoning signals of a chat-completions HTTP response."""
+    from app.providers.openai_compatible import strip_reasoning
+
+    data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    raw = str(message.get("content") or "")
+    text = strip_reasoning(raw).strip()
+    details = (data.get("usage") or {}).get("completion_tokens_details") or {}
+    tokens = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    tokens = tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0
+    reasoning_text = any(
+        isinstance(message.get(k), str) and message[k].strip()
+        for k in ("reasoning", "reasoning_content")
+    )
+    return {
+        "text": text,
+        "reasoning_tokens": tokens,
+        "thinking": tokens > 0 or reasoning_text or text != raw.strip(),
+        "finish_reason": choice.get("finish_reason"),
+    }
+
+
+async def _probe_chat(
+    client: Any,
+    *,
+    base: str,
+    headers: dict[str, str],
+    model_id: str,
+    mode: str,
+    budget: int | None,
+    off_by_default: bool,
+) -> dict[str, Any]:
+    """Chat probe that also tells whether the model is a thinking model.
+
+    1. A plain call (thinking as the model serves it; "on" adds the budget):
+       reasoning tokens / reasoning text here = a thinking model.
+    2. A thinking-off call when the endpoint has a switch and either the model
+       runs with thinking off (``thinking: off``, or the on-prem default) or it
+       is a thinking model that gave no answer — whether disabling thinking works.
+
+    ``ok`` = the model answers the way the runtime calls it ("auto" retries an
+    empty thinking reply with thinking off, so a working switch counts).
+    """
+    from app.providers.openai_compatible import (
+        is_template_kwargs_rejection,
+        mark_template_kwargs_unsupported,
+        thinking_off_body,
+    )
+
+    body: dict[str, Any] = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": "Reply with just the word OK"}],
+        "max_tokens": _PROBE_CHAT_MAX_TOKENS + (budget if mode == "on" and budget else 0),
+    }
+    off_effective = mode == "off" or (mode == "auto" and off_by_default)
+    thinking: dict[str, Any] = {
+        "mode": mode,
+        "thinking_model": False,
+        "reasoning_tokens": 0,
+        "disable_supported": None,
+        "disabled_works": None,
+        "recommendation": None,
+    }
+    out: dict[str, Any] = {"thinking": thinking, "error": None, "detail": "", "ok": False}
+
+    plain = await client.post(f"{base}/chat/completions", json=body, headers=headers)
+    if plain.status_code >= 400:
+        out["error"] = f"HTTP {plain.status_code}: {plain.text[:300]}"
+        return out
+    first = _chat_reply(plain)
+    thinking["thinking_model"] = first["thinking"]
+    thinking["reasoning_tokens"] = first["reasoning_tokens"]
+
+    off_body = thinking_off_body(base, model_id, {**body, "max_tokens": _PROBE_CHAT_MAX_TOKENS})
+    second: dict[str, Any] | None = None
+    if off_body is not None and (off_effective or (first["thinking"] and not first["text"])):
+        off = await client.post(f"{base}/chat/completions", json=off_body, headers=headers)
+        if off.status_code >= 400:
+            if is_template_kwargs_rejection(off.status_code, off.text):
+                mark_template_kwargs_unsupported(base)
+                thinking["disable_supported"] = False
+            else:
+                out["error"] = f"HTTP {off.status_code} with thinking off: {off.text[:300]}"
+                return out
+        else:
+            second = _chat_reply(off)
+            thinking["disable_supported"] = True
+            thinking["disabled_works"] = bool(second["text"]) and second["reasoning_tokens"] == 0
+    elif off_body is None and (off_effective or first["thinking"]):
+        thinking["disable_supported"] = False  # no known switch for this endpoint
+
+    if off_effective and second is not None:
+        answer = second["text"]
+        how = "with thinking off"
+    elif first["text"]:
+        answer, how = first["text"], ""
+    elif mode == "auto" and second is not None and second["text"]:
+        answer, how = second["text"], "after retrying with thinking off"
+    else:
+        answer, how = "", ""
+    if answer:
+        out["ok"] = True
+        out["detail"] = f"replied: {answer[:80]!r}" + (f" ({how})" if how else "")
+    elif first["thinking"]:
+        out["error"] = (
+            f"thinking model: spent the whole {body['max_tokens']}-token budget reasoning "
+            f"(finish_reason={first['finish_reason']}) without an answer"
+        )
+    else:
+        out["detail"] = "empty reply"
+        out["ok"] = True  # reachable and serving; the runtime retries empty replies
+    if thinking["thinking_model"]:
+        if thinking["disabled_works"] and mode == "auto":
+            thinking["recommendation"] = (
+                'set "thinking": "off" for direct answers (auto otherwise spends the '
+                "first call reasoning before retrying with thinking off)"
+            )
+        elif thinking["disabled_works"] and mode == "on" and not out["ok"]:
+            thinking["recommendation"] = (
+                'set "thinking": "off" (it answers with thinking off), or raise '
+                '"thinking_budget_tokens" so the reasoning fits'
+            )
+        elif thinking["disable_supported"] is False and mode != "on":
+            thinking["recommendation"] = (
+                'this endpoint cannot turn thinking off: set "thinking": "on" with a '
+                '"thinking_budget_tokens" large enough for the reasoning'
+            )
+    return out
+
+
+def _probe_thinking_settings(
+    body: dict[str, Any], provider: str, model_id: str, base: str
+) -> tuple[str, int | None]:
+    """Thinking mode for a probe: the body's, else the saved entry's at this
+    endpoint, else "auto"; 400 on an invalid value."""
+    from app.ai_router.model_endpoints import parse_thinking_mode
+
+    given = _thinking_fields(body, {})  # validates (400) what the operator typed
+    settings: dict[str, Any] = given
+    if not given:
+        entry = model_registry.get_configured(provider, model_id)
+        if entry is not None and str(getattr(entry, "base_url", "") or "").rstrip("/") == base:
+            settings = entry.extra or {}
+    mode = parse_thinking_mode(settings.get("thinking")) or "auto"
+    budget = settings.get("thinking_budget_tokens")
+    ok_budget = isinstance(budget, int) and not isinstance(budget, bool) and budget > 0
+    return mode, budget if ok_budget else None
 
 
 @router.post("/configured/test-endpoint")
 async def test_model_endpoint(request: Request) -> dict[str, Any]:
     """Check that a model's own endpoint answers (platform admin).
 
-    Body ``{provider, model_id, base_url, capabilities, api_key?}``. Lists the
-    server's models (``GET {base_url}/models``), then makes one real call for the
-    capability: a short chat completion (reasoning / vision / OCR), an embedding
-    (``POST {base_url}/embeddings``) for an embedding model, or a rerank.
+    Body ``{provider, model_id, base_url, capabilities, api_key?, thinking?,
+    thinking_budget_tokens?}``. Lists the server's models (``GET
+    {base_url}/models``), then makes a real call for the capability: a short
+    chat completion (reasoning / vision / OCR), an embedding (``POST
+    {base_url}/embeddings``) for an embedding model, or a rerank.
     ``ok: false`` (HTTP 200) carries the error; 400 = URL refused.
+
+    A chat probe also reports ``thinking``: whether the model is a thinking
+    model (reasoning tokens / text observed), whether the endpoint accepts the
+    thinking-off switch and whether the model answers with thinking off, plus a
+    recommendation for the ``thinking`` setting (see ``_probe_chat``). The mode
+    probed is the body's ``thinking``, else the saved entry's, else "auto".
 
     The credential is ``api_key`` when given (used for this call only, never
     stored or echoed), else the one saved with the registry entry, else the
@@ -796,13 +969,13 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
         if ModelCapability.RERANK.value in caps and not chat
         else "chat"
     )
+    from app.ai_router.selection import _ensure_seeded
+
+    _ensure_seeded(model_registry)
     typed_key = str(body.get("api_key", "") or "").strip()
     if typed_key:
         api_key = typed_key
     else:
-        from app.ai_router.selection import _ensure_seeded
-
-        _ensure_seeded(model_registry)
         saved = model_registry.get_configured(provider, model_id)
         same_endpoint = saved is not None and (
             str(getattr(saved, "base_url", "") or "").rstrip("/") == base
@@ -811,6 +984,7 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
             api_key = endpoint_api_key(provider, saved if same_endpoint else None)
         except ModelEndpointError as exc:
             raise HTTPException(400, str(exc)) from exc
+    mode, budget = _probe_thinking_settings(body, provider, model_id, base)
     headers = {"Authorization": f"Bearer {api_key}"}
     result: dict[str, Any] = {
         "ok": False,
@@ -839,14 +1013,19 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
                 pass  # not every server lists models; the real call decides
 
             if probe == "chat":
-                payload: dict[str, Any] = {
-                    "model": model_id,
-                    "messages": [{"role": "user", "content": "Reply with just the word OK"}],
-                    "max_tokens": 16,
-                }
-                payload.update(onprem_extra_body(provider) or {})
-                resp = await client.post(f"{base}/chat/completions", json=payload, headers=headers)
-            elif probe == "embedding":
+                chat_result = await _probe_chat(
+                    client,
+                    base=base,
+                    headers=headers,
+                    model_id=model_id,
+                    mode=mode,
+                    budget=budget,
+                    off_by_default=bool(onprem_extra_body(provider)),
+                )
+                result["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+                result.update(chat_result)
+                return result
+            if probe == "embedding":
                 resp = await client.post(
                     f"{base}/embeddings", json={"model": model_id, "input": ["ping"]},
                     headers=headers,
@@ -863,11 +1042,7 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
             result["error"] = f"HTTP {resp.status_code}: {resp.text[:300]}"
             return result
         data = resp.json()
-        if probe == "chat":
-            choice = (data.get("choices") or [{}])[0]
-            text = str((choice.get("message") or {}).get("content") or "").strip()
-            result["detail"] = f"replied: {text[:80]!r}" if text else "empty reply"
-        elif probe == "embedding":
+        if probe == "embedding":
             vec = ((data.get("data") or [{}])[0]).get("embedding") or []
             if not isinstance(vec, list) or not vec:
                 result["error"] = "the endpoint returned no embedding"
@@ -891,11 +1066,59 @@ async def test_model_endpoint(request: Request) -> dict[str, Any]:
     return result
 
 
+def _thinking_fields(body: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    """``thinking`` / ``thinking_budget_tokens`` to store, or 400.
+
+    ``thinking``: "auto" (default) | "off" | "on". ``thinking_budget_tokens``: a
+    positive int, or null / 0 to clear. A field left out keeps the saved value
+    (an edit of the price from an older client must not reset it).
+    """
+    from app.ai_router.model_endpoints import THINKING_MODES, parse_thinking_mode
+
+    out: dict[str, Any] = {}
+    if "thinking" in body and body.get("thinking") is not None:
+        mode = parse_thinking_mode(body.get("thinking"))
+        if mode is None:
+            raise HTTPException(
+                400, f"invalid thinking {body.get('thinking')!r}; must be one of "
+                + ", ".join(THINKING_MODES)
+            )
+        out["thinking"] = mode
+    elif parse_thinking_mode(existing.get("thinking")):
+        out["thinking"] = existing["thinking"]
+    if "thinking_budget_tokens" in body:
+        raw = body.get("thinking_budget_tokens")
+        if raw not in (None, "", 0):
+            if isinstance(raw, bool):
+                raise HTTPException(400, "thinking_budget_tokens must be a positive integer")
+            try:
+                budget = int(str(raw))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    400, "thinking_budget_tokens must be a positive integer"
+                ) from exc
+            if budget <= 0 or budget > 131072:
+                raise HTTPException(400, "thinking_budget_tokens must be in 1..131072")
+            out["thinking_budget_tokens"] = budget
+    elif isinstance(existing.get("thinking_budget_tokens"), int):
+        out["thinking_budget_tokens"] = existing["thinking_budget_tokens"]
+    return out
+
+
 @router.post("/configured")
 async def upsert_configured_model(request: Request) -> dict[str, Any]:
     """Add or override a configured model. Persists to the store and takes effect
     immediately (registry re-seeded). Platform-admin only — the registry is
-    deployment-global (shared across tenants)."""
+    deployment-global (shared across tenants).
+
+    Body: ``provider``, ``model_id``, ``capabilities`` (required), optional
+    ``display_name``, costs, ``supports_*``, ``quality_score``, ``is_available``,
+    ``base_url`` (the model's own OpenAI-compatible server), ``api_key`` /
+    ``clear_api_key``, and the thinking-model control ``thinking`` ("auto" —
+    default: retry an empty, reasoning-only reply once with thinking off —
+    "off": always send thinking off, "on": keep thinking) with an optional
+    ``thinking_budget_tokens`` (reasoning tokens added to the budget with "on").
+    """
     _require_tenant(request)
     _require_platform_admin(request)
     from app.ai_router.registry_store import get_model_registry_store
@@ -937,6 +1160,7 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
     if store is None:
         raise HTTPException(503, "model registry store unavailable")
     existing = store.get(provider, model_id) or {}
+    endpoint.update(_thinking_fields(body, existing))
     # The endpoint credential: encrypted by the credential vault, never stored
     # (or returned) in plaintext. Omitted = keep the saved one (an edit of the
     # price must not drop it); ``clear_api_key`` removes it.
