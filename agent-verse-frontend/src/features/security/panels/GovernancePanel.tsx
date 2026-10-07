@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useAuthStore, getAuthHeader } from '../../../stores/auth';
 import { API_BASE, governanceApi, type ApprovalRequest } from '@/lib/api/client';
+import { formatWindowDays, formatWindowHours, hasTimeWindow } from '@/features/governance/policyWindow';
 
 function apiFetch(path: string, opts?: RequestInit) {
   return fetch(`${API_BASE}${path}`, { ...opts, headers: { ...getAuthHeader(), 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
@@ -34,6 +35,17 @@ export function GovernancePanel() {
     enabled: !!apiKey,
     refetchInterval: 10000,
   });
+
+  // Tenant policies with a time window (hours / weekdays in the policy's own
+  // IANA timezone): the real time-based rules the policy engine enforces. The
+  // static "no destructive ops overnight / no weekend deploys" text described
+  // the removed app.governance.time_policy module, which never ran.
+  const { data: policies, isError: policiesError } = useQuery({
+    queryKey: ['governance-policies'],
+    queryFn: () => governanceApi.listGovernancePolicies(),
+    enabled: !!apiKey,
+  });
+  const timeWindowed = Array.isArray(policies) ? policies.filter(hasTimeWindow) : [];
 
   const enableMutation = useMutation({
     mutationFn: (bundleId: string) => apiFetch(`/trust/compliance-bundles/${bundleId}/enable`, { method: 'POST' }),
@@ -125,25 +137,44 @@ export function GovernancePanel() {
         </div>
       </div>
 
-      {/* Time-Based Rules */}
+      {/* Time-Based Rules: tenant policies with a time window */}
       <div className="rounded-xl border bg-card p-5">
-        <h2 className="font-semibold text-foreground mb-3">Time-Based Rules</h2>
-        <div className="space-y-2">
-          {[
-            { name: 'No destructive ops overnight', desc: 'delete_*, drop_*, truncate_*', hours: '22:00–06:00 UTC', active: true },
-            { name: 'No prod deploys on weekends', desc: 'deploy_*, *_to_prod, terraform_apply', hours: 'Sat & Sun', active: true },
-          ].map(rule => (
-            <div key={rule.name} className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
-              <div>
-                <p className="text-sm font-medium text-foreground">{rule.name}</p>
-                <p className="text-xs text-muted-foreground">{rule.desc} · {rule.hours}</p>
-              </div>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                Active
-              </span>
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold text-foreground">Time-Based Rules</h2>
+          <Link to="/governance" className="text-xs text-primary hover:underline">
+            Manage policies
+          </Link>
         </div>
+        {policiesError ? (
+          <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+            Could not load policies.
+          </p>
+        ) : timeWindowed.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No time-windowed policies. Give a policy active hours or weekdays (in its own
+            timezone) in Governance to restrict tools by time.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {timeWindowed.map((p) => (
+              <div
+                key={p.policy_id}
+                data-testid={`time-rule-${p.policy_id}`}
+                className="flex items-center justify-between p-3 rounded-lg border bg-muted/30"
+              >
+                <div>
+                  <p className="text-sm font-medium text-foreground">{p.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {p.tools_pattern} · Active {formatWindowHours(p)} · {formatWindowDays(p)}
+                  </p>
+                </div>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                  {p.action === 'deny' ? 'Deny' : 'Needs approval'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

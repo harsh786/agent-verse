@@ -66,4 +66,8 @@ before any change. No alembic migration was added.
    result). Tests: `tests/api/test_agent_autonomy_revalidation.py`,
    `tests/intelligence/test_autonomy_revalidation.py`,
    `tests/intelligence/test_autonomy_revalidation_pg.py` (app role),
-   `AutonomyRevalidationNotice.test.tsx`.
+   `AutonomyRevalidationNotice.test.tsx`. Follow-ups (same day): `POST /agents/{id}/rollback/{snapshot_id}`
+   restores a snapshot's `fully-autonomous` only when a run vouches for the restored config, else
+   restores it bounded and re-validates it the same way (source `snapshot_rollback:<id>`); cloning a
+   fully-autonomous agent creates a `bounded-autonomous` clone (`autonomy_note` in the response,
+   audited `clone_bounded`).

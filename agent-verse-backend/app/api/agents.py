@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -1461,86 +1462,13 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
         update_data.update(_merged)
         update_data["pattern_flags"] = _merged
 
-    # Becoming fully-autonomous, or changing the suite that vouches for it,
-    # requires the suite's latest completed run to pass the gate FOR THE CONFIG
-    # BEING WRITTEN (MEM-52). A behaviour-config change to an agent that IS
-    # fully-autonomous (owner decision on a05-F095-04) is accepted instead: the
-    # agent is demoted to bounded-autonomous in the same write, and its suite is
-    # run against the new config; it is promoted back when that run passes the
-    # gate (app.intelligence.autonomy_revalidation). If a run already vouches
-    # for the new config, nothing is demoted.
-    from app.intelligence import autonomy_revalidation as _reval
-
-    proposed = {**current, **update_data}
-    current_mode = current.get("autonomy_mode")
-    behaviour_changed = _behaviour_config_changed(current, proposed)
-    suite_changed = new_eval_suite != current.get("eval_suite_id")
-    manual_autonomy_change = (
-        body.autonomy_mode is not None and body.autonomy_mode != current_mode
+    # Becoming fully-autonomous / a new vouching suite is gated (409); a
+    # behaviour change to a fully-autonomous agent demotes and re-validates it
+    # (owner decision on a05-F095-04, see _plan_autonomy_change).
+    plan = await _plan_autonomy_change(
+        request, tenant_ctx, agent_id=agent_id, current=current, update_data=update_data,
+        requested_mode=body.autonomy_mode, source="agent_update", refuse_promotion=True,
     )
-    previous_marker = _reval.marker_of(current)
-    revalidate = False
-    if _gate_on and new_autonomy == "fully-autonomous" and (
-        current_mode != "fully-autonomous" or suite_changed or behaviour_changed
-    ):
-        if current_mode == "fully-autonomous" and behaviour_changed:
-            report = await _rollout_gate_report(
-                request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
-                agent_config=proposed,
-            )
-            revalidate = not report["gate_passed"]
-        else:
-            await _enforce_rollout_gate(
-                request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
-                agent_config=proposed,
-            )
-    elif (
-        _gate_on
-        and not manual_autonomy_change
-        and _reval.is_pending(current)
-        and (behaviour_changed or suite_changed)
-    ):
-        # Changed again while being re-validated: re-test the newest config
-        # (the older run is failed as superseded and can never promote).
-        revalidate = True
-
-    if manual_autonomy_change and previous_marker and previous_marker.get("state") == "pending":
-        # The operator decided the autonomy themselves: never re-promote later.
-        update_data["autonomy_revalidation"] = _reval.cancelled_by_operator(
-            previous_marker, new_mode=str(body.autonomy_mode), actor=tenant_ctx.api_key_id
-        )
-
-    marker: dict[str, Any] | None = None
-    eval_store: Any = None
-    tenant_plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"
-    if revalidate:
-        from app.intelligence.eval_suite_store import EvalSuiteStore
-
-        eval_store = EvalSuiteStore(
-            getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
-        )
-        update_data["autonomy_mode"] = _reval.BOUNDED_AUTONOMOUS
-        try:
-            marker = await _reval.begin_revalidation(
-                eval_store,
-                agent_id=agent_id,
-                proposed={**current, **update_data},
-                source="agent_update",
-                actor=tenant_ctx.api_key_id,
-                tenant_plan=str(tenant_plan),
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "REVALIDATION_UNAVAILABLE",
-                    "message": (
-                        "The eval run that re-validates this fully-autonomous agent could "
-                        "not be enqueued; nothing was changed. Try again."
-                    ),
-                },
-            ) from exc
-        update_data["autonomy_revalidation"] = marker
 
     # QA-15: a new trigger / goal template goes through the same gate as create
     # (422 before anything is written), and the agent's schedule is replaced
@@ -1567,57 +1495,199 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
             await _undo_agent_reschedule(
                 request, current, agent_id=agent_id, tenant_ctx=tenant_ctx
             )
-        await _reval.abandon_run(eval_store, marker, "the agent update was not saved")
+        await _abandon_autonomy_change(plan)
         raise
     if not updated:
         if reschedule:
             await _undo_agent_reschedule(
                 request, current, agent_id=agent_id, tenant_ctx=tenant_ctx
             )
-        await _reval.abandon_run(eval_store, marker, "the agent update was not saved")
+        await _abandon_autonomy_change(plan)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
 
-    audit_log = getattr(request.app.state, "audit_log", None)
-    if marker is not None:
-        from app.api.enterprise import eval_run_dispatcher
-
-        await _reval.start_revalidation(
-            eval_store=eval_store,
-            agent_store=store,
-            tenant_ctx=tenant_ctx,
-            agent_id=agent_id,
-            marker=marker,
-            dispatch=eval_run_dispatcher(request, tenant_ctx, eval_store),
-            tenant_plan=str(tenant_plan),
-            previous=previous_marker,
-            audit_log=audit_log,
-        )
-    elif "autonomy_revalidation" in update_data and previous_marker is not None:
-        from app.intelligence.eval_suite_store import EvalSuiteStore
-
-        await _reval.abandon_run(
-            EvalSuiteStore(
-                getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
-            ),
-            previous_marker,
-            "re-validation cancelled: an operator changed the agent's autonomy",
-        )
-        await _reval.audit_transition(
-            tenant_id=tenant_ctx.tenant_id, agent_id=agent_id, outcome="revalidation_cancelled",
-            actor=tenant_ctx.api_key_id, audit_log=audit_log,
-            note=(
-                f"autonomy set to {body.autonomy_mode} by an operator while re-validation "
-                f"run {previous_marker.get('run_id')} was pending; it will not re-promote"
-            ),
-        )
+    await _finish_autonomy_change(
+        request, tenant_ctx, agent_id=agent_id, store=store, plan=plan,
+        requested_mode=body.autonomy_mode,
+    )
 
     result = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
     if schedule_id and result is not None:
         return {**result, "schedule_id": schedule_id}
     return result  # type: ignore[return-value]
+
+
+# ── Autonomy changes behind the rollout gate (a05-F095-04 owner decision) ────
+
+
+@dataclass
+class _AutonomyPlan:
+    """What an agent write does to its autonomy, decided before the write."""
+
+    marker: dict[str, Any] | None = None
+    eval_store: Any = None
+    previous: dict[str, Any] | None = None
+    cancelled: bool = False
+    tenant_plan: str = "free"
+    source: str = "agent_update"
+
+
+async def _plan_autonomy_change(
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    agent_id: str,
+    current: dict[str, Any],
+    update_data: dict[str, Any],
+    requested_mode: str | None,
+    source: str,
+    refuse_promotion: bool,
+) -> _AutonomyPlan:
+    """Decide (and stage into ``update_data``) the write's autonomy effects.
+
+    * Becoming fully-autonomous, or changing the suite that vouches for it,
+      needs the suite's latest completed run to pass the gate FOR THE CONFIG
+      BEING WRITTEN (MEM-52). With ``refuse_promotion`` (PUT) a failing gate is
+      409; otherwise (snapshot rollback) the write is applied bounded-autonomous
+      and re-validated like a config change.
+    * A behaviour-config change to an agent that IS fully-autonomous is
+      accepted: demoted to bounded-autonomous in the same write, its suite run
+      against the new config, promoted back when it passes
+      (app.intelligence.autonomy_revalidation). Nothing is demoted when a run
+      already vouches for the new config.
+    * Changed again while being re-validated: re-test the newest config.
+    * An operator's explicit autonomy change cancels a pending re-validation.
+    """
+    from app.intelligence import autonomy_revalidation as reval
+
+    gate_on = _eval_gate_enabled()
+    current_mode = current.get("autonomy_mode")
+    new_autonomy = update_data.get("autonomy_mode") or current_mode
+    new_eval_suite = update_data.get("eval_suite_id") or current.get("eval_suite_id")
+    proposed = {**current, **update_data}
+    behaviour_changed = _behaviour_config_changed(current, proposed)
+    suite_changed = new_eval_suite != current.get("eval_suite_id")
+    manual_autonomy_change = requested_mode is not None and requested_mode != current_mode
+    plan = _AutonomyPlan(
+        previous=reval.marker_of(current),
+        tenant_plan=str(getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"),
+        source=source,
+    )
+    revalidate = False
+    if gate_on and new_autonomy == reval.FULLY_AUTONOMOUS and (
+        current_mode != reval.FULLY_AUTONOMOUS or suite_changed or behaviour_changed
+    ):
+        if (current_mode == reval.FULLY_AUTONOMOUS and behaviour_changed) or not refuse_promotion:
+            report = await _rollout_gate_report(
+                request, tenant_ctx, agent_id=agent_id,
+                eval_suite_id=str(new_eval_suite or "") or None, agent_config=proposed,
+            )
+            revalidate = not report["gate_passed"]
+        else:
+            await _enforce_rollout_gate(
+                request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
+                agent_config=proposed,
+            )
+    elif (
+        gate_on
+        and not manual_autonomy_change
+        and reval.is_pending(current)
+        and (behaviour_changed or suite_changed)
+    ):
+        revalidate = True
+
+    if manual_autonomy_change and plan.previous and plan.previous.get("state") == reval.PENDING:
+        update_data["autonomy_revalidation"] = reval.cancelled_by_operator(
+            plan.previous, new_mode=str(requested_mode), actor=tenant_ctx.api_key_id
+        )
+        plan.cancelled = True
+
+    if revalidate:
+        from app.intelligence.eval_suite_store import EvalSuiteStore
+
+        plan.eval_store = EvalSuiteStore(
+            getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
+        )
+        update_data["autonomy_mode"] = reval.BOUNDED_AUTONOMOUS
+        try:
+            plan.marker = await reval.begin_revalidation(
+                plan.eval_store,
+                agent_id=agent_id,
+                proposed={**current, **update_data},
+                source=source,
+                actor=tenant_ctx.api_key_id,
+                tenant_plan=plan.tenant_plan,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "REVALIDATION_UNAVAILABLE",
+                    "message": (
+                        "The eval run that re-validates this agent could not be "
+                        "enqueued; nothing was changed. Try again."
+                    ),
+                },
+            ) from exc
+        update_data["autonomy_revalidation"] = plan.marker
+        plan.cancelled = False
+    return plan
+
+
+async def _abandon_autonomy_change(plan: _AutonomyPlan) -> None:
+    """The agent write failed: fail the run enqueued for it."""
+    from app.intelligence.autonomy_revalidation import abandon_run
+
+    await abandon_run(plan.eval_store, plan.marker, "the agent update was not saved")
+
+
+async def _finish_autonomy_change(
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    agent_id: str,
+    store: AgentStore,
+    plan: _AutonomyPlan,
+    requested_mode: str | None,
+) -> None:
+    """After the write: audit, dispatch the re-validation run, or cancel the old one."""
+    from app.intelligence import autonomy_revalidation as reval
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if plan.marker is not None:
+        from app.api.enterprise import eval_run_dispatcher
+
+        await reval.start_revalidation(
+            eval_store=plan.eval_store,
+            agent_store=store,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+            marker=plan.marker,
+            dispatch=eval_run_dispatcher(request, tenant_ctx, plan.eval_store),
+            tenant_plan=plan.tenant_plan,
+            previous=plan.previous,
+            audit_log=audit_log,
+        )
+    elif plan.cancelled and plan.previous is not None:
+        from app.intelligence.eval_suite_store import EvalSuiteStore
+
+        await reval.abandon_run(
+            EvalSuiteStore(
+                getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
+            ),
+            plan.previous,
+            "re-validation cancelled: an operator changed the agent's autonomy",
+        )
+        await reval.audit_transition(
+            tenant_id=tenant_ctx.tenant_id, agent_id=agent_id, outcome="revalidation_cancelled",
+            actor=tenant_ctx.api_key_id, audit_log=audit_log,
+            note=(
+                f"autonomy set to {requested_mode} ({plan.source}) while re-validation run "
+                f"{plan.previous.get('run_id')} was pending; it will not re-promote"
+            ),
+        )
 
 
 # FIX 5: delete cleans up associated schedules
@@ -1929,9 +1999,41 @@ async def rollback_agent(request: Request, agent_id: str, snapshot_id: str) -> d
         )
     }
 
+    current = await store.get_async(agent_id, tenant_ctx=tenant)
+    if current is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    # A snapshot's fully-autonomous mode is restored only through the rollout
+    # gate: when no run vouches for the restored config, it is restored
+    # bounded-autonomous and re-validated (auto-promoted when the suite passes).
+    requested_mode = restore_data.get("autonomy_mode")
+    plan = await _plan_autonomy_change(
+        request, tenant, agent_id=agent_id, current=current, update_data=restore_data,
+        requested_mode=str(requested_mode) if requested_mode else None,
+        source=f"snapshot_rollback:{snapshot_id}", refuse_promotion=False,
+    )
+
     # Persist rollback to DB (and update in-memory cache)
-    await store.update_async(agent_id, restore_data, tenant_ctx=tenant)
-    return {"agent_id": agent_id, "restored_from": snapshot_id, "status": "rolled_back"}
+    try:
+        updated = await store.update_async(agent_id, restore_data, tenant_ctx=tenant)
+    except Exception:
+        await _abandon_autonomy_change(plan)
+        raise
+    if not updated:
+        await _abandon_autonomy_change(plan)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    await _finish_autonomy_change(
+        request, tenant, agent_id=agent_id, store=store, plan=plan,
+        requested_mode=str(requested_mode) if requested_mode else None,
+    )
+    restored = await store.get_async(agent_id, tenant_ctx=tenant) or {}
+    return {
+        "agent_id": agent_id,
+        "restored_from": snapshot_id,
+        "status": "rolled_back",
+        "autonomy_mode": restored.get("autonomy_mode"),
+        "autonomy_revalidation": restored.get("autonomy_revalidation"),
+        "pending_promotion": bool(restored.get("pending_promotion")),
+    }
 
 
 @router.get("/{agent_id}/export")
@@ -2009,10 +2111,18 @@ async def clone_agent(
             detail=f"Agent {agent_id} not found",
         )
 
+    # A clone has never passed its OWN rollout gate (runs vouch per agent id),
+    # so a fully-autonomous original is cloned bounded-autonomous.
+    original_mode = original.get("autonomy_mode", "bounded-autonomous")
+    clone_mode = (
+        "bounded-autonomous"
+        if original_mode == "fully-autonomous" and _eval_gate_enabled()
+        else original_mode
+    )
     clone_data: dict[str, Any] = {
         "name": (body.name if body else None) or f"{original['name']} (copy)",
         "goal_template": original.get("goal_template", ""),
-        "autonomy_mode": original.get("autonomy_mode", "bounded-autonomous"),
+        "autonomy_mode": clone_mode,
         "connector_ids": list(original.get("connector_ids", [])),
         "trigger_config": dict(original.get("trigger_config", {})),
         "allowed_collection_ids": list(original.get("allowed_collection_ids", [])),
@@ -2039,7 +2149,22 @@ async def clone_agent(
     check_agent_limit(tenant_ctx, len(existing))
 
     clone_id = await _create_agent_record(store, clone_data, tenant_ctx=tenant_ctx)
-    return {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
+    result: dict[str, Any] = {**clone_data, "agent_id": clone_id, "cloned_from": agent_id}
+    if clone_mode != original_mode:
+        note = (
+            f"Cloned as bounded-autonomous: agent {agent_id} is fully-autonomous, but the "
+            "clone has never passed its own rollout gate. Run its eval suite against the "
+            "clone, then promote it."
+        )
+        result["autonomy_note"] = note
+        from app.intelligence.autonomy_revalidation import audit_transition
+
+        await audit_transition(
+            tenant_id=tenant_ctx.tenant_id, agent_id=clone_id, outcome="clone_bounded",
+            actor=tenant_ctx.api_key_id, note=note,
+            audit_log=getattr(request.app.state, "audit_log", None),
+        )
+    return result
 
 
 # ── Agent Identity / JWT Service-Account Credentials ─────────────────────────

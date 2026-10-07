@@ -10,6 +10,7 @@
  * Plus: Emergency Stop kill-switch (always visible above tabs)
  */
 import { useState } from 'react';
+import { WEEKDAYS, formatWindowDays, formatWindowHours } from './policyWindow';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity,
@@ -250,23 +251,6 @@ function EmergencyStopBanner() {
 // POLICIES TAB
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-const hh = (h: number) => `${String(h).padStart(2, '0')}:00`;
-
-/** Active hours as ranges, e.g. [9, 10, 11, 14] → "09:00–12:00, 14:00–15:00". */
-function formatActiveHours(hours: number[]): string {
-  const sorted = [...new Set(hours)].sort((a, b) => a - b);
-  const ranges: string[] = [];
-  let start = sorted[0];
-  for (let i = 0; i < sorted.length; i++) {
-    if (sorted[i + 1] !== sorted[i] + 1) {
-      ranges.push(`${hh(start)}–${hh(sorted[i] + 1)}`);
-      start = sorted[i + 1];
-    }
-  }
-  return ranges.join(', ');
-}
 
 const PATTERN_EXAMPLES = [
   'shell:*', 'github:delete*', 'jira:create*', 'slack:*', '*:delete*', 'deploy:*',
@@ -791,14 +775,10 @@ function PoliciesTab({ tenantId }: { tenantId: string }) {
                         <div>
                           <p>
                             Active{' '}
-                            {p.allowed_hours_utc?.length
-                              ? `${formatActiveHours(p.allowed_hours_utc)} ${p.timezone ?? 'UTC'}`
-                              : 'all day'}
+                            {formatWindowHours(p)}
                           </p>
                           <p className="text-muted-foreground">
-                            {p.allowed_weekdays?.length
-                              ? p.allowed_weekdays.map((d) => WEEKDAYS[d] ?? d).join(', ')
-                              : 'every day'}
+                            {formatWindowDays(p)}
                           </p>
                         </div>
                       </div>

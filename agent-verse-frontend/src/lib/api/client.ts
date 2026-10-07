@@ -559,6 +559,8 @@ export interface AgentResponse {
   autonomy_revalidation?: AutonomyRevalidation | null;
   /** True while demoted and waiting for the eval suite run to pass. */
   pending_promotion?: boolean;
+  /** Clone of a fully-autonomous agent: why the clone was created bounded-autonomous. */
+  autonomy_note?: string;
 }
 
 /** The re-validation of a demoted fully-autonomous agent (agents.autonomy_revalidation). */

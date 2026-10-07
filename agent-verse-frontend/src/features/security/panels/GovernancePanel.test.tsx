@@ -10,12 +10,15 @@ interface MockOpts {
   active?: string[];
   effectiveMode?: string;
   approvals?: unknown[];
+  policies?: unknown[];
+  policiesStatus?: number;
 }
 
 function mockFetch(opts: MockOpts = {}) {
   const active = opts.active ?? [];
   const effective = opts.effectiveMode ?? 'fully-autonomous';
   const approvals = opts.approvals ?? [];
+  const policies = opts.policies ?? [];
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -26,6 +29,8 @@ function mockFetch(opts: MockOpts = {}) {
     if (url.includes('/trust/approvals'))
       // Retired (a03-F057-01): the panel must never call it.
       return new Response(JSON.stringify({ detail: { code: 'TRUST_APPROVALS_RETIRED' } }), { status: 410, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/governance/policies'))
+      return new Response(JSON.stringify(policies), { status: opts.policiesStatus ?? 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/governance/approvals'))
       return new Response(JSON.stringify(approvals), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -106,10 +111,38 @@ describe('GovernancePanel', () => {
     );
   });
 
-  test('renders the static time-based rules', async () => {
-    mockFetch();
+  test('time-based rules are the tenant policies with a time window, in their own timezone', async () => {
+    mockFetch({
+      policies: [
+        { policy_id: 'p1', name: 'No deploys out of hours', description: '', tools_pattern: 'deploy_*', action: 'deny', priority: 10,
+          allowed_hours_utc: [9, 10, 11, 12, 13, 14, 15, 16], allowed_weekdays: [0, 1, 2, 3, 4], timezone: 'Europe/Berlin' },
+        { policy_id: 'p2', name: 'Always approve payments', description: '', tools_pattern: 'pay_*', action: 'require_approval', priority: 5 },
+      ],
+    });
     renderPanel();
-    expect(await screen.findByText('No destructive ops overnight')).toBeInTheDocument();
-    expect(screen.getByText('No prod deploys on weekends')).toBeInTheDocument();
+    const rule = await screen.findByTestId('time-rule-p1');
+    expect(rule).toHaveTextContent('No deploys out of hours');
+    expect(rule).toHaveTextContent('deploy_*');
+    expect(rule).toHaveTextContent('Active 09:00–17:00 Europe/Berlin');
+    expect(rule).toHaveTextContent('Mon, Tue, Wed, Thu, Fri');
+    expect(rule).toHaveTextContent('Deny');
+    // No window → not a time-based rule.
+    expect(screen.queryByTestId('time-rule-p2')).not.toBeInTheDocument();
+    // The removed time_policy module's static text is gone.
+    expect(screen.queryByText('No destructive ops overnight')).not.toBeInTheDocument();
+    expect(screen.queryByText('No prod deploys on weekends')).not.toBeInTheDocument();
+  });
+
+  test('says so when no policy has a time window', async () => {
+    mockFetch({ policies: [] });
+    renderPanel();
+    expect(await screen.findByText(/No time-windowed policies/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Manage policies' })).toHaveAttribute('href', '/governance');
+  });
+
+  test('a failing policies request is shown, not an empty list', async () => {
+    mockFetch({ policiesStatus: 503 });
+    renderPanel();
+    expect(await screen.findByText('Could not load policies.')).toBeInTheDocument();
   });
 });

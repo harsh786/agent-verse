@@ -356,6 +356,9 @@ export function AgentDetailPage() {
     onSuccess: (data) => {
       navigate(`/agents/${data.agent_id}`);
       toast({ kind: 'success', message: 'Agent cloned.' });
+      // A fully-autonomous original is cloned bounded-autonomous (the clone
+      // has never passed its own rollout gate); say so.
+      if (data.autonomy_note) toast({ kind: 'warning', message: data.autonomy_note });
     },
     onError: (e) => toast({ kind: 'error', message: `Clone failed: ${e}` }),
   });

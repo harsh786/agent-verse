@@ -275,3 +275,82 @@ def test_snapshot_rollback_never_restores_a_revalidation_marker() -> None:
         body = client.get(f"/agents/{agent_id}", headers=_H).json()
         assert body["autonomy_revalidation"]["state"] == "cancelled"
         assert body["pending_promotion"] is False
+
+
+# ── snapshot rollback and clone go through the gate too ─────────────────────
+
+
+def test_rolling_back_to_a_fully_autonomous_snapshot_restores_it_bounded_and_revalidates() -> None:
+    with _client() as (client, ctx, goals, audit):
+        goals.running_polls = 10_000
+        agent_id = _fully_autonomous(client, ctx)
+        snap = client.post(f"/agents/{agent_id}/snapshot", headers=_H).json()
+        assert snap["autonomy_mode"] == "fully-autonomous"
+        # The operator demotes it and changes the prompt. The golden dataset
+        # then gains a task, so no run vouches for the snapshot's config any more.
+        client.put(f"/agents/{agent_id}",
+                   json={"autonomy_mode": "bounded-autonomous", "system_prompt": "v2"},
+                   headers=_H)
+        asyncio.run(EvalSuiteStore(None, ctx.tenant_id).add_task(
+            snap["eval_suite_id"], {"goal": "new case", "expected_tools": ["t"]}))
+        r = client.post(f"/agents/{agent_id}/rollback/{snap['snapshot_id']}", headers=_H)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # The snapshot's config, but NOT its fully-autonomous mode without the gate.
+        assert body["autonomy_mode"] == "bounded-autonomous"
+        assert body["pending_promotion"] is True
+        marker = body["autonomy_revalidation"]
+        assert marker["source"] == f"snapshot_rollback:{snap['snapshot_id']}"
+        assert marker["reason"] == "config_changed_pending_eval"
+        record = client.get(f"/agents/{agent_id}", headers=_H).json()
+        assert record["system_prompt"] == "vetted"
+        assert audit.outcomes()[-1] == "demoted"
+        # The suite passes against the restored config: promoted automatically.
+        goals.running_polls = 0
+        final = _wait_resolved(client, agent_id)
+        assert final["autonomy_mode"] == "fully-autonomous"
+        assert final["autonomy_revalidation"]["state"] == "promoted"
+        assert audit.outcomes()[-1] == "promoted"
+
+
+def test_rolling_back_to_a_snapshot_a_run_still_vouches_for_restores_it_directly() -> None:
+    with _client() as (client, ctx, _goals, audit):
+        agent_id = _fully_autonomous(client, ctx)
+        snap = client.post(f"/agents/{agent_id}/snapshot", headers=_H).json()
+        client.put(f"/agents/{agent_id}",
+                   json={"autonomy_mode": "bounded-autonomous", "system_prompt": "v2"},
+                   headers=_H)
+        body = client.post(f"/agents/{agent_id}/rollback/{snap['snapshot_id']}",
+                           headers=_H).json()
+        assert body["autonomy_mode"] == "fully-autonomous"  # the vetted run vouches for it
+        assert body["pending_promotion"] is False
+        assert "demoted" not in audit.outcomes()
+
+
+def test_cloning_a_fully_autonomous_agent_creates_a_bounded_clone() -> None:
+    with _client() as (client, ctx, _goals, audit):
+        agent_id = _fully_autonomous(client, ctx)
+        r = client.post(f"/agents/{agent_id}/clone", headers=_H)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["autonomy_mode"] == "bounded-autonomous"
+        assert "never passed its own rollout gate" in body["autonomy_note"]
+        stored = client.get(f"/agents/{body['agent_id']}", headers=_H).json()
+        assert stored["autonomy_mode"] == "bounded-autonomous"
+        assert stored["system_prompt"] == "vetted"
+        assert audit.outcomes() == ["clone_bounded"]
+        assert audit.events[0].step_id == body["agent_id"]
+        # The original is untouched.
+        assert client.get(f"/agents/{agent_id}", headers=_H).json()["autonomy_mode"] == (
+            "fully-autonomous"
+        )
+
+
+def test_cloning_a_bounded_agent_keeps_its_mode_and_adds_no_note() -> None:
+    with _client() as (client, _ctx, _goals, audit):
+        r = client.post("/agents", json={"name": "a", "autonomy_mode": "supervised"},
+                        headers=_H)
+        body = client.post(f"/agents/{r.json()['agent_id']}/clone", headers=_H).json()
+        assert body["autonomy_mode"] == "supervised"
+        assert "autonomy_note" not in body
+        assert audit.outcomes() == []
