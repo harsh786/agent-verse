@@ -39,6 +39,12 @@ def _decoded_b64_size(data_b64: str) -> int:
     return max(0, (len(data_b64) * 3) // 4 - padding)
 
 
+class ImageDescriptionError(Exception):
+    """No caption could be produced for an image (no vision-capable provider, or
+    an empty answer). The job fails with this reason — a placeholder string is
+    never stored as the image's extracted content."""
+
+
 class PdfExtractionError(Exception):
     """A PDF yielded no usable text (unparseable, parser missing, or text-free)."""
 
@@ -465,7 +471,10 @@ class MultimodalPipeline:
             and vision.supports_vision()
         )
         if not has_vision:
-            return "[Image content - vision provider not configured]"
+            raise ImageDescriptionError(
+                "Image could not be described: no vision-capable LLM provider is "
+                "configured for this tenant"
+            )
 
         from app.providers.base import CompletionRequest, Message
 
@@ -500,7 +509,12 @@ class MultimodalPipeline:
             tenant_id=tenant_id,
             timeout_seconds=generation_timeout_seconds(),
         )
-        return str(resp.content)
+        description = str(getattr(resp, "content", "") or "").strip()
+        if not description:
+            raise ImageDescriptionError(
+                "Image could not be described: the vision model returned an empty answer"
+            )
+        return description
 
     async def _extract_pdf(self, pdf_base64: str) -> list[ExtractedSpan]:
         """Extract per-page text spans from a PDF.
