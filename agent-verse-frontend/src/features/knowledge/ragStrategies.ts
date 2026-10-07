@@ -10,6 +10,9 @@ export interface RagStrategyInfo {
   name: string;
   available: boolean;
   unavailable_reason: string | null;
+  /** "beta" for RAFT (owner decision: no CI-verified real fine-tune runs); else null. */
+  stability?: 'beta' | null;
+  stability_note?: string | null;
 }
 
 interface RagStrategiesResponse {
@@ -36,6 +39,12 @@ export function useRagStrategies(collectionId: string | null) {
     ),
     staleTime: 30_000,
   });
+}
+
+/** The option label: name, a Beta marker, and why it cannot be picked (if so). */
+export function strategyLabel(s: RagStrategyInfo): string {
+  const notes = [s.stability === 'beta' ? 'Beta' : null, strategyNote(s)].filter(Boolean);
+  return notes.length > 0 ? `${s.name} (${notes.join(', ')})` : s.name;
 }
 
 /** Why a strategy cannot be picked, in words a user can act on. */

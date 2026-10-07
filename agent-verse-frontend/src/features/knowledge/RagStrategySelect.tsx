@@ -6,9 +6,13 @@
  * the backend with the selected `collection_id`. With no single collection
  * selected the backend reports `collection_index_required`, shown here as
  * "needs a collection" (not as broken).
+ *
+ * RAFT is beta (owner decision): its option is labelled "Beta" and, when it is
+ * the selected strategy, a Beta badge explains the limits.
  */
 import { useEffect } from 'react';
-import { DEFAULT_RAG_STRATEGY, strategyNote, useRagStrategies } from './ragStrategies';
+import { Badge } from '@/components/ui/badge';
+import { DEFAULT_RAG_STRATEGY, strategyLabel, useRagStrategies } from './ragStrategies';
 
 interface Props {
   /** The one selected collection, or null when none (or several) are selected. */
@@ -39,21 +43,28 @@ export function RagStrategySelect({ collectionId, value, onChange, id = 'rag-str
     : [{ id: DEFAULT_RAG_STRATEGY, name: 'Hybrid', available: true, unavailable_reason: null }];
 
   return (
-    <select
-      id={id}
-      data-testid="rag-strategy-select"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={className ?? 'w-full px-3 py-2 border border-border rounded-md text-sm bg-background'}
-    >
-      {options.map((s) => {
-        const note = strategyNote(s);
-        return (
+    <>
+      <select
+        id={id}
+        data-testid="rag-strategy-select"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={className ?? 'w-full px-3 py-2 border border-border rounded-md text-sm bg-background'}
+      >
+        {options.map((s) => (
           <option key={s.id} value={s.id} disabled={!s.available} title={s.unavailable_reason ?? undefined}>
-            {note ? `${s.name} (${note})` : s.name}
+            {strategyLabel(s)}
           </option>
-        );
-      })}
-    </select>
+        ))}
+      </select>
+      {selected?.stability === 'beta' && (
+        <span data-testid="rag-strategy-beta" title={selected.stability_note ?? undefined}>
+          <Badge variant="outline" className="mt-1">Beta</Badge>
+          {selected.stability_note && (
+            <span className="ml-1.5 text-[11px] text-muted-foreground">{selected.stability_note}</span>
+          )}
+        </span>
+      )}
+    </>
   );
 }

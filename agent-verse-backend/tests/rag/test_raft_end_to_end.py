@@ -518,6 +518,7 @@ def test_api_rejects_unsupported_provider_with_422() -> None:
         headers=HEADERS,
     )
     assert dataset.status_code == 201, dataset.text
+    assert dataset.json()["stability"] == "beta"
 
     preview = client.post(
         "/rag/raft/jobs/preview",
@@ -554,6 +555,30 @@ async def test_api_deploy_and_deployment_lookup() -> None:
     lookup = client.get(f"/rag/raft/collections/{COLLECTION}/deployment", headers=HEADERS)
     assert lookup.status_code == 200
     assert lookup.json()["job_id"] == job.job_id
+
+    # Owner decision: RAFT is beta — every RAFT response says so.
+    fetched = client.get(f"/rag/raft/jobs/{job.job_id}", headers=HEADERS)
+    for response in (deployed, lookup, fetched):
+        assert response.json()["stability"] == "beta"
+        assert "OpenAI-compatible" in response.json()["stability_note"]
+        assert "not CI-verified" in response.json()["stability_note"]
+
+
+def test_every_raft_route_is_documented_as_beta_in_openapi() -> None:
+    spec = _client(_service(inference=RecordingInferenceProvider())).app.openapi()
+    raft_ops = [
+        operation
+        for path, item in spec["paths"].items()
+        if path.startswith("/rag/raft/")
+        for operation in item.values()
+    ]
+    assert len(raft_ops) == 9
+    for operation in raft_ops:
+        assert operation["x-stability"] == "beta", operation["operationId"]
+        assert "Beta: RAFT fine-tuning supports only OpenAI-compatible" in (
+            operation["description"]
+        ), operation["operationId"]
+        assert "not CI-verified" in operation["description"]
 
 
 async def test_api_refresh_of_unsubmitted_job_is_a_conflict_not_an_outage() -> None:

@@ -12,6 +12,9 @@ const json = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
 const COLLECTION = { collection_id: 'col-1', name: 'Engineering Docs', doc_count: 3 };
+const RAFT_NOTE =
+  'Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers ' +
+  '(OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.';
 
 /** Backend readiness: raptor / agentic_chunking need a collection; col-1 has a RAPTOR index only. */
 function strategiesFor(collectionId: string | null) {
@@ -32,6 +35,14 @@ function strategiesFor(collectionId: string | null) {
         ...collectionBound(false, 'requires agentic-chunking indexing'),
       },
       { id: 'web_augmented', name: 'Web Augmented', available: false, unavailable_reason: 'web_search_backend_outage' },
+      {
+        id: 'raft',
+        name: 'Raft',
+        available: collectionId === 'col-1',
+        unavailable_reason: collectionId === 'col-1' ? null : 'raft_model_not_deployed',
+        stability: 'beta',
+        stability_note: RAFT_NOTE,
+      },
     ],
   };
 }
@@ -95,6 +106,26 @@ describe('RagStrategySelect', () => {
     const calls = strategyCalls(spy);
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((u) => u.endsWith('/rag/strategies?collection_id=col-1'))).toBe(true);
+  });
+
+  test('RAFT is labelled Beta, and a Beta badge with its limits shows when it is selected', async () => {
+    mockBackend();
+    const { unmount } = wrap(<RagStrategySelect collectionId="col-1" value="hybrid" onChange={() => {}} />);
+    expect(await screen.findByRole('option', { name: 'Raft (Beta)' })).not.toBeDisabled();
+    expect(screen.queryByTestId('rag-strategy-beta')).toBeNull(); // hybrid selected: no badge
+    unmount();
+
+    wrap(<RagStrategySelect collectionId="col-1" value="raft" onChange={() => {}} />);
+    const badge = await screen.findByTestId('rag-strategy-beta');
+    expect(badge).toHaveTextContent('Beta');
+    expect(badge).toHaveTextContent('only OpenAI-compatible fine-tune providers');
+    expect(badge).toHaveTextContent('not CI-verified');
+  });
+
+  test('an unavailable RAFT keeps both the Beta marker and the reason', async () => {
+    mockBackend();
+    wrap(<RagStrategySelect collectionId={null} value="hybrid" onChange={() => {}} />);
+    expect(await screen.findByRole('option', { name: 'Raft (Beta, unavailable)' })).toBeDisabled();
   });
 
   test('a value the backend does not offer (legacy made-up id) falls back to hybrid', async () => {

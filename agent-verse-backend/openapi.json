@@ -41441,6 +41441,7 @@
     },
     "/rag/raft/collections/{collection_id}/deployment": {
       "get": {
+        "description": "The fine-tuned model deployed for a collection's RAFT queries, and whether it can be served.\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "get_raft_deployment_rag_raft_collections__collection_id__deployment_get",
         "parameters": [
           {
@@ -41480,11 +41481,13 @@
         "summary": "Get Raft Deployment",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/datasets": {
       "post": {
+        "description": "Build a RAFT training dataset (questions, oracle and distractor chunks) from a knowledge collection.\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "create_raft_dataset_rag_raft_datasets_post",
         "requestBody": {
           "content": {
@@ -41523,11 +41526,13 @@
         "summary": "Create Raft Dataset",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs": {
       "post": {
+        "description": "Submit a confirmed RAFT fine-tune job to the provider (paid; admin only).\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "submit_raft_job_rag_raft_jobs_post",
         "requestBody": {
           "content": {
@@ -41566,11 +41571,13 @@
         "summary": "Submit Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs/preview": {
       "post": {
+        "description": "Estimate a RAFT fine-tune's cost and issue the confirmation token a submit needs.\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "preview_raft_job_rag_raft_jobs_preview_post",
         "requestBody": {
           "content": {
@@ -41609,11 +41616,13 @@
         "summary": "Preview Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs/{job_id}": {
       "get": {
+        "description": "A RAFT fine-tune job's status, model and evaluation.\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "get_raft_job_rag_raft_jobs__job_id__get",
         "parameters": [
           {
@@ -41653,12 +41662,13 @@
         "summary": "Get Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs/{job_id}/deploy": {
       "post": {
-        "description": "Serve this completed job's fine-tuned model for its collection's RAFT queries.",
+        "description": "Serve this completed job's fine-tuned model for its collection's RAFT queries (admin only).\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "deploy_raft_job_rag_raft_jobs__job_id__deploy_post",
         "parameters": [
           {
@@ -41698,11 +41708,13 @@
         "summary": "Deploy Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs/{job_id}/evaluate": {
       "post": {
+        "description": "Score held-out examples with the fine-tuned model (paid inference; admin only).\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "evaluate_raft_job_rag_raft_jobs__job_id__evaluate_post",
         "parameters": [
           {
@@ -41742,11 +41754,13 @@
         "summary": "Evaluate Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs/{job_id}/reconcile": {
       "post": {
+        "description": "Resolve a RAFT job whose submission outcome is unknown (admin only).\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "reconcile_raft_job_rag_raft_jobs__job_id__reconcile_post",
         "parameters": [
           {
@@ -41786,11 +41800,13 @@
         "summary": "Reconcile Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/raft/jobs/{job_id}/refresh": {
       "post": {
+        "description": "Poll the provider for a RAFT job's status (admin only).\n\n**Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers (OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider fine-tune runs are not CI-verified.**",
         "operationId": "refresh_raft_job_rag_raft_jobs__job_id__refresh_post",
         "parameters": [
           {
@@ -41830,7 +41846,8 @@
         "summary": "Refresh Raft Job",
         "tags": [
           "rag-platform"
-        ]
+        ],
+        "x-stability": "beta"
       }
     },
     "/rag/strategies": {

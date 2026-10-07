@@ -36,6 +36,16 @@ IN_FLIGHT_STATUSES: frozenset[RAFTJobStatus] = frozenset({"submitted", "running"
 DEFAULT_MAX_TRAINING_CHUNKS = 2000
 DEFAULT_MAX_EVAL_EXAMPLES = 50
 POLL_FAILURE_PREFIX = "status_poll_failed:"
+# Owner decision: RAFT fine-tuning ships as beta. Only OpenAI-compatible fine-tune
+# providers are supported (OpenAI itself, or any vendor exposing OpenAI's fine-tuning
+# REST API via RAFT_COMPAT_FINE_TUNE_*); Bedrock / Vertex are out of scope, and real
+# (paid) provider fine-tune runs are not CI-verified — CI uses scripted providers.
+RAFT_STABILITY = "beta"
+RAFT_STABILITY_NOTE = (
+    "Beta: RAFT fine-tuning supports only OpenAI-compatible fine-tune providers "
+    "(OpenAI or a vendor exposing the OpenAI fine-tuning API). Real provider "
+    "fine-tune runs are not CI-verified."
+)
 _LEGAL_TRANSITIONS: dict[RAFTJobStatus, frozenset[RAFTJobStatus]] = {
     "pending": frozenset({"pending", "reconciling", "submitted", "failed"}),
     "reconciling": frozenset({"reconciling", "submitted", "failed"}),

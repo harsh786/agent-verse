@@ -239,6 +239,14 @@ def test_rag_list_strategies():
     assert by_id[RAGStrategy.ADAPTIVE.value]["state"] == "implemented"
     assert by_id[RAGStrategy.GRAPH.value]["available"] is False
     assert by_id[RAGStrategy.GRAPH.value]["unavailable_reason"] == "registry_not_certified"
+    # Owner decision: RAFT is beta; no other strategy carries a stability label.
+    assert by_id[RAGStrategy.RAFT.value]["stability"] == "beta"
+    assert "OpenAI-compatible" in by_id[RAGStrategy.RAFT.value]["stability_note"]
+    assert all(
+        s["stability"] is None and s["stability_note"] is None
+        for s in strategies
+        if s["id"] != RAGStrategy.RAFT.value
+    )
     gateway = app.state.retrieval_gateway
     assert isinstance(gateway, _Gateway)
     assert gateway.readiness_tenants == [_CTX] * len(RAGStrategy)

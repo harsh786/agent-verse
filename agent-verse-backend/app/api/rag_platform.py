@@ -21,6 +21,8 @@ from app.rag.contracts import (
 from app.rag.gateway import CollectionNotFoundError
 from app.rag.raft import (
     POLL_FAILURE_PREFIX,
+    RAFT_STABILITY,
+    RAFT_STABILITY_NOTE,
     ConfirmationRequiredError,
     RAFTConcurrentUpdateError,
     RAFTDatasetConfig,
@@ -77,6 +79,20 @@ class RAFTJobRequest(BaseModel):
 # paid provider fine-tunes / inference: admin only (only the generic
 # unregistered-write fallback used to guard them).
 _REQUIRE_ADMIN = require_role("admin")
+
+# Every RAFT route is beta (owner decision): it says so in the OpenAPI description,
+# as an ``x-stability`` extension, and in every response body (``stability``).
+_RAFT_ROUTE_DOCS: dict[str, Any] = {
+    "openapi_extra": {"x-stability": RAFT_STABILITY},
+}
+
+
+def _raft_description(summary: str) -> str:
+    return f"{summary}\n\n**{RAFT_STABILITY_NOTE}**"
+
+
+def _beta(body: dict[str, Any]) -> dict[str, Any]:
+    return {**body, "stability": RAFT_STABILITY, "stability_note": RAFT_STABILITY_NOTE}
 
 
 def _raft_service(request: Request) -> RAFTService:
@@ -274,6 +290,10 @@ async def list_strategies(
                 "unavailable_reason": (
                     None if registry_available and capability_available else unavailable_reason
                 ),
+                # "beta" for a strategy shipped without CI-verified real provider runs
+                # (RAFT); null for every other strategy.
+                "stability": RAFT_STABILITY if strategy is RAGStrategy.RAFT else None,
+                "stability_note": RAFT_STABILITY_NOTE if strategy is RAGStrategy.RAFT else None,
             }
         )
     return {
@@ -282,7 +302,15 @@ async def list_strategies(
     }
 
 
-@router.post("/raft/datasets", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/raft/datasets",
+    status_code=status.HTTP_201_CREATED,
+    description=_raft_description(
+        "Build a RAFT training dataset (questions, oracle and distractor chunks) from a "
+        "knowledge collection."
+    ),
+    **_RAFT_ROUTE_DOCS,
+)
 async def create_raft_dataset(
     request: Request,
     body: RAFTDatasetRequest,
@@ -300,16 +328,24 @@ async def create_raft_dataset(
         )
     except Exception as exc:
         _raise_raft_http_error(exc)
-    return {
-        "dataset_id": dataset.dataset_id,
-        "collection_id": dataset.collection_id,
-        "train_examples": len(dataset.train_examples),
-        "test_examples": len(dataset.test_examples),
-        "validation_errors": list(dataset.validation_errors),
-    }
+    return _beta(
+        {
+            "dataset_id": dataset.dataset_id,
+            "collection_id": dataset.collection_id,
+            "train_examples": len(dataset.train_examples),
+            "test_examples": len(dataset.test_examples),
+            "validation_errors": list(dataset.validation_errors),
+        }
+    )
 
 
-@router.post("/raft/jobs/preview")
+@router.post(
+    "/raft/jobs/preview",
+    description=_raft_description(
+        "Estimate a RAFT fine-tune's cost and issue the confirmation token a submit needs."
+    ),
+    **_RAFT_ROUTE_DOCS,
+)
 async def preview_raft_job(request: Request, body: RAFTJobRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -321,23 +357,29 @@ async def preview_raft_job(request: Request, body: RAFTJobRequest) -> dict[str, 
         )
     except Exception as exc:
         _raise_raft_http_error(exc)
-    return {
-        "dataset_id": preview.dataset_id,
-        "provider_id": preview.provider_id,
-        "base_model": preview.base_model,
-        "estimated_cost": {
-            "currency": preview.estimated_cost.currency,
-            "estimated_amount": preview.estimated_cost.canonical_amount,
-        },
-        "confirmation_token": preview.confirmation_token,
-        "expires_at": preview.expires_at.isoformat(),
-    }
+    return _beta(
+        {
+            "dataset_id": preview.dataset_id,
+            "provider_id": preview.provider_id,
+            "base_model": preview.base_model,
+            "estimated_cost": {
+                "currency": preview.estimated_cost.currency,
+                "estimated_amount": preview.estimated_cost.canonical_amount,
+            },
+            "confirmation_token": preview.confirmation_token,
+            "expires_at": preview.expires_at.isoformat(),
+        }
+    )
 
 
 @router.post(
     "/raft/jobs",
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(_REQUIRE_ADMIN)],
+    description=_raft_description(
+        "Submit a confirmed RAFT fine-tune job to the provider (paid; admin only)."
+    ),
+    **_RAFT_ROUTE_DOCS,
 )
 async def submit_raft_job(request: Request, body: RAFTJobRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
@@ -354,7 +396,11 @@ async def submit_raft_job(request: Request, body: RAFTJobRequest) -> dict[str, A
     return _job_response(job)
 
 
-@router.get("/raft/jobs/{job_id}")
+@router.get(
+    "/raft/jobs/{job_id}",
+    description=_raft_description("A RAFT fine-tune job's status, model and evaluation."),
+    **_RAFT_ROUTE_DOCS,
+)
 async def get_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -364,7 +410,12 @@ async def get_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/refresh", dependencies=[Depends(_REQUIRE_ADMIN)])
+@router.post(
+    "/raft/jobs/{job_id}/refresh",
+    dependencies=[Depends(_REQUIRE_ADMIN)],
+    description=_raft_description("Poll the provider for a RAFT job's status (admin only)."),
+    **_RAFT_ROUTE_DOCS,
+)
 async def refresh_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -374,7 +425,14 @@ async def refresh_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/reconcile", dependencies=[Depends(_REQUIRE_ADMIN)])
+@router.post(
+    "/raft/jobs/{job_id}/reconcile",
+    dependencies=[Depends(_REQUIRE_ADMIN)],
+    description=_raft_description(
+        "Resolve a RAFT job whose submission outcome is unknown (admin only)."
+    ),
+    **_RAFT_ROUTE_DOCS,
+)
 async def reconcile_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -384,7 +442,14 @@ async def reconcile_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/evaluate", dependencies=[Depends(_REQUIRE_ADMIN)])
+@router.post(
+    "/raft/jobs/{job_id}/evaluate",
+    dependencies=[Depends(_REQUIRE_ADMIN)],
+    description=_raft_description(
+        "Score held-out examples with the fine-tuned model (paid inference; admin only)."
+    ),
+    **_RAFT_ROUTE_DOCS,
+)
 async def evaluate_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -394,9 +459,16 @@ async def evaluate_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/deploy", dependencies=[Depends(_REQUIRE_ADMIN)])
+@router.post(
+    "/raft/jobs/{job_id}/deploy",
+    dependencies=[Depends(_REQUIRE_ADMIN)],
+    description=_raft_description(
+        "Serve this completed job's fine-tuned model for its collection's RAFT queries "
+        "(admin only)."
+    ),
+    **_RAFT_ROUTE_DOCS,
+)
 async def deploy_raft_job(request: Request, job_id: str) -> dict[str, Any]:
-    """Serve this completed job's fine-tuned model for its collection's RAFT queries."""
     tenant = _require_tenant(request)
     service = _raft_service(request)
     try:
@@ -407,7 +479,14 @@ async def deploy_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _deployment_response(deployment, job)
 
 
-@router.get("/raft/collections/{collection_id}/deployment")
+@router.get(
+    "/raft/collections/{collection_id}/deployment",
+    description=_raft_description(
+        "The fine-tuned model deployed for a collection's RAFT queries, and whether it "
+        "can be served."
+    ),
+    **_RAFT_ROUTE_DOCS,
+)
 async def get_raft_deployment(request: Request, collection_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     service = _raft_service(request)
@@ -421,14 +500,16 @@ async def get_raft_deployment(request: Request, collection_id: str) -> dict[str,
 
 
 def _deployment_response(deployment: RAFTDeploymentRecord, job: RAFTJobRecord) -> dict[str, Any]:
-    return {
-        "collection_id": deployment.collection_id,
-        "job_id": deployment.job_id,
-        "provider_id": job.provider_id,
-        "base_model": job.base_model,
-        "fine_tuned_model": job.fine_tuned_model,
-        "deployed_at": deployment.deployed_at.isoformat(),
-    }
+    return _beta(
+        {
+            "collection_id": deployment.collection_id,
+            "job_id": deployment.job_id,
+            "provider_id": job.provider_id,
+            "base_model": job.base_model,
+            "fine_tuned_model": job.fine_tuned_model,
+            "deployed_at": deployment.deployed_at.isoformat(),
+        }
+    )
 
 
 def _job_error(job: RAFTJobRecord) -> str | None:
@@ -444,25 +525,27 @@ def _job_error(job: RAFTJobRecord) -> str | None:
 
 
 def _job_response(job: RAFTJobRecord) -> dict[str, Any]:
-    return {
-        "job_id": job.job_id,
-        "dataset_id": job.dataset_id,
-        "collection_id": job.collection_id,
-        "provider_id": job.provider_id,
-        "base_model": job.base_model,
-        "status": job.status,
-        "provider_job_id": job.provider_job_id,
-        "fine_tuned_model": job.fine_tuned_model,
-        "evaluation": job.evaluation.metrics if job.evaluation else None,
-        "estimated_cost": (
-            {
-                "currency": job.estimated_cost.currency,
-                "estimated_amount": job.estimated_cost.canonical_amount,
-            }
-            if job.estimated_cost
-            else None
-        ),
-        "error": _job_error(job),
-        "created_at": job.created_at.isoformat(),
-        "updated_at": job.updated_at.isoformat(),
-    }
+    return _beta(
+        {
+            "job_id": job.job_id,
+            "dataset_id": job.dataset_id,
+            "collection_id": job.collection_id,
+            "provider_id": job.provider_id,
+            "base_model": job.base_model,
+            "status": job.status,
+            "provider_job_id": job.provider_job_id,
+            "fine_tuned_model": job.fine_tuned_model,
+            "evaluation": job.evaluation.metrics if job.evaluation else None,
+            "estimated_cost": (
+                {
+                    "currency": job.estimated_cost.currency,
+                    "estimated_amount": job.estimated_cost.canonical_amount,
+                }
+                if job.estimated_cost
+                else None
+            ),
+            "error": _job_error(job),
+            "created_at": job.created_at.isoformat(),
+            "updated_at": job.updated_at.isoformat(),
+        }
+    )
