@@ -8,7 +8,7 @@ Outreach is now opt-in: a principal is contacted only once a row exists here
 ``timezone``, and ``max_per_day`` (enforced by the shared Redis daily cap).
 Tenant-scoped, FORCE RLS.
 
-Revision ID: c3e5a7b9d1f4
+Revision ID: d6f8b0c2e4a7
 Revises: a7c9e1f3b5d7
 Create Date: 2026-10-07
 """
@@ -19,7 +19,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "c3e5a7b9d1f4"
+revision: str = "d6f8b0c2e4a7"
 down_revision: str | Sequence[str] | None = "a7c9e1f3b5d7"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

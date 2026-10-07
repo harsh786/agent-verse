@@ -1,6 +1,6 @@
 """a10-F227-02 on real Postgres: the proactive_preferences opt-in table.
 
-Migration c3e5a7b9d1f4 creates ``proactive_preferences`` (FORCE RLS). The store
+Migration d6f8b0c2e4a7 creates ``proactive_preferences`` (FORCE RLS). The store
 reads/writes it under the tenant's RLS context as a least-privilege
 (NOBYPASSRLS) role: a record round-trips, updates in place, is invisible to
 another tenant, and the CHECK constraints refuse unsafe values.
