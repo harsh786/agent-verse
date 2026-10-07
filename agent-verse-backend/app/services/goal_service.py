@@ -1566,7 +1566,11 @@ class GoalService:
                     {"tid": tenant_id, "ids": goal_ids},
                 )
                 return {row[0]: int(row[1]) for row in result.fetchall()}
-        except Exception:
+        except Exception as exc:
+            from app.db.availability import is_db_unavailable_error
+
+            if is_db_unavailable_error(exc):
+                raise  # 503 — not a 200 listing every goal with event_count 0
             return {}
 
     def _make_agent_loop_for_tenant(
@@ -5022,8 +5026,9 @@ class GoalService:
         """The goal's parent (a sub-goal) and its sub-goals (a fan-out parent).
 
         Sub-goals are real goals (a01-F007-01): each is readable / cancellable on
-        its own, and the parent lists them with their live status. Bounded; an
-        unreadable store degrades to no lineage (logged), never fails the read.
+        its own, and the parent lists them with their live status. Bounded; a
+        query error degrades to no lineage (logged), but a DB outage propagates
+        (503) rather than answering 200 with a wrong "no lineage".
         """
         out: dict[str, Any] = {"parent_goal_id": None, "sub_goals": []}
         if self._db is None:
@@ -5063,6 +5068,10 @@ class GoalService:
                     )
                 ).all()
         except Exception as exc:
+            from app.db.availability import is_db_unavailable_error
+
+            if is_db_unavailable_error(exc):
+                raise  # an outage is a 503, not a 200 claiming "no lineage"
             _svc_logger.warning("goal_lineage_read_failed", goal_id=goal_id, error=str(exc)[:200])
             return out
         out["parent_goal_id"] = str(parent) if isinstance(parent, str) and parent else None

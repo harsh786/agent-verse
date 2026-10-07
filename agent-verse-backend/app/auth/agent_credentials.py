@@ -262,8 +262,9 @@ class AgentCredentialStore:
         """Authenticate an ``av_agent_*`` key; None when it is unknown/revoked/expired.
 
         DB-authoritative behind a 60 s shared Redis cache (deleted on revoke). A
-        DB error raises :class:`AgentKeyStoreUnavailableError`: the caller answers
-        401 — never an unrestricted context.
+        DB error raises :class:`AgentKeyStoreUnavailableError` — never an
+        unrestricted context. TenantMiddleware answers 503 when its cause is a DB
+        outage (``app.db.availability``), else 401.
         """
         if not is_agent_key(raw_key):
             return None
