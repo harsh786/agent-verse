@@ -416,6 +416,10 @@ class Settings(BaseSettings):
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024
+    # Hard cap on one OCR document (/ocr/extract upload or decoded base64, and
+    # each /ocr/batch document). The request body is also bounded before any
+    # route reads it (app/integrations/body_limit.py). a10-F243-05.
+    ocr_max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
     # OCR parallelism (OCR-PAR, app/ocr/concurrency.py). Every OCR caller in a
     # process (API requests, ZIP members, ingestion jobs) shares ONE pool:
     # OCR threads AND pages in flight (page bitmaps in memory) per process;

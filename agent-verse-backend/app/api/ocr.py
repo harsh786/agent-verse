@@ -35,6 +35,42 @@ class OcrRequest(BaseModel):
     )
 
 
+def _ocr_max_bytes() -> int:
+    from app.core.config import get_settings
+
+    return int(get_settings().ocr_max_upload_bytes)
+
+
+def _too_large(limit: int) -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=f"Document exceeds the {limit // (1024 * 1024)} MiB OCR limit",
+    )
+
+
+async def _read_upload_capped(file: UploadFile) -> bytes:
+    """a10-F243-05: read an upload in chunks, refusing (413) past the OCR cap —
+    ``await file.read()`` pulled any size into memory before validation."""
+    limit = _ocr_max_bytes()
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > limit:
+            raise _too_large(limit)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _check_b64_size(*payloads: str) -> None:
+    """413 when a base64 document decodes past the OCR cap (checked before the
+    payload is decoded)."""
+    limit = _ocr_max_bytes()
+    for data in payloads:
+        if data and (len(data) * 3) // 4 - data.count("=", -2) > limit:
+            raise _too_large(limit)
+
+
 class OcrFieldResult(BaseModel):
     value: str
     confidence: float
@@ -223,13 +259,13 @@ async def extract_document(
 
     try:
         if file is not None:
-            content = await file.read()
             mime = file.content_type or ""
             if not (mime.startswith("image/") or mime == "application/pdf"):
                 raise HTTPException(
                     status_code=422,
                     detail=f"Unsupported file type: {mime}. Only images and PDFs are accepted.",
                 )
+            content = await _read_upload_capped(file)
             persist_filename = file.filename or persist_filename
             if mime == "application/pdf":
                 result = await _tool.execute(
@@ -251,6 +287,7 @@ async def extract_document(
                 body = None
 
             if body and (body.image_base64 or body.pdf_base64):
+                _check_b64_size(body.image_base64, body.pdf_base64)
                 persist_requested = persist_requested or body.persist_to_kb
                 persist_collection = persist_collection or body.collection_id
                 if body.filename:
@@ -372,6 +409,7 @@ async def extract_documents_batch(
 
     async def _extract_one(doc: OcrRequest) -> tuple[OcrResponse | None, str | None]:
         try:
+            _check_b64_size(doc.image_base64, doc.pdf_base64)
             res = await _tool.execute(
                 image_base64=doc.image_base64,
                 pdf_base64=doc.pdf_base64,
