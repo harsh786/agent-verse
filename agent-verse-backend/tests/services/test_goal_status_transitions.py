@@ -198,7 +198,18 @@ async def test_conditional_update_excludes_terminal_rows_and_reports_no_match() 
 
     assert changed is False
     sql = " ".join(str(s) for s in session.statements if "UPDATE goals" in str(s))
-    assert "NOT IN" in sql.upper()
+    # Conditioned on the state machine's active predecessors (a08-F189-03).
+    assert "goals.status IN" in sql
+
+
+async def test_every_status_write_is_conditioned_without_only_if_active() -> None:
+    """a08-F189-03: writers that omitted only_if_active could move a terminal goal."""
+    session = _Session(rowcount=0)
+    svc = _svc_with(session)
+
+    assert await svc._db_update_goal_status("g", CTX.tenant_id, "waiting_human") is False
+    sql = " ".join(str(s) for s in session.statements if "UPDATE goals" in str(s))
+    assert "goals.status IN" in sql
 
 
 async def test_update_raises_service_unavailable_when_asked() -> None:

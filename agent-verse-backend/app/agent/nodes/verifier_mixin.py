@@ -995,19 +995,19 @@ class VerifierMixin:
             # FIX: On permanent failure (retry=False), roll back all registered actions
             # using the async method to guarantee each inverse completes before moving on.
             if not retry and self._rollback_engine is not None and len(self._rollback_engine) > 0:
-                rolled = await self._rollback_engine.rollback_all_async()
-                # Report what was really undone vs skipped vs failed — rolled only
-                # lists actions whose inverse succeeded.
-                from app.reliability.rollback import RollbackReport as _RbReport
+                # The one goal-rollback path (also used for timeouts and
+                # cancel-with-rollback): what was really undone vs skipped vs
+                # failed is reported, never just "rolled back".
+                from app.reliability.rollback import rollback_goal_side_effects
 
-                _rb_report = getattr(self._rollback_engine, "last_report", None)
-                if isinstance(_rb_report, _RbReport):
-                    _rb_summary = _rb_report.as_dict()
+                _rb_summary = await rollback_goal_side_effects(
+                    self._rollback_engine, trigger="verifier_failure", emit=self._emit
+                )
+                if _rb_summary is not None:
                     agent_state.context["rollback_report"] = _rb_summary
-                    self._logger.info("agent_rollback_complete", **_rb_summary["counts"])
-                    await self._emit({"type": "rollback_report", **_rb_summary})
-                else:
-                    self._logger.info("agent_rollback_complete", rolled_back=rolled)
+                    self._logger.info(
+                        "agent_rollback_complete", **(_rb_summary.get("counts") or {})
+                    )
 
             # Reflexion: store failure lesson (C1 fix — was incorrectly in success branch)
             try:

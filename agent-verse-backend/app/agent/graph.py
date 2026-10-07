@@ -895,6 +895,7 @@ class AgentGraph(
                         if resumed is not None:
                             input_state["agent_state"] = resumed
                             input_state["iteration"] = max(0, resumed.iterations - 1)
+                            await self._rehydrate_rollback_stack(resumed, tenant_ctx)
                             from app.observability.logging import get_logger
 
                             get_logger(__name__).info(
@@ -1349,6 +1350,31 @@ class AgentGraph(
                 "checkpoint_write_attempt_failed", goal_id=goal_id, error=type(exc).__name__
             )
             raise
+
+    async def _rehydrate_rollback_stack(self, state: AgentState, tenant_ctx: Any) -> None:
+        """A resumed goal's undo records come back from the action ledger (a08-F200-02).
+
+        Only re-registers them: a crash alone never undoes anything. A later
+        permanent failure, timeout or cancel-with-rollback then undoes the calls
+        of the first attempt too, each once.
+        """
+        if self._rollback_engine is None:
+            return
+        from app.reliability.rollback import rehydrate_from_ledger
+
+        try:
+            entries = await self._goal_action_ledger(state, tenant_ctx).all_executed_entries()
+            n = rehydrate_from_ledger(
+                self._rollback_engine,
+                entries,
+                tenant_ctx=tenant_ctx,
+                mcp_client=self._mcp_client,
+            )
+        except Exception as exc:
+            self._logger.warning("rollback_stack_rehydrate_failed", error=str(exc)[:200])
+            return
+        if n:
+            self._logger.info("rollback_stack_rehydrated", goal_id=state.goal_id, records=n)
 
     async def _load_checkpoint(self, goal_id: str, tenant_ctx: Any) -> dict[str, Any] | None:
         """Load latest checkpoint for goal resume."""

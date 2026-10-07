@@ -83,6 +83,11 @@ _DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
 )
 
 
+# The goal's ActiveTimeBudget (app.reliability.active_budget), when the run has one.
+_ACTIVE_BUDGET: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "agentverse_llm_active_budget", default=None
+)
+
 @asynccontextmanager
 async def llm_deadline(seconds: float) -> AsyncIterator[None]:
     """Bound every rate-limit wait in this context to ``seconds`` from now.
@@ -104,11 +109,27 @@ async def run_with_llm_deadline[T](coro: Coroutine[Any, Any, T], seconds: float)
         return await coro
 
 
+async def run_with_llm_budget[T](coro: Coroutine[Any, Any, T], budget: Any) -> T:
+    """Await ``coro`` with rate-limit waits bounded by an ``ActiveTimeBudget``
+    (a goal budget that stops while the goal is paused, a08-F193-04)."""
+    token = _ACTIVE_BUDGET.set(budget)
+    try:
+        return await coro
+    finally:
+        _ACTIVE_BUDGET.reset(token)
+
+
 def remaining_budget() -> float | None:
     deadline = _DEADLINE.get()
-    if deadline is None:
+    budget = _ACTIVE_BUDGET.get()
+    candidates: list[float] = []
+    if deadline is not None:
+        candidates.append(deadline - time.monotonic())
+    if budget is not None:
+        candidates.append(float(budget.remaining()))
+    if not candidates:
         return None
-    return max(0.0, deadline - time.monotonic())
+    return max(0.0, min(candidates))
 
 
 # ---------------------------------------------------------------- classification

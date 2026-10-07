@@ -24,6 +24,11 @@ from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
 from app.org.feature_flags import is_feature_enabled
+from app.reliability.active_budget import (
+    ActiveTimeBudget,
+    paused_window,
+    run_within_active_budget,
+)
 from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app, goal_queue_for
@@ -214,23 +219,80 @@ end
 return 0
 """
 
+    _EXTEND_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+    # Renewal cadence ceiling; the actual interval is min(this, ttl / 3).
+    RENEW_INTERVAL_S = 60.0
+
     def __init__(self, redis_client: Any, lock_value: str) -> None:
         self._redis = redis_client
         self._value = lock_value
+        self._renew_stop: threading.Event | None = None
+        self._renew_thread: threading.Thread | None = None
 
     @property
     def token(self) -> str:
         """This run's lock value (also recorded as goals.runner_token)."""
         return self._value
 
-    def acquire(self, goal_id: str, ttl_ms: int = 1_800_000) -> bool:
-        """Return True if the lock was acquired; False if another worker holds it."""
+    def acquire(self, goal_id: str, ttl_ms: int = 1_800_000, *, renew: bool = True) -> bool:
+        """Return True if the lock was acquired; False if another worker holds it.
+
+        While held, a daemon thread renews the TTL (a08-F193-01): correctness
+        used to rely on the goal timeout firing before the fixed TTL expired,
+        and a goal whose paused time no longer counts against its timeout
+        (a08-F193-04) can outlive any fixed TTL. A worker that dies stops
+        renewing; the reaper releases its lock by token, or the TTL expires.
+        """
         key = f"{self.KEY_PREFIX}{goal_id}"
         result = self._redis.set(key, self._value, px=ttl_ms, nx=True)
+        if result and renew:
+            self._start_renewal(key, ttl_ms)
         return bool(result)
+
+    def extend(self, goal_id: str, ttl_ms: int) -> bool:
+        """Reset the TTL if this instance still owns the lock (atomic)."""
+        key = f"{self.KEY_PREFIX}{goal_id}"
+        return bool(self._redis.eval(self._EXTEND_SCRIPT, 1, key, self._value, str(int(ttl_ms))))
+
+    def _start_renewal(self, key: str, ttl_ms: int) -> None:
+        stop = threading.Event()
+        interval = max(0.05, min(self.RENEW_INTERVAL_S, ttl_ms / 3000))
+
+        def _loop() -> None:
+            while not stop.wait(interval):
+                try:
+                    owned = self._redis.eval(
+                        self._EXTEND_SCRIPT, 1, key, self._value, str(int(ttl_ms))
+                    )
+                except Exception as exc:
+                    logger.warning("goal_lock_renew_failed key=%s: %s", key, exc)
+                    continue
+                if not owned:
+                    logger.warning("goal_lock_lost key=%s (no longer this run's)", key)
+                    return
+
+        self._renew_stop = stop
+        self._renew_thread = threading.Thread(
+            target=_loop, name=f"goal-lock-renew-{key}", daemon=True
+        )
+        self._renew_thread.start()
+
+    def _stop_renewal(self) -> None:
+        stop, thread = self._renew_stop, self._renew_thread
+        self._renew_stop = self._renew_thread = None
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
 
     def release(self, goal_id: str) -> None:
         """Release the lock only if this instance owns it (atomic Lua check-and-delete)."""
+        self._stop_renewal()
         key = f"{self.KEY_PREFIX}{goal_id}"
         with contextlib.suppress(Exception):
             self._redis.eval(self._RELEASE_SCRIPT, 1, key, self._value)
@@ -854,6 +916,7 @@ def _make_worker_pause_gate(
     tenant_id: str | None = None,
     org_id: str | None = None,
     org_unverified: bool = False,
+    budget: Any = None,
 ) -> Any:
     """Step-boundary gate for worker runs, driven by the cross-replica Redis flags.
 
@@ -882,10 +945,12 @@ def _make_worker_pause_gate(
             return
         logger.info("goal_paused_in_worker goal_id=%s", goal_id)
         await _emit({"type": "goal_paused_at_step_boundary"})
-        while is_paused_sync(goal_id, sync_r):
-            await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
-            if is_cancelled_sync(goal_id, sync_r):
-                raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+        # Paused time does not count against the goal timeout (a08-F193-04).
+        with paused_window(budget):
+            while is_paused_sync(goal_id, sync_r):
+                await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+                if is_cancelled_sync(goal_id, sync_r):
+                    raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
         logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
         await _emit({"type": "goal_execution_resumed"})
 
@@ -902,8 +967,12 @@ async def _run_with_signals(
     *,
     org_id: str | None = None,
     org_unverified: bool = False,
+    budget: Any = None,
 ) -> Any:
     """Run agent_runner.run() while observing cross-replica pause/cancel signals.
+
+    *budget* (an ``ActiveTimeBudget``) is told about every pause wait, so time
+    a goal spends paused is not counted against its timeout.
 
     *org_id* is the goal's organisation (``goals.execution_context.org_id``,
     resolved by ``run_goal``): an org emergency stop halts the run too; with
@@ -934,6 +1003,7 @@ async def _run_with_signals(
             tenant_id=_tenant_id,
             org_id=_org_id,
             org_unverified=org_unverified,
+            budget=budget,
         )
 
     run_task = asyncio.create_task(
@@ -967,12 +1037,63 @@ async def _run_with_signals(
             tenant_id=_tenant_id,
             org_id=_org_id,
             org_unverified=org_unverified,
+            budget=budget,
         )
     finally:
         if listener is not None:
             listener.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await listener
+
+
+def _worker_rollback_trigger(goal_id: str, tenant_id: str, org_id: str | None) -> str:
+    """The opt-in rollback a cancel / emergency stop asked for, or "" (none)."""
+    from app.governance.emergency_stop import stop_requests_rollback_sync
+    from app.reliability.goal_lifecycle import cancel_rollback_requested_sync
+
+    sync_r = _get_sync_redis()
+    if cancel_rollback_requested_sync(goal_id, sync_r):
+        return "cancel"
+    if stop_requests_rollback_sync(sync_r, tenant_id, org_id):
+        return "emergency_stop"
+    return ""
+
+
+async def _run_with_abort_rollback(
+    run: Any,
+    engine: Any,
+    *,
+    goal_id: str,
+    tenant_id: str,
+    org_id: str | None,
+    emit: Any,
+) -> Any:
+    """Await the goal run; undo its side effects when it is aborted (a08-F200-03).
+
+    A TIMEOUT is a failure, so its registered side effects are undone through
+    the same path as the verifier's permanent failure. A cancel / emergency
+    stop undoes them only when the operator asked (``rollback=true``). The run
+    task is already cancelled and awaited when either reaches here, and the
+    rollback runs on the run's own loop (the MCP clients are loop-bound).
+    """
+    from app.reliability.rollback import rollback_goal_side_effects
+
+    async def _undo(trigger: str) -> None:
+        try:
+            await rollback_goal_side_effects(engine, trigger=trigger, emit=emit)
+        except Exception as exc:
+            logger.warning("goal_rollback_failed goal_id=%s trigger=%s: %s", goal_id, trigger, exc)
+
+    try:
+        return await run
+    except TimeoutError:
+        await _undo("timeout")
+        raise
+    except GoalCancelledError:
+        trigger = _worker_rollback_trigger(goal_id, tenant_id, org_id)
+        if trigger:
+            await _undo(trigger)
+        raise
 
 
 async def _listen_for_emergency_stop(tenant_id: str, wake: asyncio.Event) -> None:
@@ -1038,6 +1159,7 @@ async def _signal_poll_loop(
     tenant_id: str | None,
     org_id: str | None,
     org_unverified: bool = False,
+    budget: Any = None,
 ) -> Any:
     from app.governance.emergency_stop import enforce_emergency_stop_sync
     from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
@@ -1078,10 +1200,11 @@ async def _signal_poll_loop(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
                 logger.info("goal_paused_in_worker goal_id=%s", goal_id)
-                while is_paused_sync(goal_id, sync_r):
-                    await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
-                    if is_cancelled_sync(goal_id, sync_r):
-                        raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+                with paused_window(budget):
+                    while is_paused_sync(goal_id, sync_r):
+                        await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+                        if is_cancelled_sync(goal_id, sync_r):
+                            raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
                 logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
                 # Re-run from checkpoint (AgentGraph will resume from last durable state)
                 run_task = asyncio.create_task(
@@ -2323,17 +2446,34 @@ def _runtime_profile_from_context(
     return (profile if drives else None), profile, None
 
 
+def _worker_llm_circuit_breaker(tenant_id: str) -> Any:
+    """The tenant's LLM-provider breaker for a worker goal graph (API parity)."""
+    from app.reliability.redis_circuit_breaker import build_llm_circuit_breaker
+
+    return build_llm_circuit_breaker(_worker_async_redis(), tenant_id)
+
+
+_WORKER_BULKHEAD: tuple[str, Any] | None = None
+
+
 def _worker_bulkhead_registry() -> Any:
-    """The distributed per-tenant bulkhead the API path gives its graphs (or None)."""
+    """The distributed per-tenant bulkhead the API path gives its graphs (or None).
+
+    One registry per worker process (a08-F199-04): it used to build a new
+    registry and a new ``redis.asyncio`` client for every run_goal and never
+    close them. The client is per task loop and closed at its teardown
+    (``LoopLocalRedis``); the Redis-down fallback limit is process-wide.
+    """
+    global _WORKER_BULKHEAD
     try:
-        import redis.asyncio as _aioredis_bh
+        from app.reliability.bulkhead import LoopLocalRedis, RedisBulkheadRegistry
 
-        from app.reliability.bulkhead import RedisBulkheadRegistry
-
-        return RedisBulkheadRegistry(
-            redis=_aioredis_bh.from_url(REDIS_URL, decode_responses=True),
-            default_max_concurrent=20,
-        )
+        if _WORKER_BULKHEAD is None or _WORKER_BULKHEAD[0] != REDIS_URL:
+            _WORKER_BULKHEAD = (
+                REDIS_URL,
+                RedisBulkheadRegistry(redis=LoopLocalRedis(REDIS_URL), default_max_concurrent=20),
+            )
+        return _WORKER_BULKHEAD[1]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("worker_bulkhead_registry_wire_failed: %s", exc)
         return None
@@ -2997,12 +3137,28 @@ def run_goal(
     try:
         _broker_url = str(celery_app.conf.broker_url or "")
         # The lock lives in Redis: the broker when it is Redis, else REDIS_URL.
-        # Neither configured (eager/test mode) is the only lock-less path.
         _redis_url = (
             _broker_url
             if _broker_url.startswith(("redis://", "rediss://", "unix://"))
             else (os.getenv("REDIS_URL", "") if _broker_url else "")
         )
+        if not _redis_url:
+            if _broker_url:
+                # A real (non-Redis) broker delivers this task, but there is no
+                # Redis for the lock: a redelivered or duplicated message could
+                # run the goal twice. Fail closed like an unreachable lock
+                # (a08-F193-05: this ran lock-less with no warning at all).
+                raise RuntimeError(
+                    "no Redis for the per-goal execution lock "
+                    "(non-Redis broker and REDIS_URL unset)"
+                )
+            # No broker at all: an inline / eager run (tests, CLI), never a
+            # worker consuming a queue. Said out loud rather than silently.
+            logger.warning(
+                "goal_execution_lock_skipped goal_id=%s: no broker configured "
+                "(inline run, no duplicate delivery possible)",
+                goal_id,
+            )
         if _redis_url:
             import uuid as _uuid
 
@@ -3277,6 +3433,7 @@ def run_goal(
             logger.warning("worker_strategy_execution_persist_failed: %s", _se_exc)
 
     _agent_runner: Any = None
+    _worker_rollback_engine: Any = None
     _use_agent_graph = False
     # Canonical Reflexion memory (recall in the planner, learning after the goal).
     _reflexion_service: Any = None
@@ -3726,10 +3883,14 @@ def run_goal(
                 # Distributed per-tenant concurrency bulkhead — same registry the
                 # API path gives its graphs (tool-call concurrency per tenant).
                 bulkhead_registry=_worker_bulkhead_registry(),
+                # The tenant's LLM-provider breaker, shared with the API replicas
+                # through Redis (a08-F198-03: worker graphs had none).
+                circuit_breakers={"llm": _worker_llm_circuit_breaker(tenant_id)},
                 # The agent's reasoning-pattern flags (snapshotted on the goal at
                 # submission — the worker has no in-memory agent store).
                 **_worker_pattern_flags,
             )
+            _worker_rollback_engine = _worker_graph_services.get("rollback_engine")
             # Same assembly as GoalService: the persisted runtime profile is
             # compiled (GraphFactory) when the rollout lets it drive; what runs —
             # including any downgrade — is recorded on the goal.
@@ -3947,8 +4108,6 @@ def run_goal(
 
         async def worker_event_callback(event: dict[str, Any]) -> None:
             await append_submitted_goal_event(event)
-
-        import asyncio as _asyncio
 
         # ── Pre-execution cancel check (cross-process signal) ──────────────────
         try:
@@ -4191,24 +4350,40 @@ def run_goal(
                     retrieval_gateway=_retrieval_gateway_worker,
                 )
 
-            from app.providers.rate_limit import run_with_llm_deadline
+            from app.providers.rate_limit import run_with_llm_budget
 
-            _goal_run = _asyncio.wait_for(
-                # P5-1: provider-throttling backoff never waits past the goal budget.
-                run_with_llm_deadline(
-                    _run_with_signals(
-                        _agent_runner,
-                        effective_goal,
-                        tenant_ctx,
-                        worker_event_callback,
-                        goal_id,
-                        initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
-                        org_id=_goal_org_id or _worker_exec_ctx.get("org_id"),
-                        org_unverified=_worker_ctx_unreadable and not _goal_org_id,
+            # The goal timeout counts ACTIVE time only: the pause gates mark
+            # their waits on this budget (a08-F193-04). It used to be a
+            # wait_for over the whole run, so a goal paused longer than its
+            # plan timeout failed as "Goal timed out".
+            _goal_budget = ActiveTimeBudget(float(goal_timeout_s))
+            from app.reliability.rollback import find_rollback_engine
+
+            _goal_org_for_rb = _goal_org_id or _worker_exec_ctx.get("org_id")
+            _goal_run = _run_with_abort_rollback(
+                run_within_active_budget(
+                    # P5-1: provider-throttling backoff never waits past the goal budget.
+                    run_with_llm_budget(
+                        _run_with_signals(
+                            _agent_runner,
+                            effective_goal,
+                            tenant_ctx,
+                            worker_event_callback,
+                            goal_id,
+                            initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
+                            org_id=_goal_org_id or _worker_exec_ctx.get("org_id"),
+                            org_unverified=_worker_ctx_unreadable and not _goal_org_id,
+                            budget=_goal_budget,
+                        ),
+                        _goal_budget,
                     ),
-                    float(goal_timeout_s),
+                    _goal_budget,
                 ),
-                timeout=float(goal_timeout_s),
+                find_rollback_engine(_agent_runner) or _worker_rollback_engine,
+                goal_id=goal_id,
+                tenant_id=tenant_id,
+                org_id=str(_goal_org_for_rb) if _goal_org_for_rb else None,
+                emit=worker_event_callback,
             )
             state = _run_async(
                 _await_then_flush_audit(
@@ -8836,7 +9011,7 @@ def forward_siem_outbox() -> dict[str, Any]:
     max_retries=5,
 )  # type: ignore[untyped-decorator]
 def cancel_goals_for_emergency_stop(
-    self: Any, tenant_id: str, org_id: str | None = None
+    self: Any, tenant_id: str, org_id: str | None = None, rollback: bool = False
 ) -> dict[str, Any]:
     """Cancel every non-terminal goal of a stopped tenant / org, in keyset batches.
 
@@ -8851,7 +9026,9 @@ def cancel_goals_for_emergency_stop(
 
         redis = _worker_async_redis()
         try:
-            return await cancel_goals_under_stop(get_session_factory(), redis, tenant_id, org_id)
+            return await cancel_goals_under_stop(
+                get_session_factory(), redis, tenant_id, org_id, rollback=rollback
+            )
         finally:
             if redis is not None:
                 with contextlib.suppress(Exception):

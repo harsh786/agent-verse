@@ -240,3 +240,30 @@ def test_sync_from_db_no_longer_recovers_before_redis_is_wired() -> None:
     assert "_recover_interrupted_goals" not in inspect.getsource(GoalService.sync_from_db)
     assert "recover_interrupted_goals(" in inspect.getsource(main_mod)
     assert goal_service is not None
+
+
+@pytest.mark.asyncio
+async def test_orphan_outside_the_warm_cache_is_recovered(redis: Any) -> None:
+    """a08-F189-05: recovery iterated only the warm cache (last 24 h, 500 per
+    tenant); an older orphan was left to the stuck-goal sweeper."""
+    table = _GoalsTable()
+    table.add("g-old-orphan", "executing", {"kind": "in_process", "replica": "replica-dead"})
+    queue = MagicMock()
+    svc = table.bind(GoalService(task_queue=queue))
+    svc._redis = redis  # nothing warmed into memory
+
+    async def _from_db() -> list[GoalRecord]:
+        row = table.rows["g-old-orphan"]
+        return [
+            GoalRecord(
+                goal_id="g-old-orphan", goal_text="old", status=GoalStatus(row["status"]),
+                tenant_id=TENANT, priority="normal", dry_run=False, created_at="",
+                agent_id="agent-1", execution_context=dict(row["execution_context"]),
+            )
+        ]
+
+    svc._db_orphan_candidates = _from_db  # type: ignore[method-assign]
+    assert svc._goals == {}
+
+    assert await svc._recover_interrupted_goals() == 1
+    assert queue.enqueue_goal.call_args.kwargs["goal_id"] == "g-old-orphan"

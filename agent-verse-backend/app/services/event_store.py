@@ -7,10 +7,10 @@ import contextlib
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, literal_column, select
 
 from app.core.errors import PlatformError, ServiceUnavailableError
-from app.db.models.goal import GoalEvent
+from app.db.models.goal import Goal, GoalEvent
 from app.db.rls import sqlalchemy_rls_context
 from app.guardrails_v2.output_screening import redact_legacy_event
 from app.observability.logging import get_logger
@@ -140,6 +140,25 @@ async def drain_event_outbox(event_store: Any, redis: Any, *, batch: int = 500) 
 _DEFAULT_EVENT_LIMIT = 10_000
 
 
+def _since_goal_created(goal_id: str, tenant_id: str) -> ColumnElement[bool]:
+    """``goal_events.created_at`` lower bound: no event predates its goal.
+
+    goal_events is range-partitioned by month on ``created_at``; a replay page
+    filtered only on tenant / goal / sequence probed every monthly partition
+    (a08-F191-03). Bounding ``created_at`` by the goal's own creation time (a
+    scalar subquery: Postgres prunes at executor start-up, "Subplans Removed")
+    skips every month before the goal existed. One day of slack covers clock
+    skew between the app that stamped ``goals.created_at`` and the database's
+    ``now()`` that stamps events.
+    """
+    goal_created = (
+        select(Goal.created_at - literal_column("INTERVAL '1 day'"))
+        .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+        .scalar_subquery()
+    )
+    return GoalEvent.created_at >= goal_created
+
+
 class EventStore:
     """Append and replay goal events under tenant-scoped DB context."""
 
@@ -249,6 +268,7 @@ class EventStore:
                         GoalEvent.tenant_id == tenant_ctx.tenant_id,
                         GoalEvent.goal_id == goal_id,
                         GoalEvent.sequence > after_sequence,
+                        _since_goal_created(goal_id, tenant_ctx.tenant_id),
                     )
                     .order_by(GoalEvent.sequence)
                     .limit(limit)
@@ -296,6 +316,7 @@ class EventStore:
                         GoalEvent.tenant_id == tenant_ctx.tenant_id,
                         GoalEvent.goal_id == goal_id,
                         GoalEvent.sequence > after_sequence,
+                        _since_goal_created(goal_id, tenant_ctx.tenant_id),
                     )
                     .order_by(GoalEvent.sequence)
                     .limit(limit)

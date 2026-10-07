@@ -105,3 +105,24 @@ async def test_reject_after_goal_finished_keeps_real_status(db: Any) -> None:
     result = await svc.resume_goal(gid, ctx, approved=False, feedback="no")
     assert result["status"] == "complete"
     assert await _row(db, gid) == ("complete", 2)
+
+
+@pytest.mark.parametrize("terminal", ["complete", "failed", "cancelled"])
+@pytest.mark.parametrize("late", ["waiting_human", "executing", "failed", "complete"])
+async def test_no_status_write_moves_a_terminal_goal(db: Any, terminal: str, late: str) -> None:
+    """a08-F189-03: writers that did not pass only_if_active (the supervised
+    suspension's "waiting_human", the background terminal-event writes, restart
+    recovery) could move a terminal goal; every write is now conditioned on the
+    goal state machine."""
+    ctx, gid = await _seed(db, terminal, 3)
+    changed = await _svc(db)._db_update_goal_status(gid, ctx.tenant_id, late)
+    assert changed is False
+    assert await _row(db, gid) == (terminal, 3)
+
+
+async def test_active_goals_still_move_freely(db: Any) -> None:
+    ctx, gid = await _seed(db, "verifying", 2)
+    svc = _svc(db)
+    for status in ("planning", "executing", "waiting_human", "executing", "complete"):
+        assert await svc._db_update_goal_status(gid, ctx.tenant_id, status) is True
+        assert (await _row(db, gid))[0] == status

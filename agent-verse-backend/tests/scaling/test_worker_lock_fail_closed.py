@@ -86,3 +86,45 @@ def test_lock_error_after_last_retry_fails_the_goal(
     assert result["reason"] == "execution_lock_unavailable"
     assert worker["graph_ran"] is False
     assert worker["decrements"] == 1
+
+
+def test_non_redis_broker_without_redis_url_fails_closed(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a08-F193-05: a non-Redis broker with REDIS_URL unset ran the goal with no
+    lock and no warning (the 'eager/test' lock-less path was taken)."""
+    from app.scaling import tasks
+
+    monkeypatch.setattr(tasks.celery_app.conf, "broker_url", "amqp://guest@rabbit:5672//")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    tasks.run_goal.push_request(retries=tasks.run_goal.max_retries)
+    try:
+        result = tasks.run_goal.run("g-lock-3", "tenant-l", "goal", "normal", False)
+    finally:
+        tasks.run_goal.pop_request()
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "execution_lock_unavailable"
+    assert worker["graph_ran"] is False
+
+
+def test_no_broker_inline_run_says_it_skips_the_lock(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.scaling import tasks
+
+    warnings: list[str] = []
+    real_warning = tasks.logger.warning
+
+    def _warning(msg: str, *args: Any, **kwargs: Any) -> Any:
+        warnings.append(str(msg))
+        return real_warning(msg, *args, **kwargs)
+
+    monkeypatch.setattr(tasks.logger, "warning", _warning)
+    monkeypatch.setattr(tasks.celery_app.conf, "broker_url", "")
+    monkeypatch.setattr(
+        "app.guardrails_v2.worker_binding.bind_worker_guardrail_rules", lambda: None
+    )
+    # The stub graph refuses to run (the run fails); only the lock decision matters.
+    tasks.run_goal.run("g-lock-4", "tenant-l", "goal", "normal", False)
+    assert any(w.startswith("goal_execution_lock_skipped") for w in warnings)

@@ -208,6 +208,39 @@ class GoalActionLedger:
         """Executed calls known to this run (context mirror), oldest first."""
         return [e for e in self._section(_EXECUTED).values() if isinstance(e, dict)]
 
+    async def all_executed_entries(self) -> list[dict[str, Any]]:
+        """Every executed call of the goal: the context mirror plus the shared hash.
+
+        The hash also holds the call that ran in the step a crash interrupted
+        (recorded before that step's checkpoint). A Redis read error leaves the
+        mirror (logged).
+        """
+        merged: dict[str, dict[str, Any]] = {
+            k: v for k, v in self._section(_EXECUTED).items() if isinstance(v, dict)
+        }
+        if self._redis is not None and self._goal_id:
+            try:
+                raw = await _maybe_await(self._redis.hgetall(self._key)) or {}
+            except Exception as exc:
+                logger.warning(
+                    "goal_action_ledger_read_failed",
+                    goal_id=self._goal_id,
+                    error=f"{type(exc).__name__}: {str(exc)[:120]}",
+                )
+                raw = {}
+            prefix = f"{_EXECUTED[0]}:"
+            for field, value in raw.items():
+                name = field.decode() if isinstance(field, bytes) else str(field)
+                if not name.startswith(prefix) or name[len(prefix):] in merged:
+                    continue
+                try:
+                    entry = json.loads(value.decode() if isinstance(value, bytes) else value)
+                except (ValueError, UnicodeDecodeError, AttributeError, TypeError):
+                    continue
+                if isinstance(entry, dict):
+                    merged[name[len(prefix):]] = entry
+        return sorted(merged.values(), key=lambda e: float(e.get("at") or 0.0))
+
     # ── approval decisions ─────────────────────────────────────────────────
 
     async def approval(self, key: str) -> dict[str, Any] | None:

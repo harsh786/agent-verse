@@ -1,140 +1,115 @@
-"""SSE subscribers must survive a GoalRecord refresh from the DB (Celery mode).
+"""SSE of a worker-run goal held by this replica streams from the goal's channel.
 
-Regression: ``subscribe_events`` registered its queue on the in-memory record,
-then ``_refresh_goal_from_db_if_needed`` -> ``_db_get_goal_record`` replaced
-``self._goals[goal_id]`` with a brand-new record (empty ``subscribers``). The
-Celery Redis bridge looks the record up in ``self._goals`` and so fed only the
-new object: the SSE client never saw live events nor its end-of-stream marker
-and hung forever.
+a08-F190-07: every API replica PSUBSCRIBEd goal_events:* and decoded every
+worker event of every tenant, just to feed the few goals it held.
+a08-F190-08: what it fed local SSE queues was the worker's
+``{type, payload, goal_id, tenant_id}`` envelope, not the event, so the
+same goal streamed different shapes on different replicas.
+
+Now a goal this replica does not run (task is None) streams from
+``goal_events:{tenant}:{goal}`` only (the per-goal SUBSCRIBE path), normalised.
+(The earlier regression here, a subscriber lost on a DB refresh of the record,
+was about the bridge's local queues, which no longer exist for such goals.)
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
+import fakeredis
+import fakeredis.aioredis
 import pytest
 
 from app.agent.state import GoalStatus
-from app.services.goal_service import GoalRecord, GoalService
+from app.services.goal_service import SSE_HEARTBEAT_TYPE, GoalRecord, GoalService
 from app.tenancy.context import PlanTier, TenantContext
 
-
-def _ctx() -> TenantContext:
-    return TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
+CTX = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 
 
-def _async_cm(value: Any) -> MagicMock:
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=value)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    return cm
-
-
-def _db_returning_goal_row() -> MagicMock:
-    row = MagicMock()
-    row.id = "g1"
-    row.goal_text = "do it"
-    row.status = "executing"
-    row.tenant_id = "t1"
-    row.priority = "normal"
-    row.dry_run = False
-    row.created_at = datetime.now(UTC)
-    row.agent_id = None
-    row.workflow_mode = "single_agent"
-    row.execution_context = {}
-    session = AsyncMock()
-    session.execute = AsyncMock(
-        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=row))
+def _record() -> GoalRecord:
+    return GoalRecord(
+        goal_id="g1", goal_text="do it", status=GoalStatus.EXECUTING, tenant_id="t1",
+        priority="normal", dry_run=False, created_at=datetime.now(UTC).isoformat(),
     )
-    session.begin = MagicMock(return_value=_async_cm(None))
-    db = MagicMock()
-    db.return_value = _async_cm(session)
-    return db
-
-
-class _FakePubSub:
-    def __init__(self, inbox: asyncio.Queue[dict[str, Any]]) -> None:
-        self._inbox = inbox
-
-    async def psubscribe(self, *_: Any) -> None:
-        return None
-
-    async def listen(self) -> Any:
-        while True:
-            yield await self._inbox.get()
-
-
-class _FakeRedis:
-    def __init__(self, inbox: asyncio.Queue[dict[str, Any]]) -> None:
-        self._inbox = inbox
-
-    async def __aenter__(self) -> _FakeRedis:
-        return self
-
-    async def __aexit__(self, *_: Any) -> None:
-        return None
-
-    def pubsub(self) -> _FakePubSub:
-        return _FakePubSub(self._inbox)
-
-
-def _msg(etype: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {
-        "type": "pmessage",
-        "data": json.dumps(
-            {"goal_id": "g1", "tenant_id": "t1", "type": etype, "payload": payload or {}}
-        ),
-    }
 
 
 @pytest.mark.asyncio
-async def test_subscriber_survives_db_refresh_and_gets_bridge_events() -> None:
-    svc = GoalService(db_session_factory=_db_returning_goal_row(), task_queue=MagicMock())
-    original = GoalRecord(
-        goal_id="g1",
-        goal_text="do it",
-        status=GoalStatus.EXECUTING,
-        tenant_id="t1",
-        priority="normal",
-        dry_run=False,
-        created_at=datetime.now(UTC).isoformat(),
+async def test_worker_goal_streams_normalised_events_from_its_own_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import redis.asyncio as aioredis
+
+    server = fakeredis.FakeServer()
+    monkeypatch.setattr(
+        aioredis,
+        "from_url",
+        lambda *_a, **_k: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True),
     )
-    svc._goals["g1"] = original
-    svc._events_for_replay = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    svc = GoalService(db_session_factory=object())
+    svc._redis_url_for_pubsub = "redis://fake"
+    local = _record()  # held here (submitted on this replica), run by a worker
+    svc._goals["g1"] = local
+
+    async def _row(goal_id: str, tenant_ctx: TenantContext) -> GoalRecord:
+        return _record()
+
+    async def _nothing(*_a: Any, **_k: Any) -> AsyncGenerator[dict[str, Any], None]:
+        return
+        yield {}
+
+    svc._db_get_goal_record = _row  # type: ignore[method-assign]
+    svc._replay_events = _nothing  # type: ignore[method-assign]
+    svc._persisted_events_after = _nothing  # type: ignore[method-assign]
 
     received: list[dict[str, Any]] = []
 
     async def _consume() -> None:
-        async for ev in svc.subscribe_events("g1", _ctx()):
-            received.append(ev)
+        async for ev in svc.subscribe_events("g1", CTX):
+            if ev.get("type") != SSE_HEARTBEAT_TYPE:
+                received.append(ev)
 
-    inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    with patch("redis.asyncio.from_url", return_value=_FakeRedis(inbox)):
-        consumer = asyncio.create_task(_consume())
-        # Wait until subscribe_events has refreshed the record from the DB
-        # (Celery mode always refreshes) and is blocked on its queue.
-        for _ in range(200):
-            if svc._goals["g1"] is not original:
-                break
-            await asyncio.sleep(0.005)
-        assert svc._goals["g1"] is not original, "refresh from DB did not happen"
+    consumer = asyncio.create_task(_consume())
+    pub = fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+    channel = "goal_events:t1:g1"
+    for _ in range(100):  # until the stream has SUBSCRIBEd
+        if (await pub.pubsub_numsub(channel))[0][1]:
+            break
         await asyncio.sleep(0.01)
+    assert local.subscribers == []  # no local queue: nothing to bridge into
+    # Only the goal's own channel: nobody listens to other goals' events.
+    assert await pub.pubsub_numpat() == 0
 
-        bridge = asyncio.create_task(svc._subscribe_celery_goal_events("redis://fake"))
-        inbox.put_nowait(_msg("step_complete", {"step": 1}))
-        inbox.put_nowait(_msg("goal_complete", {"result": "ok"}))
-        try:
-            await asyncio.wait_for(consumer, timeout=2.0)
-        finally:
-            bridge.cancel()
-            consumer.cancel()
-            await asyncio.gather(bridge, consumer, return_exceptions=True)
+    def envelope(event: dict[str, Any], seq: int) -> str:
+        return json.dumps(
+            {"goal_id": "g1", "tenant_id": "t1", "type": event["type"],
+             "payload": event, "_seq": seq}
+        )
 
-    types = [e["type"] for e in received]
-    assert types == ["step_complete", "goal_complete"]
-    # Queue was deregistered from the shared registry on exit.
-    assert svc._goals["g1"].subscribers == []
+    await pub.publish(channel, envelope({"type": "step_complete", "step": 1}, 4))
+    await pub.publish(channel, envelope({"type": "goal_complete", "result": "ok"}, 5))
+    await asyncio.wait_for(consumer, timeout=3.0)
+
+    assert received == [
+        {"type": "step_complete", "step": 1, "_seq": 4},
+        {"type": "goal_complete", "result": "ok", "_seq": 5},
+    ]
+
+
+def test_locally_running_and_finished_goals_keep_the_local_path() -> None:
+    svc = GoalService(db_session_factory=object())
+    svc._redis_url_for_pubsub = "redis://fake"
+    rec = _record()
+    assert svc._streams_from_goal_channel(rec) is True
+    rec.status = GoalStatus.COMPLETE
+    assert svc._streams_from_goal_channel(rec) is False
+    rec.status = GoalStatus.EXECUTING
+    rec.dry_run = True
+    assert svc._streams_from_goal_channel(rec) is False
+    rec.dry_run = False
+    svc._redis_url_for_pubsub = ""
+    assert svc._streams_from_goal_channel(rec) is False

@@ -355,7 +355,7 @@ async def test_execute_step_guardrail_allows_clean_steps() -> None:
 async def test_execute_step_circuit_breaker_open_skips_execution() -> None:
     """When the circuit breaker is open, step is skipped with message."""
     mock_breaker = MagicMock(spec=CircuitBreaker)
-    mock_breaker.can_call.return_value = False
+    mock_breaker.can_call_async.return_value = False  # async API (a08-F198-01)
 
     executor = FakeProvider(responses=["should not run"])
     graph = _make_graph(
@@ -376,8 +376,7 @@ async def test_execute_step_circuit_breaker_open_skips_execution() -> None:
 async def test_execute_step_circuit_breaker_closed_allows_execution() -> None:
     """When circuit breaker is closed, execution proceeds normally."""
     mock_breaker = MagicMock(spec=CircuitBreaker)
-    mock_breaker.can_call.return_value = True
-    mock_breaker.record_success = MagicMock()
+    mock_breaker.can_call_async.return_value = True
 
     executor = FakeProvider(responses=["success output"])
     graph = _make_graph(
@@ -389,7 +388,7 @@ async def test_execute_step_circuit_breaker_closed_allows_execution() -> None:
     result = await graph._execute_step("step 1", agent_state, T)
 
     assert result == "success output"
-    mock_breaker.record_success.assert_called_once()
+    mock_breaker.record_success_async.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -398,8 +397,7 @@ async def test_execute_step_circuit_breaker_records_failure_on_exception() -> No
     from app.providers.base import CompletionRequest
 
     mock_breaker = MagicMock(spec=CircuitBreaker)
-    mock_breaker.can_call.return_value = True
-    mock_breaker.record_failure = MagicMock()
+    mock_breaker.can_call_async.return_value = True
 
     class _BoomProvider:
         async def complete(self, req: CompletionRequest) -> None:
@@ -426,7 +424,7 @@ async def test_execute_step_circuit_breaker_records_failure_on_exception() -> No
     with pytest.raises(RuntimeError):
         await graph._execute_step("step 1", agent_state, T)
 
-    mock_breaker.record_failure.assert_called_once()
+    mock_breaker.record_failure_async.assert_awaited_once()
 
 
 # ===========================================================================
@@ -995,9 +993,13 @@ async def test_execute_step_cost_tracker_records_usage() -> None:
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_execute_step_bulkhead_full_is_not_executed() -> None:
-    """When bulkhead is full the step is NOT executed (no retry text as output)."""
+async def test_execute_step_bulkhead_full_is_not_executed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When bulkhead stays full past the bounded wait the step is NOT executed."""
     from app.agent.graph_types import StepNotExecutedError
+
+    monkeypatch.setattr("app.reliability.bulkhead.bulkhead_wait_seconds", lambda: 0.05)
 
     mock_bulkhead = MagicMock()
     mock_bulkhead.acquire = AsyncMock(return_value=False)  # Bulkhead full

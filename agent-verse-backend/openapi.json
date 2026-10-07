@@ -29835,6 +29835,18 @@
               "title": "Goal Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Also undo the goal's executed side effects (created issues, sent messages, ...) through their registered inverses. Off by default: a cancel keeps what was done. The request is audited.",
+            "in": "query",
+            "name": "rollback",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also undo the goal's executed side effects (created issues, sent messages, ...) through their registered inverses. Off by default: a cancel keeps what was done. The request is audited.",
+              "title": "Rollback",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -31322,6 +31334,20 @@
       "post": {
         "description": "Stop all autonomous work for this tenant until an admin lifts the stop.\n\nUse for: security incidents, runaway agents, cost overruns.\n\n1. Persists ``emergency_stop:{tenant}`` in Redis with NO expiry (it used to\n   expire after 300 s). Every enforcement point reads it: goal submission,\n   goal start (worker + in-process) and every step boundary on every\n   replica and worker. If it cannot be written the call fails 503 \u2014 it\n   used to answer \"All running goals cancelled\" with nothing persisted.\n2. Cancels every non-terminal goal of the tenant through the cross-replica\n   cancel path (DB-backed listing; it used to see only this replica's\n   in-memory goals).\n3. Rejects every pending approval.\n\nAdmin-only. Every per-goal cancel and per-approval reject failure is\nreported (``failed_*``, ``partial``); the stop flag itself still blocks\nthose goals at their next step boundary.",
         "operationId": "emergency_stop_governance_emergency_stop_post",
+        "parameters": [
+          {
+            "description": "Also undo the executed side effects of every goal the stop halts (opt-in; audited). Off by default: the stop keeps what was done.",
+            "in": "query",
+            "name": "rollback",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also undo the executed side effects of every goal the stop halts (opt-in; audited). Off by default: the stop keeps what was done.",
+              "title": "Rollback",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -31334,6 +31360,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Emergency Stop",
@@ -51148,6 +51184,18 @@
             "schema": {
               "title": "Org Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Also undo the executed side effects of the org goals the stop halts (opt-in; audited). Off by default.",
+            "in": "query",
+            "name": "rollback",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Also undo the executed side effects of the org goals the stop halts (opt-in; audited). Off by default.",
+              "title": "Rollback",
+              "type": "boolean"
             }
           },
           {

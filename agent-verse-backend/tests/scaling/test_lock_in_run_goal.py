@@ -90,16 +90,9 @@ def test_lock_ttl_covers_the_tenants_full_goal_timeout(monkeypatch: Any) -> None
     assert captured_ttl_ms[0] > 1_800_000
 
 
-def test_distributed_lock_exists():
-    """GoalExecutionLock class is importable from reliability module."""
-    from app.reliability.distributed_lock import GoalExecutionLock
-    assert GoalExecutionLock is not None
+def test_caller_less_async_goal_execution_lock_is_gone():
+    """a08-F193-02: run_goal's lock is _SyncGoalLock; the unused async
+    GoalExecutionLock duplicate (app.reliability.distributed_lock) is removed."""
+    import importlib.util
 
-
-def test_distributed_lock_acquire_release_interface():
-    """GoalExecutionLock has acquire and release coroutine methods."""
-    import inspect
-
-    from app.reliability.distributed_lock import GoalExecutionLock
-    assert inspect.iscoroutinefunction(GoalExecutionLock.acquire)
-    assert inspect.iscoroutinefunction(GoalExecutionLock.release)
+    assert importlib.util.find_spec("app.reliability.distributed_lock") is None

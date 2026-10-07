@@ -1231,17 +1231,3 @@ class TestRunWorkflow:
         assert "goal_complete" not in types
         failed = [e for e in record.events if e.get("type") == "goal_failed"]
         assert failed and "empty_plan" in failed[-1]["reason"]
-
-
-# ── start_celery_event_bridge ─────────────────────────────────────────────────
-
-class TestStartCeleryEventBridge:
-    async def test_creates_background_task(self):
-        svc = _svc()
-
-        async def _noop_bridge(url: str) -> None:
-            await asyncio.sleep(0)
-
-        with patch.object(svc, "_subscribe_celery_goal_events", _noop_bridge):
-            svc.start_celery_event_bridge("redis://localhost")
-        await asyncio.sleep(0)

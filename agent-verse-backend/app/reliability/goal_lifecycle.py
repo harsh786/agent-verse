@@ -12,12 +12,15 @@ Usage:
     # From Celery worker (sync check before each step):
     if is_cancelled_sync("goal-123", sync_redis):
         raise GoalCancelledError("Cancelled by operator")
-    await check_pause_cancel("goal-123", sync_redis)  # blocks if paused
+
+The step-boundary gates that block while paused are the runners' own:
+``app.scaling.tasks._make_worker_pause_gate`` / ``_run_with_signals`` (worker)
+and ``GoalService._make_pause_gate`` (in-process). The caller-less
+``check_pause_cancel`` duplicate was removed (a08-F193-02).
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from typing import Any
 
@@ -27,6 +30,9 @@ logger = get_logger(__name__)
 
 _PAUSE_FLAG = "goal_paused:{goal_id}"
 _CANCEL_FLAG = "goal_cancelled:{goal_id}"
+# Set together with the cancel flag when the operator asked the cancel to undo
+# the goal's side effects (opt-in ``rollback=true``, a08-F200-03).
+_CANCEL_ROLLBACK_FLAG = "goal_cancel_rollback:{goal_id}"
 _PAUSE_CHANNEL = "goal_pause:{goal_id}"
 _CANCEL_CHANNEL = "goal_cancel:{goal_id}"
 _FLAG_TTL = 7200  # 2 hours
@@ -97,11 +103,21 @@ async def signal_resume(goal_id: str, redis: Any, *, strict: bool = False) -> No
     )
 
 
-async def signal_cancel(goal_id: str, redis: Any, *, strict: bool = False) -> None:
-    """Signal a running goal to cancel immediately."""
+async def signal_cancel(
+    goal_id: str, redis: Any, *, strict: bool = False, rollback: bool = False
+) -> None:
+    """Signal a running goal to cancel immediately.
+
+    With *rollback* the runner also undoes the goal's registered side effects
+    before it stops (opt-in; the default cancel keeps what was done). The
+    rollback flag is written before the cancel flag, so a runner that sees the
+    cancel always sees the request.
+    """
     key = _CANCEL_FLAG.format(goal_id=goal_id)
 
     async def _write() -> None:
+        if rollback:
+            await redis.set(_CANCEL_ROLLBACK_FLAG.format(goal_id=goal_id), "1", ex=_FLAG_TTL)
         await redis.set(key, "1", ex=_FLAG_TTL)
 
     await _signal(
@@ -128,9 +144,55 @@ async def withdraw_cancel(goal_id: str, redis: Any) -> None:
     """Best-effort undo of :func:`signal_cancel` when the cancel could not be
     persisted (the API answers 503 and the goal must keep running)."""
     try:
-        await redis.delete(_CANCEL_FLAG.format(goal_id=goal_id))
+        await redis.delete(
+            _CANCEL_FLAG.format(goal_id=goal_id), _CANCEL_ROLLBACK_FLAG.format(goal_id=goal_id)
+        )
     except Exception as exc:
         logger.warning("goal_cancel_withdraw_failed", goal_id=goal_id, error=str(exc))
+
+
+async def cancel_rollback_requested(goal_id: str, redis: Any) -> bool:
+    """Whether the goal's cancel asked for its side effects to be undone.
+
+    False on a read error: undoing is opt-in, so an unknown request never
+    deletes anything.
+    """
+    if redis is None:
+        return False
+    try:
+        return bool(await redis.get(_CANCEL_ROLLBACK_FLAG.format(goal_id=goal_id)))
+    except Exception as exc:
+        logger.warning("goal_cancel_rollback_read_failed", goal_id=goal_id, error=str(exc))
+        return False
+
+
+def cancel_rollback_requested_sync(goal_id: str, redis_sync: Any) -> bool:
+    """Sync variant of :func:`cancel_rollback_requested` (worker)."""
+    if redis_sync is None:
+        return False
+    try:
+        return bool(redis_sync.get(_CANCEL_ROLLBACK_FLAG.format(goal_id=goal_id)))
+    except Exception as exc:
+        logger.warning("goal_cancel_rollback_read_failed", goal_id=goal_id, error=str(exc))
+        return False
+
+
+async def withdraw_pause(goal_id: str, redis: Any) -> None:
+    """Best-effort undo of :func:`signal_pause` when the pause could not be
+    persisted (the API answers 503 and the goal must keep running)."""
+    try:
+        await redis.delete(_PAUSE_FLAG.format(goal_id=goal_id))
+    except Exception as exc:
+        logger.warning("goal_pause_withdraw_failed", goal_id=goal_id, error=str(exc))
+
+
+async def restore_pause(goal_id: str, redis: Any) -> None:
+    """Best-effort undo of :func:`signal_resume` when the resume could not be
+    persisted (the API answers 503 and the goal must stay paused)."""
+    try:
+        await redis.set(_PAUSE_FLAG.format(goal_id=goal_id), "1", ex=_PAUSE_TTL)
+    except Exception as exc:
+        logger.warning("goal_pause_restore_failed", goal_id=goal_id, error=str(exc))
 
 
 async def clear_signals(goal_id: str, redis: Any) -> None:
@@ -139,6 +201,7 @@ async def clear_signals(goal_id: str, redis: Any) -> None:
         await redis.delete(
             _PAUSE_FLAG.format(goal_id=goal_id),
             _CANCEL_FLAG.format(goal_id=goal_id),
+            _CANCEL_ROLLBACK_FLAG.format(goal_id=goal_id),
         )
 
 
@@ -188,24 +251,3 @@ def is_cancelled_sync(goal_id: str, redis_sync: Any) -> bool:
         return bool(redis_sync.get(_CANCEL_FLAG.format(goal_id=goal_id)))
     except Exception as exc:
         return _read_failed("cancel", goal_id, exc)
-
-
-async def check_pause_cancel(goal_id: str, redis_sync: Any) -> None:
-    """Check pause/cancel signals. Call between each wave step.
-
-    - If cancelled: raises GoalCancelledError immediately
-    - If paused: blocks with polling until resumed or cancelled (max 4 hours)
-    """
-    if is_cancelled_sync(goal_id, redis_sync):
-        raise GoalCancelledError(f"Goal {goal_id} cancelled by operator")
-
-    if is_paused_sync(goal_id, redis_sync):
-        logger.info("goal_paused_waiting_for_resume", goal_id=goal_id)
-        max_wait = 4 * 3600  # 4 hours max pause
-        waited = 0
-        while is_paused_sync(goal_id, redis_sync) and waited < max_wait:
-            await asyncio.sleep(5)
-            waited += 5
-            if is_cancelled_sync(goal_id, redis_sync):
-                raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
-        logger.info("goal_resumed", goal_id=goal_id, waited_seconds=waited)

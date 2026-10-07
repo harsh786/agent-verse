@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 class Bulkhead:
@@ -66,36 +69,24 @@ class BulkheadRegistry:
 
 
 class RedisBulkhead:
-    """Redis-backed distributed bulkhead — enforces concurrency limits across ALL workers.
+    """Redis-backed distributed bulkhead — enforces a tenant's limit across ALL workers.
 
-    Uses atomic Lua INCR/DECR with TTL to track concurrent slots.
-    Key pattern: bulkhead:{tenant_id}  →  current active count (int, TTL=300s)
+    Each acquisition is a lease (a member of the sorted set
+    ``bulkhead_leases:{tenant_id}``, see :class:`RedisLeaseLimiter`) that a
+    background task renews while the slot is held, so
+
+    * a crashed holder's slot frees itself when its lease expires — the old
+      INCR/DECR counter re-armed its 300 s TTL on every acquire, so under steady
+      traffic a leaked slot never expired;
+    * a step that runs longer than the lease keeps its slot — the counter's TTL
+      could expire mid-step and reset the count to zero for everyone
+      (a08-F199-03).
+
+    While Redis is unreachable the call degrades to a process-local limit when a
+    fallback was supplied (still bounded per replica), and otherwise denies.
     """
 
-    _LUA_ACQUIRE = """
-    local key = KEYS[1]
-    local limit = tonumber(ARGV[1])
-    local ttl = tonumber(ARGV[2])
-    local current = tonumber(redis.call('GET', key) or 0)
-    if current >= limit then
-        return -1
-    end
-    local new_val = redis.call('INCR', key)
-    redis.call('EXPIRE', key, ttl)
-    return new_val
-    """
-
-    _LUA_RELEASE = """
-    local key = KEYS[1]
-    local current = tonumber(redis.call('GET', key) or 0)
-    if current <= 0 then
-        redis.call('SET', key, 0)
-        return 0
-    end
-    return redis.call('DECR', key)
-    """
-
-    _SLOT_TTL = 300  # 5 minutes — safety TTL if release not called (e.g., crash)
+    _LEASE_S = 300.0
 
     def __init__(
         self,
@@ -103,57 +94,100 @@ class RedisBulkhead:
         max_concurrent: int,
         redis: Any,
         *,
-        fallback: asyncio.Semaphore | None = None,
+        fallback: LocalSlotCounter | asyncio.Semaphore | None = None,
+        lease_s: float | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._max = max_concurrent
         self._redis = redis
-        self._key = f"bulkhead:{tenant_id}"
+        self._key = f"bulkhead_leases:{tenant_id}"
+        self._limiter = RedisLeaseLimiter(redis)
+        self._lease_s = float(lease_s if lease_s is not None else self._LEASE_S)
         # Process-local limit used while Redis is unreachable.
         self._fallback = fallback
         self._holding_fallback = False
+        self._member: str | None = None
+        self._keepalive: asyncio.Task[None] | None = None
 
     async def acquire(self) -> bool:
-        """Try to acquire a slot. Returns True if acquired, False if at limit.
+        """Try to acquire a slot. Returns True if acquired, False if at limit."""
+        import uuid
 
-        When Redis is unreachable the call used to return True (fail-open: no
-        limit at all). It now degrades to the process-local semaphore when one
-        was supplied (still bounded per replica), and otherwise denies.
-        """
+        member = uuid.uuid4().hex
         try:
-            result = await self._redis.eval(
-                self._LUA_ACQUIRE, 1, self._key, str(self._max), str(self._SLOT_TTL)
+            acquired = await self._limiter.try_acquire(
+                self._key, member, limit=self._max, lease_s=self._lease_s
             )
-            return int(result) >= 0
-        except Exception:
-            if self._fallback is None:
+        except Exception as exc:
+            _log.warning(
+                "bulkhead_redis_unavailable tenant_id=%s error=%s", self._tenant_id, exc
+            )
+            return await self._acquire_fallback()
+        if acquired:
+            self._member = member
+            self._keepalive = asyncio.create_task(self._renew(member))
+        return acquired
+
+    async def _acquire_fallback(self) -> bool:
+        fb = self._fallback
+        if fb is None:
+            return False
+        if isinstance(fb, LocalSlotCounter):
+            if not fb.try_acquire(self._key, self._max):
                 return False
-            if self._fallback.locked():
+        else:
+            if fb.locked():
                 return False
-            await self._fallback.acquire()
-            self._holding_fallback = True
-            return True
+            await fb.acquire()  # a slot is free: completes without waiting
+        self._holding_fallback = True
+        return True
+
+    async def _renew(self, member: str) -> None:
+        """Keep the lease alive while the slot is held."""
+        while True:
+            await asyncio.sleep(self._lease_s / 3)
+            try:
+                alive = await self._limiter.refresh(self._key, member, lease_s=self._lease_s)
+            except Exception as exc:
+                _log.warning(
+                    "bulkhead_lease_renew_failed tenant_id=%s error=%s", self._tenant_id, exc
+                )
+                continue
+            if not alive:
+                _log.warning("bulkhead_lease_lost tenant_id=%s", self._tenant_id)
+                return
 
     async def release(self) -> None:
         """Release a previously acquired slot."""
         if self._holding_fallback and self._fallback is not None:
             self._holding_fallback = False
-            self._fallback.release()
+            if isinstance(self._fallback, LocalSlotCounter):
+                self._fallback.release(self._key)
+            else:
+                self._fallback.release()
             return
-        with contextlib.suppress(Exception):
-            await self._redis.eval(self._LUA_RELEASE, 1, self._key)
-
-    def available_slots_sync(self) -> int:
-        """Approximate available slots (non-blocking estimate)."""
-        return self._max  # async-only for accurate count
+        member, self._member = self._member, None
+        task, self._keepalive = self._keepalive, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        if member is None:
+            return
+        try:
+            await self._limiter.release(self._key, member)
+        except Exception as exc:
+            # Not silent: the slot stays taken until its lease expires.
+            _log.warning(
+                "bulkhead_release_failed tenant_id=%s error=%s (slot frees in %.0fs)",
+                self._tenant_id,
+                exc,
+                self._lease_s,
+            )
 
     async def available_slots(self) -> int:
-        """Get current available slots from Redis."""
-        try:
-            current = int(await self._redis.get(self._key) or 0)
-            return max(0, self._max - current)
-        except Exception:
-            return self._max
+        """Free slots right now, from the live leases in Redis (raises on a Redis error)."""
+        return max(0, self._max - len(await self._limiter.members(self._key)))
 
     async def __aenter__(self) -> RedisBulkhead:
         acquired = await self.acquire()
@@ -167,10 +201,76 @@ class RedisBulkhead:
         await self.release()
 
 
+class BulkheadFullError(RuntimeError):
+    """No slot became free within the bounded wait."""
+
+
+def bulkhead_wait_seconds() -> float:
+    """``TENANT_BULKHEAD_WAIT_SECONDS`` (default 10 s)."""
+    try:
+        from app.core.config import get_settings
+
+        return float(get_settings().tenant_bulkhead_wait_seconds)
+    except Exception:
+        return 10.0
+
+
+async def acquire_with_wait(
+    bulkhead: Any,
+    *,
+    wait_s: float,
+    base_delay_s: float = 0.05,
+    max_delay_s: float = 1.0,
+) -> float:
+    """Take a slot, waiting up to ``wait_s`` for one; return the seconds waited.
+
+    A full tenant bulkhead used to refuse the step at once (a08-F199-02): a
+    burst (a parallel wave, a supervisor fan-out) failed steps that a moment
+    later would have found a slot. Now a full bulkhead is retried with
+    exponential backoff and full jitter until the deadline, and only then
+    refused with :class:`BulkheadFullError`. An error checking the limit (e.g.
+    Redis down without a fallback) propagates immediately: never a wait on an
+    unknown state. ``asyncio.Semaphore`` (no Redis) waits on the semaphore.
+    """
+    import random
+    import time as _time
+
+    start = _time.monotonic()
+    deadline = start + max(0.0, float(wait_s))
+    if isinstance(bulkhead, asyncio.Semaphore):
+        try:
+            await asyncio.wait_for(bulkhead.acquire(), timeout=max(0.0, float(wait_s)))
+        except TimeoutError as exc:
+            raise BulkheadFullError(f"no slot within {wait_s:g}s") from exc
+        return _time.monotonic() - start
+    delay = base_delay_s
+    while True:
+        if await bulkhead.acquire():
+            return _time.monotonic() - start
+        left = deadline - _time.monotonic()
+        if left <= 0:
+            raise BulkheadFullError(f"no slot within {wait_s:g}s")
+        await asyncio.sleep(min(left, random.uniform(0, delay)))
+        delay = min(max_delay_s, delay * 2)
+
+
+# One process-wide, event-loop-agnostic fallback for every registry in this
+# process: an asyncio.Semaphore binds to one loop, and a worker registry built
+# per goal had a fallback "limit" per goal (a08-F199-04).
+_PROCESS_FALLBACK: LocalSlotCounter | None = None
+
+
+def _process_fallback() -> LocalSlotCounter:
+    global _PROCESS_FALLBACK
+    if _PROCESS_FALLBACK is None:
+        _PROCESS_FALLBACK = LocalSlotCounter()
+    return _PROCESS_FALLBACK
+
+
 class RedisBulkheadRegistry:
     """Redis-backed registry of per-tenant distributed bulkheads.
 
-    Falls back to asyncio.Semaphore (in-process) when Redis is unavailable.
+    Falls back to asyncio.Semaphore (in-process) when no Redis client is wired.
     """
 
     def __init__(
@@ -181,7 +281,7 @@ class RedisBulkheadRegistry:
         self._redis = redis
         self._default_max = default_max_concurrent
         self._limits: dict[str, int] = {}
-        # In-process fallback registry
+        # In-process registry used when no Redis client is wired.
         self._local = BulkheadRegistry(default_max_concurrent=default_max_concurrent)
 
     def configure_tenant(self, tenant_id: str, max_concurrent: int) -> None:
@@ -189,12 +289,14 @@ class RedisBulkheadRegistry:
         self._limits[tenant_id] = max_concurrent
         self._local.configure_tenant(tenant_id, max_concurrent)
 
+    def limit_for(self, tenant_id: str) -> int:
+        return self._limits.get(tenant_id, self._default_max)
+
     def get_bulkhead(self, tenant_id: str) -> RedisBulkhead | asyncio.Semaphore:
         """Get a bulkhead for a tenant (Redis if available, local otherwise)."""
-        limit = self._limits.get(tenant_id, self._default_max)
         if self._redis is not None:
             return RedisBulkhead(
-                tenant_id, limit, self._redis, fallback=self._local.get(tenant_id)
+                tenant_id, self.limit_for(tenant_id), self._redis, fallback=_process_fallback()
             )
         return self._local.get(tenant_id)
 
@@ -202,8 +304,51 @@ class RedisBulkheadRegistry:
     def get(self, tenant_id: str) -> asyncio.Semaphore:
         return self._local.get(tenant_id)
 
-    def available_slots(self, tenant_id: str) -> int:
+    async def available_slots(self, tenant_id: str) -> int:
+        """The tenant's free slots: the fleet-wide count in Redis when wired.
+
+        It used to read the process-local registry, which never sees another
+        replica's (or even this replica's Redis) slots (a08-F199-01).
+        """
+        bulkhead = self.get_bulkhead(tenant_id)
+        if isinstance(bulkhead, RedisBulkhead):
+            return await bulkhead.available_slots()
         return self._local.available_slots(tenant_id)
+
+
+class LoopLocalRedis:
+    """An async Redis client per running event loop, closed when the loop ends.
+
+    Celery tasks run each goal on a fresh loop (``run_in_fresh_loop``) and
+    ``redis.asyncio`` clients are loop-bound. Building a client per ``run_goal``
+    and never closing it leaked one client (and its connections) per goal
+    (a08-F199-04); this proxy opens one per loop on first use and registers its
+    ``aclose`` with ``on_loop_teardown``.
+    """
+
+    def __init__(self, url: str) -> None:
+        import weakref
+
+        self._url = url
+        self._clients: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any] = (
+            weakref.WeakKeyDictionary()
+        )
+
+    def _client(self) -> Any:
+        loop = asyncio.get_running_loop()
+        client = self._clients.get(loop)
+        if client is None:
+            import redis.asyncio as aioredis
+
+            from app.db.session import on_loop_teardown
+
+            client = aioredis.from_url(self._url, decode_responses=True)
+            self._clients[loop] = client
+            on_loop_teardown(client.aclose)
+        return client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client(), name)
 
 
 class RedisLeaseLimiter:

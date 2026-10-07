@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -168,45 +167,6 @@ async def test_unpersisted_event_has_no_sequence() -> None:
     await svc._dispatch_event("g4", {"type": "step_started"}, tenant_ctx=CTX)
 
     assert "_seq" not in q.get_nowait()
-
-
-async def test_worker_bridge_events_keep_the_worker_sequence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Worker events fed to local subscribers by the Celery bridge keep ``_seq``."""
-    import redis.asyncio as aioredis
-
-    server = fakeredis.FakeServer()
-    svc = GoalService()
-    rec = _record("gw", GoalStatus.EXECUTING)
-    svc._goals["gw"] = rec
-    q: asyncio.Queue[Any] = asyncio.Queue()
-    rec.subscribers.append(q)
-    monkeypatch.setattr(
-        aioredis,
-        "from_url",
-        lambda *_a, **_k: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True),
-    )
-    bridge = asyncio.create_task(svc._subscribe_celery_goal_events("redis://fake"))
-    try:
-        pub = fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
-        envelope = {
-            "goal_id": "gw",
-            "tenant_id": CTX.tenant_id,
-            "type": "step_started",
-            "payload": {"type": "step_started"},
-            "_seq": 9,
-        }
-        for _ in range(50):
-            await pub.publish(f"goal_events:{CTX.tenant_id}:gw", json.dumps(envelope))
-            if not q.empty():
-                break
-            await asyncio.sleep(0.02)
-        assert q.get_nowait()["_seq"] == 9
-    finally:
-        bridge.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await bridge
 
 
 # ── no gap and no duplicate between replay and live ───────────────────────────
