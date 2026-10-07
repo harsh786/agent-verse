@@ -18,6 +18,7 @@ from app.rag.engine import RetrievalStrategyExecutionError
 from app.rag_platform.reranker_contract import (
     AsyncCloseableProtocol,
     BoundedAsyncExecutor,
+    BoundedInferenceLane,
     RerankerInferenceError,
     RerankerLoadError,
     RerankerProtocol,
@@ -170,6 +171,7 @@ class ColBERTLateInteractionReranker(RerankerProtocol):
         self._model: RAGatouilleColBERTModel | None = None
         self._model_lock = Lock()
         self._rerank_lock = Lock()
+        self._sync_lane: BoundedInferenceLane | None = None
         worker_count = max_workers if backend_thread_safe else 1
         self._workers = BoundedAsyncExecutor(
             max_workers=worker_count,
@@ -217,11 +219,33 @@ class ColBERTLateInteractionReranker(RerankerProtocol):
         await self._workers.aclose()
 
     def score_sync(self, query: str, documents: list[str]) -> list[float]:
-        """Compatibility boundary that still performs model work in a worker thread."""
+        """Synchronous scoring on ONE bounded lane (never a thread per call).
+
+        It used to open a fresh executor per call, so concurrent sync callers all
+        parked threads behind ``_rerank_lock`` without limit (the cross-encoder
+        had the same bug: unbounded queueing past the retrieval deadline). A full
+        lane raises :class:`RerankSkipped` ``busy`` at once.
+        """
         if not documents:
             return []
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(self._score_blocking, query, documents).result()
+        return self._get_sync_lane().run_sync(
+            self._score_blocking, query, documents, units=len(documents)
+        )
+
+    def _get_sync_lane(self) -> BoundedInferenceLane:
+        lane = self._sync_lane
+        if lane is not None:
+            return lane
+        with self._model_lock:
+            if self._sync_lane is None:
+                from app.rag.rerank_budget import rerank_limits
+
+                self._sync_lane = BoundedInferenceLane(
+                    max_workers=1,
+                    max_queue_depth=rerank_limits().max_queue_depth,
+                    thread_name_prefix="colbert-reranker-sync",
+                )
+            return self._sync_lane
 
 
 class ColBERTRAGRuntimeAdapter(ColBERTRAGRuntimeContract):
