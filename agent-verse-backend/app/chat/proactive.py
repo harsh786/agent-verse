@@ -3,7 +3,7 @@
 The assistant may initiate messages (reminders, follow-ups, "want me to handle
 X?"), but ONLY within per-principal consent: enabled, allowed channel, outside
 quiet hours, under the daily rate limit. This module is the pure decision gate;
-the signal bus + delivery wire into it.
+``app.proactive.engine`` wires it to signals and delivery.
 """
 
 from __future__ import annotations

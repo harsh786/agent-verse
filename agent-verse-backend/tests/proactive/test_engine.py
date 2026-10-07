@@ -6,7 +6,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.chat.proactive import ProactivePreferences
-from app.proactive import ProactiveEngine, ProactivePlanner, ProactiveSignal, SignalBus
+import app.proactive as proactive_pkg
+import app.proactive.signals as signals_mod
+from app.proactive import ProactiveEngine, ProactivePlanner, ProactiveSignal
 from app.proactive.planner import ProactiveProposal
 from app.proactive.signals import SignalKind
 
@@ -107,7 +109,7 @@ async def test_kill_switch_blocks_everything() -> None:
     assert rec.delivered == []
 
 
-# ── signal bus ───────────────────────────────────────────────────────────────
+# ── planner hardening ────────────────────────────────────────────────────────
 
 def test_planner_sanitizes_untrusted_payload() -> None:
     # An attacker-controlled email subject with newlines/instructions is neutralized.
@@ -140,11 +142,8 @@ async def test_durable_counter_hooks_back_rate_limit() -> None:
     assert recorded == []  # nothing sent, so nothing recorded
 
 
-async def test_signal_bus_fans_out_to_engine() -> None:
-    rec = _Recorder()
-    eng = ProactiveEngine(deliver=rec.deliver, audit=rec.audit, clock=_clock(12))
-    bus = SignalBus()
-    bus.subscribe(eng.handle)
-    await bus.publish(_signal(kind=SignalKind.MEMORY_FOLLOWUP, note="water the plants"))
-    assert len(rec.delivered) == 1
-    assert "water the plants" in rec.delivered[0]["message"]
+def test_no_dead_in_process_signal_bus() -> None:
+    # a10-F227-04: the in-process SignalBus had no producer or subscriber outside
+    # its tests (the API hands signals straight to the engine), so it is gone.
+    assert not hasattr(signals_mod, "SignalBus")
+    assert "SignalBus" not in proactive_pkg.__all__
