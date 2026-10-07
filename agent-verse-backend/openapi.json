@@ -941,17 +941,6 @@
             ],
             "title": "Goal Id"
           },
-          "preview_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Preview Url"
-          },
           "project_id": {
             "title": "Project Id",
             "type": "string"
@@ -6344,6 +6333,103 @@
         "title": "PredictCostRequest",
         "type": "object"
       },
+      "PreferencesBody": {
+        "properties": {
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Channels",
+            "type": "array"
+          },
+          "enabled": {
+            "description": "false keeps the record but sends nothing",
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_per_day": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Max Per Day",
+            "type": "integer"
+          },
+          "quiet_hours": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuietHours"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timezone": {
+            "default": "UTC",
+            "description": "IANA zone, e.g. Europe/Berlin",
+            "maxLength": 64,
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "PreferencesBody",
+        "type": "object"
+      },
+      "PreferencesView": {
+        "properties": {
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_per_day": {
+            "default": 0,
+            "title": "Max Per Day",
+            "type": "integer"
+          },
+          "opted_in": {
+            "title": "Opted In",
+            "type": "boolean"
+          },
+          "principal_id": {
+            "title": "Principal Id",
+            "type": "string"
+          },
+          "quiet_hours": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuietHours"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timezone": {
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal_id",
+          "opted_in"
+        ],
+        "title": "PreferencesView",
+        "type": "object"
+      },
       "PromoteGoalRequest": {
         "description": "Options for promoting a completed goal to a golden task (a10-F235-01).",
         "properties": {
@@ -6559,6 +6645,30 @@
           "name"
         ],
         "title": "PublishTemplateV2Request",
+        "type": "object"
+      },
+      "QuietHours": {
+        "properties": {
+          "end": {
+            "description": "local hour they end (may wrap midnight)",
+            "maximum": 23.0,
+            "minimum": 0.0,
+            "title": "End",
+            "type": "integer"
+          },
+          "start": {
+            "description": "local hour quiet hours begin",
+            "maximum": 23.0,
+            "minimum": 0.0,
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "QuietHours",
         "type": "object"
       },
       "RAFTDatasetRequest": {
@@ -7683,6 +7793,7 @@
           "principal_id": {
             "anyOf": [
               {
+                "maxLength": 200,
                 "type": "string"
               },
               {
@@ -7701,6 +7812,18 @@
       },
       "SignalResult": {
         "properties": {
+          "channel_delivered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when only the web thread was targeted; true/false whether the push to the signal's external channel succeeded (false also when no channel push is configured \u2014 the message is still in the principal's thread)",
+            "title": "Channel Delivered"
+          },
           "delivered": {
             "title": "Delivered",
             "type": "boolean"
@@ -13377,7 +13500,7 @@
     },
     "/agent-runtime/strategies": {
       "get": {
-        "description": "List available agent execution strategies.",
+        "description": "The goal execution modes (``workflow_mode``) POST /goals accepts.",
         "operationId": "list_strategies_agent_runtime_strategies_get",
         "responses": {
           "200": {
@@ -13425,7 +13548,7 @@
     },
     "/agent-runtime/traces/{trace_id}": {
       "get": {
-        "description": "Get a run trace.",
+        "description": "A run trace; a goal-linked one is derived from the goal's durable records.",
         "operationId": "get_run_trace_agent_runtime_traces__trace_id__get",
         "parameters": [
           {
@@ -14488,7 +14611,7 @@
     },
     "/agents/{agent_id}/rollback/{snapshot_id}": {
       "post": {
-        "description": "Roll back agent to a previous snapshot.",
+        "description": "Roll back agent to a previous snapshot (404 when the agent is gone).",
         "operationId": "rollback_agent_agents__agent_id__rollback__snapshot_id__post",
         "parameters": [
           {
@@ -14615,7 +14738,7 @@
     },
     "/agents/{agent_id}/snapshot": {
       "post": {
-        "description": "Save a version snapshot of the current agent config.",
+        "description": "Save a version snapshot of the current agent config.\n\nWith a database the snapshot is stored (and numbered) before it is\nreturned; a failure is a 503, never a snapshot that does not exist.",
         "operationId": "snapshot_agent_agents__agent_id__snapshot_post",
         "parameters": [
           {
@@ -14705,7 +14828,7 @@
     },
     "/agents/{agent_id}/versions": {
       "get": {
-        "description": "List all saved version snapshots of an agent.",
+        "description": "List all saved version snapshots of an agent (503 when the store is down).",
         "operationId": "list_agent_versions_agents__agent_id__versions_get",
         "parameters": [
           {
@@ -22112,97 +22235,6 @@
         ]
       }
     },
-    "/builder/assets/{workspace_id}/{file_path}": {
-      "get": {
-        "description": "NOT IMPLEMENTED (501) \u2014 same reasons as :func:`serve_preview` (it also\nreturned ``str(exc)`` in a 500 body).",
-        "operationId": "serve_asset_builder_assets__workspace_id___file_path__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "title": "Workspace Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "file_path",
-            "required": true,
-            "schema": {
-              "title": "File Path",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Serve Asset",
-        "tags": [
-          "builder"
-        ]
-      }
-    },
-    "/builder/preview/{workspace_id}": {
-      "get": {
-        "description": "NOT IMPLEMENTED (501).\n\nThe old handler listed artifacts by a workspace-id substring across ALL\ntenants (no tenant scoping), called ``read_bytes`` positionally although it\nis keyword-only (a TypeError swallowed by a bare except), and so always\nshowed a \"Building...\" page that refreshed forever.",
-        "operationId": "serve_preview_builder_preview__workspace_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "title": "Workspace Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Serve Preview",
-        "tags": [
-          "builder"
-        ]
-      }
-    },
     "/builder/projects": {
       "post": {
         "description": "Create a new builder project and submit a code-generation goal.",
@@ -22247,7 +22279,7 @@
     },
     "/builder/projects/{project_id}": {
       "get": {
-        "description": "NOT IMPLEMENTED (501).\n\nThis was a stub that answered ``status: building, artifacts: []`` for any id\n(including ones that never existed), forever.",
+        "description": "The project's build goal and its status (a10-F229-02).\n\nThe ``project_id`` POST /builder/projects returns is persisted on the build\ngoal (``execution_context.builder_project_id``) and resolved from it, on any\nreplica, under the caller's tenant. This route used to be a 501 (and before\nthat a stub answering \"building\" for any id), so the id led nowhere.",
         "operationId": "get_builder_project_builder_projects__project_id__get",
         "parameters": [
           {
@@ -29370,7 +29402,7 @@
     },
     "/goals/batch": {
       "post": {
-        "description": "Submit multiple goals as a batch for parallel processing.",
+        "description": "Submit multiple goals as one batch, at most ``max_parallel`` submissions at once.\n\nEvery goal carries ``execution_context.batch_id`` (persisted with the goal),\nso ``GET /goals/batch/{batch_id}/status`` finds the batch's goals on any\nreplica. The response lists the goals in request order.",
         "operationId": "submit_batch_goals_goals_batch_post",
         "requestBody": {
           "content": {
@@ -29414,7 +29446,7 @@
     },
     "/goals/batch/{batch_id}/status": {
       "get": {
-        "description": "Get status summary for a batch submission.",
+        "description": "Status summary of a batch.\n\n*batch_id* is the id ``POST /goals/batch`` returned (resolved from the\ngoals' persisted ``execution_context``; an unknown batch is 404) or, for\nbackward compatibility, a comma-separated list of goal ids. The old code\nonly knew the second form, so a real batch id resolved to one \"not_found\"\ngoal that counted as done: ``all_complete`` was true at once.",
         "operationId": "get_batch_status_goals_batch__batch_id__status_get",
         "parameters": [
           {
@@ -29697,7 +29729,7 @@
     },
     "/goals/{goal_id}/attempts": {
       "get": {
-        "description": "Return persistence attempt history for a goal.",
+        "description": "Return persistence attempt history for a goal (404 unknown goal, 503 DB error).",
         "operationId": "get_goal_attempts_goals__goal_id__attempts_get",
         "parameters": [
           {
@@ -30114,7 +30146,7 @@
     },
     "/goals/{goal_id}/lineage": {
       "get": {
-        "description": "Return the parent\u2192child spawn tree for a goal.",
+        "description": "Return the parent\u2192child spawn tree for a goal (404 unknown goal, 503 DB error).",
         "operationId": "get_goal_lineage_goals__goal_id__lineage_get",
         "parameters": [
           {
@@ -30394,7 +30426,7 @@
     },
     "/goals/{goal_id}/replay": {
       "get": {
-        "description": "Reconstruct the full execution timeline of a completed goal.\n\nReturns a chronologically ordered list of events with:\n- Plan steps and their descriptions\n- Tool calls and their results\n- LLM prompts and completions (if include_raw_output=True)\n- Governance events (policy checks, HITL approvals)\n- Eval scores\n- Timing and cost per step",
+        "description": "Reconstruct the execution timeline of a goal, one bounded page at a time.\n\nEvents are ordered by sequence; when more exist ``events_truncated`` is true\nand ``next_after_sequence`` is the cursor for the next page. Steps and\ndecision traces are capped at *limit* too (``steps_truncated`` /\n``decision_traces_truncated``).\n\nReturns a chronologically ordered list of events with:\n- Plan steps and their descriptions\n- Tool calls and their results\n- LLM prompts and completions (if include_raw_output=True)\n- Governance events (policy checks, HITL approvals)\n- Eval scores\n- Timing and cost per step",
         "operationId": "replay_goal_goals__goal_id__replay_get",
         "parameters": [
           {
@@ -30428,6 +30460,33 @@
               "description": "Include tool call details",
               "title": "Include Tool Calls",
               "type": "boolean"
+            }
+          },
+          {
+            "description": "Max events / steps / traces returned",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "description": "Max events / steps / traces returned",
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Return events with sequence > this (next_after_sequence)",
+            "in": "query",
+            "name": "after_sequence",
+            "required": false,
+            "schema": {
+              "default": -1,
+              "description": "Return events with sequence > this (next_after_sequence)",
+              "minimum": -1,
+              "title": "After Sequence",
+              "type": "integer"
             }
           }
         ],
@@ -30609,7 +30668,7 @@
     },
     "/goals/{goal_id}/traces": {
       "get": {
-        "description": "Return decision trace records for this goal.",
+        "description": "Return decision trace records for this goal (404 unknown goal, 503 DB error).",
         "operationId": "get_goal_traces_goals__goal_id__traces_get",
         "parameters": [
           {
@@ -45696,6 +45755,7 @@
     },
     "/templates": {
       "get": {
+        "description": "One page of the tenant's templates, newest first (``limit`` / ``offset``).",
         "operationId": "list_templates_templates_get",
         "parameters": [
           {
@@ -45721,6 +45781,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 200,
                   "type": "string"
                 },
                 {
@@ -45728,6 +45789,29 @@
                 }
               ],
               "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -53837,6 +53921,139 @@
         "summary": "SUPP-H Digital Twin \u2014 what-if scenario analysis (not implemented: 501)",
         "tags": [
           "org"
+        ]
+      }
+    },
+    "/v1/proactive/preferences/{principal_id}": {
+      "delete": {
+        "description": "Opt a principal out entirely (idempotent).",
+        "operationId": "proactive_delete_preferences",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "principal_id",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Principal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Preferences",
+        "tags": [
+          "proactive"
+        ]
+      },
+      "get": {
+        "operationId": "proactive_get_preferences",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "principal_id",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Principal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Preferences",
+        "tags": [
+          "proactive"
+        ]
+      },
+      "put": {
+        "description": "Opt a principal in (or update its consent controls).",
+        "operationId": "proactive_put_preferences",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "principal_id",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Principal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Preferences",
+        "tags": [
+          "proactive"
         ]
       }
     },
