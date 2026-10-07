@@ -156,14 +156,27 @@ def test_policy_requires_approval(api: LiveAPI, cleanup: Any, evidence: dict[str
                        "Reserve Bank of India and report it with its source.", agent_id=agent)
     goal_id = sub["goal_id"]
     evidence["goal_id"] = goal_id
-    goal, pending = goals.wait_gate_or_end(api, goal_id)
-    evidence.update(status=goal.get("status"), approvals=[str(a.get("action"))[:120]
-                                                          for a in pending])
-    assert pending, f"web_search ran without the approval its policy requires (goal " \
-        f"{goal.get('status')})"
-    assert "web_search" in mask(pending[0]), f"the approval is not for web_search: " \
-        f"{mask(pending[0])[:200]}"
-    r = api.post(f"/governance/approvals/{pending[0]['request_id']}/reject",
+    # A supervised agent also asks to approve each plan step: approve those until
+    # the gate the web_search policy files appears, then reject that one.
+    seen: list[str] = []
+    web_gate = None
+    for _ in range(8):
+        goal, pending = goals.wait_gate_or_end(api, goal_id)
+        if not pending:
+            break
+        seen.extend(str(a.get("action"))[:120] for a in pending)
+        web_gate = next((a for a in pending if "web_search" in mask(a)), None)
+        if web_gate is not None:
+            break
+        for a in pending:
+            ok = api.post(f"/governance/approvals/{a['request_id']}/approve",
+                          json={"approver": "rw-suite", "note": "supervised step"})
+            assert ok.status_code == 200, mask(ok.text[:200])
+    evidence.update(status=goal.get("status"), approvals=seen)
+    assert web_gate is not None, (
+        f"web_search ran (or the goal ended: {goal.get('status')}) without the approval "
+        f"its policy requires; gates seen: {seen}")
+    r = api.post(f"/governance/approvals/{web_gate['request_id']}/reject",
                  json={"approver": "rw-suite", "note": "policy scenario"})
     assert r.status_code == 200, mask(r.text[:200])
     final = goals.wait_terminal(api, goal_id)

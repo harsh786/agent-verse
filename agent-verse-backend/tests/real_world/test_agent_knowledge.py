@@ -683,7 +683,9 @@ def test_agent_knowledge_honest_failures(
         out = _source(api, cleanup, cid, cfg, expect=422)
         refused[name] = mask(out.get("detail"))[:160]
     evidence["refused"] = refused
-    assert "chat_transcript" in refused["unknown kind"]
+    # Refused by name: as an unknown kind, or (now) as a kind this workspace has
+    # not enabled ("chat transcripts are not enabled for this workspace").
+    assert any(k in refused["unknown kind"].lower() for k in ("chat_transcript", "chat transcript"))
     ok = jobs.validate(api, family=FAMILY, source_type="agent_generated",
                        config={"source_types": ["goal_output"]}, collection_id=cid)
     evidence["validate"] = ok

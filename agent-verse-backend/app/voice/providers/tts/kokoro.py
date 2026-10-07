@@ -82,23 +82,29 @@ class KokoroTTS:
         async with self._lock:
             if self._kokoro:
                 return self._kokoro
-            from kokoro_onnx import Kokoro
-
-            model_dir = os.getenv("MODEL_CACHE_DIR", "/app/models")
-            model_path = os.path.join(model_dir, "kokoro-v1.0.onnx")
-            voices_path = os.path.join(model_dir, "voices-v1.0.bin")
-            # If model files not found, download them
-            if not os.path.exists(model_path):
-                import urllib.request
-
-                os.makedirs(model_dir, exist_ok=True)
-                urllib.request.urlretrieve(
-                    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
-                    model_path,
-                )
-                urllib.request.urlretrieve(
-                    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
-                    voices_path,
-                )
-            self._kokoro = Kokoro(model_path, voices_path)
+            # Loading (and a first-run model download) is blocking: keep it off the
+            # API's event loop.
+            self._kokoro = await asyncio.to_thread(_build_kokoro)
             return self._kokoro
+
+
+def _build_kokoro() -> Any:
+    from kokoro_onnx import Kokoro
+
+    model_dir = os.getenv("MODEL_CACHE_DIR", "/app/models")
+    model_path = os.path.join(model_dir, "kokoro-v1.0.onnx")
+    voices_path = os.path.join(model_dir, "voices-v1.0.bin")
+    # If model files not found, download them
+    if not os.path.exists(model_path):
+        import urllib.request
+
+        os.makedirs(model_dir, exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+            model_path,
+        )
+        urllib.request.urlretrieve(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+            voices_path,
+        )
+    return Kokoro(model_path, voices_path)

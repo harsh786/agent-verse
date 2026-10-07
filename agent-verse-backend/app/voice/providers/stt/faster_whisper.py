@@ -67,26 +67,32 @@ class FasterWhisperSTT:
         async with self._lock:
             if self._model:
                 return self._model
-            import pathlib as _pl
-
-            from faster_whisper import WhisperModel
-
-            device = os.getenv("VOICE_DEVICE", "cpu")
-            compute = "float16" if device == "cuda" else "int8"
-            # Use a writable local cache — /app/models is Docker-only, read-only on macOS
-            cache_dir = os.getenv("MODEL_CACHE_DIR") or str(
-                _pl.Path.home() / ".cache" / "agentverse" / "models"
-            )
-            _pl.Path(cache_dir).mkdir(parents=True, exist_ok=True)
-            # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production  # noqa: E501
-            model_name = os.getenv("VOICE_STT_MODEL", "tiny")
-            self._model = WhisperModel(
-                model_name,
-                device=device,
-                compute_type=compute,
-                download_root=cache_dir,
-            )
+            # Model construction (and the first-run download) is blocking: run it in
+            # a worker thread so it never stalls the API's event loop.
+            self._model = await asyncio.to_thread(_build_whisper_model)
             return self._model
+
+
+def _build_whisper_model() -> Any:
+    import pathlib as _pl
+
+    from faster_whisper import WhisperModel
+
+    device = os.getenv("VOICE_DEVICE", "cpu")
+    compute = "float16" if device == "cuda" else "int8"
+    # Use a writable local cache — /app/models is Docker-only, read-only on macOS
+    cache_dir = os.getenv("MODEL_CACHE_DIR") or str(
+        _pl.Path.home() / ".cache" / "agentverse" / "models"
+    )
+    _pl.Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production  # noqa: E501
+    model_name = os.getenv("VOICE_STT_MODEL", "tiny")
+    return WhisperModel(
+        model_name,
+        device=device,
+        compute_type=compute,
+        download_root=cache_dir,
+    )
 
 
 async def _decode_audio(audio_bytes: bytes, content_type: str) -> np.ndarray:
