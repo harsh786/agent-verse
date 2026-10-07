@@ -13,7 +13,7 @@ def test_results_are_ignored_app_wide() -> None:
 
 
 def test_workflow_and_goal_tasks_ignore_results() -> None:
-    import app.scaling.tasks  # noqa: F401 - registers the goal tasks
+    import app.scaling.tasks
     import app.workflow.celery_tasks  # noqa: F401 - registers the workflow tasks
 
     for name in ("workflow.execute_workflow_run",):
