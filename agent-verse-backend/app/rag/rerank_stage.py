@@ -20,13 +20,23 @@ Design guarantees:
     computes a genuine relevance score (cross-encoder / TF-IDF fallback) the new
     blended score is reflected onto the result and the raw score is preserved in
     ``source_metadata['pre_rerank_score']`` for auditability.
+  * **Bounded (RERANK-BOUNDED)** — the stage never takes longer than
+    ``RAG_RERANK_BUDGET_MS`` (warm-up wait + queue wait + inference), capped by
+    what is left of the retrieval deadline. When the cross-encoder is busy or
+    out of budget the results keep their retrieval order, each flagged
+    ``rerank_skipped: busy|budget_exceeded`` (like ``reranker_warming_up``) and
+    counted in ``agentverse_rerank_degraded_total{reason}``. Only the top
+    ``RAG_RERANK_MAX_CANDIDATES`` are cross-encoded; the rest follow them in
+    retrieval order, flagged ``rerank_beyond_window``.
 """
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from app.observability.logging import get_logger
+from app.rag.rerank_budget import rerank_budget_seconds, rerank_limits
 
 if TYPE_CHECKING:
     from app.context.rerank_policy import RerankStrategy
@@ -45,11 +55,24 @@ def is_enabled(settings: Any) -> bool:
 
 
 async def _cross_encoder_status(settings: Any) -> str:
-    """Readiness of the cross-encoder, waiting at most the configured budget."""
+    """Readiness of the cross-encoder, waiting at most the warm-up wait.
+
+    The wait is also capped by the rerank budget: the warm-up wait and the
+    inference share ONE stage budget.
+    """
     from app.rag.cross_encoder import ensure_default_cross_encoder_ready
 
-    budget = float(getattr(settings, "rag_rerank_warmup_wait_seconds", 2.0))
-    return await ensure_default_cross_encoder_ready(budget)
+    wait = float(getattr(settings, "rag_rerank_warmup_wait_seconds", 2.0))
+    return await ensure_default_cross_encoder_ready(min(wait, rerank_budget_seconds(settings)))
+
+
+def _flag_skipped(
+    results: list[RetrievalResult], reason: str, top_k: int | None
+) -> list[RetrievalResult]:
+    """Retrieval order, nothing dropped, every result saying why it is unranked."""
+    for result in results:
+        result.source_metadata = {**(result.source_metadata or {}), "rerank_skipped": reason}
+    return results[:top_k] if top_k else results
 
 
 def _resolve_strategy(name: str) -> RerankStrategy:
@@ -84,6 +107,10 @@ async def apply_default_rerank(
     from app.context.rerank_policy import RerankPolicy, RerankStrategy
 
     strategy = _resolve_strategy(strategy_name)
+    requested_auto = strategy is RerankStrategy.AUTO
+    # ONE budget for the whole stage (warm-up wait + queue + inference), capped by
+    # the retrieval deadline.
+    stage_deadline = time.monotonic() + rerank_budget_seconds(settings)
     # RERANK-PRELOAD: the cross-encoder model is warmed in the background at
     # startup. Until it is loaded, a search waits for it only within a small
     # budget and then skips it honestly (marked on every result) — it used to
@@ -108,12 +135,7 @@ async def apply_default_rerank(
             if strategy is not RerankStrategy.AUTO:
                 # An explicitly requested cross-encoder is not silently replaced:
                 # original order, flagged.
-                for result in results:
-                    result.source_metadata = {
-                        **(result.source_metadata or {}),
-                        "rerank_skipped": skipped_reason,
-                    }
-                return results
+                return _flag_skipped(results, skipped_reason, top_k)
             # ``auto`` keeps its documented degradation: deterministic score order.
             strategy = RerankStrategy.SCORE
     # Pure reranker: no dedup, no min-score filter, no per-source cap, and no
@@ -124,6 +146,7 @@ async def apply_default_rerank(
         min_score=0.0,
         max_per_source=0,
         calibration_method=None,
+        max_rerank_candidates=rerank_limits(settings).max_candidates,
     )
 
     chunk_dicts: list[dict[str, Any]] = []
@@ -150,6 +173,7 @@ async def apply_default_rerank(
                 query=query,
                 strategy=strategy,
                 query_embedding=query_embedding,
+                budget_seconds=max(stage_deadline - time.monotonic(), 0.0),
             )
         else:
             reranked = policy.rerank(chunk_dicts, query, query_embedding=query_embedding)
@@ -169,6 +193,22 @@ async def apply_default_rerank(
             result.source_metadata = {**(result.source_metadata or {}), "rerank_degraded": True}
         return results
 
+    if policy.last_skipped_reason is not None:
+        # RERANK-BOUNDED: the cross-encoder was busy / out of budget (the policy
+        # counted and logged it). Never a long wait: an explicit cross-encoder
+        # keeps the retrieval order, flagged; ``auto`` keeps its documented
+        # degradation (deterministic score order, labelled ``score``), flagged —
+        # exactly like the warm-up skip above.
+        if not requested_auto:
+            return _flag_skipped(results, policy.last_skipped_reason, top_k)
+        by_score = sorted(results, key=lambda result: float(result.score), reverse=True)
+        for result in by_score:
+            result.source_metadata = {
+                **(result.source_metadata or {}),
+                "rerank_strategy": RerankStrategy.SCORE.value,
+            }
+        return _flag_skipped(by_score, policy.last_skipped_reason, top_k)
+
     effective = (policy.last_strategy_used or strategy).value
     # a04-F073-03: the requested reranker failed and TF-IDF ranked instead; the
     # policy counted it, every result says so.
@@ -186,6 +226,8 @@ async def apply_default_rerank(
             result.source_metadata["rerank_skipped"] = skipped_reason
         if degraded_reason is not None:
             result.source_metadata["rerank_degraded"] = degraded_reason
+        if chunk.get("rerank_beyond_window"):
+            result.source_metadata["rerank_beyond_window"] = True
         # Reflect a genuine reranker score when one was computed.
         new_score = chunk.get("score")
         ce_score = chunk.get("ce_score")

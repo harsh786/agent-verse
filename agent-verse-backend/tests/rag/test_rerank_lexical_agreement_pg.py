@@ -131,8 +131,15 @@ def _cross_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _ready(_settings: Any) -> str:
         return "ready"
 
+    async def _fake_cross_encode_async(
+        query: str, documents: list[str], *, budget_seconds: float | None = None
+    ) -> list[float]:
+        return _fake_cross_encode(query, documents)
+
     monkeypatch.setattr("app.rag.rerank_stage._cross_encoder_status", _ready)
     monkeypatch.setattr("app.rag.cross_encoder.cross_encode", _fake_cross_encode)
+    # The async default path awaits the bounded lane (cross_encode_async).
+    monkeypatch.setattr("app.rag.cross_encoder.cross_encode_async", _fake_cross_encode_async)
 
 
 _SETTINGS = SimpleNamespace(

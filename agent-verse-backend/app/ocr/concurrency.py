@@ -41,7 +41,6 @@ import atexit
 import contextlib
 import contextvars
 import functools
-import math
 import os
 import threading
 import uuid
@@ -53,6 +52,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from app.core.cpu import available_cpus as _available_cpus
+from app.core.cpu import cgroup_cpu_quota
 
 # Before any tesseract subprocess is spawned (they inherit this environment).
 os.environ.setdefault("OMP_THREAD_LIMIT", "1")
@@ -76,21 +78,11 @@ class OcrLimits:
 
 def _cgroup_cpu_quota() -> float | None:
     """The container's CPU limit (cgroup v2, else v1), or None when unlimited."""
-    try:
-        quota, period = _CGROUP_V2_CPU_MAX.read_text().split()[:2]
-        if quota != "max" and int(period) > 0:
-            return int(quota) / int(period)
-        return None
-    except (OSError, ValueError):
-        pass
-    try:
-        quota_us = int(_CGROUP_V1_QUOTA.read_text().strip())
-        period_us = int(_CGROUP_V1_PERIOD.read_text().strip())
-        if quota_us > 0 and period_us > 0:
-            return quota_us / period_us
-    except (OSError, ValueError):
-        pass
-    return None
+    return cgroup_cpu_quota(
+        v2_cpu_max=_CGROUP_V2_CPU_MAX,
+        v1_quota=_CGROUP_V1_QUOTA,
+        v1_period=_CGROUP_V1_PERIOD,
+    )
 
 
 def available_cpus() -> int:
@@ -99,13 +91,7 @@ def available_cpus() -> int:
     ``os.cpu_count()`` is the NODE's count inside a container: a 2-CPU pod on a
     64-core node must not start 64 Tesseracts.
     """
-    count = os.cpu_count() or 1
-    with contextlib.suppress(AttributeError, OSError):  # macOS: no sched_getaffinity
-        count = min(count, len(os.sched_getaffinity(0)))
-    quota = _cgroup_cpu_quota()
-    if quota is not None:
-        count = min(count, max(1, math.ceil(quota)))
-    return max(1, count)
+    return _available_cpus(_cgroup_cpu_quota())
 
 
 def _worker_processes() -> int:
