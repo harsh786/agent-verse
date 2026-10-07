@@ -115,9 +115,55 @@ _COMPLEXITY_COMPLEX = frozenset(
         "summarize",
     }
 )
-_STEP_SEPARATORS = re.compile(
-    r"\band\b|\bthen\b|\bafter\b|\bfollowed by\b|\balso\b|\bnext\b", re.IGNORECASE
+# A bare "and" followed by one of these joins two parts of ONE ask, not two work
+# steps: a preposition / determiner / pronoun ("at WH-Hosur and at WH-Pune",
+# "Hosur and the Pune site"), or an answer-shaping verb ("... and cite the
+# document", "... and show the arithmetic") that only says how to present the one
+# answer. Counting them made a single KB-lookup-plus-arithmetic question
+# "complex, multi-step" and fanned it out to supervisor sub-agents.
+_NON_STEP_AFTER_AND = frozenset(
+    {
+        # prepositions / determiners / pronouns / conjunction glue
+        "at", "in", "on", "of", "for", "from", "to", "with", "by", "between", "into",
+        "the", "a", "an", "its", "their", "his", "her", "our", "your", "my", "this",
+        "that", "these", "those", "which", "who", "what", "how", "where", "when", "why",
+        "it", "them", "each", "both", "all", "any", "or", "not", "so",
+        # answer-shaping verbs: how to present the one answer, not more work
+        "cite", "show", "say", "state", "explain", "include", "mention", "give",
+        "tell", "note", "quote", "reference", "justify",
+    }
 )
+# Separators that always start another step; "and" directly before one of them is
+# the same boundary ("and then", "and also"), counted once.
+_SEQUENCE_WORDS = frozenset({"then", "after", "also", "next", "followed"})
+
+
+def _count_steps(goal: str) -> int:
+    """Steps the goal spells out: 1 + the separators that begin a new action."""
+    words = re.findall(r"[a-z0-9]+(?:[-'][a-z0-9]+)*", goal.lower())
+    steps = 1
+    for i, word in enumerate(words):
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        if word == "and":
+            if nxt and nxt not in _NON_STEP_AFTER_AND and nxt not in _SEQUENCE_WORDS:
+                steps += 1
+        elif word == "followed":
+            if nxt == "by":
+                steps += 1
+        elif word in _SEQUENCE_WORDS:
+            steps += 1
+    return steps
+
+
+def _signal_in(signal: str, lower: str, tokens: set[str]) -> bool:
+    """Whole-word match for a single-word signal; substring for a phrase.
+
+    A bare substring test matched "now" inside "kNOWledge" (and "live" inside
+    "deLIVEr"), flagging knowledge-base questions as needing the live web.
+    """
+    if " " in signal or "-" in signal:
+        return signal in lower
+    return signal in tokens
 _WEB_SIGNALS = frozenset(
     {
         "latest",
@@ -229,13 +275,13 @@ class GoalClassifier:
                 reversibility = "irreversible"
                 break
 
-        requires_web = bool(tokens & _WEB_SIGNALS) or any(p in lower for p in _WEB_SIGNALS)
+        requires_web = any(_signal_in(p, lower, tokens) for p in _WEB_SIGNALS)
         time_sensitivity = TimeSensitivity.REALTIME if requires_web else TimeSensitivity.NORMAL
         requires_code = bool(
             tokens & {"code", "function", "script", "python", "javascript", "sql", "query", "test"}
         )
 
-        step_count = len(_STEP_SEPARATORS.findall(goal)) + 1
+        step_count = _count_steps(goal)
         expert_hits = len(tokens & _COMPLEXITY_EXPERT)
         complex_hits = len(tokens & _COMPLEXITY_COMPLEX)
 
