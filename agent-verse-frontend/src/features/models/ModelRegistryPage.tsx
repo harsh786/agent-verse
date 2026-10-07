@@ -376,13 +376,16 @@ export function ModelRegistryPage() {
           if (dirty) {
             let n = 0;
             models.forEach((m, i) => {
-              if (!m.provider_ready) return;
+              if (!m.provider_ready || m.refused) return;
               if (primaryIdx === -1) primaryIdx = i;
               else fallbackNo.set(i, ++n);
             });
           } else if (group) {
-            primaryIdx = models.findIndex((m) => m.model_id === group.selected_model_id);
-            if (primaryIdx === -1) primaryIdx = models.findIndex((m) => m.rank === 1);
+            primaryIdx = models.findIndex(
+              (m) => m.model_id === group.selected_model_id && !m.refused,
+            );
+            // A refused row (e.g. wrong embedding dimension) is never badged primary.
+            if (primaryIdx === -1) primaryIdx = models.findIndex((m) => m.rank === 1 && !m.refused);
             models.forEach((m, i) => {
               const fb = group.fallback_model_ids.indexOf(m.model_id);
               if (fb !== -1 && i !== primaryIdx) fallbackNo.set(i, fb + 1);

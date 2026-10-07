@@ -544,9 +544,11 @@ function HITLConfig({ data, onUpdate }: PanelProps) {
         value={String(data.timeout_action ?? 'escalate')}
         onChange={(v) => onUpdate({ timeout_action: v })}
         options={[
+          // Must match the DSL's timeout_action: escalate | auto_approve | auto_reject | pause.
           { label: 'Escalate', value: 'escalate' },
-          { label: 'Auto-approve', value: 'approve' },
-          { label: 'Auto-reject', value: 'reject' },
+          { label: 'Auto-approve', value: 'auto_approve' },
+          { label: 'Auto-reject', value: 'auto_reject' },
+          { label: 'Pause the run', value: 'pause' },
         ]}
       />
     </>

@@ -166,8 +166,8 @@ describe('WorkflowStepConfig — http extra branches', () => {
 describe('WorkflowStepConfig — hitl extra branches', () => {
   test('timeout action select + escalation hours edits', () => {
     const { onUpdate } = renderConfig(makeNode('hitl'));
-    fireEvent.change(screen.getByLabelText('On timeout'), { target: { value: 'approve' } });
-    expect(onUpdate).toHaveBeenCalledWith({ timeout_action: 'approve' });
+    fireEvent.change(screen.getByLabelText('On timeout'), { target: { value: 'auto_approve' } });
+    expect(onUpdate).toHaveBeenCalledWith({ timeout_action: 'auto_approve' });
     fireEvent.change(screen.getByLabelText('Escalate after (hours)'), { target: { value: '12' } });
     expect(onUpdate).toHaveBeenCalledWith({ escalation_after_hours: 12 });
   });

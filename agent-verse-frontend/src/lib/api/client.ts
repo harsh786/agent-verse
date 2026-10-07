@@ -915,6 +915,9 @@ export interface ConfiguredModel {
   is_available: boolean;
   /** False when the provider has no API key configured — skipped at runtime. */
   provider_ready: boolean;
+  /** Refused for this deployment (e.g. embedding dimension mismatch); never the primary. */
+  refused?: boolean;
+  refusal_reason?: string | null;
   source: 'env' | 'override';
   /** 1-based effective execution order within the capability. */
   rank: number;
