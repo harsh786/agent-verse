@@ -352,6 +352,17 @@ PATTERN_SAFETY_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+LLM_THINKING_DISABLED_TOTAL = Counter(
+    "agentverse_llm_thinking_disabled_total",
+    "A thinking (reasoning) model spent its budget reasoning with no answer and the "
+    "OpenAI-compatible provider retried with thinking turned off, by outcome: "
+    "recovered (answered), still_empty, or unsupported (the endpoint refused the "
+    "switch). Model and endpoint host are in the llm_thinking_auto_disabled log.",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+_THINKING_OUTCOMES = frozenset({"recovered", "still_empty", "unsupported"})
+
 _GROUNDING_STATUS_LABELS = frozenset({"grounded", "ungrounded"})
 _GROUNDING_RISK_LABELS = frozenset({"high_risk", "normal"})
 
@@ -439,6 +450,13 @@ def record_strategy_execution(
     STRATEGY_TOKENS_TOTAL.labels(family=family_label, strategy=strategy_label).inc(
         _non_negative(float(tokens))
     )
+
+
+def record_thinking_disabled(outcome: str) -> None:
+    """A thinking model was retried with thinking off (bounded outcome label)."""
+    LLM_THINKING_DISABLED_TOTAL.labels(
+        outcome=outcome if outcome in _THINKING_OUTCOMES else "other"
+    ).inc()
 
 
 def record_checkpointer_fallback(reason: str) -> None:

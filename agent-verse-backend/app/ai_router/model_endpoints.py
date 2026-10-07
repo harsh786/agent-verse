@@ -175,3 +175,56 @@ def onprem_extra_body(provider: str) -> dict[str, Any] | None:
     if bool(getattr(s, "onprem_disable_thinking", True)):
         return {"chat_template_kwargs": {"enable_thinking": False}}
     return None
+
+
+THINKING_MODES = ("auto", "off", "on")
+
+
+def parse_thinking_mode(value: Any) -> str | None:
+    """``"auto"`` / ``"off"`` / ``"on"`` (case-insensitive), else ``None``."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in THINKING_MODES else None
+
+
+def registry_thinking_settings(
+    model: str, base_url: str | None = None, provider: str | None = None
+) -> tuple[str | None, int | None]:
+    """The Model Registry's thinking setting for *model*: ``(mode, budget_tokens)``.
+
+    ``(None, None)`` when no registry entry of the model sets one (the caller's
+    default applies; an entry saved before the setting existed means "auto").
+    Several entries of one model id (e.g. the same Qwen on two endpoints) are
+    told apart by endpoint: an entry whose ``base_url`` is *base_url* wins, then
+    one of *provider*, then any entry of the model.
+    """
+    if not model:
+        return None, None
+    try:
+        from app.ai_router.registry import model_registry
+
+        entries = [m for m in model_registry.list_configured() if m.model_id == model]
+    except Exception:  # pragma: no cover - never block a call
+        return None, None
+    if not entries:
+        return None, None
+    wanted = normalize_base_url(base_url or "")
+    prov = (provider or "").strip().lower()
+
+    def _rank(m: Any) -> int:
+        if wanted and normalize_base_url(str(getattr(m, "base_url", "") or "")) == wanted:
+            return 0
+        if prov and str(getattr(m, "provider", "") or "").strip().lower() == prov:
+            return 1
+        return 2
+
+    best = min(_rank(m) for m in entries)
+    # Only the closest entries count: another endpoint's setting never applies
+    # to a model registered at this endpoint without one (= auto).
+    for m in (e for e in entries if _rank(e) == best):
+        extra = getattr(m, "extra", None) or {}
+        mode = parse_thinking_mode(extra.get("thinking"))
+        budget = extra.get("thinking_budget_tokens")
+        budget_ok = isinstance(budget, int) and not isinstance(budget, bool) and budget > 0
+        if mode is not None or budget_ok:
+            return mode, (budget if budget_ok else None)
+    return None, None

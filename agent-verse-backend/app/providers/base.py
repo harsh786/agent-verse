@@ -80,6 +80,10 @@ class CompletionResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str = "end_turn"
     usage: TokenUsage | None = None  # populated by providers for real cost tracking
+    # Thinking (reasoning) models — reported by providers that can tell:
+    reasoning_tokens: int = 0  # completion tokens this response spent reasoning
+    thinking_observed: bool = False  # reasoning seen on any attempt of this call
+    thinking_disabled: bool = False  # this answer was produced with thinking turned off
 
     @property
     def total_tokens(self) -> int:

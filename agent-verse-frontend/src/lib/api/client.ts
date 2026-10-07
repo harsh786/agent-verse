@@ -923,7 +923,17 @@ export interface ConfiguredModel {
    * Ollama `/v1`, on-prem). null = the provider's configured API.
    */
   base_url: string | null;
+  /**
+   * Thinking-model control: "auto" (default — an empty, reasoning-only reply is
+   * retried once with thinking off), "off" (always answer without reasoning),
+   * "on" (keep reasoning).
+   */
+  thinking?: ThinkingMode;
+  /** Reasoning tokens added to the budget when thinking is "on"; null = none. */
+  thinking_budget_tokens?: number | null;
 }
+
+export type ThinkingMode = 'auto' | 'off' | 'on';
 
 export interface CapabilityGroup {
   capability: ModelCapability | string;
@@ -981,6 +991,21 @@ export interface ModelEndpointTestRequest {
   model_id: string;
   base_url: string;
   capabilities: string[];
+  thinking?: ThinkingMode;
+  thinking_budget_tokens?: number | null;
+}
+
+/** What a chat probe learned about a thinking (reasoning) model. */
+export interface ThinkingProbe {
+  mode: ThinkingMode;
+  /** Reasoning tokens / reasoning text were observed on the plain call. */
+  thinking_model: boolean;
+  reasoning_tokens: number;
+  /** null = not tried; false = the endpoint has no (or refused the) switch. */
+  disable_supported: boolean | null;
+  /** The model answered with thinking off (no reasoning tokens). */
+  disabled_works: boolean | null;
+  recommendation: string | null;
 }
 
 /** `ok: false` still arrives as HTTP 200 with `error` set; a refused URL is a 400. */
@@ -993,6 +1018,8 @@ export interface ModelEndpointTestResult {
   served_models: string[];
   detail: string;
   error: string | null;
+  /** Chat probes only. */
+  thinking?: ThinkingProbe;
 }
 
 /** GET /models/plan-cap — would this model be clamped to the caller's plan tier? */
