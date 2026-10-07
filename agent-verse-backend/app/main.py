@@ -1571,23 +1571,6 @@ def create_app(
 
             app.state.magentic_run_repository = PostgresMagenticRunRepository(db_factory)
             app.state.moa_run_repository = PostgresMoARunRepository(db_factory)
-            from app.routing_runtime.decision_store import PostgresDecisionStore
-            from app.routing_runtime.embedding_router import (
-                EmbeddingRouter as CanonicalEmbeddingRouter,
-            )
-            from app.routing_runtime.model_router import ModelRouter as CanonicalModelRouter
-            from app.routing_runtime.skill_router import SkillRouter as CanonicalSkillRouter
-
-            app.state.routing_decision_store = PostgresDecisionStore(db_factory)
-            app.state.canonical_model_router = CanonicalModelRouter(
-                decision_store=app.state.routing_decision_store
-            )
-            app.state.canonical_skill_router = CanonicalSkillRouter(
-                decision_store=app.state.routing_decision_store
-            )
-            app.state.canonical_embedding_router = CanonicalEmbeddingRouter(
-                decision_store=app.state.routing_decision_store
-            )
             from app.memory.embedding import memory_embedder_from_provider
             from app.memory.postgres_repository import PostgresMemoryRepository
 
@@ -3022,21 +3005,6 @@ def create_app(
         reserve_budget=_strategy_budget_reserver(app.state),
     )
     app.state.graph_factory = GraphFactory()
-    from app.routing_runtime.decision_store import InMemoryDecisionStore
-    from app.routing_runtime.embedding_router import EmbeddingRouter as CanonicalEmbeddingRouter
-    from app.routing_runtime.model_router import ModelRouter as CanonicalModelRouter
-    from app.routing_runtime.skill_router import SkillRouter as CanonicalSkillRouter
-
-    app.state.routing_decision_store = InMemoryDecisionStore()
-    app.state.canonical_model_router = CanonicalModelRouter(
-        decision_store=app.state.routing_decision_store
-    )
-    app.state.canonical_skill_router = CanonicalSkillRouter(
-        decision_store=app.state.routing_decision_store
-    )
-    app.state.canonical_embedding_router = CanonicalEmbeddingRouter(
-        decision_store=app.state.routing_decision_store
-    )
     from app.memory.repository import InMemoryMemoryRepository
 
     app.state.memory_repository = InMemoryMemoryRepository()

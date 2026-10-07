@@ -2,6 +2,18 @@
 
 > **Status note (2026-09-30, CORE-23):** this document predates the removal of unwired modules it references — `app/agent/pattern_assembler.py`, `app/agent/goal_classifier.py`, `app/agent/semantic_entropy.py`, `app/agent/errors.py`, `app/agent/patterns/dynamic_graph_assembler.py` and `app/orchestration/workflow_compatibility.py` no longer exist. The live equivalents are `app/orchestration/goal_classifier.py`, `app/orchestration/pattern_selector.py` and `app/agent/dynamic_graph.py`.
 
+> **Status note (2026-10-07, a10-F251-01/02 — owner decision): the `routing_runtime` work is SUPERSEDED.**
+> `app/routing_runtime/` (contracts, decision store, model / skill / tool / embedding routers, optimizer),
+> its `app.state` wiring in `main.py`, `app/db/models/routing.py` and `tests/routing_runtime/` were deleted:
+> nothing on a request or goal path ever called them. Migration `b3e7d1f9a5c2` drops `routing_decisions` /
+> `routing_outcomes` (refusing while they hold rows unless `AGENTVERSE_ALLOW_ORPHAN_TABLE_DROP=1`).
+> Tasks **AP10-T01, T03, T04, T05, T06, T07** below are superseded and must not be re-implemented from this
+> plan. The live equivalents are `app/agent/model_router.py` (+ tenant routing policies), agent auto-routing
+> (`GoalService._auto_route_goal`, `AgentStore.routing_candidates`), `app/orchestration/pattern_selector.py`,
+> `app/agent/skill_selector.py` / `tool_selector.py` and the embedding provider selection. The remaining
+> tasks (classification, compression, Constitutional AI, plan verification, provenance, sandbox, BabyAGI /
+> AutoGPT) are unaffected by this note.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`
 > or `superpowers:executing-plans` to execute this plan task by task. Every implementation task
 > starts with a failing test and uses checkbox (`- [ ]`) tracking.
@@ -108,7 +120,9 @@ PostgreSQL/pgvector, Redis, LangGraph, Celery, MCP, pytest, Ruff, mypy.
 
 ## Task Breakdown
 
-### AP10-T01: Define routing contracts and tenant-scoped decision persistence
+### AP10-T01: Define routing contracts and tenant-scoped decision persistence — SUPERSEDED (2026-10-07)
+
+> Superseded: `app/routing_runtime` was removed (a10-F251-01/02); see the status note at the top.
 
 **Files:**
 
@@ -223,7 +237,9 @@ uv run mypy app/orchestration app/agent/goal_classifier.py
 Expected: all focused tests pass and a recording builder proves exactly one profile build per
 goal execution.
 
-### AP10-T03: Unify model routing with health, cost, latency, and fallback
+### AP10-T03: Unify model routing with health, cost, latency, and fallback — SUPERSEDED (2026-10-07)
+
+> Superseded: `app/routing_runtime` was removed (a10-F251-01/02); see the status note at the top.
 
 **Files:**
 
@@ -270,7 +286,9 @@ uv run mypy app/routing_runtime/model_router.py app/ai_router app/agent/model_ro
 Expected: all tests pass; a deadline-constrained test selects the lowest eligible p95 model,
 and a circuit-open model is present only in rejected alternatives.
 
-### AP10-T04: Add semantic, versioned, trusted, policy-intersected skill routing
+### AP10-T04: Add semantic, versioned, trusted, policy-intersected skill routing — SUPERSEDED (2026-10-07)
+
+> Superseded: `app/routing_runtime` was removed (a10-F251-01/02); see the status note at the top.
 
 **Files:**
 
@@ -313,7 +331,9 @@ uv run mypy app/routing_runtime/skill_router.py app/agent/skill_selector.py
 
 Expected: tests pass and denied tools never appear in selected skill context.
 
-### AP10-T05: Wire semantic and trust-weighted tool ranking into governed dispatch
+### AP10-T05: Wire semantic and trust-weighted tool ranking into governed dispatch — SUPERSEDED (2026-10-07)
+
+> Superseded: `app/routing_runtime` was removed (a10-F251-01/02); see the status note at the top.
 
 **Files:**
 
@@ -357,7 +377,9 @@ uv run mypy app/routing_runtime/tool_router.py app/agent/tool_selector.py app/to
 Expected: tests pass; a high-semantic/low-trust tool loses to an eligible trusted candidate,
 and policy denial produces no dispatch.
 
-### AP10-T06: Complete content/query-aware embedding routing
+### AP10-T06: Complete content/query-aware embedding routing — SUPERSEDED (2026-10-07)
+
+> Superseded: `app/routing_runtime` was removed (a10-F251-01/02); see the status note at the top.
 
 **Files:**
 
@@ -400,7 +422,9 @@ uv run mypy app/routing_runtime/embedding_router.py app/embedding
 Expected: tests pass; incompatible dimensions fail before provider calls; allowed degraded
 results identify `lexical` explicitly.
 
-### AP10-T07: Close the cost and latency feedback loop
+### AP10-T07: Close the cost and latency feedback loop — SUPERSEDED (2026-10-07)
+
+> Superseded: `app/routing_runtime` was removed (a10-F251-01/02); see the status note at the top.
 
 **Files:**
 
