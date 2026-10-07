@@ -43,7 +43,8 @@ function statusMeta(status: string): { color: string; Icon: React.ElementType } 
     case 'executing':
     case 'running':
     case 'verifying':    return { color: '#00D4FF', Icon: Loader2 };
-    case 'waiting_human':return { color: '#FFB300', Icon: Clock };
+    case 'waiting_human':
+    case 'waiting_children': return { color: '#FFB300', Icon: Clock };
     default:             return { color: '#475569', Icon: BookOpen };
   }
 }

@@ -89,6 +89,16 @@ function mockGoal(status: string, goal = 'Fix prod') {
   });
 }
 
+/** Goal read carrying extra fields (e.g. fan-out lineage) on top of the basics. */
+function mockGoalWith(fields: Record<string, unknown>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+    new Response(
+      JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', goal: 'Fix prod', ...fields }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
+  );
+}
+
 function mockCompletedGoalWithResultArtifact() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
@@ -365,6 +375,50 @@ describe('GoalDetailPage', () => {
     renderGoalDetailPage();
     expect(await screen.findByText('Fix production bug')).toBeInTheDocument();
     expect(screen.getByText('executing')).toBeInTheDocument();
+  });
+
+  test('waiting_children parent lists its sub-goals with status and links', async () => {
+    const longGoal = 'Research competitor pricing '.repeat(10);
+    mockGoalWith({
+      status: 'waiting_children',
+      parent_goal_id: null,
+      sub_goals: [
+        { goal_id: 'child-a', status: 'executing', goal: 'Summarise Q3 sales', task_key: 't1', kind: 'supervisor' },
+        { goal_id: 'child-b', status: 'complete', goal: longGoal, task_key: 't2', kind: 'supervisor' },
+      ],
+    });
+    renderGoalDetailPage();
+
+    const section = await screen.findByRole('region', { name: /sub-goals/i });
+    expect(screen.getByText('waiting children')).toBeInTheDocument();
+    const links = within(section).getAllByRole('link');
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/goals/child-a', '/goals/child-b']);
+    expect(within(section).getByRole('link', { name: 'Summarise Q3 sales' })).toBeInTheDocument();
+    // Long goal text is truncated in the list; the full text stays in the title.
+    expect(links[1].textContent?.endsWith('…')).toBe(true);
+    expect(links[1].textContent!.length).toBeLessThan(longGoal.length);
+    expect(links[1]).toHaveAttribute('title', longGoal);
+    expect(within(section).getByLabelText('Status: Executing')).toBeInTheDocument();
+    expect(within(section).getByLabelText('Status: Complete')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /parent goal/i })).not.toBeInTheDocument();
+  });
+
+  test('a sub-goal links back to its parent goal', async () => {
+    mockGoalWith({ status: 'executing', parent_goal_id: 'parent-123456789', sub_goals: [] });
+    renderGoalDetailPage();
+
+    const parent = await screen.findByRole('link', { name: /parent goal/i });
+    expect(parent).toHaveAttribute('href', '/goals/parent-123456789');
+    expect(screen.queryByRole('region', { name: /sub-goals/i })).not.toBeInTheDocument();
+  });
+
+  test('omits lineage UI when the fields are absent or null', async () => {
+    mockGoalWith({ status: 'executing', sub_goals: null });
+    renderGoalDetailPage();
+
+    expect(await screen.findByText('Fix prod')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /sub-goals/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /parent goal/i })).not.toBeInTheDocument();
   });
 
   test('shows completed result artifact by default and opens execution and developer log tabs', async () => {

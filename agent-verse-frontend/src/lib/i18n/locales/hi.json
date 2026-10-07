@@ -15,7 +15,8 @@
     "status": {
       "complete": "पूर्ण", "failed": "विफल",
       "executing": "क्रियान्वित", "planning": "योजना बना रहा है",
-      "waiting_human": "अनुमोदन की प्रतीक्षा", "cancelled": "रद्द"
+      "waiting_human": "अनुमोदन की प्रतीक्षा", "waiting_children": "उप-लक्ष्यों की प्रतीक्षा",
+      "cancelled": "रद्द"
     },
     "tabs": { "results": "परिणाम", "execution": "क्रियान्वयन", "events": "लॉग", "eval": "मूल्यांकन", "explain": "क्यों?" },
     "actions": { "cancel": "रद्द करें", "pause": "रोकें", "resume": "जारी रखें", "refresh": "ताज़ा करें" }

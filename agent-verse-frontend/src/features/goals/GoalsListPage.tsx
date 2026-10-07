@@ -18,7 +18,9 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
 
-const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
+const STATUS_OPTIONS = [
+  "all", "planning", "executing", "complete", "failed", "waiting_human", "waiting_children",
+];
 
 type SortField = "created_at" | "status" | "goal";
 type SortDir = "asc" | "desc";
@@ -40,6 +42,7 @@ function StatusBadge({ status }: { status: string }) {
     planning:      "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
     failed:        "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
     waiting_human: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
+    waiting_children: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-400",
   };
   return (
     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] ?? "bg-muted text-muted-foreground"}`}>
@@ -110,7 +113,7 @@ export function GoalsListPage() {
     refetchInterval: (query) => {
       const goals = query.state.data?.goals ?? [];
       const hasActive = goals.some((g) =>
-        ["executing", "planning", "waiting_human"].includes(g.status)
+        ["executing", "planning", "waiting_human", "waiting_children"].includes(g.status)
       );
       return hasActive ? 5_000 : 30_000;
     },

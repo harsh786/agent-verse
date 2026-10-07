@@ -15,20 +15,21 @@ import {
   useEffect, useRef, useState, useCallback, useMemo,
   type KeyboardEvent,
 } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, CheckCircle, XCircle, RefreshCw, Loader2,
   ChevronDown, ChevronRight, Pause, Play, Dna, GitCompare,
   Ghost, FlaskConical, RotateCcw, Download, FileJson, FileText,
   Copy, Printer, Terminal, ListTree, BookOpen, Sparkles, Zap,
-  Clock, AlertTriangle, Bot, Plug, Layers, Inbox,
+  Clock, AlertTriangle, Bot, Plug, Layers, Inbox, GitBranch, CornerLeftUp,
 } from "lucide-react";
 import { RichMarkdown } from "@/components/ui/RichMarkdown";
-import { goalsApi, governanceApi, agentsApi } from "@/lib/api/client";
+import { goalsApi, governanceApi, agentsApi, type SubGoalSummary } from "@/lib/api/client";
 import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { StatusBadge as SubGoalStatusBadge } from "@/components/ui/StatusBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { LiveCostTicker } from "@/components/live/LiveCostTicker";
@@ -110,12 +111,49 @@ function StatusBadge({ status }: { status: string }) {
     planning: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 animate-pulse",
     failed: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
     waiting_human: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
+    waiting_children: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-400",
     cancelled: "bg-muted text-muted-foreground",
   };
   return (
     <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${map[status] ?? "bg-muted text-muted-foreground"}`}>
       {status.replace(/_/g, " ")}
     </span>
+  );
+}
+
+function truncateGoalText(text: string, max = 120): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** Sub-goals of a fan-out parent — each a real goal with its own detail page. */
+function SubGoalsPanel({ subGoals }: { subGoals: SubGoalSummary[] }) {
+  return (
+    <section aria-labelledby="sub-goals-heading" className="rounded-xl border border-border bg-card p-4 space-y-3">
+      <h2 id="sub-goals-heading" className="flex items-center gap-1.5 text-sm font-semibold">
+        <GitBranch className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        Sub-goals
+        <span className="px-1.5 rounded-full bg-muted text-[10px] font-medium text-muted-foreground">
+          {subGoals.length}
+        </span>
+      </h2>
+      <ul className="divide-y divide-border">
+        {subGoals.map((sg) => (
+          <li key={sg.goal_id} className="flex items-center gap-3 py-2 min-w-0">
+            <SubGoalStatusBadge status={sg.status} />
+            <Link
+              to={`/goals/${sg.goal_id}`}
+              title={sg.goal}
+              className="min-w-0 flex-1 truncate text-sm hover:text-primary hover:underline"
+            >
+              {truncateGoalText(sg.goal || sg.goal_id)}
+            </Link>
+            {sg.task_key && (
+              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{sg.task_key}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -981,6 +1019,7 @@ export function GoalDetailPage() {
   );
 
   const artifact = goal.result_artifact as any;
+  const subGoals = goal.sub_goals ?? [];
 
   return (
     <JARVISPageShell>
@@ -1060,6 +1099,18 @@ export function GoalDetailPage() {
                 {goal.workflow_mode.replace(/_/g, " ")}
               </span>
             </span>
+          )}
+
+          {/* Fan-out parent (this goal is a sub-goal) */}
+          {goal.parent_goal_id && (
+            <Link
+              to={`/goals/${goal.parent_goal_id}`}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted transition-colors"
+            >
+              <CornerLeftUp className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
+              <span className="text-muted-foreground">Parent goal</span>
+              <span className="font-mono text-foreground">{goal.parent_goal_id.slice(0, 8)}</span>
+            </Link>
           )}
 
           {/* Iterations count */}
@@ -1178,6 +1229,9 @@ export function GoalDetailPage() {
           )}
         </div>
       )}
+
+      {/* ── Sub-goals (fan-out parent) ── */}
+      {subGoals.length > 0 && <SubGoalsPanel subGoals={subGoals} />}
 
       {/* ── SINGLE unified tab bar ── */}
       <div role="tablist" aria-label="Goal detail tabs" className="flex gap-0.5 border-b border-border">

@@ -337,6 +337,19 @@ export interface GoalResponse {
   priority?: string;
   /** Whether this was a dry run */
   dry_run?: boolean;
+  /** The fan-out parent this goal was spawned by (null for a top-level goal) */
+  parent_goal_id?: string | null;
+  /** Sub-goals of a fan-out parent (real goals, max 64), with their live status */
+  sub_goals?: SubGoalSummary[] | null;
+}
+
+/** One sub-goal of a fan-out parent, as listed on GET /goals/{id}. */
+export interface SubGoalSummary {
+  goal_id: string;
+  status: string;
+  goal: string;
+  task_key?: string | null;
+  kind?: string | null;
 }
 
 export interface StepResponse {

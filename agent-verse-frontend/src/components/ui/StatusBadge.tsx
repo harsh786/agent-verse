@@ -2,7 +2,7 @@ import { clsx } from "clsx";
 
 type StatusValue =
   | "planning" | "executing" | "verifying" | "complete" | "completed"
-  | "failed" | "cancelled" | "waiting_human" | "paused" | "pending"
+  | "failed" | "cancelled" | "waiting_human" | "waiting_children" | "paused" | "pending"
   | "approved" | "rejected" | "active" | "inactive" | "draft"
   | "running" | "error" | "timeout" | "dry_run";
 
@@ -16,6 +16,8 @@ const STATUS_MAP: Record<string, { label: string; className: string }> = {
   error:         { label: "Error",       className: "bg-red-100   text-red-800    dark:bg-red-900/40   dark:text-red-300    border-red-200   dark:border-red-800"    },
   cancelled:     { label: "Cancelled",   className: "bg-slate-100 text-slate-700  dark:bg-slate-900/40 dark:text-slate-300  border-slate-200 dark:border-slate-700"  },
   waiting_human: { label: "Awaiting OK", className: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300 border-orange-200 dark:border-orange-800" },
+  // A fan-out parent parked (worker slot released) while its sub-goals run.
+  waiting_children: { label: "Waiting on sub-goals", className: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800" },
   paused:        { label: "Paused",      className: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800" },
   pending:       { label: "Pending",     className: "bg-amber-100  text-amber-800  dark:bg-amber-900/40  dark:text-amber-300  border-amber-200  dark:border-amber-800"  },
   approved:      { label: "Approved",    className: "bg-green-100 text-green-800  dark:bg-green-900/40 dark:text-green-300  border-green-200 dark:border-green-800"  },

@@ -88,6 +88,25 @@ describe('GoalsListPage — table branches', () => {
     expect(screen.getByText('Write documentation')).toBeInTheDocument();
   });
 
+  test('waiting_children has its own filter pill and badge', async () => {
+    mockFetch({
+      goals: {
+        goals: [
+          ...GOALS,
+          { id: 'g4', goal: 'Fan out research', status: 'waiting_children', created_at: NOW, event_count: 2 },
+        ],
+      },
+    });
+    renderPage();
+    await screen.findByText('Fan out research');
+    const pill = screen.getByRole('button', { name: /^waiting_children/i });
+    expect(pill).toHaveTextContent('1');
+    await userEvent.click(pill);
+    await waitFor(() => expect(screen.queryByText('Deploy to prod')).not.toBeInTheDocument());
+    expect(screen.getByText('Fan out research')).toBeInTheDocument();
+    expect(screen.getByText('waiting children')).toBeInTheDocument();
+  });
+
   test('search narrows the visible rows', async () => {
     mockFetch();
     renderPage();

@@ -45,7 +45,8 @@ export interface StreamingToken {
 /**
  * Whether *event* ends the goal's stream. Mirrors the backend: worker_failed
  * (timeout, crash, lock failure) is terminal, and worker_complete is terminal
- * only for the final status it carries (waiting_human is a suspension).
+ * only for the final status it carries (waiting_human and waiting_children —
+ * a fan-out parent parked while its sub-goals run — are suspensions).
  */
 export function isTerminalGoalEvent(event: GoalEvent): boolean {
   const t = event.type;
