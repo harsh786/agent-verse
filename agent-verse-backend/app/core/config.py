@@ -251,6 +251,31 @@ class Settings(BaseSettings):
     # then skips the cross-encoder and flags ``rerank_skipped`` on each citation.
     rag_rerank_preload: bool = True
     rag_rerank_warmup_wait_seconds: float = 2.0
+    # RERANK-BOUNDED: the local cross-encoder is CPU-bound and serialised (one
+    # model call at a time). Every rerank — async stage or synchronous policy —
+    # goes through ONE bounded queue; past these limits a search keeps its
+    # retrieval order, flagged ``rerank_skipped: busy|budget_exceeded`` and counted
+    # (``agentverse_rerank_degraded_total``), instead of queueing without limit.
+    # Time the rerank stage may take (warm-up wait + queue wait + inference); it is
+    # also capped by what is left of the retrieval strategy deadline.
+    rag_rerank_budget_ms: int = Field(default=2500, ge=0, le=60_000)
+    # Rerank jobs allowed to WAIT behind the one running (0 = no waiting at all).
+    rag_rerank_max_queue_depth: int = Field(default=4, ge=0, le=256)
+    # Only the top-N candidates (retrieval order) are cross-encoded; the rest
+    # follow them in retrieval order. 0 = rerank every candidate.
+    rag_rerank_max_candidates: int = Field(default=30, ge=0, le=1000)
+    # Tokens of (query + passage) the cross-encoder reads (its tokenizer truncates).
+    rag_rerank_max_length: int = Field(default=256, ge=32, le=512)
+    # torch intra-op threads, set ONCE when the cross-encoder model loads (the
+    # setting is process-wide: it also applies to other torch models in the same
+    # process). 0 = auto: min(2, CPUs available to the process — affinity and the
+    # cgroup CPU quota). torch's default is every CPU of the node, which on a VM
+    # shared with Postgres/Redis/workers oversubscribes the CPU and starves the
+    # API event loop.
+    rag_rerank_torch_threads: int = Field(default=0, ge=0, le=256)
+    # torch inter-op threads (also process-wide; torch accepts it only before its
+    # first parallel work, so a later attempt is logged and ignored).
+    rag_rerank_torch_interop_threads: int = Field(default=1, ge=0, le=64)
     # L-03: Celery prefork children warm the retrieval models (cross-encoder,
     # ColBERT checkpoint download) at start only when their pool opts in. Warm
     # children cost ~450 MB each (torch + sentence-transformers + model); pools
