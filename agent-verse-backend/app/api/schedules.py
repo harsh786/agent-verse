@@ -689,6 +689,9 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
             str(getattr(spec, "trigger_id", "") or ""),
             guard_key,
             _dispatch,
+            on_refused=lambda: dispatcher.record_refused_replay(
+                spec, payload, tenant_ctx.tenant_id
+            ),
             webhook_type="webhook",
         )
     except HTTPException:

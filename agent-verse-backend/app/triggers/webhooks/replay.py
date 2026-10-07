@@ -161,6 +161,7 @@ async def guarded_dispatch(
     dispatch: Callable[[], Awaitable[Any]],
     *,
     log_event: str = "webhook_replay_refused",
+    on_refused: Callable[[], Awaitable[None]] | None = None,
     **log_fields: Any,
 ) -> Any:
     """``dispatch()`` unless a delivery with the signed ``key`` already ran.
@@ -175,6 +176,13 @@ async def guarded_dispatch(
     guarded = bool(key) and db is not None
     if guarded and await already_delivered(db, tenant_id, trigger_id, key):
         _log.warning(log_event, tenant_id=tenant_id, trigger_id=trigger_id, **log_fields)
+        if on_refused is not None:
+            # Audit the refusal (trigger_events dedup row); an audit-write failure
+            # never turns a refused replay into a dispatch.
+            try:
+                await on_refused()
+            except Exception as exc:
+                _log.warning("webhook_replay_refusal_audit_failed", error=str(exc)[:200])
         return SimpleNamespace(skip_reason="dedup", goal_id=None, goal_created=False)
     event = await dispatch()
     if guarded and _ran(event):

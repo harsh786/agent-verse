@@ -1351,6 +1351,9 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                     guard_key,
                     _dispatch,
                     log_event="webhook_replay_refused",
+                    on_refused=lambda spec=spec, enriched=enriched: (
+                        dispatcher.record_refused_replay(spec, enriched, tenant_id)
+                    ),
                     webhook_type=webhook_type,
                 )
             )

@@ -841,6 +841,31 @@ class TriggerDispatcher:
         except Exception as exc:
             raise RuntimeError(f"goal_service.create_goal failed: {exc}") from exc
 
+    async def record_refused_replay(
+        self, trigger_spec: TriggerSpec, payload: dict, tenant_id: str
+    ) -> None:
+        """Audit a signed redelivery the replay guard refused (never dispatched).
+
+        The guard answers it as a dedup no-op before the dispatcher runs, so
+        without this row a replayed webhook left no trace in the trigger's event
+        history. Each refusal gets its own key (the original delivery's row keeps
+        its idempotency key; ON CONFLICT would otherwise drop this one).
+        """
+        await self._persist_event(
+            TriggerEvent(
+                event_id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                trigger_id=str(getattr(trigger_spec, "trigger_id", "") or ""),
+                trigger_type=str(getattr(trigger_spec, "trigger_type", "") or "webhook"),
+                idempotency_key=f"replay-refused:{uuid.uuid4().hex}",
+                fired_at=datetime.now(UTC),
+                payload=payload,
+                goal_created=False,
+                goal_id=None,
+                skip_reason="dedup",
+            )
+        )
+
     async def _persist_event(self, event: TriggerEvent) -> None:
         if self._db_factory is None:
             return
