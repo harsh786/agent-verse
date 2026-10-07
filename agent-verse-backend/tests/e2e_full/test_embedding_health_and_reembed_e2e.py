@@ -134,7 +134,8 @@ def _install_embedder(monkeypatch: pytest.MonkeyPatch, dim: int) -> None:
 
     monkeypatch.setattr(
         "app.providers.embedder_factory.resolve_embedder",
-        lambda settings=None: EmbedderResolution(
+        # Same signature as resolve_embedder (a worker passes wire_registry_store=True).
+        lambda settings=None, *, wire_registry_store=False: EmbedderResolution(
             embedder=_Embedder(), provider="e2e", model=f"fake-{dim}", dimension=dim
         ),
     )
