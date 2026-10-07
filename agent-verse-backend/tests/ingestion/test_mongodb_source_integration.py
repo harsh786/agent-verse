@@ -12,6 +12,8 @@ widen it.
 
 from __future__ import annotations
 
+import uuid
+
 import datetime
 from collections.abc import Iterator
 from typing import Any
@@ -128,7 +130,9 @@ class _Harness:
                 "connection_config": connection_config,
                 # A Source with no target knowledge collection is parked as
                 # "needs configuration" and refuses to sync (L-02).
-                "collection_id": "kb-orders",
+                # One per source: the same data into the same collection twice
+                # is refused as a duplicate source (409).
+                "collection_id": f"kb-orders-{uuid.uuid4().hex[:8]}",
                 **extra,
             },
         )
@@ -319,7 +323,9 @@ async def test_platform_credential_auth_mechanisms_are_refused(mongo: tuple[str,
         stored = await h.store.create(SourceConfig(
             source_id=f"legacy-{abs(hash(uri))}", tenant_id=_CTX.tenant_id, name="legacy",
             family=SourceFamily.NOSQL_DATABASE, source_type="mongodb",
-            connection_config=cc, collection_id="kb-orders"))
+            # One collection per legacy row: same database+collection into the same
+            # knowledge collection would be a duplicate source.
+            connection_config=cc, collection_id=f"kb-orders-{abs(hash(uri))}"))
         health = h.health(stored.source_id)
         assert health["ok"] is False, uri
         assert "not allowed" in health["error"], (uri, health["error"])

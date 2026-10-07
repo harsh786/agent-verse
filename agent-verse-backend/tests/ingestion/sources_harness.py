@@ -4,6 +4,8 @@ integration tests that drive a real Source end to end (create -> health -> sync)
 
 from __future__ import annotations
 
+import uuid
+
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -48,7 +50,9 @@ class SourcesHarness:
                 "family": self.family,
                 "source_type": self.source_type,
                 "connection_config": connection_config,
-                "collection_id": "col-harness",
+                # One collection per source: the same data read into the same
+                # collection twice is refused as a duplicate source (409).
+                "collection_id": f"col-harness-{uuid.uuid4().hex[:8]}",
                 **extra,
             },
         )

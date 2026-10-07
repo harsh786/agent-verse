@@ -458,8 +458,19 @@ async def test_semantic_cache_miss_for_different_embedding() -> None:
 
 
 async def test_cross_encoder_fallback_returns_scores() -> None:
-    """cross_encode() falls back to TF-IDF when model unavailable."""
+    """cross_encode() falls back to TF-IDF when the model cannot load.
+
+    (A model that is merely still warming up raises RerankSkipped — the honest
+    "not scored yet" — so this test makes the load fail outright.)
+    """
+    from unittest.mock import patch
+
+    from app.rag import cross_encoder as ce
     from app.rag.cross_encoder import cross_encode
+
+    class _Unloadable:
+        def score_sync(self, *a: object, **k: object) -> list[float]:
+            raise ce.RerankerLoadError("model unavailable")
 
     query = "Python async event loop"
     documents = [
@@ -467,7 +478,8 @@ async def test_cross_encoder_fallback_returns_scores() -> None:
         "Go channels for concurrency",
         "Redis sorted sets for leaderboards",
     ]
-    scores = cross_encode(query, documents)
+    with patch.object(ce, "_get_default_reranker", lambda: _Unloadable()):
+        scores = cross_encode(query, documents)
     assert len(scores) == len(documents)
     assert all(isinstance(s, float) for s in scores)
     # The Python asyncio doc should score highest
