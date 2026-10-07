@@ -55,6 +55,10 @@ _FIELDS = (
     # An embedding model's REAL output width, probed by "Test connection" or on
     # first use (app.providers.registry_embedder) — the dimension-safety input.
     "dimensions",
+    # The output width the operator REQUESTS from an embedding model that can
+    # shorten its vectors (OpenAI text-embedding-3-*, Gemini gemini-embedding-001):
+    # sent as ``dimensions`` on /embeddings. Absent = the model's native width.
+    "output_dimensions",
     # Thinking-model control (app.providers.openai_compatible): "auto" (default
     # when absent), "off" or "on", plus an optional reasoning-token budget used
     # with "on".

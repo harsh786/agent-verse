@@ -927,6 +927,22 @@ export interface ConfiguredModel {
    */
   base_url: string | null;
   /**
+   * Whether the entry carries its own (vault-encrypted) endpoint credential.
+   * The key itself is never returned; false = the provider's server-side key.
+   */
+  has_api_key?: boolean;
+  /**
+   * Embedding models: the vector width requested from the model (sent as
+   * `dimensions`); null = the model's native width.
+   */
+  output_dimensions?: number | null;
+  /** Embedding models: the known vector width (measured, requested or catalog). */
+  dimensions?: number | null;
+  /** Embedding models: the vector index width (EMBEDDING_DIM). */
+  index_dimension?: number | null;
+  dimension_mismatch?: boolean;
+  dimension_reason?: string;
+  /**
    * Thinking-model control: "auto" (default — an empty, reasoning-only reply is
    * retried once with thinking off), "off" (always answer without reasoning),
    * "on" (keep reasoning).
@@ -994,6 +1010,10 @@ export interface ModelEndpointTestRequest {
   model_id: string;
   base_url: string;
   capabilities: string[];
+  /** Used for this call only (never stored); omitted = the saved / provider key. */
+  api_key?: string;
+  /** Embedding probes: the width to request (`dimensions`); null = native width. */
+  output_dimensions?: number | null;
   thinking?: ThinkingMode;
   thinking_budget_tokens?: number | null;
 }
@@ -1023,6 +1043,16 @@ export interface ModelEndpointTestResult {
   error: string | null;
   /** Chat probes only. */
   thinking?: ThinkingProbe;
+  /** Embedding probes: the measured vector width. */
+  dimensions?: number | null;
+  /** Embedding probes: the vector index width (EMBEDDING_DIM). */
+  index_dimension?: number | null;
+  dimension_mismatch?: boolean;
+  dimension_reason?: string;
+  /** Embedding probes: the width asked for (`dimensions`), null = native. */
+  requested_dimensions?: number | null;
+  /** The endpoint answered another width than the one asked for. */
+  dimensions_ignored?: boolean;
 }
 
 /** GET /models/plan-cap — would this model be clamped to the caller's plan tier? */
@@ -1049,6 +1079,10 @@ export const modelsApi = {
     body: Partial<Omit<ConfiguredModel, 'key' | 'rank' | 'source' | 'provider_ready'>> & {
       model_id: string;
       capabilities: string[];
+      /** Write-only endpoint credential (vault-encrypted server-side); omitted = keep. */
+      api_key?: string;
+      /** Remove the saved endpoint credential. */
+      clear_api_key?: boolean;
     },
     adminKey?: string
   ) =>
