@@ -488,11 +488,19 @@ _PROVIDER_ENV_VARS = (
 
 
 def _cached_settings_environment() -> str | None:
-    from app.core.config import get_settings
+    """ENVIRONMENT of the CACHED Settings, or None (nothing cached / not cacheable).
 
-    if not get_settings.cache_info().currsize:
+    Tests may monkeypatch get_settings with a plain function — no cache to read.
+    """
+    from app.core import config
+
+    cache_info = getattr(config.get_settings, "cache_info", None)
+    if cache_info is None or not cache_info().currsize:
         return None
-    return str(get_settings().environment)
+    try:
+        return str(config.get_settings().environment)
+    except Exception:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -508,9 +516,11 @@ def _reset_leaked_settings_environment():
     yield
     after = _cached_settings_environment()
     if after is not None and after != before:
-        from app.core.config import get_settings
+        from app.core import config
 
-        get_settings.cache_clear()
+        clear = getattr(config.get_settings, "cache_clear", None)
+        if clear is not None:
+            clear()
 
 
 @pytest.fixture(autouse=True)

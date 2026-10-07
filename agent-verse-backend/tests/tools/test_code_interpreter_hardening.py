@@ -101,6 +101,10 @@ async def test_unsandboxed_fallback_is_refused_outside_development(
     """CODE-04: the opt-in only works in development/test. ``ENVIRONMENT=Production``
     (any case/whitespace), staging or an unknown value must never run host code."""
     monkeypatch.setattr(ci, "_docker_available", lambda: False)
+    # The subject is the local fallback: no remote runner configured. (The raw
+    # ENVIRONMENT values here are deliberately not valid Settings values, so the
+    # remote-runner lookup must not build a Settings from them.)
+    monkeypatch.setattr("app.sandbox.client.remote_sandbox_config", lambda: None)
     monkeypatch.setenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
     monkeypatch.setenv("ENVIRONMENT", env)
     with pytest.raises(RuntimeError, match="disabled"):
@@ -112,6 +116,10 @@ async def test_unsandboxed_fallback_opt_in_works_in_development(
     env: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ci, "_docker_available", lambda: False)
+    # The subject is the local fallback: no remote runner configured. (The raw
+    # ENVIRONMENT values here are deliberately not valid Settings values, so the
+    # remote-runner lookup must not build a Settings from them.)
+    monkeypatch.setattr("app.sandbox.client.remote_sandbox_config", lambda: None)
     monkeypatch.setenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
     monkeypatch.setenv("ENVIRONMENT", env)
     res = await ci.CodeInterpreter().execute("print('dev ok')", "python", 10)
