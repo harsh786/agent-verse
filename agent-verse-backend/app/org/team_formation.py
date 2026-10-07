@@ -513,7 +513,7 @@ class TeamFormationEngine:
 
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model=getattr(self._llm, "_default_model", "") or "claude-sonnet-4-5",
+            model="",  # resolve_reasoning("org_team_formation") in complete_decision
             max_tokens=512,
         )
         from app.providers.guarded_completion import complete_decision

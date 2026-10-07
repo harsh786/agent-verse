@@ -33,10 +33,11 @@ def test_pattern_config_defaults() -> None:
     assert cfg.rag_patterns == ["hybrid_rag"]
     assert cfg.multi_agent_patterns == ["single_agent"]
     assert cfg.safety_patterns == ["guardrails"]
-    assert cfg.model_planner == "gpt-5.2"
-    assert cfg.model_executor == "gpt-5.2"
-    assert cfg.model_verifier == "gpt-5.2"
-    assert cfg.model_classifier == "gpt-4o-mini"
+    # No built-in model ids: empty means "resolved from the Model Registry".
+    assert cfg.model_planner == ""
+    assert cfg.model_executor == ""
+    assert cfg.model_verifier == ""
+    assert cfg.model_classifier == ""
     assert cfg.max_iterations == 6
     assert cfg.max_refine_iterations == 2
     assert cfg.persistence_mode is False
@@ -103,9 +104,9 @@ def test_to_sse_event_shape() -> None:
     assert event["patterns_active"]["rag"] == ["hybrid_rag", "agentic_rag"]
     assert event["patterns_active"]["multi_agent"] == ["goal_tree"]
     assert event["patterns_active"]["safety"] == ["guardrails", "hitl"]
-    assert event["models"]["planner"] == "gpt-5.2"
-    assert event["models"]["executor"] == "gpt-5.2"
-    assert event["models"]["verifier"] == "gpt-5.2"
+    assert event["models"]["planner"] == ""
+    assert event["models"]["executor"] == ""
+    assert event["models"]["verifier"] == ""
     assert event["selection_reasons"] == {"hitl": "risk=high"}
     assert event["assembly_latency_ms"] == pytest.approx(1.23)
 

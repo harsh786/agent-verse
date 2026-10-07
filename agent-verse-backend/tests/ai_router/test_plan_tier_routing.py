@@ -10,11 +10,16 @@ downgrade.
 
 from __future__ import annotations
 
+import pytest
+
 from types import SimpleNamespace
 
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
 from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
 from app.tenancy.context import PlanTier
+
+
+pytestmark = pytest.mark.usefixtures("tiered_registry")
 
 
 def _premium_config(plan_tier: str = "") -> PatternConfig:

@@ -29,7 +29,6 @@ changes) — no restart:
 
 from __future__ import annotations
 
-import dataclasses
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
@@ -39,6 +38,7 @@ from app.providers.model_dispatch import (
     ModelDispatchProvider,
     _norm,
     _provider_config,
+    _with_model,
     keyed_endpoint_usable,
 )
 
@@ -188,30 +188,23 @@ class RegistryLLMProvider(ModelDispatchProvider):
                 ),
             )
 
-    async def complete(self, request: Any) -> Any:
+    # complete / stream_complete / stream_tokens (ModelDispatchProvider) first
+    # fill a request with no model from resolve_reasoning(role), then route here.
+
+    async def _dispatch_complete(self, request: Any) -> Any:
         target, req = self.route(request)
         return await target.complete(req)
 
-    async def stream_complete(self, request: Any) -> AsyncGenerator[str, None]:
+    def _dispatch_stream(self, request: Any) -> AsyncGenerator[str, None]:
         target, req = self.route(request)
-        async for chunk in target.stream_complete(req):
-            yield chunk
+        result: AsyncGenerator[str, None] = target.stream_complete(req)
+        return result
 
-    async def stream_tokens(
+    async def _dispatch_stream_tokens(
         self, request: Any, on_token: Callable[[str], Awaitable[None]]
     ) -> Any:
         target, req = self.route(request)
         return await target.stream_tokens(req, on_token)
-
-
-def _with_model(request: Any, model: str) -> Any:
-    if dataclasses.is_dataclass(request) and not isinstance(request, type):
-        return dataclasses.replace(request, model=model)
-    copy = getattr(request, "model_copy", None)
-    if callable(copy):
-        return copy(update={"model": model})
-    request.model = model
-    return request
 
 
 _SHARED: dict[bool, RegistryLLMProvider] = {}

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import hashlib as _hashlib
 import re
 import uuid
@@ -175,6 +176,36 @@ async def _split_reasoning_stream(source: Any) -> Any:
 
 _LLM_STALL_TIMEOUT_ENV = "AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS"
 _DEFAULT_LLM_STALL_TIMEOUT = 60.0
+
+
+def _chat_model(generator: Any, preferred: str = "") -> tuple[str, list[str]]:
+    """``(model, fallbacks)`` for a chat answer on *generator*.
+
+    The session's ``preferred_model`` is honoured only when it is a configured
+    registry text model (``validated_preference``); otherwise — and for its
+    fallbacks — :func:`~app.ai_router.resolve.resolve_reasoning` (``chat_qa``).
+    Only models *generator* serves; ``("", [])`` leaves the provider default.
+    """
+    from app.ai_router.resolve import (
+        ModelNotConfiguredError,
+        resolve_reasoning,
+        validated_preference,
+    )
+    from app.providers.model_dispatch import can_serve_model
+
+    try:
+        resolution = resolve_reasoning(
+            "chat_qa", override=validated_preference(preferred, "chat_qa"), provider=generator
+        )
+    except ModelNotConfiguredError:
+        return "", []
+    except Exception as exc:  # never block a chat turn on model routing
+        _logger.warning("chat_model_resolution_failed", error=str(exc)[:200])
+        return "", []
+    servable = [
+        m for m in (resolution.model, *resolution.fallbacks) if m and can_serve_model(generator, m)
+    ]
+    return (servable[0], servable[1:]) if servable else ("", [])
 
 
 def _llm_stall_timeout_seconds() -> float:
@@ -1718,6 +1749,7 @@ class ChatService:
             ),
         )
         request = CompletionRequest(messages=chat_msgs, model="", max_tokens=1024)
+        preferred_model = str(getattr(session, "preferred_model", "") or "") if session else ""
 
         yield sse_event(ChatEventType.MESSAGE_STARTED, session_id=session_id, message_id=message_id)
         from app.providers.guarded_completion import (
@@ -1753,6 +1785,12 @@ class ChatService:
             )
             yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
             return
+        # The chat model: the session's preferred model when it is a configured
+        # registry model, else resolve_reasoning("chat_qa"); only a model this
+        # provider serves (a BYOK provider keeps its own).
+        chat_model, chat_fallbacks = _chat_model(generator, preferred_model)
+        if chat_model:
+            request = dataclasses.replace(request, model=chat_model)
         parts: list[str] = []
         stall_timeout = _llm_stall_timeout_seconds()
         stalled = False
@@ -1792,6 +1830,7 @@ class ChatService:
                         role="chat_qa",
                         tenant_id=tenant_id,
                         timeout_seconds=stall_timeout,
+                        fallback_models=chat_fallbacks,
                     ),
                     timeout=stall_timeout,
                 )
@@ -1834,7 +1873,7 @@ class ChatService:
             # and the ledger. A refusal here only stops later turns.
             prompt_chars = sum(len(str(m.content)) for m in chat_msgs)
             usage = SimpleNamespace(
-                model=str(getattr(generator, "_default_model", "") or ""),
+                model=chat_model or str(getattr(generator, "_default_model", "") or ""),
                 input_tokens=max(1, prompt_chars // 4),
                 output_tokens=max(1, generated[0] // 4),
             )

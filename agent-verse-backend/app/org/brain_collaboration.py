@@ -207,8 +207,8 @@ class LLMProviderCollaborationGateway:
                 model = selection.model_id
             except Exception as exc:  # pragma: no cover - defensive, gateway is cheap
                 _log.warning("collaboration_gateway.select_model_failed", error=str(exc))
-        if not model:
-            model = getattr(self._llm, "_default_model", "") or ""
+        # No selection: model "" — complete_decision resolves the
+        # org_collaboration role from the Model Registry (resolve_reasoning).
 
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],

@@ -250,11 +250,34 @@ async def test_create_and_list_artifact(client_with_tenant) -> None:
 # ── Models ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_list_models(client_with_tenant) -> None:
-    r = await client_with_tenant.get("/chat/models")
-    assert r.status_code == 200
-    models = r.json()["models"]
-    assert len(models) >= 4
+async def test_list_models(client_with_tenant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The selector lists the Model Registry's text models — no hardcoded vendor list."""
+    import app.ai_router.selection as sel
+    from app.ai_router.models import ModelCapability, ModelEndpoint
+    from app.ai_router.registry import model_registry
+
+    monkeypatch.setattr(sel, "_lazy_seeded", True)
+    monkeypatch.setattr(sel, "_last_version_check", float("inf"))
+    monkeypatch.setattr(
+        "app.ai_router.deployment_roles.deployment_role_models", lambda *a, **k: {}
+    )
+    model_registry.clear_configured()
+    model_registry.set_preferences({})
+    try:
+        for model_id in ("chat-model-a", "chat-model-b"):
+            model_registry.register_configured(ModelEndpoint(
+                provider="onprem", model_id=model_id, display_name=model_id,
+                capabilities=[ModelCapability.TEXT_GENERATION],
+                base_url="http://127.0.0.1:9/v1", extra={"source": "env"},
+            ))
+        r = await client_with_tenant.get("/chat/models")
+        assert r.status_code == 200
+        models = r.json()["models"]
+        assert set(models) >= {"chat-model-a", "chat-model-b"}
+        assert not {"gpt-4o", "claude-sonnet-4-5"} & set(models)
+    finally:
+        model_registry.clear_configured()
+        model_registry.set_preferences({})
 
 
 # ── New endpoints ──────────────────────────────────────────────────────────────

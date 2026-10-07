@@ -649,20 +649,13 @@ class PlannerMixin:
         # extra_parts.append). The duplicate discover_all_tools block has been
         # removed — single source of truth is now the tiered ToolSelector output.
 
-        # Determine planning model — derive from the wired provider's default so
-        # the model name always matches the active provider (OpenAI → gpt-4-turbo,
-        # Anthropic → claude-opus-4-8, Fake → "fake", etc.).
-        # Never hard-code a vendor-specific model name here.
-        # Fallback: the deployment's configured model, else "" — every provider
-        # treats an empty model as "use my own default". The hard-coded OpenAI
-        # slug sent "gpt-5.2" to Anthropic/Gemini/on-prem providers.
+        # The planning model without a router: resolve_reasoning("planner") (saved
+        # registry order > env pins > role map > env default > registry > the
+        # planner's own model). "" when nothing is configured: every provider
+        # treats an empty model as "use my own default" — never a vendor slug.
         from app.ai_router.role_preference import resolve_role_model
-        from app.providers.model_defaults import configured_default_model
 
-        # Without a router: saved order > env pin > the planner's own model.
-        planning_model = resolve_role_model(
-            "planner", provider=self._planner
-        ) or configured_default_model("")
+        planning_model = resolve_role_model("planner", provider=self._planner)
         # Update ModelOrchestratorAdapter with current runtime profile for budget-aware selection
         try:
             _runtime_profile_for_router = agent_state.context.get("_runtime_profile")

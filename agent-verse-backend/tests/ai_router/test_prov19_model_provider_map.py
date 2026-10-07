@@ -22,11 +22,23 @@ def reg(monkeypatch: pytest.MonkeyPatch) -> ModelRegistry:
     r = ModelRegistry()
     import app.ai_router.registry as registry_mod
 
+    import app.ai_router.selection as selection_mod
+
     monkeypatch.setattr(registry_mod, "model_registry", r)
+    monkeypatch.setattr(selection_mod, "model_registry", r)
+    monkeypatch.setattr(selection_mod, "_lazy_seeded", True)
+    monkeypatch.setattr(selection_mod, "_last_version_check", float("inf"))
+    monkeypatch.setattr(
+        "app.ai_router.deployment_roles.deployment_role_models", lambda *a, **k: {}
+    )
+    for var in ("DEFAULT_MODEL", "NVIDIA_MODEL", "OPENAI_MODEL", "DEFAULT_PLANNING_MODEL",
+                "DEFAULT_EXECUTION_MODEL", "DEFAULT_VERIFICATION_MODEL"):
+        monkeypatch.delenv(var, raising=False)
     r.register_configured(
         ModelEndpoint(
             provider="nvidia", model_id="moonshotai/kimi-k2", display_name="k",
-            capabilities=[ModelCapability.TEXT_GENERATION], quality_score=0.9,
+            capabilities=[ModelCapability.TEXT_GENERATION, ModelCapability.TOOL_USE],
+            supports_tools=True, quality_score=0.9,
         )
     )
     return r

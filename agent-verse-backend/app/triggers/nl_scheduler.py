@@ -27,7 +27,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.providers.base import CompletionRequest, LLMProvider, Message
-from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.triggers.models import TriggerSpec, TriggerType, apply_plan_interval_defaults
 
 # ── Keyword routing: (pattern, TriggerType, {extra_spec_fields}) ──────────────
@@ -659,7 +658,7 @@ class NLScheduler:
                     Message(role="system", content=_NL_SCHEDULER_SYSTEM + _time_context(current)),
                     Message(role="user", content=description),
                 ],
-                model=_configured_default_model("claude-opus-4-8"),
+                model="",  # resolve_reasoning("nl_scheduler") in complete_decision
             )
             resp = await complete_decision(
                 self._provider,

@@ -2,6 +2,11 @@
 """ModelOrchestratorAdapter wired into graph as model_router."""
 from __future__ import annotations
 
+import pytest
+
+
+pytestmark = pytest.mark.usefixtures("tiered_registry")
+
 
 def test_adapter_returns_models_for_all_task_types():
     """ModelOrchestratorAdapter must handle all model_for() task types."""

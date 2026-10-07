@@ -2,6 +2,12 @@
 
 Environment:
   GEMINI_API_KEY: Google Gemini API key for authentication
+
+Model defaults: the ``model`` arguments below default to the VENDOR API's own
+current models (constants at the top of this module). They apply only to this
+connector's calls to the vendor's API on the user's own key — they are not the
+platform's reasoning model (agents, goals, chat and workflows resolve that from
+the Model Registry). The caller may pass any model the vendor serves.
 """
 
 from __future__ import annotations
@@ -16,6 +22,12 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 BASE_URL = "https://generativelanguage.googleapis.com/v1"
 
+# Vendor-API defaults (see the module docstring). gemini-pro / gemini-pro-vision
+# / embedding-001 were retired by Google.
+DEFAULT_TEXT_MODEL = "gemini-2.5-flash"
+DEFAULT_VISION_MODEL = "gemini-2.5-flash"
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+
 TOOL_DEFINITIONS = [
     {
         "name": "gemini_generate_text",
@@ -27,7 +39,10 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "The text prompt to generate content from",
                 },
-                "model": {"type": "string", "description": "Gemini model ID (default: gemini-pro)"},
+                "model": {
+                    "type": "string",
+                    "description": f"Gemini model ID (default: {DEFAULT_TEXT_MODEL})",
+                },
                 "max_output_tokens": {
                     "type": "integer",
                     "description": "Maximum tokens to generate",
@@ -54,7 +69,7 @@ TOOL_DEFINITIONS = [
                 },
                 "model": {
                     "type": "string",
-                    "description": "Gemini model ID (default: gemini-pro-vision)",
+                    "description": f"Gemini model ID (default: {DEFAULT_VISION_MODEL})",
                 },
             },
             "required": ["prompt"],
@@ -81,7 +96,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "Text to count tokens for"},
-                "model": {"type": "string", "description": "Gemini model ID (default: gemini-pro)"},
+                "model": {
+                    "type": "string",
+                    "description": f"Gemini model ID (default: {DEFAULT_TEXT_MODEL})",
+                },
             },
             "required": ["prompt"],
         },
@@ -95,7 +113,7 @@ TOOL_DEFINITIONS = [
                 "text": {"type": "string", "description": "Text content to embed"},
                 "model": {
                     "type": "string",
-                    "description": "Embedding model (default: embedding-001)",
+                    "description": f"Embedding model (default: {DEFAULT_EMBEDDING_MODEL})",
                 },
                 "task_type": {
                     "type": "string",
@@ -116,7 +134,10 @@ TOOL_DEFINITIONS = [
                     "description": "Conversation history as array of {role, parts} objects",
                     "items": {"type": "object"},
                 },
-                "model": {"type": "string", "description": "Gemini model ID (default: gemini-pro)"},
+                "model": {
+                    "type": "string",
+                    "description": f"Gemini model ID (default: {DEFAULT_TEXT_MODEL})",
+                },
                 "max_output_tokens": {
                     "type": "integer",
                     "description": "Maximum tokens in the response",
@@ -137,7 +158,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     async with httpx.AsyncClient(timeout=60) as client:
         try:
             if tool_name == "gemini_generate_text":
-                model = arguments.get("model", "gemini-pro")
+                model = arguments.get("model", DEFAULT_TEXT_MODEL)
                 payload: dict[str, Any] = {
                     "contents": [{"parts": [{"text": arguments["prompt"]}]}],
                 }
@@ -161,7 +182,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "gemini_generate_with_image":
-                model = arguments.get("model", "gemini-pro-vision")
+                model = arguments.get("model", DEFAULT_VISION_MODEL)
                 parts: list[dict[str, Any]] = [{"text": arguments["prompt"]}]
                 if "image_data" in arguments:
                     parts.append(
@@ -193,7 +214,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "gemini_count_tokens":
-                model = arguments.get("model", "gemini-pro")
+                model = arguments.get("model", DEFAULT_TEXT_MODEL)
                 r = await client.post(
                     f"{BASE_URL}/models/{model}:countTokens",
                     params={"key": api_key},
@@ -203,7 +224,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "gemini_embed_text":
-                model = arguments.get("model", "embedding-001")
+                model = arguments.get("model", DEFAULT_EMBEDDING_MODEL)
                 payload = {"content": {"parts": [{"text": arguments["text"]}]}}
                 if "task_type" in arguments:
                     payload["taskType"] = arguments["task_type"]
@@ -216,7 +237,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "gemini_chat_completion":
-                model = arguments.get("model", "gemini-pro")
+                model = arguments.get("model", DEFAULT_TEXT_MODEL)
                 payload = {"contents": arguments["messages"]}
                 gen_cfg: dict[str, Any] = {}
                 if "max_output_tokens" in arguments:

@@ -231,7 +231,9 @@ class TestModelRouterComplexityTiering:
         router = self._make()
         assert router.complexity_tier("summarize the last 5 commits") == "medium"
 
-    def test_model_for_goal_simple_downgrades_planning(self):
+    def test_model_for_goal_simple_downgrades_planning(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_PLANNING_MODEL", "big-planner")
+        monkeypatch.setenv("DEFAULT_EXECUTION_MODEL", "small-executor")
         router = self._make("anthropic")
         planning_model = router.model_for("planning")
         downgraded = router.model_for_goal("planning", goal="list all open tickets")

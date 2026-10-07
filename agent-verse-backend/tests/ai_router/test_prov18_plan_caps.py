@@ -16,14 +16,7 @@ import pytest
 from app.ai_router.model_orchestrator import ModelOrchestratorAdapter, model_quality_tier
 
 
-@pytest.fixture(autouse=True)
-def _no_configured_models(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.ai_router.selection as selection
-
-    monkeypatch.setattr(selection, "select_configured_model_id", lambda *a, **k: "")
-    monkeypatch.setattr(
-        "app.ai_router.model_orchestrator._configured_within_cap", lambda task, cap: ""
-    )
+pytestmark = pytest.mark.usefixtures("tiered_registry")
 
 
 def test_model_quality_tier_follows_the_single_pricing_source() -> None:

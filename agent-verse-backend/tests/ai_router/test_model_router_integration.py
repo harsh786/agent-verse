@@ -7,6 +7,9 @@ from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, 
 from app.ai_router.model_orchestrator import ModelOrchestrator
 
 
+pytestmark = pytest.mark.usefixtures("tiered_registry")
+
+
 @pytest.fixture
 def orchestrator():
     return ModelOrchestrator()
@@ -57,6 +60,9 @@ def test_all_content_types_get_valid_model_assignment(orchestrator, monkeypatch)
     from app.ingestion.content_classifier import ContentType
     from tests.ai_router._vision_registry import vision_models
 
+    # The reasoner (and text / code extractor) is a reasoning role: configured
+    # here by the env default (vision_models below configures only vision).
+    monkeypatch.setenv("DEFAULT_MODEL", "reasoning-model")
     with vision_models(monkeypatch, ("openai", "registry-vlm")):
         assignments = [orchestrator.select_for_content_type(ct) for ct in ContentType]
     for ct, assignment in zip(ContentType, assignments, strict=True):

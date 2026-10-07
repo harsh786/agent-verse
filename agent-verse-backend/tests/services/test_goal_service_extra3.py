@@ -159,11 +159,18 @@ class TestResolveCheckpointer:
 class TestMakeAgentGraph:
     """Lines 233-239: AgentGraph construction failure."""
 
-    def test_construction_failure_raises_runtime_error(self):
+    def test_construction_failure_raises_runtime_error(self, monkeypatch):
+        from app.core.config import get_settings
         from app.services.goal_service import _make_agent_loop
+
+        # Pin a FakeProvider-eligible environment: a settings object cached by an
+        # earlier test (ENVIRONMENT=production) must not decide this test.
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        get_settings.cache_clear()
         with patch("app.agent.graph.AgentGraph", side_effect=RuntimeError("bad config")):
             with pytest.raises(RuntimeError, match="Failed to construct AgentGraph"):
                 _make_agent_loop()
+        get_settings.cache_clear()
 
 
 # ── start_hitl_rejection_subscriber ──────────────────────────────────────────

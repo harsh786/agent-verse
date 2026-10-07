@@ -7,18 +7,19 @@ used to decide only the failover chain: both role routers (``ModelRouter`` and
 first — which every NVIDIA / on-prem deployment has (planning on NVIDIA,
 execution and verification on Qwen) — so the model ranked first never ran.
 
-Precedence in both routers is now: per-agent / per-goal override > the tenant's
-own routing-policy pin (``PUT /models/routing-policies``) > saved reasoning
-order > per-role env pin (``DEFAULT_*_MODEL``) > deployment role map > cheapest
-configured model.
+Precedence (both routers and every single call) is ONE resolver,
+:func:`app.ai_router.resolve.resolve_reasoning`: per-agent / per-goal override >
+the tenant's own routing-policy pin (``PUT /models/routing-policies``) > saved
+reasoning order > per-role env pin (``DEFAULT_*_MODEL``) > deployment role map >
+env default model > the registry's configured models > the provider default
+(empty registry only) > ``ModelNotConfiguredError``.
 
 **Every** LLM role of the agent/goal runtime and its adjacent subsystems resolves
-its model here (:func:`resolve_role_model`): :data:`ROLE_TASK_TYPES` maps each
-charged role label (``role_calls[].role``) to the routing task type that decides
-it. A role with no pin of its own (supervisor, debate, router, classifier,
-judges, guardrails, RAG strategy LLMs, ...) therefore follows the saved
-text-generation order before the env default — ranking an on-prem model first is
-honoured by every role, not only by planner/executor/verifier.
+its model through it (:func:`resolve_role_model`): :data:`ROLE_TASK_TYPES` maps
+each charged role label (``role_calls[].role``) to the routing task type that
+decides it — the agent graph, multi-agent patterns, routers, judges,
+guardrails, RAG strategy LLMs, chat, org, knowledge graph, skills, triggers and
+workflows. ``complete_decision`` fills any request sent with no model from it.
 """
 
 from __future__ import annotations
@@ -35,11 +36,11 @@ logger = get_logger(__name__)
 # base role (``deployment_roles.ROLE_ALIASES``) for tenant pins and the role map.
 ROUTED_TASK_TYPES = frozenset(
     {"planning", "execution", "verification", "classification", "reflection", "think",
-     "thinking", "supervisor"}
+     "thinking", "supervisor", "judge"}
 )
 
 # Roles that run on a reasoning model.
-REASONING_ROLES = ROUTED_TASK_TYPES | {"judge"}
+REASONING_ROLES = ROUTED_TASK_TYPES
 
 # Per-task env pins (explicit operator intent, below the saved order).
 ROLE_PIN_ENV: dict[str, str] = {
@@ -67,6 +68,12 @@ ROLE_TASK_TYPES: dict[str, str] = {
     "think": "think",
     "reflection": "reflection",
     "refine": "execution",
+    "execute": "execution",
+    "judge": "judge",
+    "critique": "verification",
+    "synthesis": "planning",
+    "summarization": "classification",
+    "extraction": "classification",
     "goal_tree": "planning",
     "goal_tree_synthesis": "planning",
     # ── multi-agent / reasoning patterns ──
@@ -103,7 +110,6 @@ ROLE_TASK_TYPES: dict[str, str] = {
     "memory_consolidation": "classification",
     # Structured field extraction from OCR'd text (app/ocr/extractors).
     "ocr_extract": "classification",
-    "extraction": "classification",
     # ── guardrails / LLM classifiers ──
     "guardrail_judge": "judge",
     "guardrail_toxicity": "classification",
@@ -126,6 +132,44 @@ ROLE_TASK_TYPES: dict[str, str] = {
     "rag_raptor": "classification",
     "rag_agentic_chunking": "classification",
     "rag_synthesis": "planning",
+    "rag_raft_inference": "planning",
+    "rag_proposition": "classification",
+    "rag_indexing": "classification",
+    # ── chat ──
+    "chat": "planning",
+    "chat_qa": "planning",
+    "chat_summary": "classification",
+    "chat_intent": "classification",
+    "chat_understanding": "classification",
+    # ── organisation runtime ──
+    "org_goal_analysis": "planning",
+    "org_decompose_mission": "planning",
+    "org_compose_departments": "planning",
+    "org_strategic_brief": "planning",
+    "org_team_formation": "planning",
+    "org_collaboration": "planning",
+    "org_quality_gate": "judge",
+    "org_meta_orchestrator": "planning",
+    "collab_insights": "planning",
+    "collab_consensus": "judge",
+    # ── knowledge graph / memory / skills / tools ──
+    "kg_entity_extraction": "classification",
+    "kg_relationship_extraction": "classification",
+    "skill": "planning",
+    "skill_test": "planning",
+    "tool_self_heal": "classification",
+    "tool_intelligence": "classification",
+    "simulation": "classification",
+    # ── triggers / schedules / meta ──
+    "nl_trigger": "classification",
+    "nl_scheduler": "classification",
+    "schedule_suggest": "classification",
+    "meta_agent": "planning",
+    "proactive_planner": "planning",
+    "insights_nl_query": "planning",
+    "insights_failure_analysis": "planning",
+    "workflow_llm_step": "planning",
+    "worker_job": "execution",
 }
 
 # Families of role labels built at runtime (``coordination_<pattern>_<step>``, ...).
@@ -135,6 +179,10 @@ _ROLE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("eval_", "judge"),
     ("rag_", "classification"),
     ("guardrail_", "classification"),
+    ("org_", "planning"),
+    ("chat_", "classification"),
+    ("kg_", "classification"),
+    ("collab_", "planning"),
 )
 
 
@@ -147,6 +195,16 @@ def role_task_type(role: str) -> str:
         if r.startswith(prefix):
             return task
     return ""
+
+
+def rag_role_for_strategy(strategy: Any) -> str:
+    """The role label of a RAG strategy's LLM (``rag_hyde``, ``rag_raptor``, ...).
+
+    HyDE, query rewrite, RAPTOR, propositions, corrective / self-RAG grading,
+    synthesis and citation verification each resolve as their own role.
+    """
+    value = str(getattr(strategy, "value", strategy) or "").strip().lower()
+    return f"rag_{value}" if value else "rag_strategy"
 
 
 def env_pin_model(task_type: str) -> str:
@@ -216,17 +274,20 @@ def preferred_model_and_fallbacks(task_type: str, provider: Any = None) -> tuple
 
 
 def resolve_role_model(role: str, *, router: Any = None, provider: Any = None) -> str:
-    """THE model for one LLM role — the single resolver every role goes through.
+    """THE model for one LLM role — every role goes through here.
 
     *role* is a charged role label (``supervisor``, ``agent_router``,
     ``rag_hyde``, ...) or a task type. With the goal's *router* (``ModelRouter``
-    / ``ModelOrchestratorAdapter``) a routed task type takes the router's full
-    precedence: per-agent override > tenant routing-policy pin > saved reasoning
-    order > deployment role map > env pin > registry. Without one (or for a task
-    type the routers do not route, e.g. ``judge``): saved reasoning order > env
-    pin > *provider*'s own default model (``""`` when it has none).
+    / ``ModelOrchestratorAdapter``) a routed task type takes the router's
+    ``model_for`` (which resolves through :func:`app.ai_router.resolve.resolve_reasoning`
+    with the router's override, tenant pin and role map, then applies its
+    plan / budget cap). Without one: :func:`~app.ai_router.resolve.resolve_reasoning`
+    directly. ``""`` when nothing is configured (the provider reports the honest
+    "no LLM configured" error).
     """
-    task = role_task_type(role) or str(role or "").strip().lower()
+    from app.ai_router.resolve import reasoning_model, reasoning_task_type
+
+    task = reasoning_task_type(role)
     if router is not None and task in ROUTED_TASK_TYPES:
         try:
             routed = router.model_for(task)
@@ -234,14 +295,7 @@ def resolve_role_model(role: str, *, router: Any = None, provider: Any = None) -
                 return routed
         except Exception as exc:  # pragma: no cover - never block a call
             logger.warning("role_router_lookup_failed role=%s error=%s", role, exc)
-    preferred = preferred_role_model(task)
-    if preferred:
-        return preferred
-    pinned = env_pin_model(task)
-    if pinned:
-        return pinned
-    default = getattr(provider, "_default_model", "") if provider is not None else ""
-    return default if isinstance(default, str) else ""
+    return reasoning_model(role, router=router, provider=provider)
 
 
 def servable_role_model(role: str, provider: Any, *, router: Any = None) -> str:
@@ -279,4 +333,20 @@ def explicit_role_model(router: Any, task_type: str) -> str:
         pinned = policy.get(ROLE_ALIASES.get(task_type, task_type))
         if isinstance(pinned, str) and pinned:
             return pinned
-    return preferred_role_model(task_type)
+    return preferred_role_model(task_type) or env_pin_model(task_type)
+
+
+def router_role_model_ids(router: Any) -> set[str]:
+    """The models *router* routes its reasoning roles to (Strategy C may only
+    pick among these — or a configured registry text model)."""
+    out: set[str] = set()
+    if router is None:
+        return out
+    for task in ("planning", "execution", "verification", "classification"):
+        try:
+            model = router.model_for(task)
+        except Exception:  # pragma: no cover - never block a call
+            continue
+        if isinstance(model, str) and model:
+            out.add(model)
+    return out

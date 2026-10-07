@@ -2,6 +2,12 @@
 
 Environment:
   PERPLEXITY_API_KEY: Perplexity API key (pplx-...)
+
+Model defaults: the ``model`` arguments below default to the VENDOR API's own
+current models (constants at the top of this module). They apply only to this
+connector's calls to the vendor's API on the user's own key — they are not the
+platform's reasoning model (agents, goals, chat and workflows resolve that from
+the Model Registry). The caller may pass any model the vendor serves.
 """
 
 from __future__ import annotations
@@ -17,6 +23,12 @@ logger = get_logger(__name__)
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 
+# Vendor-API defaults (see the module docstring). The llama-3.1-sonar-* models
+# were retired by Perplexity in favour of the sonar family.
+DEFAULT_SEARCH_MODEL = "sonar"
+DEFAULT_RESEARCH_MODEL = "sonar-pro"
+DEFAULT_REASONING_MODEL = "sonar-reasoning-pro"
+
 TOOL_DEFINITIONS = [
     {
         "name": "perplexity_chat",
@@ -31,7 +43,7 @@ TOOL_DEFINITIONS = [
                 },
                 "model": {
                     "type": "string",
-                    "default": "llama-3.1-sonar-large-128k-online",
+                    "default": DEFAULT_SEARCH_MODEL,
                     "description": "Model: sonar, sonar-pro, sonar-reasoning, sonar-reasoning-pro",
                 },
                 "max_tokens": {"type": "integer", "default": 1024},
@@ -53,7 +65,7 @@ TOOL_DEFINITIONS = [
                 "query": {"type": "string", "description": "Search query or question"},
                 "model": {
                     "type": "string",
-                    "default": "llama-3.1-sonar-large-128k-online",
+                    "default": DEFAULT_RESEARCH_MODEL,
                     "description": "Online Sonar model for real-time web search",
                 },
                 "max_tokens": {"type": "integer", "default": 1024},
@@ -77,7 +89,7 @@ TOOL_DEFINITIONS = [
                 "context": {"type": "string", "description": "Additional context to include"},
                 "model": {
                     "type": "string",
-                    "default": "llama-3.1-sonar-huge-128k-online",
+                    "default": DEFAULT_REASONING_MODEL,
                 },
                 "max_tokens": {"type": "integer", "default": 2048},
             },
@@ -109,7 +121,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if sys := arguments.get("system"):
                     messages = [{"role": "system", "content": sys}, *messages]
                 payload: dict[str, Any] = {
-                    "model": arguments.get("model", "llama-3.1-sonar-large-128k-online"),
+                    "model": arguments.get("model", DEFAULT_SEARCH_MODEL),
                     "messages": messages,
                     "max_tokens": arguments.get("max_tokens", 1024),
                     "temperature": arguments.get("temperature", 0.2),
@@ -126,7 +138,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "perplexity_search":
                 payload = {
-                    "model": arguments.get("model", "llama-3.1-sonar-large-128k-online"),
+                    "model": arguments.get("model", DEFAULT_RESEARCH_MODEL),
                     "messages": [{"role": "user", "content": arguments["query"]}],
                     "max_tokens": arguments.get("max_tokens", 1024),
                     "return_citations": arguments.get("return_citations", True),
@@ -147,7 +159,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if ctx := arguments.get("context"):
                     content = f"Context: {ctx}\n\nQuestion: {content}"
                 payload = {
-                    "model": arguments.get("model", "llama-3.1-sonar-huge-128k-online"),
+                    "model": arguments.get("model", DEFAULT_REASONING_MODEL),
                     "messages": [{"role": "user", "content": content}],
                     "max_tokens": arguments.get("max_tokens", 2048),
                 }

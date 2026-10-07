@@ -2,6 +2,12 @@
 
 Environment:
   ELEVENLABS_API_KEY: ElevenLabs API key for authentication
+
+Model defaults: the ``model`` arguments below default to the VENDOR API's own
+current models (constants at the top of this module). They apply only to this
+connector's calls to the vendor's API on the user's own key — they are not the
+platform's reasoning model (agents, goals, chat and workflows resolve that from
+the Model Registry). The caller may pass any model the vendor serves.
 """
 
 from __future__ import annotations
@@ -15,6 +21,9 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 BASE_URL = "https://api.elevenlabs.io/v1"
+
+# Vendor-API default (see the module docstring); eleven_monolingual_v1 is deprecated.
+DEFAULT_TTS_MODEL = "eleven_multilingual_v2"
 
 TOOL_DEFINITIONS = [
     {
@@ -30,7 +39,7 @@ TOOL_DEFINITIONS = [
                 "text": {"type": "string", "description": "Text content to convert to speech"},
                 "model_id": {
                     "type": "string",
-                    "description": "Model ID (e.g. eleven_monolingual_v1)",
+                    "description": f"Model ID (default: {DEFAULT_TTS_MODEL})",
                 },
                 "stability": {"type": "number", "description": "Voice stability (0.0-1.0)"},
                 "similarity_boost": {
@@ -111,7 +120,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 voice_id = arguments["voice_id"]
                 payload: dict[str, Any] = {
                     "text": arguments["text"],
-                    "model_id": arguments.get("model_id", "eleven_monolingual_v1"),
+                    "model_id": arguments.get("model_id", DEFAULT_TTS_MODEL),
                 }
                 voice_settings: dict[str, Any] = {}
                 if "stability" in arguments:

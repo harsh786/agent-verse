@@ -164,18 +164,25 @@ def _prettify_model_id(model_id: str) -> str:
 async def get_active_model(request: Request) -> dict[str, Any]:
     """Return the model the platform will actually run goals with.
 
-    Reflects the *configured* default provider/model (env-driven, via the
-    provider registry) rather than the top of the static quality-ranked
-    catalogue — so the UI shows the real active model (e.g. the configured
-    NVIDIA model) instead of a hardcoded-looking default.
+    The head of the reasoning resolution (``resolve_reasoning``: the Model
+    Registry's saved order, env pins, role map, env default, registry models) —
+    the same model a goal's planner runs on, not an env-only value. ``source``
+    says where the choice came from; ``configured`` is false (and ``hint`` says
+    how to fix it) when nothing is configured.
     """
     _require_tenant(request)
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_reasoning
     from app.core.config import get_settings
-    from app.providers.model_defaults import configured_default_model
 
-    settings = get_settings()
-    model_id = configured_default_model()
-    provider = (settings.default_llm_provider or "").strip()
+    hint = ""
+    source = ""
+    try:
+        resolution = resolve_reasoning("planning")
+        model_id, provider, source = resolution.model, resolution.provider, resolution.source
+    except ModelNotConfiguredError as exc:
+        model_id, provider, hint = "", "", exc.hint
+    if not provider and model_id:
+        provider = (get_settings().default_llm_provider or "").strip()
 
     display_name = ""
     if model_id:
@@ -187,6 +194,8 @@ async def get_active_model(request: Request) -> dict[str, Any]:
         "model_id": model_id,
         "display_name": display_name or _prettify_model_id(model_id) or "Auto-routed",
         "configured": bool(model_id),
+        "source": source,
+        "hint": hint,
     }
 
 

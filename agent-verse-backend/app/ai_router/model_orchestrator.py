@@ -18,31 +18,21 @@ if TYPE_CHECKING:
     from app.agent.pattern_config import PatternConfig
     from app.ingestion.content_classifier import ContentType
 
+# Reasoning roles (planner / executor / verifier / judge / classifier) resolve
+# through app.ai_router.resolve.resolve_reasoning — never a table. What remains
+# here is the embedder reference slug per tier, owned by the embedding resolver.
 _TIER_MODELS: dict[str, dict[str, str]] = {
-    "high": {
-        "planner": "gpt-5.2",
-        "executor": "gpt-5.2",
-        "verifier": "gpt-5.2",
-        "judge": "gpt-5.2",
-        "embedder": "text-embedding-3-large",
-        "classifier": "gpt-4o-mini",
-    },
-    "medium": {
-        "planner": "gpt-4o",
-        "executor": "gpt-4o",
-        "verifier": "gpt-4o",
-        "judge": "gpt-4o",
-        "embedder": "text-embedding-3-small",
-        "classifier": "gpt-4o-mini",
-    },
-    "low": {
-        "planner": "gpt-4o-mini",
-        "executor": "gpt-4o-mini",
-        "verifier": "gpt-4o-mini",
-        "judge": "gpt-4o-mini",
-        "embedder": "voyage-3-lite",
-        "classifier": "gpt-4o-mini",
-    },
+    "high": {"embedder": "text-embedding-3-large"},
+    "medium": {"embedder": "text-embedding-3-small"},
+    "low": {"embedder": "voyage-3-lite"},
+}
+
+_REASONING_ROLE_TASK: dict[str, str] = {
+    "planner": "planning",
+    "executor": "execution",
+    "verifier": "verification",
+    "judge": "judge",
+    "classifier": "classification",
 }
 
 _MODEL_PROVIDER: dict[str, str] = {
@@ -83,26 +73,27 @@ def provider_for_model(model: str) -> str:
     return _MODEL_PROVIDER.get(model, _UNKNOWN_PROVIDER)
 
 
-def _configured_for_tier(tier: str) -> str:
-    """Best CONFIGURED text model within *tier* (highest quality, then cheaper), or "".
+def _configured_for_tier(tier: str, task: str = "planning") -> str:
+    """Best CONFIGURED model for *task* within quality *tier* (highest quality,
+    then cheaper), or ``""``.
 
-    Tier models come from what the deployment serves; the static OpenAI table is
-    only the fallback when nothing is configured.
+    Used only when no explicit choice (override, tenant pin, saved registry
+    order, env pin, role map, env default) decides the role: the goal's
+    complexity then picks among the deployment's configured models.
     """
     try:
-        from app.ai_router.models import ModelCapability
-        from app.ai_router.registry import model_registry
+        from app.ai_router.selection import ordered_configured_models
 
         allowed = [
             m
-            for m in model_registry.list_configured(ModelCapability.TEXT_GENERATION)
+            for m in ordered_configured_models(task)
             if _TIER_RANK[model_quality_tier(m.model_id)] <= _TIER_RANK[tier]
         ]
     except Exception:  # pragma: no cover - never block selection
         return ""
     if not allowed:
         return ""
-    return max(allowed, key=lambda m: (m.quality_score, -m.cost_per_1k_input)).model_id
+    return str(max(allowed, key=lambda m: (m.quality_score, -m.cost_per_1k_input)).model_id)
 
 
 # Health-based failover target: when a provider's circuit is open, prefer this
@@ -114,16 +105,10 @@ _FALLBACK_PROVIDER: dict[str, str] = {
     "voyage": "openai",
 }
 
-# Representative chat model per provider (generic failover target).
-_PROVIDER_CHAT_MODEL: dict[str, str] = {
-    "openai": "gpt-4o",
-    "anthropic": "claude-3-5-sonnet",
-    "google": "gemini-2.5-pro",
-}
-
 # Vision (image / video) extraction has no per-provider literal: the extractor
 # and its failover chain are the Model Registry's vision models
-# (app.ai_router.resolve.resolve_vision).
+# (app.ai_router.resolve.resolve_vision). Reasoning failover is the registry
+# reasoning order (resolve_fallback_models), never a per-provider chat model.
 
 # Audio-capable model per provider (failover for audio extraction). Anthropic has
 # no audio model, so it is deliberately absent — audio fails over to google.
@@ -149,13 +134,17 @@ _CONTENT_TYPE_MODALITY: dict[str, str] = {
     "json": "text",
 }
 
+# Extractor reference slugs per modality (vision / audio: owned by the vision and
+# speech resolvers). Text / code extraction and every reasoner are reasoning
+# roles: resolve_reasoning.
 _MULTIMODAL_MODELS: dict[str, dict[str, Any]] = {
-    # Vision extractors ("") are resolved from the Model Registry, never a literal.
-    "image": {"extractor": "", "reasoner": "gpt-5.2", "requires_vision": True},
-    "audio": {"extractor": "gpt-4o-audio", "reasoner": "gpt-5.2", "requires_vision": False},
-    "video": {"extractor": "", "reasoner": "gpt-5.2", "requires_vision": True},
-    "code": {"extractor": "gpt-5.2", "reasoner": "gpt-5.2", "requires_vision": False},
-    "text": {"extractor": "gpt-4o", "reasoner": "gpt-5.2", "requires_vision": False},
+    # Vision extractors ("") are resolved from the Model Registry, never a literal;
+    # text / code extraction is a reasoning role (resolve_reasoning).
+    "image": {"extractor": "", "requires_vision": True},
+    "audio": {"extractor": "gpt-4o-audio", "requires_vision": False},
+    "video": {"extractor": "", "requires_vision": True},
+    "code": {"extractor": "", "requires_vision": False},
+    "text": {"extractor": "", "requires_vision": False},
 }
 
 _BUDGET_75 = 0.75
@@ -179,9 +168,9 @@ _TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 # place an arbitrary model in a quality tier: lets plan caps and budget
 # downgrades apply to pinned / role-mapped models, not just tier-table slugs.
 _TIER_PRICE_CEILING: dict[str, float] = {"low": 1.0, "medium": 5.0}
-_ROLE_FOR_TASK: dict[str, str] = {
-    "planning": "planner", "reflection": "planner", "think": "planner", "thinking": "planner",
-    "execution": "executor", "verification": "verifier", "classification": "classifier",
+_ROLE_FOR_TASK_BASE: dict[str, str] = {
+    "reflection": "planning", "think": "planning", "thinking": "planning",
+    "supervisor": "planning",
 }
 
 
@@ -203,95 +192,40 @@ def plan_tier_cap(plan: str) -> str | None:
 
 
 def _configured_within_cap(task: str, cap: str) -> str:
-    """Cheapest CONFIGURED text model whose tier is within *cap* (or "").
+    """Cheapest CONFIGURED model eligible for *task* whose tier is within *cap* (or "").
 
-    Reasoning roles (*task*) all need text generation; a model the deployment
-    actually serves beats a tier-table cloud slug it may not.
+    Only models the deployment actually serves: never a reference slug.
     """
     try:
-        from app.ai_router.models import ModelCapability
-        from app.ai_router.registry import model_registry
+        from app.ai_router.selection import ordered_configured_models
 
         allowed = [
             m
-            for m in model_registry.list_configured(ModelCapability.TEXT_GENERATION)
+            for m in ordered_configured_models(task)
             if _TIER_RANK[model_quality_tier(m.model_id)] <= _TIER_RANK[cap]
         ]
     except Exception:  # pragma: no cover - never block selection
         return ""
     if not allowed:
         return ""
-    return min(allowed, key=lambda m: m.cost_per_1k_input).model_id
-
-
-# Vendors whose own reference table IS ``_TIER_MODELS`` ("" = vendor unknown:
-# the caller did not say, so the legacy table is kept).
-_TIER_TABLE_VENDORS = frozenset({"", "openai"})
-_PROFILE_ROLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "planner": ("planning_model", "fallback_model"),
-    "executor": ("execution_model", "fallback_model"),
-    "verifier": ("verification_model", "fallback_model"),
-    "classifier": ("execution_model", "fallback_model"),
-    "judge": ("verification_model", "planning_model", "fallback_model"),
-    "embedder": ("embedding_model",),
-}
-
-
-def vendor_profile_models(vendor: str) -> dict[str, str]:
-    """``{role: model}`` from *vendor*'s provider profile, or ``{}``.
-
-    The same profiles (plus env role pins) the Celery worker's ``ModelRouter``
-    routes with, so the API path and the worker agree on what a vendor serves.
-    """
-    from dataclasses import fields
-
-    from app.agent.model_router import (
-        _PROVIDER_DEFAULTS,
-        ModelRouterConfig,
-        _apply_env_model_overrides,
-    )
-
-    cfg = _apply_env_model_overrides(_PROVIDER_DEFAULTS.get(vendor, ModelRouterConfig()))
-    values = {f.name: str(getattr(cfg, f.name) or "") for f in fields(cfg)}
-    out: dict[str, str] = {}
-    for role, names in _PROFILE_ROLE_FIELDS.items():
-        model = next((values[n] for n in names if values.get(n)), "")
-        if model:
-            out[role] = model
-    return out
+    return str(min(allowed, key=lambda m: m.cost_per_1k_input).model_id)
 
 
 def reference_role_model(tier: str, role: str, vendor: str = "") -> str:
-    """Last-resort model for *role* when the registry has nothing configured.
+    """The model for *role* when no profile / hint names one.
 
-    a01-F022-02: this used to be ``_TIER_MODELS`` (OpenAI slugs) for every
-    vendor, so an Anthropic / NVIDIA / self-hosted goal was sent ``gpt-4o``.
-    Now: OpenAI (or an unknown vendor) keeps the tier table; any other vendor
-    gets its own profile model, or "" — callers then use the provider's own
-    default model.
+    Reasoning roles: :func:`app.ai_router.resolve.reasoning_model` (the Model
+    Registry, env pins, role map — never a vendor table; ``""`` when nothing is
+    configured, so the provider reports the honest error). Embedder: the
+    reference tier table (owned by the embedding resolver).
     """
-    vendor = (vendor or "").strip().lower()
-    if vendor in _TIER_TABLE_VENDORS:
-        return _TIER_MODELS.get(tier, _TIER_MODELS["medium"]).get(role, "")
-    return vendor_profile_models(vendor).get(role, "")
+    del vendor  # the resolver decides from what is configured, not the vendor
+    task = _REASONING_ROLE_TASK.get(role)
+    if task:
+        from app.ai_router.resolve import reasoning_model
 
-
-def reference_model_within_cap(cap: str, role: str, vendor: str = "") -> str:
-    """Cheapest model *vendor* is known to serve within tier *cap* (or "")."""
-    vendor = (vendor or "").strip().lower()
-    if vendor in _TIER_TABLE_VENDORS:
-        return _TIER_MODELS[cap][role]
-    from app.intelligence.cost_tracker import model_pricing
-
-    candidates = {
-        m
-        for r, m in vendor_profile_models(vendor).items()
-        if r != "embedder"
-        and _TIER_RANK[model_quality_tier(m)] <= _TIER_RANK[cap]
-    }
-    if not candidates:
-        return ""
-    return min(candidates, key=lambda m: model_pricing(m)[0])
+        return reasoning_model(task)
+    return _TIER_MODELS.get(tier, _TIER_MODELS["medium"]).get(role, "")
 
 
 @dataclass
@@ -353,22 +287,48 @@ class ModelOrchestrator:
         if plan_cap is not None and _TIER_RANK[tier] > _TIER_RANK[plan_cap]:
             tier = plan_cap
 
-        configured = _configured_for_tier(tier)
-
-        def reference(role: str) -> str:
-            return reference_role_model(tier, role, vendor)
+        # The plan / budget ceiling (the complexity-chosen tier is no ceiling).
+        caps = [c for c in (plan_cap,) if c is not None]
+        if budget_spent_ratio >= _BUDGET_90:
+            caps.append("low")
+        elif budget_spent_ratio >= _BUDGET_75:
+            caps.append("medium")
+        cap = min(caps, key=lambda t: _TIER_RANK[t]) if caps else None
 
         def resolve(role: str, hint: str) -> str:
-            model = hint if hint and hint != "default" else configured or reference(role)
-            return self._with_failover(model) if model else ""
+            # An explicit hint (agent / runtime profile) wins; otherwise the ONE
+            # reasoning resolver (override > tenant pin > saved registry order >
+            # env pins > role map > env default). Only when nothing explicit
+            # decided (the resolver fell to the unranked registry) does the goal's
+            # quality tier pick among the configured models; a plan / budget tier
+            # cap clamps any choice.
+            task = _REASONING_ROLE_TASK[role]
+            model = hint if hint and hint != "default" else ""
+            if not model:
+                from app.ai_router.resolve import ModelNotConfiguredError, resolve_reasoning
+
+                try:
+                    resolution = resolve_reasoning(task)
+                except ModelNotConfiguredError:
+                    resolution = None
+                if resolution is not None:
+                    model = resolution.model
+                    if resolution.source == "registry_cheapest":
+                        model = _configured_for_tier(tier, task) or model
+            over_cap = cap is not None and bool(model) and (
+                _TIER_RANK[model_quality_tier(model)] > _TIER_RANK[cap]
+            )
+            if over_cap and cap is not None:
+                model = _configured_within_cap(task, cap) or model
+            return self._with_failover(model, task=task) if model else ""
 
         latency_class = "realtime" if time_sens == "realtime" else "interactive"
         return ModelRoleAssignment(
             planner=resolve("planner", config.model_planner),
             executor=resolve("executor", config.model_executor),
             verifier=resolve("verifier", config.model_verifier),
-            judge=configured or reference("judge"),
-            embedder=reference("embedder"),
+            judge=resolve("judge", ""),
+            embedder=reference_role_model(tier, "embedder"),
             classifier=resolve("classifier", config.model_classifier),
             quality_tier=tier,
             latency_class=latency_class,
@@ -387,7 +347,10 @@ class ModelOrchestrator:
         spec = _MULTIMODAL_MODELS.get(modality, _MULTIMODAL_MODELS["text"])
         requires_vision = bool(spec.get("requires_vision", False))
         requires_audio = modality == "audio"
-        reasoner = self._with_failover(str(spec["reasoner"]))
+        from app.ai_router.resolve import reasoning_model
+
+        # The reasoner reasons over already-extracted text: a reasoning role.
+        reasoner = self._with_failover(reasoning_model("synthesis"))
         if requires_vision:
             # The extractor is the Model Registry's vision model; its failover
             # chain is the rest of the registry vision order. A model whose
@@ -406,7 +369,7 @@ class ModelOrchestrator:
         return MultimodalModelAssignment(
             modality=modality,
             extractor_model=self._with_failover(
-                str(spec["extractor"]),
+                str(spec["extractor"]) or reasoning_model("extraction"),
                 requires_audio=requires_audio,
             ),
             reasoner_model=reasoner,
@@ -471,7 +434,7 @@ class ModelOrchestrator:
         if vision:
             # Vision failover is the registry vision chain (_vision_extractor).
             return None
-        return _PROVIDER_CHAT_MODEL.get(provider)
+        return None
 
     def _with_failover(
         self,
@@ -479,9 +442,26 @@ class ModelOrchestrator:
         *,
         requires_vision: bool = False,
         requires_audio: bool = False,
+        task: str = "planning",
     ) -> str:
         provider = provider_for_model(model)
         if provider == _UNKNOWN_PROVIDER or not self._provider_open(provider):
+            return model
+
+        if not (requires_vision or requires_audio):
+            # A reasoning model whose provider's circuit is open: the next model
+            # of the registry order (resolve_fallback_models) on a healthy provider.
+            try:
+                from app.ai_router.selection import resolve_fallback_models
+
+                for candidate in resolve_fallback_models(task, model, limit=8):
+                    cand_provider = provider_for_model(candidate)
+                    if cand_provider == _UNKNOWN_PROVIDER or not self._provider_open(
+                        cand_provider
+                    ):
+                        return candidate
+            except Exception:  # pragma: no cover - never block selection
+                pass
             return model
 
         # Sweep providers (preferred fallback first) for a healthy one that still
@@ -525,6 +505,7 @@ class ModelOrchestratorAdapter:
         self._policy_roles: dict[str, str] = {}
         self._plan_tier = ""
         self._vendor = ""
+        self._bound_provider: Any = None
 
     def set_provider_vendor(self, vendor: str) -> None:
         """The vendor of the goal's provider ("anthropic", "nvidia", ...).
@@ -561,15 +542,12 @@ class ModelOrchestratorAdapter:
         tier = model_quality_tier(model)
         if _TIER_RANK[tier] <= _TIER_RANK[cap]:
             return model
-        role = _ROLE_FOR_TASK.get(task_type, "planner")
-        clamped = _configured_within_cap(task_type, cap) or reference_model_within_cap(
-            cap, role, self._vendor
-        )
+        clamped = _configured_within_cap(task_type, cap)
         import logging
 
         if not clamped:
-            # Nothing this vendor is known to serve fits the cap: a cloud slug of
-            # another vendor would only fail on this provider.
+            # Nothing configured fits the cap: a model the deployment does not
+            # serve would only fail.
             logging.getLogger(__name__).warning(
                 "model_cap_unenforceable model=%s tier=%s cap=%s plan=%s vendor=%s",
                 model, tier, cap, self._plan_tier, self._vendor,
@@ -639,6 +617,11 @@ class ModelOrchestratorAdapter:
         except Exception:
             self._cached_assignment = None
 
+    def bind_provider(self, provider: Any) -> None:
+        """The goal's provider: a tenant's BYOK provider keeps its own model, and
+        the role map / provider default follow what it serves."""
+        self._bound_provider = provider
+
     def model_for(
         self,
         task_type: str,
@@ -646,82 +629,43 @@ class ModelOrchestratorAdapter:
         fallback: str = "",
         goal: str = "",
     ) -> str:
-        """Return the best model for a task type.
+        """The model for *task_type* (a routed task type or any known role label).
 
-        Reasoning roles first consult the generic cost-aware model registry
-        (cheapest CONFIGURED model for the capability). This replaces the
-        hardcoded ``_TIER_MODELS`` cloud slugs (e.g. ``gpt-4o``) with a model the
-        deployment can actually serve, and picks the cheapest when several are
-        configured. Falls back to the tier assignment when nothing is registered.
+        Resolves through the ONE reasoning resolver
+        (:func:`app.ai_router.resolve.resolve_reasoning`: override > tenant pin >
+        saved registry order > ``DEFAULT_<ROLE>_MODEL`` > role map > env default >
+        registry > provider default), then applies the plan / budget tier cap.
+        With nothing configured: the runtime profile's explicit hint, else
+        *fallback*, else ``""`` (the provider reports the honest error).
         """
-        from app.ai_router.role_preference import ROUTED_TASK_TYPES
+        del goal
+        from app.ai_router.resolve import (
+            ModelNotConfiguredError,
+            reasoning_task_type,
+            resolve_reasoning,
+        )
 
-        if task_type in ROUTED_TASK_TYPES:
-            # A per-agent model_override wins; then the per-goal role map (models
-            # the goal's provider serves: pins, then hybrid/on-prem/NVIDIA
-            # profile) — "cheapest configured" cannot tell roles apart when
-            # every self-hosted model costs 0.
-            if self._override:
-                return self._capped(self._override, task_type)
-            from app.ai_router.deployment_roles import ROLE_ALIASES as _ALIASES
-
-            _policy = getattr(self, "_policy_roles", {}).get(_ALIASES.get(task_type, task_type))
-            if _policy:
-                return self._capped(_policy, task_type)
-            # The saved reasoning order wins over the automatic role map (see
-            # app/ai_router/role_preference.py); the plan-tier cap still applies.
-            from app.ai_router.role_preference import preferred_role_model
-
-            _preferred = preferred_role_model(task_type)
-            if _preferred:
-                return self._capped(_preferred, task_type)
-            from app.ai_router.deployment_roles import ROLE_ALIASES
-
-            _role = ROLE_ALIASES.get(task_type, task_type)
-            if self._role_map.get(_role):
-                return self._capped(self._role_map[_role], task_type)
-            try:
-                from app.ai_router.selection import select_configured_model_id
-
-                _choice = select_configured_model_id(task_type)
-                if _choice:
-                    return self._capped(_choice, task_type)
-            except Exception:  # pragma: no cover - never block on the registry
-                pass
-
+        task = reasoning_task_type(task_type)
+        try:
+            model = resolve_reasoning(
+                task, router=self, provider=getattr(self, "_bound_provider", None)
+            ).model
+        except ModelNotConfiguredError:
+            model = ""
+        if model:
+            return self._capped(model, task)
         assignment = self._cached_assignment
-        if assignment is None:
-            # No profile yet — the default tier's reference models for this
-            # goal's vendor ("" = the provider's own default model).
-            tier = self._default_tier if self._default_tier in _TIER_MODELS else "medium"
-            role = {
-                "planning": "planner",
-                "execution": "executor",
-                "verification": "verifier",
-                "reflection": "planner",
-                "think": "planner",
-                "thinking": "planner",
-                "supervisor": "planner",
-                "classification": "classifier",
-                "judge": "judge",
-            }.get(task_type, "planner")
-            return reference_role_model(tier, role, self._vendor)
-
-        mapping = {
-            "planning": assignment.planner,
-            "execution": assignment.executor,
-            "verification": assignment.verifier,
-            "reflection": assignment.planner,
-            "think": assignment.planner,
-            "thinking": assignment.planner,
-            "supervisor": assignment.planner,
-            "classification": assignment.classifier,
-            "judge": assignment.judge,
-        }
-        result = mapping.get(task_type, assignment.planner)
-        if result:
-            return result
-        return fallback or reference_role_model("low", "executor", self._vendor)
+        if assignment is not None:
+            hinted = {
+                "planning": assignment.planner,
+                "execution": assignment.executor,
+                "verification": assignment.verifier,
+                "classification": assignment.classifier,
+                "judge": assignment.judge,
+            }.get(_ROLE_FOR_TASK_BASE.get(task, task), assignment.planner)
+            if hinted:
+                return hinted
+        return fallback
 
     def model_for_goal(self, task_type: str, *, goal: str = "") -> str:
         """Alias for model_for() with goal context (unused in orchestrator path)."""

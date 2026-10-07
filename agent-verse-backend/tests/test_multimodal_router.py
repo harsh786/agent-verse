@@ -217,33 +217,29 @@ def test_content_classifier_code_variants():
 
 # ── AI MODEL ROUTER ───────────────────────────────────────────────────────────
 
-def test_model_orchestrator_adapter_all_roles():
+def test_model_orchestrator_adapter_all_roles(monkeypatch):
     from app.ai_router.model_orchestrator import ModelOrchestratorAdapter
 
+    monkeypatch.setenv("DEFAULT_MODEL", "configured-reasoning-model")
     adapter = ModelOrchestratorAdapter(default_tier="medium")
     for role in ["planning", "execution", "verification", "reflection", "think", "classification"]:
-        model = adapter.model_for(role)
-        assert isinstance(model, str)
-        assert len(model) > 3, f"Expected non-trivial model name for role={role}, got '{model}'"
+        assert adapter.model_for(role) == "configured-reasoning-model", role
 
 
-def test_model_orchestrator_tier_high():
+def test_model_orchestrator_tiers_never_invent_a_model(monkeypatch):
+    """No tier table: with nothing configured every tier yields "" (the provider
+    default / its honest error), never a hardcoded slug."""
     from app.ai_router.model_orchestrator import ModelOrchestratorAdapter
 
-    adapter = ModelOrchestratorAdapter(default_tier="high")
-    model = adapter.model_for("planning")
-    assert len(model) > 0
-    # High tier should produce a premium model (not the cheapest)
-    assert model != "gpt-4o-mini"
-
-
-def test_model_orchestrator_tier_low():
-    from app.ai_router.model_orchestrator import ModelOrchestratorAdapter
-
-    adapter = ModelOrchestratorAdapter(default_tier="low")
-    model = adapter.model_for("planning")
-    # Low tier should use gpt-4o-mini
-    assert model == "gpt-4o-mini"
+    monkeypatch.setattr("app.ai_router.selection.ordered_configured_models", lambda *a, **k: [])
+    monkeypatch.setattr("app.ai_router.resolve._registry_has_text_models", lambda: False)
+    monkeypatch.setattr(
+        "app.ai_router.deployment_roles.deployment_role_models", lambda *a, **k: {}
+    )
+    for var in ("DEFAULT_MODEL", "NVIDIA_MODEL", "OPENAI_MODEL", "DEFAULT_PLANNING_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    for tier in ("high", "medium", "low"):
+        assert ModelOrchestratorAdapter(default_tier=tier).model_for("planning") == ""
 
 
 def test_ai_router_model_selection():
@@ -276,34 +272,29 @@ def test_ai_router_cheapest_routing():
     # Must not raise; result may be None if no candidates match
 
 
-def test_model_router_openai_defaults():
+def test_model_router_has_no_vendor_profiles(monkeypatch):
     from app.agent.model_router import ModelRouter
 
+    monkeypatch.setenv("DEFAULT_MODEL", "configured-reasoning-model")
+    for vendor in ("openai", "anthropic"):
+        router = ModelRouter(vendor)
+        assert router.model_for("planning") == "configured-reasoning-model"
+        assert router.model_for("execution") == "configured-reasoning-model"
+
+
+def test_model_router_model_for_goal_downgrade(monkeypatch):
+    from app.agent.model_router import ModelRouter
+
+    monkeypatch.setenv("DEFAULT_PLANNING_MODEL", "big-planner")
+    monkeypatch.setenv("DEFAULT_EXECUTION_MODEL", "small-executor")
     router = ModelRouter("openai")
-    assert router.model_for("planning") in ("gpt-5.2", "gpt-4o", "gpt-4o-mini", "")
-    # Execution uses cheaper model
-    assert router.model_for("execution") == "gpt-4o-mini"
-
-
-def test_model_router_anthropic_defaults():
-    from app.agent.model_router import ModelRouter
-
-    router = ModelRouter("anthropic")
-    planning_model = router.model_for("planning")
-    assert "claude" in planning_model.lower()
-
-
-def test_model_router_model_for_goal_downgrade():
-    from app.agent.model_router import ModelRouter
-
-    router = ModelRouter("openai")
-    # Simple goal → downgrade planning to execution model
-    simple_model = router.model_for_goal("planning", "list all Jira tickets")
-    complex_model = router.model_for_goal("planning", "architect and implement distributed cache")
-    # For simple goals, planning model downgrades to execution model (gpt-4o-mini)
-    assert simple_model == "gpt-4o-mini"
+    # Simple goal → planning downgrades to the execution model
+    assert router.model_for_goal("planning", "list all Jira tickets") == "small-executor"
     # Complex goals keep the planning model
-    assert complex_model == "gpt-5.2"
+    assert (
+        router.model_for_goal("planning", "architect and implement distributed cache")
+        == "big-planner"
+    )
 
 
 def test_multi_model_orchestrator_budget_downgrade():

@@ -91,6 +91,19 @@ class VerifierMixin:
                 if explicit_role_model(self._model_router, "verification"):
                     _strategy_verify_model = ""
         if _strategy_verify_model:
+            # Only a model this goal actually routes to (a router role model) or a
+            # configured registry text model: an arbitrary id (a capability-table
+            # key, a stale hint) would be sent to a provider that cannot serve it.
+            from app.ai_router.role_preference import router_role_model_ids
+            from app.providers.registry_llm import configured_text_model
+
+            _known = router_role_model_ids(self._model_router)
+            if (
+                _strategy_verify_model not in _known
+                and configured_text_model(_strategy_verify_model) is None
+            ):
+                _strategy_verify_model = ""
+        if _strategy_verify_model:
             _verify_model = _strategy_verify_model
             with contextlib.suppress(Exception):
                 await self._emit(

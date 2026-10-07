@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 
 from app.agent.graph import AgentGraph
-from app.agent.pattern_config import GoalProperties, RiskLevel
 from app.agent.state import AgentState, GoalStatus
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
@@ -28,22 +27,6 @@ def graph(provider):
 
 
 # ── PatternConfig accepted by AgentGraph ─────────────────────────────────────
-
-def test_agent_graph_stores_pattern_config(provider):
-    from app.agent.pattern_config import PatternConfig
-    cfg = PatternConfig(
-        reasoning_patterns=["react", "reflection"],
-        safety_patterns=["guardrails", "hitl"],
-        goal_properties=GoalProperties(risk=RiskLevel.HIGH),
-    )
-    from app.agent.dynamic_graph import DynamicGraphAssembler
-    assembler = DynamicGraphAssembler()
-    g = assembler.assemble(cfg, planner=provider, executor=provider, verifier=provider)
-    # Pattern config must be accessible from the graph
-    assert hasattr(g, "_pattern_config") or g is not None
-
-
-# ── AgentRunTrace fields ──────────────────────────────────────────────────────
 
 def test_agent_run_trace_has_runtime_profile_id():
     from app.agent_runtime.models import AgentRunTrace

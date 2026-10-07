@@ -433,7 +433,7 @@ def test_orchestrated_document_ingest_builds_selected_strategy_indexes() -> None
     )
     app = _app(store)
     app.state._app_provider = _IndexingProvider()
-    app.state.indexing_model = "indexing-model"
+    app.state._app_provider._default_model = "indexing-model"  # empty registry: provider default
 
     response = TestClient(app, raise_server_exceptions=False).post(
         "/knowledge/collections/collection-1/documents",
@@ -504,7 +504,7 @@ def test_indexed_ingest_replaces_changed_content_and_rejects_empty() -> None:
     )
     app = _app(store)
     app.state._app_provider = _IndexingProvider()
-    app.state.indexing_model = "indexing-model"
+    app.state._app_provider._default_model = "indexing-model"  # empty registry: provider default
     client = TestClient(app, raise_server_exceptions=False)
     request = {
         "content": json.dumps(

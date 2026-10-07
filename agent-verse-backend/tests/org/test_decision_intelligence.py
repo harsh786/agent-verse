@@ -53,11 +53,22 @@ async def test_decision_intelligence_tracks_outcome():
 
 
 @pytest.mark.asyncio
-async def test_decision_intelligence_recommend_model():
+async def test_decision_intelligence_recommend_model(monkeypatch):
+    """The recommendation is the configured reasoning model (the gateway's
+    profiles name roles; resolve_reasoning picks the model), never a slug."""
     from app.org.decision_intelligence import DecisionIntelligence
+
+    monkeypatch.setattr("app.ai_router.selection.ordered_configured_models",
+                        lambda *a, **k: [])
+    monkeypatch.setattr("app.ai_router.deployment_roles.deployment_role_models",
+                        lambda *a, **k: {})
+    for var in ("DEFAULT_PLANNING_MODEL", "DEFAULT_EXECUTION_MODEL",
+                "DEFAULT_VERIFICATION_MODEL", "NVIDIA_MODEL", "OPENAI_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DEFAULT_MODEL", "configured-reasoning-model")
     engine = DecisionIntelligence()
     model = await engine.recommend_decision_model(
         decision_type="strategic_planning",
         dept_id="strategy",
     )
-    assert model  # some model name returned
+    assert model == "configured-reasoning-model"

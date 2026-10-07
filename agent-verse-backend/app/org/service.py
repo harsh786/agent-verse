@@ -514,7 +514,7 @@ class OrgService:
         )
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model=getattr(llm_provider, "_default_model", "") or "claude-sonnet-4-5",
+            model="",  # resolve_reasoning(role) in complete_decision
             max_tokens=600,
         )
         from app.providers.guarded_completion import complete_decision
@@ -2243,7 +2243,7 @@ class OrgService:
         )
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model=getattr(llm_provider, "_default_model", "") or "claude-sonnet-4-5",
+            model="",  # resolve_reasoning(role) in complete_decision
             max_tokens=600,
         )
         from app.providers.guarded_completion import complete_decision

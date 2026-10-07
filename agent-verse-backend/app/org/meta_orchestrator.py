@@ -182,12 +182,11 @@ class GoalAnalyzer:
         )
         from app.providers.base import CompletionRequest, Message
 
-        # Use the provider's own default model, not a hardcoded Anthropic slug —
-        # a self-hosted endpoint (vLLM/Qwen) doesn't serve "claude-sonnet-4-5".
-        _model = getattr(self._llm, "_default_model", "") or ""
+        # model "": complete_decision resolves the org_goal_analysis role from
+        # the Model Registry (resolve_reasoning), never a hardcoded slug.
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model=_model,
+            model="",
             # Reasoning models emit a <think> preamble before the JSON; give them
             # enough room to reach it.
             max_tokens=1024,

@@ -391,10 +391,27 @@ def main() -> int:
         executor = _build_provider(llm_key, "executor")
         verifier = _build_provider(llm_key, "verifier")
 
+        # The control plane resolved each role's model (resolve_reasoning) into
+        # the envelope: route the roles to those, never an SDK default model.
+        from app.agent.model_router import ModelRouter, ModelRouterConfig
+
+        role_models = dict(envelope_dict.get("role_models") or {})
+        model_router = (
+            ModelRouter(
+                config=ModelRouterConfig(
+                    planning_model=str(role_models.get("planning") or ""),
+                    execution_model=str(role_models.get("execution") or ""),
+                    verification_model=str(role_models.get("verification") or ""),
+                )
+            )
+            if role_models
+            else None
+        )
         loop = AgentGraph(
             planner=planner,
             executor=executor,
             verifier=verifier,
+            model_router=model_router,
         )
         # Wire the RLS-enforcing session factory through so step checkpoints
         # (crash-recovery) are persisted for isolated-worker goal runs too —

@@ -14,18 +14,6 @@ from app.workflow.steps import StepServiceUnavailableError
 _log = get_logger(__name__)
 
 
-def _default_model_for(provider: Any) -> str:
-    """"" for a tenant's own provider (BYOK-3: its configured default_model applies)
-    and for the Model Registry-backed platform provider (the registry order picks),
-    else the system-configured model."""
-    from app.providers.model_defaults import configured_default_model
-    from app.providers.registry_llm import is_registry_llm
-
-    if getattr(provider, "_byok_tenant_id", None) or is_registry_llm(provider):
-        return ""
-    return configured_default_model("gpt-4o")
-
-
 class LLMStepNode:
     def __init__(
         self,
@@ -139,11 +127,10 @@ class LLMStepNode:
                     ),
                     Message(role="user", content=full_prompt),
                 ],
-                # Use the step's model, else the system-configured model — never a
-                # hardcoded cloud slug that a self-hosted/NVIDIA endpoint 404s on.
-                # A tenant's own provider (BYOK) uses the tenant's configured model
-                # ("" → its default_model), never the platform's slug.
-                model=self.step.model or _default_model_for(provider),
+                # The step's model, else "": complete_decision resolves the
+                # workflow_llm_step role from the Model Registry (resolve_reasoning).
+                # A tenant's own provider (BYOK) keeps its configured model.
+                model=self.step.model or "",
                 temperature=self.step.temperature,
                 max_tokens=self.step.max_tokens,
                 # JSON-object mode for structured steps → clean JSON out even from

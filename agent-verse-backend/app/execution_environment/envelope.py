@@ -253,6 +253,7 @@ def build_envelope(
     feature_flags: dict[str, bool] | None = None,
     resource_limits: ExecutionResourceLimits | None = None,
     runner_type: RunnerType = RunnerType.FAKE,
+    role_models: dict[str, str] | None = None,
     # Scoped credentials — must be provided by caller, never defaults
     scoped_llm_api_key: str = "",
     scoped_db_url: str = "",
@@ -278,6 +279,7 @@ def build_envelope(
         goal_text=goal_text,
         execution_context=execution_context or {},
         agent_config=agent_config or {},
+        role_models=dict(role_models or {}),
         runtime_profile=runtime_profile or {},
         tool_context=tool_context or {},
         dry_run=dry_run,
@@ -317,6 +319,9 @@ def envelope_from_dict(data: dict[str, Any]) -> ExecutionEnvelope:
         goal_text=str(data.get("goal_text", "")),
         execution_context=dict(data.get("execution_context") or {}),
         agent_config=dict(data.get("agent_config") or {}),
+        role_models={
+            str(k): str(v) for k, v in dict(data.get("role_models") or {}).items() if v
+        },
         runtime_profile=dict(data.get("runtime_profile") or {}),
         tool_context=dict(data.get("tool_context") or {}),
         dry_run=bool(data.get("dry_run", False)),

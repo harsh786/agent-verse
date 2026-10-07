@@ -2,6 +2,12 @@
 
 Environment:
   OPENAI_API_KEY: OpenAI API key (sk-...)
+
+Model defaults: the ``model`` arguments below default to the VENDOR API's own
+current models (constants at the top of this module). They apply only to this
+connector's calls to the vendor's API on the user's own key — they are not the
+platform's reasoning model (agents, goals, chat and workflows resolve that from
+the Model Registry). The caller may pass any model the vendor serves.
 """
 
 from __future__ import annotations
@@ -17,6 +23,14 @@ logger = get_logger(__name__)
 
 OPENAI_BASE = "https://api.openai.com/v1"
 
+# Vendor-API defaults (see the module docstring).
+DEFAULT_CHAT_MODEL = "gpt-4o"
+DEFAULT_FINE_TUNE_BASE_MODEL = "gpt-4o-mini-2024-07-18"  # was gpt-3.5-turbo (legacy)
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_IMAGE_MODEL = "dall-e-3"
+DEFAULT_TTS_MODEL = "tts-1"
+DEFAULT_TRANSCRIPTION_MODEL = "whisper-1"
+
 TOOL_DEFINITIONS = [
     {
         "name": "openai_chat_completion",
@@ -31,8 +45,8 @@ TOOL_DEFINITIONS = [
                 },
                 "model": {
                     "type": "string",
-                    "default": "gpt-4o",
-                    "description": "Model ID, e.g. 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'",
+                    "default": DEFAULT_CHAT_MODEL,
+                    "description": "Model ID, e.g. 'gpt-4o', 'gpt-4.1', 'gpt-4o-mini'",
                 },
                 "temperature": {"type": "number", "default": 0.7},
                 "max_tokens": {"type": "integer", "default": 2000},
@@ -60,7 +74,7 @@ TOOL_DEFINITIONS = [
                 },
                 "model": {
                     "type": "string",
-                    "default": "text-embedding-3-small",
+                    "default": DEFAULT_EMBEDDING_MODEL,
                     "description": "Embedding model: text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002",  # noqa: E501
                 },
                 "encoding_format": {
@@ -86,7 +100,7 @@ TOOL_DEFINITIONS = [
                 "model": {
                     "type": "string",
                     "enum": ["dall-e-3", "dall-e-2"],
-                    "default": "dall-e-3",
+                    "default": DEFAULT_IMAGE_MODEL,
                 },
                 "n": {"type": "integer", "default": 1, "description": "Number of images"},
                 "size": {
@@ -142,7 +156,7 @@ TOOL_DEFINITIONS = [
                 "model": {
                     "type": "string",
                     "enum": ["tts-1", "tts-1-hd"],
-                    "default": "tts-1",
+                    "default": DEFAULT_TTS_MODEL,
                 },
                 "voice": {
                     "type": "string",
@@ -166,7 +180,7 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "file_url": {"type": "string", "description": "URL to audio file"},
-                "model": {"type": "string", "default": "whisper-1"},
+                "model": {"type": "string", "default": DEFAULT_TRANSCRIPTION_MODEL},
                 "language": {
                     "type": "string",
                     "description": "ISO-639-1 language code (optional, auto-detected if omitted)",
@@ -215,7 +229,7 @@ TOOL_DEFINITIONS = [
                 "training_file": {"type": "string", "description": "File ID of training data"},
                 "model": {
                     "type": "string",
-                    "default": "gpt-3.5-turbo",
+                    "default": DEFAULT_FINE_TUNE_BASE_MODEL,
                     "description": "Base model to fine-tune",
                 },
                 "validation_file": {"type": "string"},
@@ -245,7 +259,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "name": {"type": "string"},
                 "instructions": {"type": "string", "description": "System prompt / instructions"},
-                "model": {"type": "string", "default": "gpt-4o"},
+                "model": {"type": "string", "default": DEFAULT_CHAT_MODEL},
                 "tools": {
                     "type": "array",
                     "items": {"type": "object"},
@@ -299,7 +313,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if sys := arguments.get("system"):
                     messages = [{"role": "system", "content": sys}, *messages]
                 payload: dict[str, Any] = {
-                    "model": arguments.get("model", "gpt-4o"),
+                    "model": arguments.get("model", DEFAULT_CHAT_MODEL),
                     "messages": messages,
                     "temperature": arguments.get("temperature", 0.7),
                     "max_tokens": arguments.get("max_tokens", 2000),
@@ -318,7 +332,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "openai_create_embedding":
                 payload = {
-                    "model": arguments.get("model", "text-embedding-3-small"),
+                    "model": arguments.get("model", DEFAULT_EMBEDDING_MODEL),
                     "input": arguments["input"],
                     "encoding_format": arguments.get("encoding_format", "float"),
                 }
@@ -330,7 +344,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "openai_generate_image":
                 payload = {
-                    "model": arguments.get("model", "dall-e-3"),
+                    "model": arguments.get("model", DEFAULT_IMAGE_MODEL),
                     "prompt": arguments["prompt"],
                     "n": arguments.get("n", 1),
                     "size": arguments.get("size", "1024x1024"),
@@ -351,7 +365,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "openai_text_to_speech":
                 payload = {
-                    "model": arguments.get("model", "tts-1"),
+                    "model": arguments.get("model", DEFAULT_TTS_MODEL),
                     "input": arguments["input"],
                     "voice": arguments.get("voice", "alloy"),
                     "response_format": arguments.get("response_format", "mp3"),
@@ -370,7 +384,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "info": "Transcription requires multipart/form-data upload. "
                     "Use the OpenAI SDK or pass the file URL via SDK.",
                     "file_url": arguments.get("file_url"),
-                    "model": arguments.get("model", "whisper-1"),
+                    "model": arguments.get("model", DEFAULT_TRANSCRIPTION_MODEL),
                 }
 
             elif tool_name == "openai_list_models":
@@ -402,7 +416,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "openai_fine_tune":
                 payload = {
                     "training_file": arguments["training_file"],
-                    "model": arguments.get("model", "gpt-3.5-turbo"),
+                    "model": arguments.get("model", DEFAULT_FINE_TUNE_BASE_MODEL),
                 }
                 if vf := arguments.get("validation_file"):
                     payload["validation_file"] = vf
@@ -429,7 +443,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 payload = {
                     "name": arguments["name"],
                     "instructions": arguments["instructions"],
-                    "model": arguments.get("model", "gpt-4o"),
+                    "model": arguments.get("model", DEFAULT_CHAT_MODEL),
                 }
                 if tools := arguments.get("tools"):
                     payload["tools"] = tools

@@ -390,15 +390,21 @@ async def _resolve_indexing_llm(
         return resolved_dependencies
 
     provider = getattr(request.app.state, "_app_provider", None)
-    provider_default = getattr(provider, "_default_model", "")
-    model = str(
-        getattr(request.app.state, "indexing_model", "")
-        or (provider_default if isinstance(provider_default, str) else "")
-        or get_settings().default_model
-    ).strip()
-    if provider is None or not model:
+    if provider is None:
         return {}
-    return {RAGStrategy(strategy): IndexingDependency(provider, model) for strategy in strategies}
+    # Each indexing strategy's LLM role (RAPTOR summaries, propositions, agentic
+    # chunking) through resolve_reasoning — the Model Registry, never an env-only
+    # or provider-default model.
+    from app.ai_router.role_preference import rag_role_for_strategy, servable_role_model
+
+    out: dict[RAGStrategy, IndexingDependency] = {}
+    for strategy_name in strategies:
+        strategy = RAGStrategy(strategy_name)
+        model = servable_role_model(rag_role_for_strategy(strategy), provider).strip()
+        if not model:
+            return {}
+        out[strategy] = IndexingDependency(provider, model)
+    return out
 
 
 def _parse_retrieval_filters(filters: str | None) -> dict[str, Any]:

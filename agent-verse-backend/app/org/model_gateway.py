@@ -1,8 +1,12 @@
 """Model Intelligence Gateway — selects the optimal LLM for each task.
 
-Routes every LLM call by role family (executive/engineering/creative/analytical/…),
-quality requirement, cost budget, latency SLO, and context length.
-Falls back gracefully when primary models are unavailable.
+Picks a *profile* by role family (executive/engineering/creative/analytical/…),
+quality requirement, cost budget, latency SLO and context length. A profile
+names the reasoning ROLE it needs, never a model: the model is resolved from the
+Model Registry by :func:`app.ai_router.resolve.resolve_reasoning` (saved order,
+env pins, role map, env default, registry), and the rest of that order is the
+fallback. Unhealthy models are skipped; nothing configured yields ``""`` (the
+provider then reports the honest "no LLM configured" error).
 """
 
 from __future__ import annotations
@@ -25,8 +29,7 @@ _tracer = trace.get_tracer(__name__)
 
 @dataclass
 class ModelProfile:
-    primary: str
-    fallback: str = ""
+    role: str  # reasoning role label resolved by resolve_reasoning
     cost_tier: str = "standard"  # economy | standard | premium
     min_quality: float = 0.80
     latency_slo: float = 10.0  # seconds — soft SLO
@@ -37,50 +40,25 @@ class ModelProfile:
 
 MODEL_PROFILES: dict[str, ModelProfile] = {
     "premium": ModelProfile(
-        primary="claude-opus-4",
-        fallback="gpt-4o",
-        cost_tier="premium",
-        min_quality=0.95,
-        latency_slo=30.0,
+        role="planning", cost_tier="premium", min_quality=0.95, latency_slo=30.0
     ),
     "smart": ModelProfile(
-        primary="claude-sonnet-4-5",
-        fallback="gpt-4o",
-        cost_tier="standard",
-        min_quality=0.85,
-        latency_slo=15.0,
+        role="planning", cost_tier="standard", min_quality=0.85, latency_slo=15.0
     ),
     "coding": ModelProfile(
-        primary="claude-sonnet-4-5",
-        fallback="gpt-4o",
-        cost_tier="standard",
-        min_quality=0.85,
-        latency_slo=15.0,
+        role="execution", cost_tier="standard", min_quality=0.85, latency_slo=15.0
     ),
     "creative": ModelProfile(
-        primary="claude-sonnet-4-5",
-        fallback="gpt-4o",
-        cost_tier="standard",
-        min_quality=0.80,
-        latency_slo=20.0,
+        role="synthesis", cost_tier="standard", min_quality=0.80, latency_slo=20.0
     ),
     "analytical": ModelProfile(
-        primary="gpt-4o",
-        fallback="claude-sonnet-4-5",
-        cost_tier="standard",
-        min_quality=0.97,
-        latency_slo=20.0,
+        role="verification", cost_tier="standard", min_quality=0.97, latency_slo=20.0
     ),
     "fast": ModelProfile(
-        primary="gpt-4o-mini",
-        fallback="claude-haiku",
-        cost_tier="economy",
-        min_quality=0.70,
-        latency_slo=2.0,
+        role="classification", cost_tier="economy", min_quality=0.70, latency_slo=2.0
     ),
     "research": ModelProfile(
-        primary="claude-sonnet-4-5",
-        fallback="gpt-4o",
+        role="planning",
         cost_tier="standard",
         tools=["web_search"],
         context="128k",
@@ -88,46 +66,47 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         latency_slo=30.0,
     ),
     "expert": ModelProfile(
-        primary="claude-opus-4",
-        fallback="gpt-4o",
-        cost_tier="premium",
-        min_quality=0.99,
-        latency_slo=60.0,
+        role="planning", cost_tier="premium", min_quality=0.99, latency_slo=60.0
     ),
     "worker": ModelProfile(
-        primary="gpt-4o-mini",
-        fallback="claude-haiku",
-        cost_tier="economy",
-        min_quality=0.65,
-        latency_slo=5.0,
+        role="classification", cost_tier="economy", min_quality=0.65, latency_slo=5.0
     ),
     # The multimodal profile names no model: its primary and fallback are the
     # Model Registry's vision chain, resolved per selection (resolve_vision).
     "vision": ModelProfile(
-        primary="",
-        fallback="",
-        cost_tier="premium",
-        vision=True,
-        min_quality=0.88,
-        latency_slo=20.0,
+        role="vision", cost_tier="premium", vision=True, min_quality=0.88, latency_slo=20.0
     ),
 }
 
-def _registry_vision_models() -> tuple[str, str] | None:
-    """``(primary, fallback)`` from the Model Registry vision chain, else None."""
+def _registry_vision_chain() -> tuple[str, ...]:
+    """The Model Registry vision chain (head, then fallbacks), ``()`` when none."""
     from app.ai_router.resolve import ModelNotConfiguredError, resolve_vision
 
     try:
         res = resolve_vision()
     except ModelNotConfiguredError:
-        return None
-    return res.model, (res.fallbacks[0] if res.fallbacks else "")
+        return ()
+    return tuple(m for m in (res.model, *res.fallbacks) if m)
 
 
-def _with_models(profile: ModelProfile, primary: str, fallback: str) -> ModelProfile:
-    from dataclasses import replace
+def _candidates(profile: ModelProfile) -> list[str]:
+    """The profile's model and its fallbacks, in order (``[]``: nothing configured)."""
+    if profile.vision:
+        vision = _registry_vision_chain()
+        return list(vision)
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_reasoning
 
-    return replace(profile, primary=primary, fallback=fallback)
+    try:
+        resolution = resolve_reasoning(profile.role)
+    except ModelNotConfiguredError:
+        return []
+    return [m for m in (resolution.model, *resolution.fallbacks) if m]
+
+
+def _is_openai(model: str) -> bool:
+    from app.ai_router.model_orchestrator import provider_for_model
+
+    return provider_for_model(model) == "openai"
 
 
 # Cost tier score: higher = cheaper (better score for budget-constrained calls)
@@ -172,6 +151,13 @@ class ModelGateway:
     def __init__(self) -> None:
         self._health: dict[str, bool] = {}  # model_id → available (True by default)
 
+    def _usable(self, profile: ModelProfile, *, has_pii: bool) -> list[str]:
+        """The profile's healthy candidate models (PII: non-OpenAI first)."""
+        healthy = [m for m in _candidates(profile) if self._health.get(m, True)]
+        if has_pii:
+            healthy = [m for m in healthy if not _is_openai(m)]
+        return healthy
+
     async def select_model(
         self,
         role_profile: str,
@@ -192,13 +178,14 @@ class ModelGateway:
             latency_budget_s = latency_budget_ms / 1000.0
             best_profile_name = role_profile if role_profile in MODEL_PROFILES else "smart"
             best_score = -1.0
+            best_models: list[str] = []
             skip_reasons: list[str] = []
 
-            vision_models = _registry_vision_models()
+            vision_models = _registry_vision_chain()
             # A vision (multimodal) request is only ever served by a vision
             # profile — never silently by a text model.
             require_vision = MODEL_PROFILES.get(role_profile, MODEL_PROFILES["smart"]).vision
-            if require_vision and vision_models is None:
+            if require_vision and not vision_models:
                 from app.ai_router.resolve import ModelNotConfiguredError
 
                 raise ModelNotConfiguredError(
@@ -209,11 +196,9 @@ class ModelGateway:
             for name, profile in MODEL_PROFILES.items():
                 if require_vision and not profile.vision:
                     continue
-                if profile.vision:
-                    if vision_models is None:
-                        skip_reasons.append(f"{name}: no vision model is configured")
-                        continue
-                    profile = _with_models(profile, *vision_models)
+                if profile.vision and not vision_models:
+                    skip_reasons.append(f"{name}: no vision model is configured")
+                    continue
                 # Hard constraints
                 if quality_req > profile.min_quality + 0.05:
                     skip_reasons.append(
@@ -225,13 +210,6 @@ class ModelGateway:
                         f"{name}: latency SLO {profile.latency_slo}s exceeds budget {latency_budget_s}s"  # noqa: E501
                     )
                     continue
-                if has_pii and "gpt" in profile.primary.lower():
-                    # Prefer Anthropic when PII is involved
-                    skip_reasons.append(f"{name}: PII constraint — preferring non-OpenAI")
-                    continue
-                if not self._health.get(profile.primary, True):
-                    skip_reasons.append(f"{name}: primary model marked unhealthy")
-                    continue
                 estimated_cost = _COST_TIER_USD_PER_1K.get(profile.cost_tier, 0.003)
                 if estimated_cost > cost_budget_usd:
                     skip_reasons.append(
@@ -239,34 +217,41 @@ class ModelGateway:
                         f"budget ${cost_budget_usd:.4f}/1k"
                     )
                     continue
+                models = self._usable(profile, has_pii=has_pii)
+                if not models:
+                    skip_reasons.append(f"{name}: no healthy configured model")
+                    continue
 
                 score = self._score(profile, quality_req, latency_budget_s, cost_budget_usd)
                 if score > best_score:
                     best_score = score
                     best_profile_name = name
+                    best_models = models
 
             profile = MODEL_PROFILES.get(best_profile_name, MODEL_PROFILES["smart"])
-            if profile.vision and vision_models is not None:
-                profile = _with_models(profile, *vision_models)
+            if not best_models:
+                best_models = self._usable(profile, has_pii=has_pii)
+            model_id = best_models[0] if best_models else ""
+            fallback = best_models[1] if len(best_models) > 1 else ""
             reasoning = (
                 f"Selected '{best_profile_name}' (score={best_score:.3f}, "
-                f"model={profile.primary}). " + "; ".join(skip_reasons[:2])
+                f"model={model_id or 'unconfigured'}). " + "; ".join(skip_reasons[:2])
             )
 
             _log.info(
                 "model_gateway.selected",
                 profile=best_profile_name,
-                model=profile.primary,
+                model=model_id,
                 score=round(best_score, 3),
                 task_type=task_type,
             )
             span.set_attribute("selected_profile", best_profile_name)
-            span.set_attribute("selected_model", profile.primary)
+            span.set_attribute("selected_model", model_id)
 
             return ModelSelection(
-                model_id=profile.primary,
+                model_id=model_id,
                 profile_name=best_profile_name,
-                fallback_model=profile.fallback,
+                fallback_model=fallback,
                 reasoning=reasoning,
                 estimated_cost_usd_per_1k=_COST_TIER_USD_PER_1K.get(profile.cost_tier, 0.003),
                 estimated_latency_s=profile.latency_slo,
@@ -286,7 +271,7 @@ class ModelGateway:
             else 1.0
         )
         cost = _COST_TIER_SCORE.get(profile.cost_tier, 0.5)
-        reliability = 1.0 if self._health.get(profile.primary, True) else 0.0
+        reliability = 1.0
 
         return 0.40 * q + 0.25 * lat + 0.25 * cost + 0.10 * reliability
 

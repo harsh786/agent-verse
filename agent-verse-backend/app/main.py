@@ -1062,22 +1062,14 @@ def create_app(
 
     _embed_provider_resolver = build_provider_resolver(_embed_providers_by_name)
 
-    # Wire ModelRouter: selects optimal model per task type based on available provider
-    from app.agent.model_router import ModelRouter
-
-    try:
-        _mr_provider = "openai" if _openai_key else "anthropic"
-        _model_router: Any = ModelRouter(provider_name=_mr_provider)
-    except Exception as _mr_exc:
-        _model_router = None
-        logger.warning("model_router_init_failed", error=str(_mr_exc))
-
     async def _resolve_retrieval_llm(
         tenant_context: TenantContext,
         strategy: RAGStrategy,
     ) -> ResolvedLLM | None:
-        del strategy
+        from app.ai_router.role_preference import rag_role_for_strategy
         from app.services.llm_config_store import get_llm_config_store
+
+        rag_role = rag_role_for_strategy(strategy)
 
         tenant_config: dict[str, Any] | None = None
         config_store = getattr(app.state, "llm_config_store", None) or get_llm_config_store()
@@ -1129,11 +1121,11 @@ def create_app(
                 return None
             model = configured_model
             if not model:
-                # The RAG strategy LLM role (saved Model Registry order first), only
-                # if this tenant provider serves it; else the provider's default.
+                # The strategy's LLM role through resolve_reasoning; a BYOK
+                # provider keeps the model configured on it.
                 from app.ai_router.role_preference import servable_role_model
 
-                model = servable_role_model("rag_strategy", provider).strip()
+                model = servable_role_model(rag_role, provider).strip()
             return (
                 ResolvedLLM(
                     provider=provider,
@@ -1144,11 +1136,11 @@ def create_app(
                 else None
             )
 
-        # The RAG strategy LLM role's model (query rewrite / HyDE / verifier):
-        # saved Model Registry order > env pin > the provider's default.
+        # The strategy's LLM role (HyDE / query rewrite / RAPTOR / propositions /
+        # synthesis / citation verification) through resolve_reasoning.
         from app.ai_router.role_preference import servable_role_model
 
-        model = servable_role_model("rag_strategy", _app_provider).strip()
+        model = servable_role_model(rag_role, _app_provider).strip()
         if not model and isinstance(_app_provider, FakeProvider):
             model = "fake-provider"
         if not model:
@@ -3150,7 +3142,6 @@ def create_app(
         _ingestion_pipeline._embedder = app.state.embedder
     # Resolver for multi-model embedding routing (None when ≤1 provider configured).
     app.state.embed_provider_resolver = _embed_provider_resolver
-    app.state.model_router = _model_router
     # Core services
     app.state.tenant_service = _tenant_svc
     # SSO user sessions — no DB yet (every operation is a 503); the lifespan

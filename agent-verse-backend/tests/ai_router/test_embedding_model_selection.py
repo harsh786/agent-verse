@@ -12,6 +12,8 @@ in lockstep with the other roles rather than staying fixed.
 
 from __future__ import annotations
 
+import pytest
+
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
 from app.ai_router.model_orchestrator import ModelOrchestrator
 from app.tenancy.context import PlanTier
@@ -28,6 +30,9 @@ _PLANNER_BY_TIER = {
     "medium": "gpt-4o",
     "high": "gpt-5.2",
 }
+
+
+pytestmark = pytest.mark.usefixtures("tiered_registry")
 
 
 def _config(

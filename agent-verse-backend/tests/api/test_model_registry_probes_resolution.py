@@ -337,7 +337,8 @@ def test_resolution_follows_the_saved_order_with_fallbacks() -> None:
     assert [f["model_id"] for f in planning["fallbacks"]] == ["small-llm"]
     assert planning["model"]["servable"] is True
     judge = _task(out, "judge")
-    assert judge["model"]["model_id"] == "big-llm" and judge["routed_by_goal_router"] is False
+    # judge is routed by both goal routers (resolve_reasoning, like every role)
+    assert judge["model"]["model_id"] == "big-llm" and judge["routed_by_goal_router"] is True
 
 
 def test_resolution_without_an_order_is_cheapest_first() -> None:

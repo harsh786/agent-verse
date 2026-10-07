@@ -129,7 +129,6 @@ def _capability(
 
 def _reasoning(index: dict[str, list[Any]]) -> dict[str, Any]:
     from app.ai_router.selection import ordered_configured_models
-    from app.providers.model_defaults import configured_default_model
 
     ordered = ordered_configured_models(TaskType.TEXT_GENERATION)
     if ordered:
@@ -150,7 +149,14 @@ def _reasoning(index: dict[str, list[Any]]) -> dict[str, Any]:
             note="Each agent role below may resolve differently (tenant pins, tool use, "
             "deployment profile).",
         )
-    env_model = configured_default_model("")
+    # Nothing in the registry: what resolve_reasoning falls back to (env pins /
+    # role map / env default), never a separate reading of the env.
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_reasoning
+
+    try:
+        env_model = resolve_reasoning("planning").model
+    except ModelNotConfiguredError:
+        env_model = ""
     if env_model:
         return _capability(
             "reasoning",
@@ -380,16 +386,12 @@ def _rerank(request: Any, index: dict[str, list[Any]]) -> dict[str, Any]:
 def _roles(
     tenant_id: str, index: dict[str, list[Any]], warnings: list[str]
 ) -> list[dict[str, Any]]:
-    from app.ai_router.deployment_roles import ROLE_ALIASES, deployment_role_models
+    from types import SimpleNamespace
+
+    from app.ai_router.deployment_roles import deployment_role_models
     from app.ai_router.registry import tenant_policy_role_models
-    from app.ai_router.role_preference import (
-        ROLE_TASK_TYPES,
-        ROUTED_TASK_TYPES,
-        env_pin_model,
-        preferred_role_model,
-    )
-    from app.ai_router.selection import resolve_fallback_models, select_configured_model_id
-    from app.providers.model_defaults import configured_default_model
+    from app.ai_router.resolve import ModelNotConfiguredError, resolve_reasoning
+    from app.ai_router.role_preference import ROLE_TASK_TYPES, ROUTED_TASK_TYPES, env_pin_model
 
     try:
         pins = tenant_policy_role_models(tenant_id)
@@ -403,6 +405,19 @@ def _roles(
         logger.warning("model_resolution_role_map_failed error=%s", str(exc)[:160])
         role_map = {}
 
+    # What a goal's router carries for this tenant: its pins and the role map.
+    router = SimpleNamespace(_override="", _policy_roles=dict(pins), _role_map=dict(role_map))
+    # resolve_reasoning's source -> this panel's source vocabulary.
+    source_names = {
+        "override": "tenant_pin",
+        "tenant_pin": "tenant_pin",
+        "registry_preference": "registry_order",
+        "registry_cheapest": "registry_cheapest",
+        "deployment_role_map": "deployment_profile",
+        "provider_default": "default",
+        "local_default": "local_default",
+    }
+
     by_task: dict[str, list[str]] = {}
     for role, task in ROLE_TASK_TYPES.items():
         by_task.setdefault(task, []).append(role)
@@ -412,36 +427,16 @@ def _roles(
     out: list[dict[str, Any]] = []
     for task in order:
         routed = task in ROUTED_TASK_TYPES
-        alias = ROLE_ALIASES.get(task, task)
-        chain: list[tuple[str, str]] = []
-        if routed and pins.get(alias):
-            chain.append((pins[alias], "tenant_pin"))
-        preferred = preferred_role_model(task)
-        if preferred:
-            chain.append((preferred, "registry_order"))
-        if routed:
-            mapped = role_map.get(alias, "")
-            if mapped:
-                chain.append(
-                    (mapped, "env_pin" if mapped == env_pin_model(task) else "deployment_profile")
-                )
-            cheapest = select_configured_model_id(task)
-            if cheapest:
-                chain.append((cheapest, "registry_cheapest"))
-        else:
-            pinned = env_pin_model(task)
-            if pinned:
-                chain.append((pinned, "env_pin"))
-        default = configured_default_model("")
-        if default:
-            chain.append((default, "default"))
-        model_id, source = chain[0] if chain else ("", "none")
-        fallback_ids: list[str] = []
-        if model_id:
-            try:
-                fallback_ids = resolve_fallback_models(task, model_id, limit=3)
-            except Exception:  # pragma: no cover - never fail the read
-                fallback_ids = []
+        # The ONE reasoning resolver decides — this panel only displays it.
+        try:
+            resolution = resolve_reasoning(task, router=router)
+            model_id = resolution.model
+            source = source_names.get(resolution.source, "")
+            if resolution.source == "env_pin":
+                source = "env_pin" if model_id == env_pin_model(task) else "default"
+            fallback_ids = [m for m in resolution.fallbacks if m != model_id][:3]
+        except ModelNotConfiguredError:
+            model_id, source, fallback_ids = "", "none", []
         model = _describe(model_id, index)
         warning = None
         if not model_id:

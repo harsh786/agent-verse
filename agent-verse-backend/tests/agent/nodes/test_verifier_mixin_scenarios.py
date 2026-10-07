@@ -268,8 +268,13 @@ async def test_verify_execution_strategy_routes_faster_verifier_model_and_emits_
     async def _cb(event: dict) -> None:
         events.append(event)
 
+    from app.agent.model_router import ModelRouter, ModelRouterConfig
+
     verifier = FakeProvider(responses=['{"success": true, "reason": "ok"}'])
-    graph = _make_graph(verifier=verifier)
+    # The fast model is one this goal routes to (the execution role's model).
+    router = ModelRouter(config=ModelRouterConfig(
+        execution_model="fast-verifier-model", verification_model="slow-verifier-model"))
+    graph = _make_graph(verifier=verifier, model_router=router)
     graph._event_callback = _cb
 
     agent_state = _agent_state()
@@ -287,6 +292,29 @@ async def test_verify_execution_strategy_routes_faster_verifier_model_and_emits_
         e.get("type") == "verifier_model_routed" and e.get("model") == "fast-verifier-model"
         for e in events
     )
+
+
+@pytest.mark.asyncio
+async def test_strategy_c_never_routes_the_verifier_to_an_unknown_model_id() -> None:
+    """Strategy C may only pick a model this goal routes to (a router role model)
+    or a configured registry model — an arbitrary id (a capability-table key, a
+    stale hint) would be sent to a provider that cannot serve it."""
+    from app.agent.model_router import ModelRouter, ModelRouterConfig
+
+    verifier = FakeProvider(responses=['{"success": true, "reason": "ok"}'])
+    router = ModelRouter(config=ModelRouterConfig(verification_model="slow-verifier-model"))
+    graph = _make_graph(verifier=verifier, model_router=router)
+    agent_state = _agent_state()
+    agent_state.steps.append(_completed_step())
+
+    class _Strategy:
+        verifier_model = "claude-haiku"  # a capability-profile key, not a model id
+
+    agent_state.context["_execution_strategy"] = _Strategy()
+
+    await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+
+    assert verifier.call_history[-1].model == "slow-verifier-model"
 
 
 # ===========================================================================

@@ -14,6 +14,10 @@ Capabilities resolved here:
 * ``rerank`` — :func:`resolve_reranker`.
 * ``vision`` — :func:`resolve_vision`.
 * ``ocr`` — :func:`resolve_ocr`.
+* ``reasoning`` — :func:`resolve_reasoning` (every LLM role: agent graph,
+  goal execution, knowledge / RAG, chat, connectors, workflows, org, evals,
+  guardrails, ...). The role → task-type table is
+  :data:`app.ai_router.role_preference.ROLE_TASK_TYPES`.
 
 A vision / OCR call goes through :func:`dispatch_provider`: the
 :class:`~app.providers.model_dispatch.ModelDispatchProvider` sends each model
@@ -22,21 +26,30 @@ A vision / OCR call goes through :func:`dispatch_provider`: the
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+
+from app.observability.logging import get_logger
 
 if TYPE_CHECKING:
     from app.rag_platform.registry_reranker import FailoverReranker
 
+logger = get_logger(__name__)
+
 # Where a resolution came from.
 ResolutionSource = Literal[
+    "override",  # a per-agent / per-goal model override (reasoning)
+    "tenant_pin",  # the tenant's routing-policy role pin / BYOK model (reasoning)
     "registry_preference",  # the operator's saved preference order for the capability
     "registry_cheapest",  # a configured registry model, by cost (no preference saved)
     "env_pin",  # an explicit env/settings model or endpoint
     "local_default",  # the in-process local model tier
     "deployment_role_map",  # the deployment's per-role map (reasoning roles)
+    "provider_default",  # the provider's own default model (empty registry only)
     "degraded",  # nothing configured; the capability's documented degradation
 ]
 
@@ -439,18 +452,314 @@ def dispatch_provider(provider: Any = None) -> Any:
     return ModelDispatchProvider(provider)
 
 
+# ── reasoning ────────────────────────────────────────────────────────────────
+
+# The LLM role of the call in flight (set by ``complete_decision``): a provider
+# that receives a request with no model resolves it for this role.
+_current_role: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "agentverse_llm_role", default=""
+)
+
+
+@contextlib.contextmanager
+def llm_role_scope(role: str) -> Iterator[None]:
+    """Mark LLM calls made inside as *role* (see :func:`current_llm_role`)."""
+    token = _current_role.set(str(role or ""))
+    try:
+        yield
+    finally:
+        _current_role.reset(token)
+
+
+def current_llm_role(request: Any = None) -> str:
+    """The role of the call in flight: the request's ``metadata["agentverse_role"]``,
+    else the enclosing :func:`llm_role_scope`, else ``""``."""
+    meta = getattr(request, "metadata", None)
+    if isinstance(meta, dict):
+        role = str(meta.get("agentverse_role") or "").strip()
+        if role:
+            return role
+    return _current_role.get()
+
+
+REASONING_HINT = (
+    "add a text-generation model in the Model Registry (Models page), or set "
+    "DEFAULT_MODEL / DEFAULT_<ROLE>_MODEL"
+)
+
+# Model ids that mean "the provider default" — never a real model.
+UNSET_MODELS = frozenset({"", "default"})
+
+
+def is_unset_model(model: Any) -> bool:
+    """Whether *model* names no model (``""`` / ``"default"`` / None)."""
+    return str(model or "").strip().lower() in UNSET_MODELS
+
+
+def reasoning_task_type(role: str) -> str:
+    """The routing task type deciding *role*'s model (unknown roles: ``planning``).
+
+    ``planning`` is plain text generation with no tool requirement, so a role
+    nobody registered still follows the operator's text-generation order.
+    """
+    from app.ai_router.role_preference import REASONING_ROLES, role_task_type
+
+    task = role_task_type(role)
+    if task:
+        return task
+    r = str(role or "").strip().lower()
+    return r if r in REASONING_ROLES else "planning"
+
+
+def _endpoint_meta(model: str) -> tuple[str, str | None]:
+    """``(provider, base_url)`` of the registry entry for *model* (or ``("", None)``)."""
+    try:
+        from app.ai_router.registry import model_registry
+
+        for m in model_registry.list_configured():
+            if m.model_id == model:
+                return str(m.provider or ""), (getattr(m, "base_url", None) or None)
+    except Exception:  # pragma: no cover - never block resolution
+        pass
+    return "", None
+
+
+def _ordered(task: str) -> list[Any]:
+    try:
+        from app.ai_router.selection import ordered_configured_models
+
+        return list(ordered_configured_models(task))
+    except Exception as exc:  # pragma: no cover - never block a call on the registry
+        logger.warning("reasoning_registry_lookup_failed", task=task, error=str(exc)[:200])
+        return []
+
+
+def _registry_has_text_models() -> bool:
+    try:
+        from app.ai_router.models import ModelCapability
+        from app.ai_router.registry import model_registry
+        from app.ai_router.selection import _ensure_seeded, is_eligible
+
+        _ensure_seeded(model_registry)
+        return any(
+            is_eligible(m) for m in model_registry.list_configured(ModelCapability.TEXT_GENERATION)
+        )
+    except Exception:  # pragma: no cover - never block resolution
+        return False
+
+
+def _role_map_model(task: str, router: Any, provider: Any) -> str:
+    """The deployment role map's model for *task* (the router's per-goal map first)."""
+    from app.ai_router.deployment_roles import ROLE_ALIASES
+
+    role = ROLE_ALIASES.get(task, task)
+    if role == "judge":
+        role = "verification"
+    role_map = getattr(router, "_role_map", None) if router is not None else None
+    if isinstance(role_map, dict) and role_map:
+        return str(role_map.get(role) or "")
+    try:
+        from app.ai_router.deployment_roles import deployment_role_models, servable_models
+
+        servable = servable_models(provider) if provider is not None else None
+        return str(deployment_role_models(servable=servable).get(role) or "")
+    except Exception:  # pragma: no cover - never block resolution
+        return ""
+
+
+def _byok_default_model(provider: Any) -> str:
+    """The configured model of a tenant BYOK provider (``""``: not BYOK)."""
+    tenant = getattr(provider, "_byok_tenant_id", None) if provider is not None else None
+    if not isinstance(tenant, str) or not tenant:
+        return ""
+    default = getattr(provider, "_default_model", "")
+    return default if isinstance(default, str) and not is_unset_model(default) else ""
+
+
+def _fallbacks(task: str, primary: str, provider: Any) -> tuple[str, ...]:
+    out: list[str] = []
+    try:
+        from app.ai_router.selection import resolve_fallback_models
+
+        out = list(resolve_fallback_models(task, primary, limit=3))
+    except Exception:  # pragma: no cover - never block a call
+        out = []
+    default = getattr(provider, "_default_model", "") if provider is not None else ""
+    if not isinstance(default, str):
+        default = ""
+    if default and not is_unset_model(default) and default != primary and default not in out:
+        out.append(default)
+    return tuple(out)
+
+
+def resolve_reasoning(
+    role: str,
+    *,
+    override: str = "",
+    router: Any = None,
+    provider: Any = None,
+) -> Resolution:
+    """THE reasoning model for one LLM *role* — the one resolver every role uses.
+
+    Order:
+
+    1. a per-agent / per-goal *override* (or the *router*'s ``with_override``);
+       a tenant's own BYOK *provider* then keeps the model configured on it;
+    2. the tenant's routing-policy role pin (on the goal's *router*);
+    3. the Model Registry's saved text-generation preference order — the first
+       model eligible for the role (execution needs tool use);
+    4. the per-role env pin ``DEFAULT_<ROLE>_MODEL``;
+    5. the deployment role map (hybrid / on-prem / NVIDIA, restricted to what
+       *provider* serves);
+    6. the env default model ``NVIDIA_MODEL`` / ``DEFAULT_MODEL`` / ``OPENAI_MODEL``;
+    7. the registry's configured text models in execution order (a registry-only
+       deployment: operator-added models, cheapest first);
+    8. *provider*'s own default model — only when the registry has no text model;
+    9. :class:`ModelNotConfiguredError` (never a vendor literal).
+
+    ``fallbacks`` are the rest of the registry order for the role, then the
+    provider's own default model.
+    """
+    from app.ai_router.role_preference import env_pin_model, preferred_role_model
+    from app.providers.model_defaults import configured_default_model
+
+    task = reasoning_task_type(role)
+    if provider is None and router is not None:
+        provider = getattr(router, "_bound_provider", None)
+
+    def _done(model: str, source: ResolutionSource) -> Resolution:
+        prov, base = _endpoint_meta(model)
+        return Resolution(
+            capability="reasoning",
+            model=model,
+            source=source,
+            provider=prov,
+            base_url=base,
+            fallbacks=_fallbacks(task, model, provider),
+        )
+
+    explicit = str(override or "").strip()
+    if not explicit and router is not None:
+        explicit = str(getattr(router, "_override", "") or "").strip()
+    if explicit and not is_unset_model(explicit):
+        return _done(explicit, "override")
+
+    # A tenant's own (BYOK) provider serves the model the tenant configured on it.
+    byok_default = _byok_default_model(provider)
+    if byok_default:
+        return Resolution(capability="reasoning", model=byok_default, source="tenant_pin")
+
+    if router is not None:
+        from app.ai_router.deployment_roles import ROLE_ALIASES
+
+        policy = getattr(router, "_policy_roles", None)
+        if isinstance(policy, dict):
+            pinned = str(policy.get(ROLE_ALIASES.get(task, task)) or "").strip()
+            if pinned:
+                return _done(pinned, "tenant_pin")
+
+    preferred = preferred_role_model(task)
+    if preferred:
+        return _done(preferred, "registry_preference")
+
+    pinned_env = env_pin_model(task)
+    if pinned_env:
+        return _done(pinned_env, "env_pin")
+
+    mapped = _role_map_model(task, router, provider)
+    if mapped:
+        return _done(mapped, "deployment_role_map")
+
+    env_default = configured_default_model("")
+    if env_default:
+        return _done(env_default, "env_pin")
+
+    ordered = _ordered(task)
+    if ordered:
+        return _done(str(ordered[0].model_id), "registry_cheapest")
+
+    if not _registry_has_text_models():
+        default = getattr(provider, "_default_model", "") if provider is not None else ""
+        if isinstance(default, str) and default and not is_unset_model(default):
+            return Resolution(
+                capability="reasoning", model=default, source="provider_default"
+            )
+
+    raise ModelNotConfiguredError("reasoning", f"role {role!r}: {REASONING_HINT}")
+
+
+def reasoning_model(
+    role: str, *, override: str = "", router: Any = None, provider: Any = None
+) -> str:
+    """:func:`resolve_reasoning`'s model, or ``""`` when nothing is configured.
+
+    For call sites that hand the model to a provider which reports the honest
+    "no LLM configured" error itself (``""`` = the provider default).
+    """
+    try:
+        return resolve_reasoning(role, override=override, router=router, provider=provider).model
+    except ModelNotConfiguredError:
+        return ""
+
+
+def cheapest_reasoning_model(role: str = "classification") -> str:
+    """The cheapest configured text model for *role* (``""`` when none).
+
+    For optimisation actions that recommend a cheaper model: the registry's
+    cheapest eligible model, never a vendor literal.
+    """
+    from app.ai_router.selection import _cheapest
+
+    task = reasoning_task_type(role)
+    chosen = _cheapest(_ordered(task))
+    return str(getattr(chosen, "model_id", "") or "") if chosen is not None else ""
+
+
+def registry_text_model_ids(role: str = "chat") -> list[str]:
+    """The registry's configured text models for *role*, in execution order."""
+    seen: list[str] = []
+    for m in _ordered(reasoning_task_type(role)):
+        mid = str(m.model_id or "")
+        if mid and mid not in seen:
+            seen.append(mid)
+    return seen
+
+
+def validated_preference(model: str | None, role: str = "chat") -> str:
+    """*model* when it is a configured registry text model eligible for *role*.
+
+    A user preference (chat ``preferred_model``) is applied through the resolver
+    only after this check: a stale or invented model id is ignored (``""``)
+    instead of being sent to a provider that cannot serve it.
+    """
+    wanted = str(model or "").strip()
+    if not wanted or is_unset_model(wanted):
+        return ""
+    return wanted if wanted in registry_text_model_ids(role) else ""
+
+
 __all__ = [
+    "REASONING_HINT",
     "TESSERACT_MODEL",
     "ModelNotConfiguredError",
     "RerankTier",
     "RerankerResolution",
     "Resolution",
     "ResolutionSource",
+    "cheapest_reasoning_model",
+    "current_llm_role",
     "dispatch_provider",
+    "is_unset_model",
+    "llm_role_scope",
     "ocr_chain",
+    "reasoning_model",
+    "reasoning_task_type",
+    "registry_text_model_ids",
     "resolve_ocr",
+    "resolve_reasoning",
     "resolve_reranker",
     "resolve_vision",
+    "validated_preference",
     "vision_chain",
     "vision_configured",
 ]

@@ -97,7 +97,10 @@ def test_role_families_built_at_runtime_are_known() -> None:
     assert role_task_type("coordination_moa_aggregate") == "planning"
     assert role_task_type("rag_whatever_new") == "classification"
     assert role_task_type("eval_new_dimension") == "judge"
-    assert role_task_type("chat_qa") == ""  # out of scope: untouched
+    assert role_task_type("chat_qa") == "planning"
+    assert role_task_type("chat_new_helper") == "classification"
+    assert role_task_type("org_new_step") == "planning"
+    assert role_task_type("totally_unknown") == ""
 
 
 # ── with Qwen ranked first, every role resolves to Qwen ─────────────────────
@@ -249,8 +252,8 @@ async def test_complete_decision_routes_a_known_role_that_sends_no_model(monkeyp
             dispatch, CompletionRequest(messages=[Message(role="user", content="x")], model=""),
             role=role, charge=False,
         )
-    # chat_qa is not a known agent role: left on the provider default ("").
-    assert inner.models == [QWEN] * 7 + [""]
+    # chat_qa (chat answers) is a known role too: every role follows the order.
+    assert inner.models == [QWEN] * 8
 
 
 @pytest.mark.asyncio

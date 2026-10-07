@@ -200,14 +200,13 @@ class NLTriggerResolver:
         prompt = _PROMPT.format(description=description)
         try:
             from app.providers.base import CompletionRequest, Message
-            from app.providers.model_defaults import configured_default_model
 
             req = CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
-                # A tenant's own provider uses its configured model ("" → default).
-                model=""
-                if getattr(llm, "_byok_tenant_id", None)
-                else configured_default_model("gpt-4o"),
+                # "": complete_decision resolves the nl_trigger role from the Model
+                # Registry (resolve_reasoning); a tenant's BYOK provider keeps its
+                # own configured model.
+                model="",
                 max_tokens=256,
                 temperature=0.0,
             )

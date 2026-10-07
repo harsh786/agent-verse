@@ -1,7 +1,7 @@
 """PatternConfig and GoalProperties — exact doc-4 dataclass contracts.
 
-These live in app/agent/ (not app/orchestration/) because they directly
-drive the LangGraph DynamicGraphAssembler and are agent-execution contracts.
+These live in app/agent/ (not app/orchestration/) because they
+are agent-execution contracts.
 """
 
 from __future__ import annotations
@@ -63,10 +63,12 @@ class PatternConfig:
     rag_patterns: list[str] = field(default_factory=lambda: ["hybrid_rag"])
     multi_agent_patterns: list[str] = field(default_factory=lambda: ["single_agent"])
     safety_patterns: list[str] = field(default_factory=lambda: ["guardrails"])
-    model_planner: str = "gpt-5.2"
-    model_executor: str = "gpt-5.2"
-    model_verifier: str = "gpt-5.2"
-    model_classifier: str = "gpt-4o-mini"
+    # Explicit per-role model hints ("" = resolve_reasoning decides from the
+    # Model Registry; there is no built-in model).
+    model_planner: str = ""
+    model_executor: str = ""
+    model_verifier: str = ""
+    model_classifier: str = ""
     max_iterations: int = 6
     max_refine_iterations: int = 2
     persistence_mode: bool = False

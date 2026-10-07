@@ -770,6 +770,24 @@ def _router_vendor_of(provider: Any) -> str:
     vendor = provider_system_of(inner)
     return "" if vendor == "unknown" else vendor
 
+
+def isolated_role_models(*, byok_model: str = "", override: str = "") -> dict[str, str]:
+    """The reasoning model per role for an isolated worker's job envelope.
+
+    A tenant's BYOK model serves every role; otherwise each role resolves
+    through :func:`app.ai_router.resolve.resolve_reasoning` (a goal / agent
+    ``model_override`` first). Roles nothing resolves for are omitted — the
+    worker's provider then reports the honest "no model configured" error.
+    """
+    from app.ai_router.resolve import reasoning_model
+
+    out: dict[str, str] = {}
+    for role in ("planning", "execution", "verification"):
+        model = byok_model or reasoning_model(role, override=override)
+        if model:
+            out[role] = model
+    return out
+
 class GoalService:
     """In-memory goal service.
 
@@ -1785,12 +1803,16 @@ class GoalService:
             )
             # Last-resort role models follow THIS goal's provider (a01-F022-02).
             _model_router.set_provider_vendor(_router_vendor_of(provider))
+            # resolve_reasoning: a BYOK provider keeps its own model; the role
+            # map / provider default follow what this goal's provider serves.
+            _model_router.bind_provider(provider)
         except Exception:
             # Fallback to simple ModelRouter if orchestrator fails
             try:
                 from app.agent.model_router import ModelRouter, get_router_for_tenant
 
                 _model_router = get_router_for_tenant(_agent_config)
+                _model_router.bind_provider(provider)
             except Exception:
                 _model_router = None
 
@@ -1841,6 +1863,7 @@ class GoalService:
                 from app.agent.model_router import ModelRouter
 
                 _model_router = ModelRouter()
+                _model_router.bind_provider(provider)
             try:
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
                 if hasattr(_model_router, "set_plan_tier"):  # PROV-18: plan caps the pin
@@ -4258,12 +4281,14 @@ class GoalService:
         # isolated runner fell back to the platform key. A tenant WITH a BYOK
         # config whose key cannot be read/decrypted now fails the goal instead.
         scoped_llm_key = ""
+        _byok_model = ""
         try:
             from app.services.llm_config_store import get_llm_config_store
 
             _config_store = get_llm_config_store()
             if _config_store is not None:
                 _cfg = await _config_store.get_config(tenant_ctx.tenant_id, strict=True) or {}
+                _byok_model = str(_cfg.get("model") or _cfg.get("default_model") or "")
                 _enc = str(_cfg.get("encrypted_key") or "")
                 if _enc:
                     from app.providers.tenant_vault import decrypt_tenant_secret
@@ -4329,6 +4354,16 @@ class GoalService:
             workflow_mode=(record.workflow_mode if record is not None else "single_agent"),
             priority=(record.priority if record is not None else "normal"),
             runner_type=runner_type,
+            role_models=isolated_role_models(
+                byok_model=_byok_model if scoped_llm_key else "",
+                override=str(
+                    ((record.execution_context or {}) if record is not None else {}).get(
+                        "model_override"
+                    )
+                    or (agent_config or {}).get("model_override")
+                    or ""
+                ),
+            ),
             scoped_llm_api_key=scoped_llm_key,
         )
 

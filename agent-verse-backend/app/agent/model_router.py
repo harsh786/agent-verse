@@ -1,25 +1,23 @@
-"""Multi-model router — selects the optimal model for each task type.
+"""Per-goal role router — which model serves each agent role.
 
-Strategy:
-- Planning: Largest/most capable model (best reasoning)
-- Execution: Mid-tier model (good enough, cheaper)
-- Verification: Fastest/cheapest model (yes/no answer only)
-- Embedding: Dedicated embedding model
-- Classification: Smallest capable model
+Every reasoning role resolves through the ONE reasoning resolver,
+:func:`app.ai_router.resolve.resolve_reasoning`: per-agent / per-goal override >
+the tenant's routing-policy pin > the Model Registry's saved text-generation
+order > ``DEFAULT_<ROLE>_MODEL`` > the deployment role map > the env default
+model > the registry's configured models > the provider default (empty registry
+only). There are no built-in per-vendor model profiles: a model the deployment
+does not serve is never chosen because of a hardcoded slug.
 
-Falls back to the tenant's configured default_model when a specific
-task-type model is not configured.
+An explicit :class:`ModelRouterConfig` (an agent's own configured model) acts as
+that agent's override for the roles it names.
 """
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from app.ai_router.deployment_roles import ROLE_ALIASES as _ROLE_ALIASES
-from app.ai_router.role_preference import ROLE_PIN_ENV as _ROLE_PIN_ENV_TABLE
-from app.ai_router.role_preference import ROUTED_TASK_TYPES as _ROUTED_TASK_TYPES
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +25,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class ModelRouterConfig:
-    """Per-tenant model routing configuration."""
+    """An agent's / tenant's explicitly configured role models ("" = not set)."""
 
     planning_model: str = ""
     execution_model: str = ""
@@ -36,125 +34,39 @@ class ModelRouterConfig:
     fallback_model: str = ""
 
 
-# Built-in defaults per provider
-_PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
-    "anthropic": ModelRouterConfig(
-        planning_model="claude-opus-4-8",
-        execution_model="claude-sonnet-4-5",
-        verification_model="claude-haiku-3-5",
-        fallback_model="claude-opus-4-8",
-    ),
-    "openai": ModelRouterConfig(
-        planning_model="gpt-5.2",
-        execution_model="gpt-4o-mini",
-        verification_model="gpt-4o-mini",
-        fallback_model="gpt-5.2",
-    ),
-    "groq": ModelRouterConfig(
-        planning_model="llama-3.1-70b-versatile",
-        execution_model="llama-3.1-8b-instant",
-        verification_model="llama-3.1-8b-instant",
-        fallback_model="llama-3.1-70b-versatile",
-    ),
-    "ollama": ModelRouterConfig(
-        planning_model="llama3.2",
-        execution_model="llama3.2",
-        verification_model="llama3.2",
-        fallback_model="llama3.2",
-    ),
-    # Self-hosted vLLM cluster: capable Qwen for planning/execution, small/fast
-    # Gemma for verification, dedicated Qwen embedding. (Model names match the
-    # config defaults; override via the env model overrides if you serve others.)
-    "onprem": ModelRouterConfig(
-        planning_model="Qwen/Qwen3.5-4B",
-        execution_model="Qwen/Qwen3.5-4B",
-        verification_model="google/gemma-4-E2B",
-        embedding_model="Qwen/Qwen3-Embedding-0.6B",
-        fallback_model="Qwen/Qwen3.5-4B",
-    ),
-    # NVIDIA cloud as the top model for every reasoning role + fallback.
-    "nvidia": ModelRouterConfig(
-        planning_model="nvidia/llama-3.1-nemotron-70b-instruct",
-        execution_model="nvidia/llama-3.1-nemotron-70b-instruct",
-        verification_model="nvidia/llama-3.1-nemotron-70b-instruct",
-        fallback_model="nvidia/llama-3.1-nemotron-70b-instruct",
-    ),
-    # Hybrid: NVIDIA (top) for planning + fallback, on-prem Qwen for execution,
-    # fast on-prem Gemma for verification, on-prem Qwen for embeddings. Per-role
-    # env overrides (DEFAULT_*_MODEL) refine this at boot for the exact model ids.
-    "hybrid": ModelRouterConfig(
-        planning_model="nvidia/llama-3.1-nemotron-70b-instruct",
-        execution_model="Qwen/Qwen3.5-4B",
-        verification_model="google/gemma-4-E2B",
-        embedding_model="Qwen/Qwen3-Embedding-0.6B",
-        fallback_model="nvidia/llama-3.1-nemotron-70b-instruct",
-    ),
+# Role → the config field that pins it (then ``fallback_model``).
+_CONFIG_FIELDS: dict[str, str] = {
+    "planning": "planning_model",
+    "reflection": "planning_model",
+    "think": "planning_model",
+    "thinking": "planning_model",
+    "supervisor": "planning_model",
+    "execution": "execution_model",
+    "classification": "execution_model",
+    "verification": "verification_model",
+    "judge": "verification_model",
 }
 
 
-# One table for both routers and the single-call resolver (role_preference).
-_ROLE_PIN_ENV: dict[str, str] = _ROLE_PIN_ENV_TABLE
-
-
-def _apply_env_model_overrides(base: ModelRouterConfig) -> ModelRouterConfig:
-    """Apply env-configured model overrides on top of a provider's default profile.
-
-    Two mechanisms, both non-breaking (they only override when set):
-
-    * **Per-role** ``DEFAULT_PLANNING_MODEL`` / ``DEFAULT_EXECUTION_MODEL`` /
-      ``DEFAULT_VERIFICATION_MODEL`` always win when set — explicit operator intent.
-    * **Single self-hosted model mode**: when ``OPENAI_BASE_URL`` points at a
-      non-official (self-hosted) endpoint, ``OPENAI_MODEL``/``DEFAULT_MODEL`` fills
-      every role a per-role var didn't set — so a vLLM/Qwen deployment that serves
-      exactly one model never routes to a cloud slug (gpt-5.2, claude-…) it can't serve.
-
-    A cloud deployment (official base_url or none) is unaffected unless it sets the
-    explicit per-role vars, so multi-model routing keeps working.
-    """
-    base_url = (os.getenv("OPENAI_BASE_URL") or "").rstrip("/").lower()
-    is_self_hosted = bool(base_url) and base_url != "https://api.openai.com/v1"
-    # A single configured model (NVIDIA, self-hosted vLLM, …) should serve every
-    # role, so no hardcoded profile slug (gpt-5.2, claude-…) is ever routed to an
-    # endpoint that cannot serve it. NVIDIA is included even without OPENAI_BASE_URL.
-    # (Multi-model hybrid/on-prem routing is the per-goal role map instead — see
-    # ModelRouter.set_role_map / app/ai_router/deployment_roles.py.)
-    is_single_model = is_self_hosted or bool(os.getenv("NVIDIA_API_KEY"))
-    single = ""
-    if is_single_model:
-        single = (
-            os.getenv("NVIDIA_MODEL")
-            or os.getenv("OPENAI_MODEL")
-            or os.getenv("DEFAULT_MODEL")
-            or ""
-        )
-
-    overrides = {
-        "planning_model": os.getenv("DEFAULT_PLANNING_MODEL") or single,
-        "execution_model": os.getenv("DEFAULT_EXECUTION_MODEL") or single,
-        "verification_model": os.getenv("DEFAULT_VERIFICATION_MODEL") or single,
-        "fallback_model": single,
-    }
-    applied = {k: v for k, v in overrides.items() if v}
-    return replace(base, **applied) if applied else base
-
-
 class ModelRouter:
-    """Routes task types to optimal models for a given provider."""
+    """Routes task types to models through the reasoning resolver."""
 
     def __init__(
         self,
-        provider_name: str = "anthropic",
+        provider_name: str = "",
         config: ModelRouterConfig | None = None,
     ) -> None:
-        self._provider = provider_name.lower()
-        self._config = config or _PROVIDER_DEFAULTS.get(
-            self._provider,
-            ModelRouterConfig(),
-        )
-        self._config = _apply_env_model_overrides(self._config)
+        self._provider = (provider_name or "").lower()
+        self._config = config or ModelRouterConfig()
         self._override = ""
         self._role_map: dict[str, str] = {}
         self._policy_roles: dict[str, str] = {}
+        self._bound_provider: Any = None
+
+    def bind_provider(self, provider: Any) -> None:
+        """The goal's provider: a tenant's BYOK provider keeps its own model, and
+        the role map / provider default follow what it serves."""
+        self._bound_provider = provider
 
     def set_role_map(self, role_map: dict[str, str]) -> None:
         """Pin roles to models the goal's provider serves (deployment_roles)."""
@@ -171,82 +83,36 @@ class ModelRouter:
     def role_map(self) -> dict[str, str]:
         return dict(self._role_map)
 
-    # Reasoning roles that route through the generic configured-model registry.
-    _REGISTRY_TASKS = _ROUTED_TASK_TYPES
+    def _configured(self, task: str) -> str:
+        name = _CONFIG_FIELDS.get(task)
+        value = str(getattr(self._config, name, "") or "") if name else ""
+        return value or str(self._config.fallback_model or "")
 
     def model_for(self, task_type: str, fallback: str = "") -> str:
-        """Return the optimal model name for the given task type.
+        """The model for *task_type* (a routed task type or any known role label).
 
-        task_type: "planning" | "execution" | "verification" | "embedding" | "classification"
-
-        Reasoning roles first consult the generic cost-aware model registry
-        (cheapest configured model for the capability); when the registry has no
-        configured candidate it falls back to the env/provider-profile resolution
-        below — so behavior is unchanged until models are registered.
+        ``""`` when nothing is configured anywhere (the provider then reports
+        the honest "no LLM configured" error).
         """
-        # Explicit per-role operator intent wins over the cost-aware registry — so a
-        # hybrid deployment can pin NVIDIA to planning, Qwen to execution, Gemma to
-        # verification (the registry would otherwise pick the cheapest for every role).
-        # A per-agent model_override (with_override) wins over everything; then the
-        # per-goal role map built from what the goal's provider can actually serve
-        # (set_role_map — see app/ai_router/deployment_roles.py).
-        if self._override:
-            return self._override
-        _policy_role = _ROLE_ALIASES.get(task_type, task_type)
-        if getattr(self, "_policy_roles", {}).get(_policy_role):
-            return self._policy_roles[_policy_role]
-        # The operator's saved reasoning order (Model Registry) is explicit intent
-        # too: it wins over the env pins and the automatic deployment role map,
-        # which every NVIDIA / on-prem deployment has — the model ranked first
-        # used to run only as a fallback (app/ai_router/role_preference.py).
-        from app.ai_router.role_preference import preferred_role_model
+        if task_type == "embedding":
+            return self._config.embedding_model or fallback
+        from app.ai_router.resolve import (
+            ModelNotConfiguredError,
+            reasoning_task_type,
+            resolve_reasoning,
+        )
 
-        _preferred = preferred_role_model(task_type)
-        if _preferred:
-            return _preferred
-        _role = _ROLE_ALIASES.get(task_type, task_type)
-        if self._role_map.get(_role):
-            return self._role_map[_role]
-
-        # Explicit per-role env pins (DEFAULT_PLANNING_MODEL, …) win over the
-        # cost-aware registry, as documented above — the registry lookup used to
-        # run first and replace an operator's pin with the cheapest model.
-        _pin_env = _ROLE_PIN_ENV.get(task_type)
-        if _pin_env and os.getenv(_pin_env):
-            return str(os.getenv(_pin_env))
-
-        if task_type in self._REGISTRY_TASKS:
-            try:
-                from app.ai_router.selection import select_configured_model_id
-
-                _choice = select_configured_model_id(task_type)
-                if _choice:
-                    return _choice
-            except Exception:  # pragma: no cover - never block on the registry
-                pass
-        mapping = {
-            "planning": self._config.planning_model,
-            "execution": self._config.execution_model,
-            "verification": self._config.verification_model,
-            "embedding": self._config.embedding_model,
-            "classification": self._config.execution_model,  # reuse execution model
-            # Reflection and chain-of-thought reasoning need planning-tier quality
-            "reflection": self._config.planning_model,
-            "think": self._config.planning_model,
-            "thinking": self._config.planning_model,
-            # The supervisor decomposes / synthesizes the goal: planning tier.
-            "supervisor": self._config.planning_model,
-        }
-        model = mapping.get(task_type, "")
-        if not model:
-            model = fallback or self._config.fallback_model
+        task = reasoning_task_type(task_type)
+        pinned = self._override or self._policy_roles.get(_ROLE_ALIASES.get(task, task), "")
+        configured = "" if pinned else self._configured(task)
+        try:
+            model = resolve_reasoning(
+                task, override=configured, router=self, provider=self._bound_provider
+            ).model
+        except ModelNotConfiguredError:
+            model = fallback
         if model:
-            logger.debug(
-                "model_router_selected",
-                task_type=task_type,
-                model=model,
-                provider=self._provider,
-            )
+            logger.debug("model_router_selected", task_type=task_type, model=model)
         return model
 
     @classmethod
@@ -310,21 +176,12 @@ class ModelRouter:
 
 
 def get_router_for_tenant(tenant_cfg: dict[str, Any]) -> ModelRouter:
-    """Build a ModelRouter from a tenant's LLM config dict."""
-    provider = tenant_cfg.get("provider", "anthropic")
-    default_model = tenant_cfg.get("default_model", "")
+    """A ModelRouter for an agent / tenant LLM config dict.
 
-    base_config = _PROVIDER_DEFAULTS.get(provider, ModelRouterConfig())
-
-    # If tenant specified a model, use it as fallback
-    if default_model:
-        config = ModelRouterConfig(
-            planning_model=base_config.planning_model or default_model,
-            execution_model=base_config.execution_model or default_model,
-            verification_model=base_config.verification_model or default_model,
-            fallback_model=default_model,
-        )
-    else:
-        config = base_config
-
+    Its ``default_model`` (when set) is that agent's own model for every role;
+    otherwise every role follows the reasoning resolver.
+    """
+    provider = str(tenant_cfg.get("provider", "") or "")
+    default_model = str(tenant_cfg.get("default_model", "") or "")
+    config = ModelRouterConfig(fallback_model=default_model) if default_model else None
     return ModelRouter(provider_name=provider, config=config)

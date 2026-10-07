@@ -311,23 +311,86 @@ class ModelDispatchProvider:
                 return adapter
         return self._inner
 
+    # -- the central reasoning hook ---------------------------------------------
+
+    def resolve_unset_model(self, request: Any) -> tuple[Any, list[str]]:
+        """``(request, fallbacks)``: a request with no model (``""`` / ``"default"``)
+        gets the reasoning model of its role (``resolve_reasoning``) and the rest
+        of the registry order as fallbacks. Unchanged when it names a model, or
+        when nothing is configured (the wrapped provider then answers honestly).
+        """
+        from app.ai_router.resolve import (
+            ModelNotConfiguredError,
+            current_llm_role,
+            is_unset_model,
+            resolve_reasoning,
+        )
+
+        model = getattr(request, "model", None)
+        if not is_unset_model(model):
+            return request, []
+        if model:  # "default" is no model id: never send it to an API
+            request = _with_model(request, "")
+        if getattr(self, "_byok_tenant_id", None):
+            return request, []
+        try:
+            resolution = resolve_reasoning(current_llm_role(request) or "text_generation",
+                                           provider=self)
+        except ModelNotConfiguredError:
+            return request, []
+        except Exception as exc:  # pragma: no cover - never block a call over routing
+            logger.warning("model_dispatch_resolve_failed error=%s", str(exc)[:200])
+            return request, []
+        return _with_model(request, resolution.model), list(resolution.fallbacks)
+
     # -- dispatched paths --------------------------------------------------------
 
-    async def complete(self, request: Any) -> Any:
+    async def _dispatch_complete(self, request: Any) -> Any:
         return await self.target_for(getattr(request, "model", None)).complete(request)
 
-    async def stream_complete(self, request: Any) -> AsyncGenerator[str, None]:
-        async for chunk in self.target_for(getattr(request, "model", None)).stream_complete(
-            request
-        ):
-            yield chunk
+    def _dispatch_stream(self, request: Any) -> AsyncGenerator[str, None]:
+        result: AsyncGenerator[str, None] = self.target_for(
+            getattr(request, "model", None)
+        ).stream_complete(request)
+        return result
 
-    async def stream_tokens(
+    async def _dispatch_stream_tokens(
         self, request: Any, on_token: Callable[[str], Awaitable[None]]
     ) -> Any:
         return await self.target_for(getattr(request, "model", None)).stream_tokens(
             request, on_token
         )
+
+    async def complete(self, request: Any) -> Any:
+        request, fallbacks = self.resolve_unset_model(request)
+        try:
+            return await self._dispatch_complete(request)
+        except Exception as exc:
+            if not fallbacks or not getattr(exc, "provider_failure", True):
+                raise
+            last: Exception = exc
+        # The model this call resolved to failed: the rest of the registry order.
+        for fallback in fallbacks:
+            logger.warning(
+                "model_dispatch_failover from=%s to=%s error=%s",
+                getattr(request, "model", ""), fallback, str(last)[:200],
+            )
+            try:
+                return await self._dispatch_complete(_with_model(request, fallback))
+            except Exception as exc:
+                last = exc
+        raise last
+
+    async def stream_complete(self, request: Any) -> AsyncGenerator[str, None]:
+        request, _ = self.resolve_unset_model(request)
+        async for chunk in self._dispatch_stream(request):
+            yield chunk
+
+    async def stream_tokens(
+        self, request: Any, on_token: Callable[[str], Awaitable[None]]
+    ) -> Any:
+        request, _ = self.resolve_unset_model(request)
+        return await self._dispatch_stream_tokens(request, on_token)
 
     # -- transparent delegation for everything else (embeddings included) -------
 
@@ -343,6 +406,19 @@ class ModelDispatchProvider:
             object.__setattr__(self, name, value)
         else:
             setattr(self._inner, name, value)
+
+
+def _with_model(request: Any, model: str) -> Any:
+    """*request* with ``model`` replaced (dataclass / pydantic / plain object)."""
+    import dataclasses
+
+    if dataclasses.is_dataclass(request) and not isinstance(request, type):
+        return dataclasses.replace(request, model=model)
+    copy = getattr(request, "model_copy", None)
+    if callable(copy):
+        return copy(update={"model": model})
+    request.model = model
+    return request
 
 
 def can_serve_model(provider: Any, model: str) -> bool:

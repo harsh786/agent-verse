@@ -1,12 +1,12 @@
-"""a01-F022-02: the last-resort role models follow the goal's provider, not OpenAI.
+"""a01-F022-02 (superseded): with nothing configured, no role gets a vendor slug.
 
-``_TIER_MODELS`` (OpenAI slugs + voyage-3-lite) was the fallback for every
-deployment whenever nothing was configured in the model registry, e.g. a
-deployment with only ``ANTHROPIC_API_KEY`` and no ``DEFAULT_MODEL``: its planner,
-executor and verifier were sent ``gpt-4o`` and every call failed. The adapter
-now knows the goal's provider vendor (``set_provider_vendor``) and falls back to
-that vendor's own profile (the same table the Celery worker's ``ModelRouter``
-uses), or to "" — the provider's own default model — when it has none.
+``_TIER_MODELS`` (OpenAI slugs) and, later, per-vendor profiles were the
+fallback whenever nothing was configured in the model registry: a deployment
+with only ``ANTHROPIC_API_KEY`` and no ``DEFAULT_MODEL`` had its roles sent
+``gpt-4o`` (then ``claude-opus-4-8``) — models nobody configured. Every role now
+resolves through ``resolve_reasoning``: with nothing configured it is ``""``
+(the provider's own default model / its honest "no LLM configured" error),
+whatever the vendor.
 """
 
 from __future__ import annotations
@@ -15,38 +15,36 @@ import pytest
 
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
 from app.ai_router.model_orchestrator import (
-    _TIER_MODELS,
     ModelOrchestrator,
     ModelOrchestratorAdapter,
     model_quality_tier,
 )
+from app.ai_router.models import ModelCapability, ModelEndpoint
+from app.ai_router.registry import model_registry
 
-_OPENAI_SLUGS = {m for tier in _TIER_MODELS.values() for m in tier.values()}
 _ROLES = ("planning", "execution", "verification", "classification", "judge")
+_ENV = (
+    "NVIDIA_API_KEY", "NVIDIA_MODEL", "OPENAI_BASE_URL", "OPENAI_MODEL", "DEFAULT_MODEL",
+    "DEFAULT_PLANNING_MODEL", "DEFAULT_EXECUTION_MODEL", "DEFAULT_VERIFICATION_MODEL",
+)
 
 
 @pytest.fixture(autouse=True)
-def _nothing_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.ai_router.role_preference as role_preference
-    import app.ai_router.selection as selection
+def _nothing_configured(monkeypatch: pytest.MonkeyPatch):
+    import app.ai_router.selection as sel
 
-    monkeypatch.setattr(selection, "select_configured_model_id", lambda *a, **k: "")
-    monkeypatch.setattr(role_preference, "preferred_role_model", lambda *a, **k: "")
+    monkeypatch.setattr(sel, "_lazy_seeded", True)
+    monkeypatch.setattr(sel, "_last_version_check", float("inf"))
     monkeypatch.setattr(
-        "app.ai_router.model_orchestrator._configured_within_cap", lambda task, cap: ""
+        "app.ai_router.deployment_roles.deployment_role_models", lambda *a, **k: {}
     )
-    monkeypatch.setattr("app.ai_router.model_orchestrator._configured_for_tier", lambda tier: "")
-    for var in (
-        "NVIDIA_API_KEY",
-        "NVIDIA_MODEL",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL",
-        "DEFAULT_MODEL",
-        "DEFAULT_PLANNING_MODEL",
-        "DEFAULT_EXECUTION_MODEL",
-        "DEFAULT_VERIFICATION_MODEL",
-    ):
+    for var in _ENV:
         monkeypatch.delenv(var, raising=False)
+    model_registry.clear_configured()
+    model_registry.set_preferences({})
+    yield
+    model_registry.clear_configured()
+    model_registry.set_preferences({})
 
 
 def _adapter(vendor: str) -> ModelOrchestratorAdapter:
@@ -55,59 +53,54 @@ def _adapter(vendor: str) -> ModelOrchestratorAdapter:
     return adapter
 
 
-@pytest.mark.parametrize("task", _ROLES)
-def test_anthropic_goal_never_gets_an_openai_slug(task: str) -> None:
-    chosen = _adapter("anthropic").model_for(task)
-    assert chosen not in _OPENAI_SLUGS
-    assert chosen.startswith("claude")
-
-
-@pytest.mark.parametrize("vendor", ["vllm", "fake", "gemini", "together"])
-def test_vendor_without_a_profile_uses_the_providers_own_default(vendor: str) -> None:
+@pytest.mark.parametrize("vendor", ["anthropic", "openai", "nvidia", "vllm", "gemini", ""])
+def test_no_vendor_slug_when_nothing_is_configured(vendor: str) -> None:
     for task in _ROLES:
-        assert _adapter(vendor).model_for(task) == ""
+        assert _adapter(vendor).model_for(task) == "", (vendor, task)
 
 
-def test_nvidia_goal_gets_the_nvidia_profile() -> None:
-    assert _adapter("nvidia").model_for("planning").startswith("nvidia/")
-
-
-def test_openai_goal_keeps_the_tier_table() -> None:
-    assert _adapter("openai").model_for("planning") == _TIER_MODELS["medium"]["planner"]
-
-
-def test_profiled_assignment_follows_the_vendor_too() -> None:
+def test_profiled_assignment_has_no_reasoning_slug_either() -> None:
     adapter = _adapter("anthropic")
     adapter._cached_assignment = ModelOrchestrator().select_models(
         PatternConfig(
             goal_properties=GoalProperties(
                 complexity=Complexity.EXPERT, domain=Domain.TECHNICAL, risk=RiskLevel.HIGH
             ),
-            model_planner="",
-            model_executor="",
-            model_verifier="",
-            model_classifier="",  # as update_from_profile builds it
+            model_planner="", model_executor="", model_verifier="", model_classifier="",
         ),
         vendor="anthropic",
     )
     for task in _ROLES:
-        assert adapter.model_for(task) not in _OPENAI_SLUGS
-    assert adapter._cached_assignment.embedder not in _OPENAI_SLUGS
+        assert adapter.model_for(task) == ""
 
 
-def test_plan_cap_clamps_within_the_vendor() -> None:
-    adapter = _adapter("anthropic").with_override("claude-opus-4-8")
+def test_bound_provider_default_is_used_with_an_empty_registry() -> None:
+    class _P:
+        _default_model = "provider-own-model"
+
+    adapter = _adapter("vllm")
+    adapter.bind_provider(_P())
+    assert adapter.model_for("planning") == "provider-own-model"
+
+
+def test_plan_cap_clamps_to_a_configured_cheap_model() -> None:
+    model_registry.register_configured(ModelEndpoint(
+        provider="openai", model_id="gpt-4o-mini", display_name="mini",
+        capabilities=[ModelCapability.TEXT_GENERATION, ModelCapability.TOOL_USE],
+        supports_tools=True, cost_per_1k_input=0.00015, extra={"source": "env"},
+    ))
+    adapter = _adapter("openai").with_override("claude-opus-4-8")
     adapter.set_plan_tier("free")
     chosen = adapter.model_for("execution")
-    assert chosen.startswith("claude")
+    assert chosen == "gpt-4o-mini"
     assert model_quality_tier(chosen) == "low"
 
 
-def test_plan_cap_that_the_vendor_cannot_meet_keeps_the_model() -> None:
+def test_plan_cap_that_nothing_configured_meets_keeps_the_model() -> None:
     adapter = _adapter("gemini").with_override("gemini-2.0-pro")
     adapter.set_plan_tier("free")
-    # No cheaper model this vendor is known to serve: an OpenAI slug would only
-    # fail on the Gemini provider, so the pinned model stays (and it is logged).
+    # Nothing configured fits the cap: a model the deployment does not serve
+    # would only fail, so the pinned model stays (and it is logged).
     assert adapter.model_for("execution") == "gemini-2.0-pro"
 
 

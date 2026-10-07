@@ -425,25 +425,20 @@ class IntentRouter:
     # ── Model availability ────────────────────────────────────────────────────
 
     def available_models(self) -> list[str]:
-        """Return model IDs available for selection.
+        """Model IDs a chat may select: the Model Registry's text models.
 
-        The system-configured model (NVIDIA/self-hosted/…) is listed first so it
-        takes priority; the cloud slugs remain as additional options.
+        In execution order (the operator's saved order first), so the default
+        selection is the model chat would use anyway. With an empty registry the
+        resolved reasoning model alone (env-configured deployments); never a
+        hardcoded vendor list.
         """
-        from app.providers.model_defaults import configured_default_model
+        from app.ai_router.resolve import reasoning_model, registry_text_model_ids
 
-        configured = configured_default_model("")
-        base = [
-            "claude-3-5-sonnet",
-            "claude-3-haiku",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
-        ]
-        if configured and configured not in base:
-            return [configured, *base]
-        return base
+        models = registry_text_model_ids("chat")
+        if models:
+            return models
+        resolved = reasoning_model("chat")
+        return [resolved] if resolved else []
 
 
 # ── Shared NL schedule parser (used by chat confirmation + durable creation) ──

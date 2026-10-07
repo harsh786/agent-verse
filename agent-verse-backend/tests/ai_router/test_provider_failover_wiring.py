@@ -9,10 +9,15 @@ never took effect, so failover never fired).
 
 from __future__ import annotations
 
+import pytest
+
 import time
 
 from app.agent.nodes.executor_mixin import ExecutorMixin
 from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
+
+
+pytestmark = pytest.mark.usefixtures("tiered_registry")
 
 
 class _Exec(ExecutorMixin):

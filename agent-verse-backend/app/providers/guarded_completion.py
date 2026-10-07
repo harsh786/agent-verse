@@ -491,41 +491,72 @@ class GuardedDecisionProvider:
         return getattr(self._inner, name)
 
 
-def _route_unset_model(request: Any, role: str, provider: Any) -> tuple[Any, list[str]]:
-    """Give a known role's call with no model the role's model (role_preference).
+def central_resolution_applies(provider: Any) -> bool:
+    """Whether a request with no model sent to *provider* gets the registry model.
 
-    Callers across the runtime send ``model=""`` ("provider default") — on a
-    deployment whose env default is a cloud model, every such role (agent
-    router, goal classifier, debate, judges, guardrails, memory, RAG strategy
-    LLMs, ...) ignored the operator's saved order and ran in the cloud. Only a
-    role listed in ``role_preference.ROLE_TASK_TYPES`` is routed, only to a model
-    the provider can actually serve, and the provider's own default stays the
-    last fallback. Never raises: the request is returned unchanged on any doubt.
+    Not for a tenant's own BYOK provider (``_byok_tenant_id``: it serves its
+    own configured model only) nor the canned ``FakeProvider``; a
+    :class:`~app.providers.model_dispatch.ModelDispatchProvider` (incl. the
+    registry-backed platform provider) always qualifies, even over a fake
+    placeholder.
+    """
+    from app.providers.fake import FakeProvider
+    from app.providers.model_dispatch import ModelDispatchProvider
+
+    current = provider
+    for _ in range(8):  # wrapper chains are short; bound the walk
+        if current is None:
+            return False
+        if isinstance(current, ModelDispatchProvider):
+            return not getattr(current, "_byok_tenant_id", None)
+        own = getattr(current, "__dict__", {})
+        if own.get("_byok_tenant_id"):
+            return False
+        if isinstance(current, FakeProvider):
+            return False
+        nxt = own.get("_inner") or own.get("_provider")
+        if nxt is None:
+            return True
+        current = nxt
+    return True
+
+
+def _route_unset_model(request: Any, role: str, provider: Any) -> tuple[Any, list[str]]:
+    """Fill a call with no model (``""`` / ``"default"``) from ``resolve_reasoning(role)``.
+
+    Callers across the runtime send ``model=""`` ("provider default"): every
+    such call now runs on the role's model from the Model Registry (saved order,
+    env pins, role map, env default, registry head) with the rest of the order
+    as ``fallback_models``. Only models *provider* can actually serve are used;
+    BYOK and fake providers are left alone; nothing configured leaves the
+    request unchanged so the provider reports the honest "no LLM configured"
+    error. Never raises.
     """
     import dataclasses
 
     try:
-        from app.ai_router.role_preference import resolve_role_model, role_task_type
+        from app.ai_router.resolve import ModelNotConfiguredError, resolve_reasoning
 
-        task = role_task_type(role)
-        if not task or not dataclasses.is_dataclass(request):
+        if not dataclasses.is_dataclass(request):
             return request, []
-        model = resolve_role_model(role, provider=provider)
-        default = str(getattr(provider, "_default_model", "") or "")
-        if not model or model == default:
+        if str(getattr(request, "model", "") or "").strip():  # "default" = no model
+            request = dataclasses.replace(request, model="")  # type: ignore[type-var]
+        if not central_resolution_applies(provider):
+            return request, []
+        try:
+            resolution = resolve_reasoning(role, provider=provider)
+        except ModelNotConfiguredError:
             return request, []
         from app.providers.model_dispatch import can_serve_model
 
-        if not can_serve_model(provider, model):
+        servable = [
+            m
+            for m in (resolution.model, *resolution.fallbacks)
+            if m and can_serve_model(provider, m)
+        ]
+        if not servable:
             return request, []
-        from app.ai_router.role_preference import preferred_model_and_fallbacks
-
-        # The rest of the saved order, then the provider default (an env pin
-        # without a saved order fails over to the provider default only).
-        ranked, fallbacks = preferred_model_and_fallbacks(task, provider)
-        if ranked != model:
-            fallbacks = [default] if default else []
-        return dataclasses.replace(request, model=model), fallbacks  # type: ignore[type-var]
+        return dataclasses.replace(request, model=servable[0]), servable[1:]  # type: ignore[type-var]
     except Exception:  # pragma: no cover - never block a call over routing
         return request, []
 
@@ -566,9 +597,12 @@ async def complete_decision(
     that receives "a provider" can always route through here without charging a
     wrapped call twice.
     """
+    from app.ai_router.resolve import is_unset_model, llm_role_scope
+
     if getattr(type(provider), "_agentverse_guarded", False):
-        return await provider.complete(request)
-    if not str(getattr(request, "model", "") or ""):
+        with llm_role_scope(role):
+            return await provider.complete(request)
+    if is_unset_model(getattr(request, "model", "")):
         request, role_fallbacks = _route_unset_model(request, role, provider)
         if role_fallbacks and not fallback_models:
             fallback_models = role_fallbacks
@@ -589,9 +623,10 @@ async def complete_decision(
     model = str(getattr(request, "model", "") or "")
     started = time.monotonic()
     try:
-        resp = await _traced_call(
-            provider, request, role, _timeout(timeout_seconds), fallback_models
-        )
+        with llm_role_scope(role):
+            resp = await _traced_call(
+                provider, request, role, _timeout(timeout_seconds), fallback_models
+            )
     except BaseException as exc:
         await _release(reservation, f"{role}:call_failed")
         if not isinstance(exc, Exception):

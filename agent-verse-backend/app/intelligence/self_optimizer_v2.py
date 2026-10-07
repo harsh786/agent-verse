@@ -235,7 +235,7 @@ Respond with ONLY valid JSON:
         failing_tool_pattern: str | None = None,
         candidate_prompt: str | None = None,
         slow_model_task: str = "execution",
-        cheaper_model: str = "claude-haiku-3-5",
+        cheaper_model: str = "",
         rag_strategy: str = "rerank_hybrid",
     ) -> list[ImprovementActionRecord]:
         """Turn low-scoring eval signals into concrete improvement actions.
@@ -323,7 +323,16 @@ Respond with ONLY valid JSON:
                 )
             )
 
-        if scores.get("cost_efficiency", 1.0) < 0.3 or scores.get("latency", 1.0) < 0.3:
+        # The cheaper model to route the slow role to: the caller's, else the
+        # cheapest configured registry model for that role — never a vendor slug.
+        # Nothing configured → no routing action (there is nothing to switch to).
+        if not cheaper_model:
+            from app.ai_router.resolve import cheapest_reasoning_model
+
+            cheaper_model = cheapest_reasoning_model(slow_model_task)
+        if cheaper_model and (
+            scores.get("cost_efficiency", 1.0) < 0.3 or scores.get("latency", 1.0) < 0.3
+        ):
             actions.append(
                 _record(
                     "update_model_routing",
@@ -1111,13 +1120,12 @@ Respond with ONLY valid JSON:
                 complete_decision,
                 generation_timeout_seconds,
             )
-            from app.providers.model_defaults import configured_default_model
 
             response = await complete_decision(
                 provider,
                 CompletionRequest(
-                    model=resolve_role_model("self_optimizer", provider=provider)
-                    or configured_default_model("claude-haiku-3-5"),
+                    # "" when nothing is configured: the provider's honest error.
+                    model=resolve_role_model("self_optimizer", provider=provider),
                     messages=[
                         Message(role="system", content=self.OPTIMIZER_PROMPT),
                         Message(role="user", content=user_content),

@@ -369,7 +369,7 @@ class QualityGateSystem:
                     Message(role="system", content=system),
                     Message(role="user", content=prompt),
                 ],
-                model=getattr(self._llm, "_default_model", "") or "claude-sonnet-4-5",
+                model="",  # resolve_reasoning("org_quality_gate") in complete_decision
                 max_tokens=200,
                 response_schema={
                     "type": "object",

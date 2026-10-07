@@ -322,30 +322,3 @@ def test_debate_pattern_registered() -> None:
 
     p = DebatePattern()
     assert p.pattern_id == "debate"
-
-
-# ── Dynamic pattern assembly ──────────────────────────────────────────────────
-
-
-def test_dynamic_graph_assembler_translates_all_patterns() -> None:
-    """DynamicGraphAssembler creates graph with all requested pattern nodes."""
-    from app.agent.dynamic_graph import DynamicGraphAssembler
-    from app.agent.pattern_config import PatternConfig
-
-    p = FakeProvider()
-    assembler = DynamicGraphAssembler()
-    cfg = PatternConfig(
-        reasoning_patterns=[
-            "react",
-            "self_refine",
-            "self_consistency",
-            "peer_review",
-            "tree_of_thoughts",
-        ],
-    )
-    g = assembler.assemble(cfg, planner=p, executor=p, verifier=p)
-    node_names = set(g._graph.get_graph().nodes.keys())
-    assert "refine" in node_names
-    assert "self_consistency" in node_names
-    assert "peer_review" in node_names
-    assert "tree_of_thoughts" in node_names

@@ -1,7 +1,7 @@
 """Comprehensive tests for all agent patterns (30+ tests).
 
 Tests every pattern: init, execute, error handling, max_iterations,
-DynamicGraphAssembler, PatternSelector.
+PatternSelector.
 """
 from __future__ import annotations
 
@@ -360,67 +360,6 @@ class TestSupervisorPattern:
     def test_node_name(self) -> None:
         from app.agent.patterns.supervisor import SupervisorPattern
         assert SupervisorPattern().node_name == "supervisor"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DynamicGraphAssembler
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestDynamicGraphAssembler:
-    def test_assemble_builds_graph(self) -> None:
-        from app.agent.dynamic_graph import DynamicGraphAssembler
-        from app.agent.pattern_config import PatternConfig
-        provider = _fake()
-        config = PatternConfig(
-            reasoning_patterns=["react", "chain_of_thought"],
-            rag_patterns=["hybrid_rag"],
-            multi_agent_patterns=["single_agent"],
-            safety_patterns=["guardrails"],
-        )
-        assembler = DynamicGraphAssembler()
-        graph = assembler.assemble(
-            config, planner=provider, executor=provider, verifier=provider
-        )
-        # Graph must be returned (not None)
-        assert graph is not None
-
-    def test_get_active_nodes_default(self) -> None:
-        from app.agent.dynamic_graph import DynamicGraphAssembler
-        from app.agent.pattern_config import PatternConfig
-        config = PatternConfig(
-            reasoning_patterns=["react"],
-            rag_patterns=["hybrid_rag"],
-            multi_agent_patterns=["single_agent"],
-            safety_patterns=["guardrails"],
-        )
-        nodes = DynamicGraphAssembler().get_active_nodes(config)
-        assert "plan" in nodes
-        assert "execute" in nodes
-
-    def test_get_active_nodes_with_cot(self) -> None:
-        from app.agent.dynamic_graph import DynamicGraphAssembler
-        from app.agent.pattern_config import PatternConfig
-        config = PatternConfig(
-            reasoning_patterns=["react", "chain_of_thought"],
-            rag_patterns=["hybrid_rag"],
-            multi_agent_patterns=["single_agent"],
-            safety_patterns=[],
-        )
-        nodes = DynamicGraphAssembler().get_active_nodes(config)
-        assert "think" in nodes
-
-    def test_wire_edges_returns_dict(self) -> None:
-        from app.agent.dynamic_graph import DynamicGraphAssembler
-        from app.agent.pattern_config import PatternConfig
-        config = PatternConfig(
-            reasoning_patterns=["react"],
-            rag_patterns=["hybrid_rag"],
-            multi_agent_patterns=["single_agent"],
-            safety_patterns=[],
-        )
-        edges = DynamicGraphAssembler()._wire_edges(config)
-        assert isinstance(edges, dict)
-        assert "plan" in edges
 
 
 # ─────────────────────────────────────────────────────────────────────────────

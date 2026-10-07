@@ -378,16 +378,14 @@ class LLMJudge:
         self._threshold = threshold
 
     def _judge_model(self, provider: Any) -> str:
-        """The configured judge model, else the guardrail_judge role's model (saved
-        order > env pin > the provider's own model); the system default last."""
+        """The configured judge model, else the guardrail_judge role's model
+        (``resolve_reasoning``); ``""`` when nothing is configured (the provider
+        then reports the honest "no LLM configured" error — never a vendor slug)."""
         if self._model:
             return self._model
         from app.ai_router.role_preference import resolve_role_model
-        from app.providers.model_defaults import configured_default_model
 
-        return resolve_role_model("guardrail_judge", provider=provider) or (
-            configured_default_model("gpt-4o-mini")
-        )
+        return resolve_role_model("guardrail_judge", provider=provider)
 
     async def evaluate(
         self, text: str, *, tenant_id: str | None = None

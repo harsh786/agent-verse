@@ -289,6 +289,12 @@ class ExecutionEnvelope:
     # Feature-flag snapshot at submission time
     feature_flags: dict[str, bool] = field(default_factory=dict)
 
+    # Resolved reasoning model per role ({"planning"|"execution"|"verification":
+    # model}) — resolve_reasoning on the control plane, so the isolated worker
+    # never falls back to an SDK's built-in default model. Operator-controlled
+    # like agent_config (not part of the signed canonical bytes).
+    role_models: dict[str, str] = field(default_factory=dict)
+
     # --- Scoped credentials (populated by scheduler, never persisted) ---
     scoped_llm_api_key: str = ""  # tenant's LLM key (decrypted for this execution)
     scoped_db_url: str = ""  # scoped DB URL (RLS-only user or same URL + GUC)
@@ -321,6 +327,7 @@ class ExecutionEnvelope:
             "goal_text": self.goal_text,
             "execution_context": self.execution_context,
             "agent_config": self.agent_config,
+            "role_models": self.role_models,
             "runtime_profile": self.runtime_profile,
             "tool_context": self.tool_context,
             "dry_run": self.dry_run,

@@ -9,6 +9,8 @@ and preserve the required capability across a provider failover.
 """
 from __future__ import annotations
 
+import pytest
+
 from app.agent.pattern_config import (
     Complexity,
     Domain,
@@ -23,6 +25,9 @@ from app.ai_router.model_orchestrator import (
 from app.ai_router.provider_health_policy import ProviderHealthPolicy
 from app.ingestion.content_classifier import ContentType
 from tests.ai_router._vision_registry import vision_models
+
+
+pytestmark = pytest.mark.usefixtures("tiered_registry")
 
 
 def _high_tier_config() -> PatternConfig:
@@ -176,6 +181,9 @@ def test_text_needs_no_vision() -> None:
 
 
 def test_all_content_types_get_a_valid_assignment(monkeypatch) -> None:
+    # The reasoner (and text / code extractor) is a reasoning role: configured
+    # here by the env default (vision_models below configures only vision).
+    monkeypatch.setenv("DEFAULT_MODEL", "reasoning-model")
     orch = ModelOrchestrator()
     with vision_models(monkeypatch, ("openai", "registry-vlm")):
         assignments = [orch.select_for_content_type(ct) for ct in ContentType]

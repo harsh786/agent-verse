@@ -247,7 +247,9 @@ class StrategicAdvisor:
                 provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
-                    model=getattr(provider, "default_model", "claude-sonnet-4-5"),
+                    # Was getattr(provider, "default_model", "claude-sonnet-4-5"): no
+                    # provider has ``default_model``, so it ALWAYS sent claude-sonnet-4-5.
+                    model="",  # resolve_reasoning("org_strategic_brief")
                     max_tokens=600,
                     temperature=0.3,
                 ),

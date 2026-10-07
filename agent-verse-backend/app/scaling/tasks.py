@@ -3617,6 +3617,8 @@ def run_goal(
                     _provider_name = _ptype if isinstance(_ptype, str) and _ptype else None
                 if _provider_name:
                     _model_router = ModelRouter(provider_name=_provider_name)
+                    # resolve_reasoning: a BYOK provider keeps its own model.
+                    _model_router.bind_provider(real_provider)
             except Exception:
                 pass
 
@@ -3636,6 +3638,7 @@ def run_goal(
                         from app.agent.model_router import ModelRouter
 
                         _model_router = ModelRouter(provider_name="onprem")
+                        _model_router.bind_provider(real_provider)
                     _model_router.set_role_map(_worker_roles)
                     # The tenant's own pins outrank the deployment-wide
                     # reasoning order (MR-6); the role map keeps them too.
@@ -3652,6 +3655,7 @@ def run_goal(
                         from app.agent.model_router import ModelRouter
 
                         _model_router = ModelRouter()
+                        _model_router.bind_provider(real_provider)
                     _model_router = _model_router.with_override(_effective_override)
                     if hasattr(_model_router, "set_plan_tier"):  # PROV-18: plan caps the pin
                         _model_router.set_plan_tier(tenant_ctx.plan)
@@ -3788,14 +3792,15 @@ def run_goal(
                 tenant_context: TenantContext,
                 strategy: Any,
             ) -> ResolvedLLM | None:
-                del strategy
                 if tenant_context.tenant_id != tenant_id:
                     return None
-                # The RAG strategy LLM role's model (saved order > env pin >
-                # the provider's default), as on the API.
-                from app.ai_router.role_preference import servable_role_model
+                # The strategy's LLM role through resolve_reasoning, as on the API.
+                from app.ai_router.role_preference import (
+                    rag_role_for_strategy,
+                    servable_role_model,
+                )
 
-                model = servable_role_model("rag_strategy", provider).strip()
+                model = servable_role_model(rag_role_for_strategy(strategy), provider).strip()
                 if not model and isinstance(provider, FakeProvider):
                     model = "fake-provider"
                 if not model:

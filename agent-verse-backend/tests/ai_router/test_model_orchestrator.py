@@ -1,11 +1,16 @@
 """Tests for ModelOrchestrator + RolePolicy + ProviderHealthPolicy + CostLatencyQualityPolicy."""
 from __future__ import annotations
 
+import pytest
+
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
 from app.ai_router.model_orchestrator import ModelOrchestrator
 from app.ai_router.provider_health_policy import ProviderHealthPolicy
 from app.ai_router.role_policy import AgentRole, RolePolicy
 from app.ingestion.content_classifier import ContentType
+
+
+pytestmark = pytest.mark.usefixtures("tiered_registry")
 
 
 def _make_config(
@@ -101,6 +106,9 @@ def test_budget_downgrade_at_75_percent_from_high() -> None:
 def test_content_type_image_routing(monkeypatch) -> None:
     from tests.ai_router._vision_registry import vision_models
 
+    # The reasoner (and text / code extractor) is a reasoning role: configured
+    # here by the env default (vision_models below configures only vision).
+    monkeypatch.setenv("DEFAULT_MODEL", "reasoning-model")
     orch = ModelOrchestrator()
     with vision_models(monkeypatch, ("openai", "registry-vlm")):
         result = orch.select_for_content_type(ContentType.IMAGE)

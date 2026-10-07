@@ -38,6 +38,14 @@ SCOPE = (
     "rag",
     "rag_platform",
     "agent_runtime",
+    "chat",
+    "org",
+    "workflow",
+    "triggers",
+    "knowledge_graph",
+    "skills_runtime",
+    "mcp",
+    "knowledge",
 )
 
 PATTERNS: dict[str, re.Pattern[str]] = {
@@ -62,12 +70,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "ChargingProvider: the resolved role model first, the inner default only without one",
     ("agent/nodes/llm_cost.py", 'inner_default = str(getattr(self._inner, "_default_model"'):
         "ChargingProvider: detects a request for the provider default to re-route it",
-    ("agent/nodes/planner_mixin.py", ') or configured_default_model("")'):
-        "planner: only when the resolver returned nothing (no provider default)",
-    ("intelligence/guardrail_engine.py", 'configured_default_model("gpt-4o-mini")'):
-        "guardrail judge: only when the resolver returned nothing",
-    ("intelligence/self_optimizer_v2.py", 'or configured_default_model("claude-haiku-3-5")'):
-        "self optimizer: only when the resolver returned nothing",
     ("coordination/pattern_runs/llm.py", 'for attr in ("default_model", "_default_model", "model"):'):
         "provider_model(): identity of an explicit MoA deployment, not a role choice",
     ("coordination/pattern_runs/tasks.py", "resolved = resolve_provider()"):
@@ -75,6 +77,9 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("coordination/pattern_runs/moa.py", "provider = _instantiate_provider(cfg)"):
         "MoA proposers are, by design, every configured provider at its own model "
         "(app.state.moa_providers); the run's primary deployment uses the resolver",
+    ("chat/service.py", 'model=chat_model or str(getattr(generator, "_default_model", "") or "")'):
+        "chat stream charge label: the resolved chat model; the provider default only "
+        "labels a turn that ran on it (nothing resolved)",
     ("rag/gateway.py", 'or getattr(self._embedder, "_default_model", "")'):
         "embedder model label for the embedding cache (not an LLM role)",
 }

@@ -124,7 +124,8 @@ def test_multimodal_vision_selection_has_no_per_provider_literals() -> None:
     vision_profiles = [p for p in MODEL_PROFILES.values() if p.vision]
     assert vision_profiles
     for profile in vision_profiles:
-        assert (profile.primary, profile.fallback) == ("", ""), profile
+        # Profiles name a role, never a model: the vision chain is resolved per call.
+        assert not hasattr(profile, "primary") and not hasattr(profile, "fallback"), profile
 
 
 def test_the_patterns_catch_the_old_offenders() -> None:
