@@ -34,6 +34,10 @@ async def test_org_list_and_create_roundtrip(tenant_client: Any) -> None:
 
     listing2 = await tenant_client.get("/v1/org")
     assert org_id in {o["id"] for o in listing2.json()["data"]}
+    # ObsidianPage.tsx reads data[].id / data[].name (a10-F254-02 contract).
+    assert all(
+        isinstance(o["id"], str) and isinstance(o["name"], str) for o in listing2.json()["data"]
+    )
 
 
 async def test_org_compose_from_nl_builds_a_real_org(tenant_client: Any) -> None:

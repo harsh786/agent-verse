@@ -252,6 +252,8 @@ async def run_simulation(request: Request, body: SimulationRequest) -> dict[str,
         "cost_usd": run.result.get("cost_usd", 0.0),
         "iterations": run.result.get("iterations", 0),
         "message": run.result.get("message", ""),
+        # simulationApi.run (frontend) reads this top-level (a10-F254-02).
+        "used_real_llm": bool(run.used_real_llm),
         # Backward-compatible (existing tests expect "result" key and "completed" status)
         "result": run.result,
     }
@@ -306,6 +308,7 @@ async def get_simulation(request: Request, run_id: str) -> dict[str, Any]:
         "cost_usd": run.result.get("cost_usd", 0.0),
         "iterations": run.result.get("iterations", 0),
         "message": run.result.get("message", ""),
+        "used_real_llm": bool(run.used_real_llm),
     }
 
 
