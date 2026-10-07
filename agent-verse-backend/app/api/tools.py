@@ -93,6 +93,7 @@ async def _audit_native(
     outcome: str,
     note: str,
     durable: bool = True,
+    goal_id: str | None = None,
 ) -> None:
     """Record one audit row for a native-tool side effect.
 
@@ -107,7 +108,7 @@ async def _audit_native(
 
     audit = durable_audit_log(getattr(request.app.state, "audit_log", None))
     event = AuditEvent(
-        goal_id=f"tools.{tool}"[:64],
+        goal_id=(goal_id or f"tools.{tool}")[:64],
         tool_name=tool,
         action_level=ActionLevel.ALLOW_LOG,
         outcome=outcome,
@@ -328,8 +329,9 @@ class SendEmailRequest(BaseModel):
     to: str | list[str]
     subject: str
     body: str
-    # Only the platform-verified sender is accepted here (anything else → 400);
-    # use ``reply_to`` to direct replies to a tenant address.
+    # Only the sender of the relay in use is accepted here (the platform-verified
+    # sender, or the tenant SMTP from-address; anything else → 400); use
+    # ``reply_to`` to direct replies to another address.
     from_addr: str | None = None
     reply_to: str | None = None
 
@@ -340,19 +342,27 @@ async def send_email(
     body: SendEmailRequest,
     _rbac: None = Depends(require_role("operator", "admin")),
 ) -> dict[str, Any]:
-    """Send an email via SMTP (uses env-var config; MailHog in dev).
+    """Send an email: through the tenant's own SMTP sender when it configured one
+    (``PUT /tenants/me/email/smtp``), else through the platform relay.
 
-    The ``From`` header is always the platform-verified sender: this relay uses
-    platform SMTP credentials, so a tenant-chosen From was sender spoofing. For
-    the same reason it is bounded: operator/admin keys only, at most
-    ``email_max_recipients`` per message (422) and a per-tenant daily recipient
-    quota shared by every replica (429; 503 when the quota store is down).
+    Platform relay: the ``From`` header is always the platform-verified sender
+    (a tenant-chosen From was sender spoofing). Tenant SMTP: the ``From`` is the
+    tenant's configured from-address. Either way it is bounded: operator/admin
+    keys only, at most ``email_max_recipients`` per message (422), the tenant's
+    recipient allowlist when it set one (403, nothing sent to anyone), and a
+    per-tenant daily recipient quota shared by every replica (429; 503 when the
+    quota store is down). Every send is audited before it happens.
     """
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     from app.core.config import get_settings
-    from app.tools import email_quota, email_tool
+    from app.services.tenant_email_settings import (
+        EmailSettingsUnavailableError,
+        email_settings_for,
+        open_smtp_secret,
+    )
+    from app.tools import email_policy, email_quota, email_tool
 
     recipients = [body.to] if isinstance(body.to, str) else list(body.to)
     max_recipients = max(1, int(get_settings().email_max_recipients))
@@ -360,6 +370,35 @@ async def send_email(
         raise HTTPException(
             status_code=422,
             detail=f"At most {max_recipients} recipients per message.",
+        )
+    store = email_settings_for(request.app.state)
+    try:
+        settings = await store.get(str(ctx.tenant_id))
+    except EmailSettingsUnavailableError as exc:
+        # The allowlist cannot be checked: refuse rather than send unchecked.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tenant email settings unavailable; nothing was sent.",
+        ) from exc
+    recipients_digest = _sha256(",".join(sorted(r.strip().lower() for r in recipients)))
+    relay = "tenant" if settings.smtp is not None else "platform"
+    denied = email_policy.disallowed_recipients(recipients, settings.recipient_allowlist)
+    if denied:
+        await _audit_native(
+            request,
+            ctx,
+            tool="email.send",
+            outcome="rejected",
+            note=f"reason=recipient_allowlist denied={len(denied)} "
+            f"recipients_sha256={recipients_digest} relay={relay}",
+            durable=False,
+        )
+        shown = ", ".join(denied[:10]) + (" ..." if len(denied) > 10 else "")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Recipient(s) not on this workspace's email allowlist: {shown}. Nothing was sent."
+            ),
         )
     try:
         quota = await email_quota.consume(
@@ -376,7 +415,6 @@ async def send_email(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Email quota store unavailable; nothing was sent.",
         ) from exc
-    recipients_digest = _sha256(",".join(sorted(r.strip().lower() for r in recipients)))
     await _audit_native(
         request,
         ctx,
@@ -384,32 +422,76 @@ async def send_email(
         outcome="requested",
         note=(
             f"recipients={len(recipients)} recipients_sha256={recipients_digest} "
-            f"subject_sha256={_sha256(body.subject)} body_bytes={len(body.body.encode())}"
+            f"subject_sha256={_sha256(body.subject)} body_bytes={len(body.body.encode())} "
+            f"relay={relay}"
         ),
     )
-    result = await email_tool.email_send(
-        body.to,
-        body.subject,
-        body.body,
-        from_addr=body.from_addr,
-        reply_to=body.reply_to,
-        tenant_id=str(ctx.tenant_id),
-    )
+    if settings.smtp is not None:
+        from app.tools.tenant_smtp import SMTPTarget
+
+        try:
+            secret = await open_smtp_secret(store.db_factory, str(ctx.tenant_id), settings.smtp)
+        except Exception as exc:
+            await _audit_native(
+                request,
+                ctx,
+                tool="email.send",
+                outcome="failed",
+                note=f"reason=smtp_secret_unreadable recipients_sha256={recipients_digest}",
+                durable=False,
+            )
+            # Never fall back to the platform relay: the tenant chose its own sender.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Tenant SMTP credentials could not be read; nothing was sent.",
+            ) from exc
+        smtp = settings.smtp
+        result = await email_tool.email_send_tenant_smtp(
+            SMTPTarget(
+                host=smtp.host,
+                port=smtp.port,
+                tls_mode=smtp.tls_mode,
+                username=smtp.username,
+                from_address=smtp.from_address,
+            ),
+            secret,
+            body.to,
+            body.subject,
+            body.body,
+            from_addr=body.from_addr,
+            reply_to=body.reply_to,
+            tenant_id=str(ctx.tenant_id),
+        )
+    else:
+        result = await email_tool.email_send(
+            body.to,
+            body.subject,
+            body.body,
+            from_addr=body.from_addr,
+            reply_to=body.reply_to,
+            tenant_id=str(ctx.tenant_id),
+        )
     if not result.get("success", True):
         await _audit_native(
             request,
             ctx,
             tool="email.send",
             outcome="rejected" if result.get("rejected") else "failed",
-            note=f"recipients_sha256={recipients_digest}",
+            note=f"recipients_sha256={recipients_digest} relay={relay}",
             durable=False,
         )
     if result.get("rejected"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("error"))
     if not result.get("success", True):
-        # email_send never puts relay detail in "error" (logged with error_id).
+        # Neither relay puts credentials in "error"; the platform relay's detail
+        # is logged with error_id only.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=result.get("error") or "email delivery failed",
         )
-    return {**result, "quota_remaining": quota.remaining, "quota_limit": quota.limit}
+    return {
+        **result,
+        "relay": relay,
+        "quota_remaining": quota.remaining,
+        "quota_limit": quota.limit,
+    }

@@ -1088,6 +1088,46 @@ export const chatKnowledgeApi = {
     }),
 };
 
+/** a02-F036-02: the tenant-owned SMTP sender (the secret is never returned). */
+export type SmtpTlsMode = "starttls" | "tls" | "none";
+
+export interface TenantSmtpView {
+  host: string;
+  port: number;
+  tls_mode: SmtpTlsMode;
+  username: string;
+  from_address: string;
+  secret_set: boolean;
+  secret_masked: string | null;
+}
+
+export interface TenantEmailSettings {
+  tenant_id: string;
+  recipient_allowlist: string[];
+  smtp: TenantSmtpView | null;
+  /** Which relay the agent email tool uses: the tenant's SMTP or the platform's. */
+  relay: "tenant" | "platform";
+  updated_at: string | null;
+}
+
+export interface TenantSmtpConfigInput {
+  host: string;
+  port: number;
+  tls_mode: SmtpTlsMode;
+  username: string;
+  from_address: string;
+  /** Password or API key. Omit to keep the stored one (same host, port and username). */
+  secret?: string;
+}
+
+export interface SmtpTestResult {
+  ok: boolean;
+  stage: "policy" | "connect" | "tls" | "auth" | "send" | "done";
+  message: string;
+  smtp_code?: number;
+  tested: "saved" | "candidate";
+}
+
 export const tenantsApi = {
   /** Owner decision 7: whether chat transcripts may become knowledge (off by default). */
   getChatTranscriptsKnowledge: () =>
@@ -1097,6 +1137,25 @@ export const tenantsApi = {
     request<ChatTranscriptsKnowledgeSetting>("/tenants/me/chat-transcripts-knowledge", {
       method: "PUT",
       body: JSON.stringify({ enabled }),
+    }),
+  /** a02-F036-02: recipient allowlist + tenant SMTP sender (admin only). */
+  getEmailSettings: () => request<TenantEmailSettings>("/tenants/me/email"),
+  setEmailAllowlist: (entries: string[]) =>
+    request<TenantEmailSettings>("/tenants/me/email/allowlist", {
+      method: "PUT",
+      body: JSON.stringify({ entries }),
+    }),
+  setEmailSmtp: (config: TenantSmtpConfigInput) =>
+    request<TenantEmailSettings>("/tenants/me/email/smtp", {
+      method: "PUT",
+      body: JSON.stringify(config),
+    }),
+  deleteEmailSmtp: () =>
+    request<TenantEmailSettings>("/tenants/me/email/smtp", { method: "DELETE" }),
+  testEmailSmtp: (body: { config?: TenantSmtpConfigInput; send_to?: string } = {}) =>
+    request<SmtpTestResult>("/tenants/me/email/smtp/test", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   /** D3: whether this tenant's opted-in agents are listed at /.well-known/agents. */
   getA2ADirectory: () => request<{ enabled: boolean }>("/tenants/me/a2a-directory"),

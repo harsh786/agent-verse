@@ -235,6 +235,55 @@ def _check_header_safe(value: str, what: str) -> None:
         raise ValueError(f"{what} must not contain line breaks")
 
 
+def _validate_outgoing(
+    sender: str,
+    recipients: list[str],
+    subject: str,
+    *,
+    from_addr: str | None,
+    reply_to: str | None,
+    sender_label: str,
+) -> None:
+    """Shared checks of both relays. Raises ValueError (the caller answers 400)."""
+    if from_addr and from_addr.strip().lower() != sender.lower():
+        raise ValueError(
+            f"from_addr {from_addr!r} is not the {sender_label}; use reply_to to direct replies"
+        )
+    if not recipients:
+        raise ValueError("at least one recipient is required")
+    for addr in recipients:
+        _check_header_safe(addr, "recipient")
+        _validate_email(addr)
+    if reply_to:
+        _check_header_safe(reply_to, "reply_to")
+        _validate_email(reply_to)
+    _check_header_safe(subject, "subject")
+
+
+def _build_message(
+    sender: str,
+    recipients: list[str],
+    subject: str,
+    body: str,
+    *,
+    reply_to: str | None,
+    tenant_id: str,
+) -> Any:
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if tenant_id:
+        msg["X-AgentVerse-Tenant"] = tenant_id
+    msg.attach(MIMEText(body, "plain"))
+    return msg
+
+
 async def email_send(
     to: str | list[str],
     subject: str,
@@ -252,31 +301,26 @@ async def email_send(
     ``From`` is always :func:`platform_sender`. A ``from_addr`` other than that
     address is refused (fail closed) rather than silently rewritten; a caller
     that wants replies elsewhere passes ``reply_to``.
+
+    This is the PLATFORM relay: it never reads a tenant's email settings (its
+    SMTP sender or allowlist). The agent email tool (``POST /tools/email/send``)
+    applies those before choosing between it and :func:`email_send_tenant_smtp`.
     """
     sender = platform_sender()
     recipients = [to] if isinstance(to, str) else list(to)
     try:
-        if from_addr and from_addr.strip().lower() != sender.lower():
-            raise ValueError(
-                f"from_addr {from_addr!r} is not the platform-verified sender; "
-                "use reply_to to direct replies"
-            )
-        if not recipients:
-            raise ValueError("at least one recipient is required")
-        for addr in recipients:
-            _check_header_safe(addr, "recipient")
-            _validate_email(addr)
-        if reply_to:
-            _check_header_safe(reply_to, "reply_to")
-            _validate_email(reply_to)
-        _check_header_safe(subject, "subject")
+        _validate_outgoing(
+            sender,
+            recipients,
+            subject,
+            from_addr=from_addr,
+            reply_to=reply_to,
+            sender_label="platform-verified sender",
+        )
     except ValueError as exc:
         return {"success": False, "error": str(exc), "rejected": True}
 
     try:
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-
         import aiosmtplib
     except ImportError:
         return {
@@ -290,15 +334,7 @@ async def email_send(
     password = os.getenv("SMTP_PASSWORD", "")
     use_tls = os.getenv("SMTP_TLS", "false").lower() in {"true", "1"}
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = ", ".join(recipients)
-    if reply_to:
-        msg["Reply-To"] = reply_to
-    if tenant_id:
-        msg["X-AgentVerse-Tenant"] = tenant_id
-    msg.attach(MIMEText(body, "plain"))
+    msg = _build_message(sender, recipients, subject, body, reply_to=reply_to, tenant_id=tenant_id)
 
     try:
         await aiosmtplib.send(
@@ -328,3 +364,65 @@ async def email_send(
             "error": f"email delivery failed (error id {error_id})",
             "error_id": error_id,
         }
+
+
+async def email_send_tenant_smtp(
+    target: Any,
+    secret: str | None,
+    to: str | list[str],
+    subject: str,
+    body: str,
+    *,
+    from_addr: str | None = None,
+    reply_to: str | None = None,
+    tenant_id: str = "",
+) -> dict[str, Any]:
+    """Send through the tenant's OWN SMTP server (``target``: a
+    :class:`app.tools.tenant_smtp.SMTPTarget`), as its configured From address.
+
+    Same contract as :func:`email_send`: ``{"success": True, ...}``, or
+    ``{"success": False, "error": ..., "rejected": True}`` for a bad request,
+    or ``{"success": False, "error": ...}`` for a delivery failure. The server
+    is the tenant's, so the failing stage is reported (never the credentials).
+    System mail never comes here: it always uses the platform relay.
+    """
+    from app.tools import tenant_smtp
+
+    sender = target.from_address
+    recipients = [to] if isinstance(to, str) else list(to)
+    try:
+        _validate_outgoing(
+            sender,
+            recipients,
+            subject,
+            from_addr=from_addr,
+            reply_to=reply_to,
+            sender_label="tenant SMTP sender",
+        )
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "rejected": True}
+
+    msg = _build_message(sender, recipients, subject, body, reply_to=reply_to, tenant_id=tenant_id)
+    outcome = await tenant_smtp.deliver(target, secret, msg, recipients)
+    if outcome.ok:
+        return {"success": True, "to": recipients, "subject": subject, "relay": "tenant"}
+    import logging
+    import uuid
+
+    error_id = uuid.uuid4().hex[:12]
+    logging.getLogger(__name__).warning(
+        "tenant_smtp_send_failed error_id=%s tenant_id=%s stage=%s code=%s",
+        error_id,
+        tenant_id,
+        outcome.stage,
+        outcome.code,
+    )
+    detail = f"tenant SMTP delivery failed at {outcome.stage}: {outcome.message}"
+    if outcome.code is not None:
+        detail += f" (SMTP {outcome.code})"
+    return {
+        "success": False,
+        "error": f"{detail} (error id {error_id})",
+        "error_id": error_id,
+        "stage": outcome.stage,
+    }

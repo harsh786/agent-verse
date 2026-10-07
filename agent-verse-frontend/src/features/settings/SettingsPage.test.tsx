@@ -1094,3 +1094,20 @@ describe('SettingsPage – Danger Zone tab', () => {
     );
   });
 });
+
+describe('SettingsPage – Email tab', () => {
+  test('the Email tab shows the relay in use and the email settings', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          tenant_id: 't', recipient_allowlist: [], smtp: null, relay: 'platform', updated_at: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    renderSettingsPage('email');
+    expect(await screen.findByRole('heading', { name: 'Email' })).toBeInTheDocument();
+    expect(await screen.findByTestId('email-relay')).toHaveTextContent(/platform relay/i);
+    expect(screen.getByRole('button', { name: /Email/ })).toBeInTheDocument();
+  });
+});

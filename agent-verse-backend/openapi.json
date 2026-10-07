@@ -383,6 +383,20 @@
         "title": "AlertmanagerPayload",
         "type": "object"
       },
+      "AllowlistRequest": {
+        "properties": {
+          "entries": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "title": "AllowlistRequest",
+        "type": "object"
+      },
       "AnalyzeRequest": {
         "properties": {
           "question": {
@@ -7381,6 +7395,91 @@
           "sp_entity_id"
         ],
         "title": "SAMLConfigRequest",
+        "type": "object"
+      },
+      "SMTPConfigRequest": {
+        "properties": {
+          "from_address": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "From Address",
+            "type": "string"
+          },
+          "host": {
+            "maxLength": 253,
+            "minLength": 1,
+            "title": "Host",
+            "type": "string"
+          },
+          "port": {
+            "default": 587,
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Port",
+            "type": "integer"
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret"
+          },
+          "tls_mode": {
+            "default": "starttls",
+            "enum": [
+              "starttls",
+              "tls",
+              "none"
+            ],
+            "title": "Tls Mode",
+            "type": "string"
+          },
+          "username": {
+            "default": "",
+            "maxLength": 320,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "from_address"
+        ],
+        "title": "SMTPConfigRequest",
+        "type": "object"
+      },
+      "SMTPTestRequest": {
+        "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SMTPConfigRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "send_to": {
+            "anyOf": [
+              {
+                "maxLength": 320,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Send To"
+          }
+        },
+        "title": "SMTPTestRequest",
         "type": "object"
       },
       "ScreenshotRequest": {
@@ -46111,6 +46210,191 @@
         ]
       }
     },
+    "/tenants/me/email": {
+      "get": {
+        "description": "The tenant's email settings. The SMTP secret is never returned (masked).",
+        "operationId": "get_email_settings_tenants_me_email_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Email Settings Tenants Me Email Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Email Settings",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/email/allowlist": {
+      "put": {
+        "description": "Replace the recipient allowlist. Entries: ``alice@example.com``,\n``example.com`` (that domain only) or ``*.example.com`` (its subdomains).\nEmpty = no restriction (today's behaviour).",
+        "operationId": "set_email_allowlist_tenants_me_email_allowlist_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowlistRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Email Allowlist Tenants Me Email Allowlist Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Email Allowlist",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/email/smtp": {
+      "delete": {
+        "description": "Remove the tenant SMTP sender: the agent email tool falls back to the\nplatform relay (with its restrictions). The stored secret is deleted.",
+        "operationId": "delete_email_smtp_tenants_me_email_smtp_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Email Smtp Tenants Me Email Smtp Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Email Smtp",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "put": {
+        "description": "Configure the tenant-owned SMTP sender used by the agent email tool.\n\nThe secret is encrypted in the vault and never returned. Omitting it keeps\nthe stored one only for the same host, port and username \u2014 a stored secret\nis never sent to another server than the one it was entered for. System\nmail (invites, password resets, alerts) keeps using the platform relay.",
+        "operationId": "set_email_smtp_tenants_me_email_smtp_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SMTPConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Email Smtp Tenants Me Email Smtp Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Email Smtp",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/email/smtp/test": {
+      "post": {
+        "description": "Connect to the SMTP server (TLS / STARTTLS, AUTH) with the saved or a\ncandidate configuration; with ``send_to``, also send a short test message.\n\nThe host passes the SSRF egress policy first. The answer names the stage\nthat failed (policy / connect / tls / auth / send), never the credentials.\nA candidate without a secret reuses the stored one only for the same host,\nport and username.",
+        "operationId": "probe_email_smtp_tenants_me_email_smtp_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SMTPTestRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Probe Email Smtp Tenants Me Email Smtp Test Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Email Smtp",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
     "/tenants/me/export": {
       "post": {
         "description": "Export all of the tenant's goals and agents as JSON (GDPR data export).\n\nThe export is complete or it fails: every goal and agent is read by paging\nthrough the tenant-scoped (RLS) service reads -- not just their first page\n-- and a missing service or read failure answers **503** instead of an\nexport that silently omits data.",
@@ -46914,7 +47198,7 @@
     },
     "/tools/email/send": {
       "post": {
-        "description": "Send an email via SMTP (uses env-var config; MailHog in dev).\n\nThe ``From`` header is always the platform-verified sender: this relay uses\nplatform SMTP credentials, so a tenant-chosen From was sender spoofing. For\nthe same reason it is bounded: operator/admin keys only, at most\n``email_max_recipients`` per message (422) and a per-tenant daily recipient\nquota shared by every replica (429; 503 when the quota store is down).",
+        "description": "Send an email: through the tenant's own SMTP sender when it configured one\n(``PUT /tenants/me/email/smtp``), else through the platform relay.\n\nPlatform relay: the ``From`` header is always the platform-verified sender\n(a tenant-chosen From was sender spoofing). Tenant SMTP: the ``From`` is the\ntenant's configured from-address. Either way it is bounded: operator/admin\nkeys only, at most ``email_max_recipients`` per message (422), the tenant's\nrecipient allowlist when it set one (403, nothing sent to anyone), and a\nper-tenant daily recipient quota shared by every replica (429; 503 when the\nquota store is down). Every send is audited before it happens.",
         "operationId": "send_email_tools_email_send_post",
         "requestBody": {
           "content": {

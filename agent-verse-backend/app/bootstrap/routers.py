@@ -81,6 +81,7 @@ from app.api.state_machines import router as state_machines_router  # Phase 3
 from app.api.strategies import router as strategies_router
 from app.api.system import router as system_router
 from app.api.templates import router as templates_router
+from app.api.tenant_email import router as tenant_email_router
 from app.api.tenants import router as tenants_router
 from app.api.tools import router as tools_router
 from app.api.training_export import router as training_export_router
@@ -292,6 +293,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Core
     app.include_router(system_router)
     app.include_router(tenants_router)
+    app.include_router(tenant_email_router)  # a02-F036-02
     app.include_router(goals_router)
     app.include_router(strategies_router)
     app.include_router(coordination_router)

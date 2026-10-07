@@ -46,6 +46,15 @@ _SOURCE_PREFIX = "enc:v1:"
 # (store name, table, primary key, columns, connection_config JSON?, UUID tenant_id?)
 _PG_STORES: tuple[tuple[str, str, str, tuple[str, ...], bool, bool], ...] = (
     ("tenant_llm_configs", "tenant_llm_configs", "tenant_id", ("encrypted_key",), False, False),
+    # Tenant-owned SMTP sender secrets (a02-F036-02).
+    (
+        "tenant_smtp_secrets",
+        "tenant_email_settings",
+        "tenant_id",
+        ("smtp_secret_enc",),
+        False,
+        False,
+    ),
     ("oauth_tokens", "oauth_tokens", "id", ("access_token", "refresh_token"), False, False),
     (
         "trigger_secrets",
