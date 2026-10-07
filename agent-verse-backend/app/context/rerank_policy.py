@@ -26,6 +26,7 @@ from typing import Any
 
 from app.observability.logging import get_logger
 from app.rag.score_calibration import CalibrationMethod, calibrate_scores, retrieval_confidence
+from app.rag_platform.reranker_contract import RerankSkipped
 
 logger = get_logger(__name__)
 
@@ -85,7 +86,8 @@ _RECENCY_HALFLIFE_DAYS = 30.0
 
 
 # Characters of a chunk handed to the cross-encoder. Its tokenizer truncates at
-# 512 tokens (~2,000+ characters of English); this only bounds pathological input.
+# RAG_RERANK_MAX_LENGTH tokens (~4 characters each); this only bounds pathological
+# input.
 _CE_MAX_INPUT_CHARS = 4096
 # Weight of the cross-encoder probability against the retrieval score (OI-5:
 # equal trust; the cross-encoder's say now scales with its own confidence).
@@ -214,12 +216,16 @@ class RerankPolicy:
         min_score: float = 0.0,
         max_per_source: int = 5,
         calibration_method: CalibrationMethod | None = "minmax",
+        max_rerank_candidates: int | None = None,
     ) -> None:
         self._strategy = strategy
         self._deduplicate = deduplicate
         self._min_score = min_score
         self._max_per_source = max_per_source
         self._calibration_method = calibration_method
+        # Candidates the cross-encoder scores (retrieval order); the rest follow
+        # them in retrieval order. None = RAG_RERANK_MAX_CANDIDATES; 0 = all.
+        self._max_rerank_candidates = max_rerank_candidates
         # Observability of the retrieval-strategy decision. These are set on
         # every rerank() call so callers (and tests) can see which path ran,
         # why it was chosen, and the aggregate calibrated confidence.
@@ -229,6 +235,10 @@ class RerankPolicy:
         # Set when the requested reranker failed and a fallback ran instead
         # ("cross_encoder_error", "hosted_reranker_error", ...); None otherwise.
         self.last_degraded_reason: str | None = None
+        # Set when the cross-encoder was deliberately not run (load shedding:
+        # "busy", "budget_exceeded", "warming_up"): the chunks keep their
+        # retrieval order. None otherwise.
+        self.last_skipped_reason: str | None = None
 
     def rerank(
         self,
@@ -255,6 +265,7 @@ class RerankPolicy:
         self.last_strategy_used = effective
         self.last_reason = reason
         self.last_degraded_reason = None
+        self.last_skipped_reason = None
 
         if effective == RerankStrategy.SCORE or effective == RerankStrategy.HOSTED:
             # HOSTED is async-only (an HTTP call); on the sync path degrade to a
@@ -440,53 +451,110 @@ class RerankPolicy:
     # Fix 2: Real cross-encoder reranking
     # ------------------------------------------------------------------
 
+    def _ce_candidate_window(
+        self, chunks: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split chunks (retrieval order) into the cross-encoded head and the rest.
+
+        Cross-encoder cost grows linearly with the candidates; only the top
+        ``max_rerank_candidates`` are scored. The tail keeps its retrieval order
+        and score, behind the reranked head, marked ``rerank_beyond_window``.
+        """
+        limit = self._max_rerank_candidates
+        if limit is None:
+            from app.rag.rerank_budget import rerank_limits
+
+            limit = rerank_limits().max_candidates
+        if limit <= 0 or len(chunks) <= limit:
+            return list(chunks), []
+        tail = [{**chunk, "rerank_beyond_window": True} for chunk in chunks[limit:]]
+        return list(chunks[:limit]), tail
+
+    @staticmethod
+    def _ce_documents(chunks: list[dict[str, Any]]) -> list[str]:
+        # P1c-3: the model truncates at its token limit itself; a 512-character
+        # cut dropped most of a normal chunk (a record's distinguishing field
+        # often comes last). Capped only against pathological input.
+        return [str(c.get("content", ""))[:_CE_MAX_INPUT_CHARS] for c in chunks]
+
+    @staticmethod
+    def _ce_blend(
+        chunks: list[dict[str, Any]], scores: list[float], query: str
+    ) -> list[dict[str, Any]]:
+        """Blend cross-encoder probabilities with the retrieval score and sort."""
+        # OI-5: the cross-encoder's relevance as a PROBABILITY, not min-max
+        # normalised over the candidates. Min-max stretched an indiscriminate
+        # cross-encoder's noise (every logit ~ -10 for a one-word proper noun,
+        # every structured record ~ +6) to a full 0..1 span that outvoted the
+        # retrieval evidence; a probability adds the same to every chunk it
+        # cannot tell apart, and still separates the ones it is sure about.
+        ce_probs = _ce_probabilities(scores, len(chunks))
+        # The retrieval (weighted RRF) score on a 0..1 scale (P1c-4), relative
+        # to the best candidate: a chunk every lexical leg and the exact-match
+        # leg (P2-3) agreed on keeps its lead; near-equal RRF scores stay
+        # near-equal (min-max stretched a 0.015 vs 0.017 tie to 0 vs 1).
+        raw = [max(float(c.get("score", 0.5)), 0.0) for c in chunks]
+        top = max(raw) if raw else 0.0
+        orig_rel = [r / top for r in raw] if top > 0 else [0.5] * len(raw)
+        # An exact identifier of the query ("RTO-5531", "TJ-5531") in a chunk
+        # is decisive: such chunks rank ahead of chunks without it.
+        ident_patterns = _query_identifier_patterns(query)
+        scored = []
+        for chunk, ce_score, orig_score in zip(chunks, ce_probs, orig_rel, strict=False):
+            blended = _CE_WEIGHT * ce_score + (1.0 - _CE_WEIGHT) * orig_score
+            exact = bool(ident_patterns) and any(
+                p.search(str(chunk.get("content", ""))) for p in ident_patterns
+            )
+            scored.append(
+                {**chunk, "score": blended, "ce_score": ce_score, "exact_identifier": exact}
+            )
+        scored.sort(key=lambda c: (c["exact_identifier"], c["score"]), reverse=True)
+        return scored
+
+    def _skip_rerank(
+        self, chunks: list[dict[str, Any]], skip: RerankSkipped
+    ) -> list[dict[str, Any]]:
+        """Keep the retrieval order because the cross-encoder was not run — visibly.
+
+        Load shedding, not a failure: no fallback ranker runs (TF-IDF would be a
+        worse answer dressed up as a ranking). Recorded (``last_skipped_reason``),
+        counted (``agentverse_rerank_degraded_total{reason}``) and logged.
+        """
+        from app.observability.metrics import RERANK_DEGRADED_TOTAL
+
+        self.last_skipped_reason = skip.reason
+        self.last_reason = f"skipped:{skip.reason}"
+        RERANK_DEGRADED_TOTAL.labels(reason=skip.reason).inc()
+        logger.info(
+            "rerank_skipped",
+            strategy=RerankStrategy.CROSS_ENCODER.value,
+            reason=skip.reason,
+            detail=skip.detail[:200],
+            candidates=len(chunks),
+        )
+        return list(chunks)
+
     def _cross_encoder_rerank(
         self,
         chunks: list[dict[str, Any]],
         query: str,
     ) -> list[dict[str, Any]]:
-        """Real cross-encoder reranking via sentence-transformers.
+        """Real cross-encoder reranking via sentence-transformers (synchronous path).
 
-        Falls back to TF-IDF when model unavailable.
+        Scores the top candidates on the bounded inference lane within the
+        rerank budget. A skip (busy / budget / warming up) keeps the retrieval
+        order; a model failure degrades to TF-IDF.
         """
         if not chunks:
             return chunks
+        head, tail = self._ce_candidate_window(chunks)
         try:
             from app.rag.cross_encoder import cross_encode
 
-            # P1c-3: the model truncates at 512 *tokens* itself; a 512-character
-            # cut dropped most of a normal chunk (a record's distinguishing
-            # field often comes last). Capped only against pathological input.
-            documents = [str(c.get("content", ""))[:_CE_MAX_INPUT_CHARS] for c in chunks]
-            scores = cross_encode(query, documents)
-            # OI-5: the cross-encoder's relevance as a PROBABILITY, not min-max
-            # normalised over the candidates. Min-max stretched an indiscriminate
-            # cross-encoder's noise (every logit ~ -10 for a one-word proper noun,
-            # every structured record ~ +6) to a full 0..1 span that outvoted the
-            # retrieval evidence; a probability adds the same to every chunk it
-            # cannot tell apart, and still separates the ones it is sure about.
-            ce_probs = _ce_probabilities(scores, len(chunks))
-            # The retrieval (weighted RRF) score on a 0..1 scale (P1c-4), relative
-            # to the best candidate: a chunk every lexical leg and the exact-match
-            # leg (P2-3) agreed on keeps its lead; near-equal RRF scores stay
-            # near-equal (min-max stretched a 0.015 vs 0.017 tie to 0 vs 1).
-            raw = [max(float(c.get("score", 0.5)), 0.0) for c in chunks]
-            top = max(raw) if raw else 0.0
-            orig_rel = [r / top for r in raw] if top > 0 else [0.5] * len(raw)
-            # An exact identifier of the query ("RTO-5531", "TJ-5531") in a chunk
-            # is decisive: such chunks rank ahead of chunks without it.
-            ident_patterns = _query_identifier_patterns(query)
-            scored = []
-            for chunk, ce_score, orig_score in zip(chunks, ce_probs, orig_rel, strict=False):
-                blended = _CE_WEIGHT * ce_score + (1.0 - _CE_WEIGHT) * orig_score
-                exact = bool(ident_patterns) and any(
-                    p.search(str(chunk.get("content", ""))) for p in ident_patterns
-                )
-                scored.append(
-                    {**chunk, "score": blended, "ce_score": ce_score, "exact_identifier": exact}
-                )
-            scored.sort(key=lambda c: (c["exact_identifier"], c["score"]), reverse=True)
-            return scored
+            scores = cross_encode(query, self._ce_documents(head))
+            return self._ce_blend(head, scores, query) + tail
+        except RerankSkipped as skip:
+            return self._skip_rerank(chunks, skip)
         except Exception as exc:
             # Cross-encoder inference failed (missing lib, load error, backend
             # crash). Degrade to the lexical TF-IDF reranker rather than
@@ -495,16 +563,41 @@ class RerankPolicy:
             # with no metric).
             return self._degrade_to_tfidf(chunks, query, "cross_encoder_error", exc)
 
+    async def _cross_encoder_rerank_async(
+        self,
+        chunks: list[dict[str, Any]],
+        query: str,
+        budget_seconds: float | None,
+    ) -> list[dict[str, Any]]:
+        """Async cross-encoder reranking: awaits the bounded lane, parks no thread."""
+        if not chunks:
+            return chunks
+        head, tail = self._ce_candidate_window(chunks)
+        try:
+            from app.rag.cross_encoder import cross_encode_async
+
+            scores = await cross_encode_async(
+                query, self._ce_documents(head), budget_seconds=budget_seconds
+            )
+            return self._ce_blend(head, scores, query) + tail
+        except RerankSkipped as skip:
+            return self._skip_rerank(chunks, skip)
+        except Exception as exc:
+            return self._degrade_to_tfidf(chunks, query, "cross_encoder_error", exc)
+
     async def rerank_async(
         self,
         chunks: list[dict[str, Any]],
         query: str,
         strategy: RerankStrategy | None = None,
         query_embedding: list[float] | None = None,
+        budget_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Async reranking — cross-encoder via thread pool for blocking inference."""
-        import asyncio
+        """Async reranking — the cross-encoder runs on its bounded inference lane.
 
+        ``budget_seconds`` bounds the cross-encoder (None = the configured
+        budget, capped by the retrieval deadline).
+        """
         s = strategy or RerankStrategy.CROSS_ENCODER
 
         if s in (
@@ -515,15 +608,13 @@ class RerankPolicy:
             self.last_strategy_used = s
             self.last_reason = f"explicit:{s.value}"
             self.last_degraded_reason = None
+            self.last_skipped_reason = None
 
         if s == RerankStrategy.CROSS_ENCODER:
-            # Run blocking cross-encoder in thread pool
-            loop = asyncio.get_event_loop()
-            try:
-                result = await loop.run_in_executor(None, self._cross_encoder_rerank, chunks, query)
-                return result
-            except Exception as exc:
-                return self._degrade_to_tfidf(chunks, query, "cross_encoder_error", exc)
+            # RERANK-BOUNDED: awaits the bounded lane directly. It used to park a
+            # default-executor thread per search in a per-call executor behind
+            # the inference lock — an unbounded queue that blew the deadline.
+            return await self._cross_encoder_rerank_async(chunks, query, budget_seconds)
 
         if s == RerankStrategy.DIVERSITY:
             return self._diversity_rerank(chunks, query_embedding=query_embedding)

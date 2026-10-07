@@ -15,7 +15,9 @@ def test_cross_encoder_scores_documents() -> None:
     """cross_encode must return a score for each document."""
     from app.rag.cross_encoder import cross_encode, is_cross_encoder_available
 
-    if not is_cross_encoder_available():
+    # Non-blocking by default (it never loads the model on the caller's
+    # thread): give the background load time to finish.
+    if not is_cross_encoder_available(wait_seconds=120):
         pytest.skip("configured cross-encoder model is unavailable")
 
     documents = [
@@ -32,7 +34,9 @@ def test_cross_encoder_relevance_ordering() -> None:
     """Python ML docs should score higher than weather doc."""
     from app.rag.cross_encoder import cross_encode, is_cross_encoder_available
 
-    if not is_cross_encoder_available():
+    # Non-blocking by default (it never loads the model on the caller's
+    # thread): give the background load time to finish.
+    if not is_cross_encoder_available(wait_seconds=120):
         pytest.skip("configured cross-encoder model is unavailable")
 
     documents = [

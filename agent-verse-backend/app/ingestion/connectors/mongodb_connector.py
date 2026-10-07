@@ -43,6 +43,15 @@ documents are removed by upstream-deletion reconciliation (KB-44), which lists
 every ``_id``. Document ids are UUID v8; ids of earlier releases (v5) are never
 reconciled away.
 
+Poison documents: pages are read undecoded and each document is decoded on its
+own, so one the driver cannot decode (a string that is not UTF-8) is dead-lettered
+with its ``_id`` and an error id while the rest of the page is indexed; a document
+over the Source's per-document size cap is dead-lettered the same way. The cursor
+moves past both, and the DLQ retry reads the document again (``replay_event``)
+once it is fixed upstream. Every BSON type renders as text (binary as a marker,
+control characters as ``\\uXXXX`` escapes, dates outside Python's range as
+milliseconds), so no value makes the document look like a binary file.
+
 Cursor: JSON (MongoDB canonical Extended JSON) holding, per collection, the last
 ``cursor_field`` value and ``_id`` processed (and the change-stream token). A
 legacy cursor (a bare ObjectId string) is honoured for the single configured
@@ -63,6 +72,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -528,36 +538,87 @@ def _list_collections(client: Any, settings: _Settings) -> list[str]:
 
 _MAX_ARRAY_ITEMS = 100  # items rendered per array; the rest is summarised
 _MAX_DEEP_JSON_CHARS = 4000  # a subtree below max_depth, as JSON, at most this long
+_MAX_SCOPE_JSON_CHARS = 500  # a Code value's scope, as JSON, at most this long
+
+# C0 control characters other than tab / newline / carriage return, and DEL.
+# A NUL in the flattened text made the parser treat the whole document as a
+# binary file ("unsupported binary content"), and Postgres refuses NUL bytes:
+# they are rendered as visible ``\uXXXX`` escapes instead (and counted).
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def _scalar(value: object) -> str:
-    """A readable rendering of one BSON value (TG-09)."""
+def _safe_text(value: str, notes: dict[str, int] | None) -> str:
+    """``value`` with control characters escaped (``\\u0000``); counted in ``notes``."""
+    out, count = _CONTROL_CHARS.subn(lambda m: f"\\u{ord(m.group()):04x}", value)
+    if count and notes is not None:
+        notes["control_chars_escaped"] = notes.get("control_chars_escaped", 0) + count
+    return out
+
+
+def _scalar(value: object, notes: dict[str, int] | None = None) -> str:
+    """A readable, text-safe rendering of one BSON value (TG-09).
+
+    Every BSON type renders as text — never raw bytes, never a control
+    character — so no value can make the document look like a binary file.
+    """
     import datetime
-    import re
+    import json
 
-    from bson import Binary, Regex
+    from bson import Binary, Code, MaxKey, MinKey, Regex, Timestamp
+    from bson.datetime_ms import DatetimeMS
+    from bson.dbref import DBRef
 
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, MinKey):
+        return "<MinKey>"
+    if isinstance(value, MaxKey):
+        return "<MaxKey>"
+    if isinstance(value, Code):  # a str subclass: before str
+        text = f"<javascript code> {_safe_text(str(value), notes)}"
+        if value.scope:
+            from bson import json_util
+
+            scope = json_util.dumps(value.scope, json_options=json_util.RELAXED_JSON_OPTIONS)
+            if len(scope) > _MAX_SCOPE_JSON_CHARS:
+                scope = scope[:_MAX_SCOPE_JSON_CHARS] + " … (truncated)"
+            text += f" (scope: {scope})"
+        return text
+    if isinstance(value, str):
+        return _safe_text(value, notes)
     if isinstance(value, Binary):
-        # Raw bytes are not text: index what they are, never their content.
+        # Raw bytes are not text: index what they are, never their content —
+        # except a UUID, whose bytes ARE the identifier.
+        if value.subtype == 4 and len(value) == 16:
+            return f"<uuid {uuid.UUID(bytes=bytes(value))}>"
+        if value.subtype == 3 and len(value) == 16:
+            return f"<legacy uuid (binary subtype 3), hex {bytes(value).hex()}>"
         return f"<binary subtype {value.subtype}, {len(value)} bytes>"
     if isinstance(value, bytes | bytearray):
         return f"<binary {len(value)} bytes>"
-    if isinstance(value, Regex):
-        return f"/{value.pattern}/{_regex_flags(value.flags)}"
-    if isinstance(value, re.Pattern):
-        return f"/{value.pattern}/{_regex_flags(value.flags)}"
+    if isinstance(value, uuid.UUID):
+        return f"<uuid {value}>"
+    if isinstance(value, Regex | re.Pattern):
+        return f"/{_safe_text(str(value.pattern), notes)}/{_regex_flags(value.flags)}"
+    if isinstance(value, Timestamp):
+        return f"{value.as_datetime().isoformat()} (BSON timestamp, increment {value.inc})"
+    if isinstance(value, DBRef):
+        ref: dict[str, str] = {"$ref": value.collection, "$id": _scalar(value.id, notes)}
+        if value.database:
+            ref["$db"] = value.database
+        return json.dumps(ref, ensure_ascii=False)
+    if isinstance(value, DatetimeMS):
+        # Decoded with DATETIME_AUTO: a date outside Python's range (year 0,
+        # year 10000+) used to make the whole page undecodable.
+        return f"<datetime {int(value)} ms since the epoch, outside the representable range>"
     if isinstance(value, datetime.datetime):
         return value.isoformat()
-    return str(value)  # Decimal128, Int64, ObjectId, UUID, Timestamp, numbers, str
+    return str(value)  # Decimal128, Int64, ObjectId, numbers (nan, inf, -0.0)
 
 
 def _regex_flags(flags: object) -> str:
-    import re
-
     if isinstance(flags, str):
         return flags
     out = ""
@@ -568,24 +629,30 @@ def _regex_flags(flags: object) -> str:
     return out
 
 
-def _flatten(doc: dict[str, Any], max_depth: int = 5) -> tuple[str, dict[str, int]]:
-    """Flatten a MongoDB document to ``key: value`` lines, and what was shortened.
+def _render(
+    doc: dict[str, Any], max_depth: int = 5
+) -> tuple[str, dict[str, int], dict[str, int]]:
+    """``key: value`` lines for a MongoDB document, what was shortened, and notes.
 
     TG-09: nothing is dropped silently. Arrays render their first
     ``_MAX_ARRAY_ITEMS`` items and a marker line saying how many more there
     are; a subtree nested deeper than ``max_depth`` is kept as (bounded)
-    Extended JSON. The returned counts go on the document's metadata.
+    Extended JSON; an empty object / array renders as ``{}`` / ``[]``. The
+    shortening counts and the rendering notes (control characters escaped) go
+    on the document's metadata.
     """
     from bson import json_util
 
     parts: list[str] = []
     truncation: dict[str, int] = {}
+    notes: dict[str, int] = {}
 
     def _note(key: str, amount: int = 1) -> None:
         truncation[key] = truncation.get(key, 0) + amount
 
     def _recurse(obj: object, prefix: str = "", depth: int = 0) -> None:
         if depth > max_depth and isinstance(obj, dict | list | tuple):
+            # json.dumps escapes control characters itself.
             dumped = json_util.dumps(obj, json_options=json_util.RELAXED_JSON_OPTIONS)
             if len(dumped) > _MAX_DEEP_JSON_CHARS:
                 dumped = dumped[:_MAX_DEEP_JSON_CHARS] + " … (truncated)"
@@ -594,9 +661,14 @@ def _flatten(doc: dict[str, Any], max_depth: int = 5) -> tuple[str, dict[str, in
             _note("deep_fields")
             return
         if isinstance(obj, dict):
+            if not obj and prefix:
+                parts.append(f"{prefix}: {{}}")
             for k, v in obj.items():
-                _recurse(v, f"{prefix}.{k}" if prefix else str(k), depth + 1)
+                key = _safe_text(str(k), notes)
+                _recurse(v, f"{prefix}.{key}" if prefix else key, depth + 1)
         elif isinstance(obj, list | tuple):
+            if not obj:
+                parts.append(f"{prefix}: []")
             for i, v in enumerate(obj[:_MAX_ARRAY_ITEMS]):
                 _recurse(v, f"{prefix}[{i}]", depth + 1)
             if len(obj) > _MAX_ARRAY_ITEMS:
@@ -605,15 +677,22 @@ def _flatten(doc: dict[str, Any], max_depth: int = 5) -> tuple[str, dict[str, in
                 _note("arrays_truncated")
                 _note("array_items_omitted", omitted)
         else:
-            parts.append(f"{prefix}: {_scalar(obj)}")
+            parts.append(f"{prefix}: {_scalar(obj, notes)}")
 
     _recurse(doc)
-    return "\n".join(parts), truncation
+    return "\n".join(parts), truncation, notes
+
+
+def _flatten(doc: dict[str, Any], max_depth: int = 5) -> tuple[str, dict[str, int]]:
+    """Flatten a MongoDB document to ``key: value`` lines, and what was shortened
+    (see :func:`_render`)."""
+    text, truncation, _notes = _render(doc, max_depth)
+    return text, truncation
 
 
 def _flatten_doc(doc: dict[str, Any], max_depth: int = 5) -> str:
-    """Flatten a MongoDB document to ``key: value`` lines (see :func:`_flatten`)."""
-    return _flatten(doc, max_depth)[0]
+    """Flatten a MongoDB document to ``key: value`` lines (see :func:`_render`)."""
+    return _render(doc, max_depth)[0]
 
 
 # ── Cursor ─────────────────────────────────────────────────────────────────────
@@ -684,24 +763,121 @@ def _page_query(field_name: str, position: dict[str, Any] | None) -> dict[str, A
     return {"$and": [base, after]}
 
 
+# ── Decoding: one undecodable document never aborts the sync ──────────────────
+
+
+@dataclass(frozen=True)
+class _Undecodable:
+    """A document the driver could not decode (e.g. a string that is not UTF-8).
+
+    Its ``_id`` (and cursor value) were read leniently so the cursor moves past
+    it; the sync dead-letters it with ``error`` instead of failing the page.
+    """
+
+    oid: Any
+    value: Any
+    error: BaseException
+    size: int
+
+
+# One cursor page item: a decoded document, or one that could not be decoded.
+_PageItem = dict[str, Any] | _Undecodable
+
+
+def _raw_view(col: Any) -> Any:
+    """``col`` returning undecoded documents (``RawBSONDocument``).
+
+    pymongo decodes a whole batch at once: ONE document with invalid UTF-8 used
+    to raise ``InvalidBSON`` for the page, failing the sync with every later
+    document unread. Undecoded, each document is decoded on its own.
+    """
+    from bson.raw_bson import RawBSONDocument
+
+    return col.with_options(
+        codec_options=col.codec_options.with_options(document_class=RawBSONDocument)
+    )
+
+
+def _decode_options(col: Any) -> Any:
+    """The collection's codec options for decoding one document: a plain dict,
+    and a date outside Python's range kept as ``DatetimeMS`` (it used to make
+    the page undecodable)."""
+    from bson.codec_options import DatetimeConversion
+
+    return col.codec_options.with_options(
+        document_class=dict, datetime_conversion=DatetimeConversion.DATETIME_AUTO
+    )
+
+
+def _decode_item(raw: Any, options: Any, cursor_field: str) -> _PageItem:
+    """Decode one raw document; an undecodable one becomes :class:`_Undecodable`.
+
+    Its ``_id`` / cursor value are read with ``unicode_decode_error_handler=
+    'replace'``. When even that fails (structural corruption), or the ``_id``
+    itself held invalid UTF-8 (the replaced value would not position the cursor
+    exactly, and ``$gt`` could skip other documents), the error is raised: the
+    sync fails honestly rather than lose documents.
+    """
+    import bson
+    from bson.errors import BSONError
+    from bson.raw_bson import RawBSONDocument
+
+    if not isinstance(raw, RawBSONDocument):  # already decoded (a plain mapping)
+        return dict(raw)
+    data = raw.raw
+    try:
+        return dict(bson.decode(data, codec_options=options))
+    except (BSONError, UnicodeDecodeError, ValueError, OverflowError) as exc:
+        try:
+            lenient = bson.decode(
+                data, codec_options=options.with_options(unicode_decode_error_handler="replace")
+            )
+        except Exception:
+            raise exc from None
+        oid = lenient.get("_id")
+        if "�" in str(oid):
+            raise
+        value = oid if cursor_field == "_id" else _dotted_get(lenient, cursor_field)
+        return _Undecodable(oid=oid, value=value, error=exc, size=len(data))
+
+
+def _plain(value: Any) -> Any:
+    """A RawBSONDocument (change-stream token) as a plain dict; anything else as is."""
+    import bson
+    from bson.raw_bson import RawBSONDocument
+
+    return bson.decode(value.raw) if isinstance(value, RawBSONDocument) else value
+
+
 def _fetch_page(
     client: Any,
     settings: _Settings,
     collection: str,
     position: dict[str, Any] | None,
     limit: int,
-) -> list[dict[str, Any]]:
+) -> list[_PageItem]:
     field_name = settings.cursor_field
     sort = [("_id", 1)] if field_name == "_id" else [(field_name, 1), ("_id", 1)]
     col = client[settings.database][collection]
-    return list(
-        col.find(
+    options = _decode_options(col)
+    return [
+        _decode_item(raw, options, field_name)
+        for raw in _raw_view(col).find(
             _page_query(field_name, position),
             sort=sort,
             limit=limit,
             max_time_ms=settings.max_time_ms,
         )
-    )
+    ]
+
+
+def _fetch_one(client: Any, settings: _Settings, collection: str, oid: Any) -> _PageItem | None:
+    """The document with ``_id`` ``oid`` (decoded, or :class:`_Undecodable`), or None."""
+    col = client[settings.database][collection]
+    raw = _raw_view(col).find_one({"_id": oid}, max_time_ms=settings.max_time_ms)
+    if raw is None:
+        return None
+    return _decode_item(raw, _decode_options(col), settings.cursor_field)
 
 
 def _doc_id(config: SourceConfig, collection: str, oid: Any) -> str:
@@ -740,8 +916,7 @@ def _raw_document(
 
     oid = doc.get("_id")
     doc_key = str(oid)
-    text, truncation = _flatten({**doc, "_id": doc_key})
-    url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
+    text, truncation, notes = _render({**doc, "_id": doc_key})
     metadata: dict[str, Any] = {
         "database": settings.database,
         "collection": collection,
@@ -749,15 +924,118 @@ def _raw_document(
     }
     if truncation:
         metadata["truncated"] = truncation  # TG-09: never silent
+    if notes:
+        metadata["rendering"] = notes  # e.g. control characters escaped
     return RawDocument(
         doc_id=_doc_id(config, collection, oid),
         source_id=config.source_id,
         tenant_id=config.tenant_id,
-        source_url=f"{url}/{quote(doc_key, safe='')}",
+        source_url=_doc_url(settings, collection, doc_key),
         content=text.encode(),
         content_type="text/plain",
         metadata=metadata,
     )
+
+
+def _doc_url(settings: _Settings, collection: str, doc_key: str) -> str:
+    url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
+    return f"{url}/{quote(doc_key, safe='')}"
+
+
+# CONNECTOR_REPLAY_KEY "kind" of a document a sync dead-lettered (see replay_event).
+_REPLAY_KIND = "mongodb_document"
+_MAX_KEY_IN_REASON = 120
+
+
+def _key_for_reason(oid: Any) -> str:
+    key = str(oid)
+    return key if len(key) <= _MAX_KEY_IN_REASON else key[:_MAX_KEY_IN_REASON] + "…"
+
+
+def _failure_document(
+    config: SourceConfig,
+    settings: _Settings,
+    collection: str,
+    oid: Any,
+    reason: str,
+    *,
+    retryable: bool = True,
+) -> RawDocument:
+    """A stand-in for one document the sync could not index (→ DLQ with ``reason``).
+
+    Same id as the document would have when indexed, so a later sync that
+    indexes it resolves the entry; the replay reference lets an (operator) DLQ
+    retry read the document again once it was fixed upstream. ``retryable``:
+    the automatic retry re-reads it too (an upstream fix heals by itself).
+    """
+    from bson import json_util
+
+    from app.ingestion.base_connector import fetch_failure_document
+
+    doc_key = str(oid)
+    return fetch_failure_document(
+        config,
+        doc_id=_doc_id(config, collection, oid),
+        reason=reason,
+        retryable=retryable,
+        source_url=_doc_url(settings, collection, doc_key),
+        replay={
+            "kind": _REPLAY_KIND,
+            "collection": collection,
+            "id": json_util.dumps({"_id": oid}, json_options=json_util.CANONICAL_JSON_OPTIONS),
+        },
+        metadata={"database": settings.database, "collection": collection, "_id": doc_key},
+    )
+
+
+def _decode_failure_reason(settings: _Settings, collection: str, item: _Undecodable) -> str:
+    """Why ``item`` was dead-lettered: its ``_id``, what is wrong, and an error id
+    (the driver's detail is logged under it, never shown — MDB-20)."""
+    from app.net.mongodb_errors import public_mongo_error
+
+    what = (
+        "it holds a string that is not valid UTF-8"
+        if "utf-8" in str(item.error).lower()
+        else "it is not valid BSON"
+    )
+    return (
+        f"document _id={_key_for_reason(item.oid)} in {settings.database}.{collection} "
+        f"could not be decoded ({what}) and was not indexed: "
+        f"{public_mongo_error(item.error, context='ingestion mongodb decode')}; "
+        "fix the document upstream, then retry this DLQ entry"
+    )
+
+
+def _document_for(
+    config: SourceConfig, settings: _Settings, collection: str, item: _PageItem
+) -> RawDocument:
+    """The RawDocument for one page item: the document, or a failure stand-in for
+    an undecodable one or one over the Source's per-document size cap."""
+    if isinstance(item, _Undecodable):
+        _log.warning(
+            "mongodb_document_undecodable source=%s collection=%s _id=%s bytes=%d",
+            config.source_id,
+            collection,
+            _key_for_reason(item.oid),
+            item.size,
+        )
+        return _failure_document(
+            config, settings, collection, item.oid,
+            _decode_failure_reason(settings, collection, item),
+        )
+    raw = _raw_document(config, settings, collection, item)
+    cap = int(config.max_doc_size_bytes or 0)
+    if cap and len(raw.content) > cap:
+        # Dead-lettered with the reason (not skipped by the pipeline's size
+        # check, which left no DLQ entry an operator could retry after a fix).
+        return _failure_document(
+            config, settings, collection, item.get("_id"),
+            f"document _id={_key_for_reason(item.get('_id'))} in {settings.database}."
+            f"{collection} is {len(raw.content)} bytes as text, over this Source's "
+            f"{cap}-byte per-document cap, and was not indexed; trim it upstream (or "
+            "raise max_doc_size_bytes), then retry this DLQ entry",
+        )
+    return raw
 
 
 def _legacy_key_candidates(key: str) -> list[Any]:
@@ -808,20 +1086,22 @@ def _change_stream_start(client: Any, settings: _Settings, collection: str) -> A
     """
     from pymongo.errors import OperationFailure
 
-    col = client[settings.database][collection]
+    col = _raw_view(client[settings.database][collection])
     try:
         with col.watch(
             [{"$match": {"operationType": {"$in": _CHANGE_TYPES}}}], max_await_time_ms=50
         ) as stream:
             stream.try_next()
-            return stream.resume_token
+            return _plain(stream.resume_token)
     except OperationFailure as exc:
         if exc.code in _NO_CHANGE_STREAM_CODES or "replica set" in str(exc).lower():
             _log.warning(
-                "mongodb_change_stream_unavailable collection=%s: %s — updates are re-read "
-                "only with a cursor_field on an update timestamp",
+                "mongodb_change_stream_unavailable collection=%s code=%s: %s — updates are "
+                "re-read only with a cursor_field on an update timestamp",
                 collection,
-                exc,
+                exc.code,
+                # The raw (undecoded) view's error carries the reply as raw bytes.
+                str(exc).split(", full error:", 1)[0],
             )
             return None
         raise
@@ -829,12 +1109,18 @@ def _change_stream_start(client: Any, settings: _Settings, collection: str) -> A
 
 def _read_changes(
     client: Any, settings: _Settings, collection: str, token: Any, limit: int
-) -> tuple[list[tuple[dict[str, Any], Any]], Any, bool]:
-    """Updated / replaced documents since ``token``: ([(doc, token_after)], token, lost)."""
+) -> tuple[list[tuple[_PageItem, Any]], Any, bool]:
+    """Updated / replaced documents since ``token``: ([(doc, token_after)], token, lost).
+
+    Events arrive undecoded, so one undecodable full document is an
+    :class:`_Undecodable` item (dead-lettered by the sync), not a failed read.
+    """
     from pymongo.errors import OperationFailure
 
-    col = client[settings.database][collection]
-    changes: list[tuple[dict[str, Any], Any]] = []
+    plain = client[settings.database][collection]
+    options = _decode_options(plain)
+    col = _raw_view(plain)
+    changes: list[tuple[_PageItem, Any]] = []
     try:
         with col.watch(
             [{"$match": {"operationType": {"$in": _CHANGE_TYPES}}}],
@@ -849,9 +1135,10 @@ def _read_changes(
                 if change is None:
                     break
                 doc = change.get("fullDocument")
-                if isinstance(doc, dict):  # None: deleted since (reconcile removes it)
-                    changes.append((doc, stream.resume_token))
-            return changes, stream.resume_token, False
+                if doc is not None:  # None: deleted since (reconcile removes it)
+                    item = _decode_item(doc, options, settings.cursor_field)
+                    changes.append((item, _plain(stream.resume_token)))
+            return changes, _plain(stream.resume_token), False
     except OperationFailure as exc:
         if exc.code in _HISTORY_LOST_CODES or exc.has_error_label(
             "NonResumableChangeStreamError"
@@ -871,6 +1158,14 @@ def _live_id_page(
             query, {"_id": 1}, sort=[("_id", 1)], limit=limit, max_time_ms=settings.max_time_ms
         )
     ]
+
+
+def _position_of(item: _PageItem, cursor_field: str) -> tuple[Any, Any]:
+    """(``_id``, cursor-field value) of a page item."""
+    if isinstance(item, _Undecodable):
+        return item.oid, item.value
+    oid = item.get("_id")
+    return oid, oid if cursor_field == "_id" else _dotted_get(item, cursor_field)
 
 
 def _dotted_get(doc: dict[str, Any], path: str) -> Any:
@@ -994,6 +1289,39 @@ class MongoDBConnector(BaseConnector):
             raise ConnectorFetchError(f"mongodb: {_public_error(exc)}") from exc
         return out
 
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Read again a document a sync dead-lettered (DLQ retry, operator retry).
+
+        Yields the document as the sync would index it now — or a fresh failure
+        stand-in when it is still undecodable / over the cap (retried later), or
+        gone upstream (permanent: there is nothing left to index).
+        """
+        from bson import json_util
+
+        collection = str(reference.get("collection") or "")
+        if reference.get("kind") != _REPLAY_KIND or not collection or not reference.get("id"):
+            raise ValueError(f"not a MongoDB document replay reference: {reference!r}")
+        oid = json_util.loads(str(reference["id"]))["_id"]
+        settings = _settings(config.connection_config)
+        try:
+            async with _connected(settings) as (client, _s):
+                item = await asyncio.to_thread(_fetch_one, client, settings, collection, oid)
+        except Exception as exc:
+            if _is_own_error(exc):
+                raise
+            raise ConnectorFetchError(f"mongodb: {_public_error(exc)}") from exc
+        if item is None:
+            yield _failure_document(
+                config, settings, collection, oid,
+                f"document _id={_key_for_reason(oid)} no longer exists in "
+                f"{settings.database}.{collection}",
+                retryable=False,
+            )
+            return
+        yield _document_for(config, settings, collection, item)
+
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
@@ -1078,8 +1406,10 @@ class MongoDBConnector(BaseConnector):
             # stream (replica sets / Atlas); deletions are reconciled (KB-44).
             track_changes = settings.cursor_field == "_id"
 
-            def _raw(collection: str, doc: dict[str, Any]) -> RawDocument:
-                return _raw_document(config, settings, collection, doc)
+            def _raw(collection: str, item: _PageItem) -> RawDocument:
+                # An undecodable / over-size document is a failure stand-in
+                # (→ DLQ with its reason); the cursor still moves past it.
+                return _document_for(config, settings, collection, item)
 
             for collection in collections:
                 # A second pass only when the change stream's history was lost.
@@ -1101,10 +1431,7 @@ class MongoDBConnector(BaseConnector):
                             limit,
                         )
                         for doc in page:
-                            oid = doc.get("_id")
-                            value = oid if settings.cursor_field == "_id" else _dotted_get(
-                                doc, settings.cursor_field
-                            )
+                            oid, value = _position_of(doc, settings.cursor_field)
                             positions[collection] = {
                                 **positions.get(collection, {}),
                                 "value": value,

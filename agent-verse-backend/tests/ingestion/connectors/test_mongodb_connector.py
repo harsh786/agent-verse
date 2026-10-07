@@ -371,7 +371,9 @@ def test_reading_changes_is_bounded_by_events_read() -> None:
     stream.__enter__.return_value = stream
     stream.try_next.return_value = {"operationType": "update", "fullDocument": None}
     client = MagicMock()
-    client.__getitem__.return_value.__getitem__.return_value.watch.return_value = stream
+    coll = client.__getitem__.return_value.__getitem__.return_value
+    coll.with_options.return_value = coll  # the raw (undecoded) view of the collection
+    coll.watch.return_value = stream
     settings = _settings({"uri": "mongodb://h/", "database": "d"})
     changes, _token, lost = _read_changes(client, settings, "c", {"t": 1}, 25)
     assert changes == [] and lost is False

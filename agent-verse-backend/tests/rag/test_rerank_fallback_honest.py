@@ -28,6 +28,12 @@ def _boom(query: str, docs: list[str], batch_size: int = 32) -> list[float]:
     raise RuntimeError("CUDA error: device-side assert triggered")
 
 
+async def _boom_async(
+    query: str, docs: list[str], *, budget_seconds: float | None = None
+) -> list[float]:
+    raise RuntimeError("CUDA error: device-side assert triggered")
+
+
 def _chunks() -> list[dict[str, Any]]:
     return [
         {"chunk_id": "other", "content": "weather report", "score": 0.9},
@@ -79,7 +85,8 @@ async def _ready(_settings: Any) -> str:
 async def test_default_path_labels_a_cross_encoder_fallback_honestly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.rag.cross_encoder.cross_encode", _boom)
+    # The async default path awaits the bounded lane (cross_encode_async).
+    monkeypatch.setattr("app.rag.cross_encoder.cross_encode_async", _boom_async)
     monkeypatch.setattr("app.rag.rerank_stage._cross_encoder_status", _ready)
     settings = SimpleNamespace(
         rag_default_rerank_enabled=True, rag_default_rerank_strategy="cross_encoder"

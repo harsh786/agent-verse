@@ -54,6 +54,7 @@ from app.rag.engine import (
     RetrievalStrategyExecutionError,
 )
 from app.rag.raft import RAFTService
+from app.rag.rerank_budget import retrieval_deadline
 from app.rag.rerank_stage import apply_default_rerank
 from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
 from app.rag_platform.reranker_contract import AsyncCloseableProtocol
@@ -2455,8 +2456,11 @@ class RetrievalGateway:
         )
         started = time.monotonic()
         try:
-            async with asyncio.timeout(self.dependencies.strategy_timeout_seconds):
-                result = await capability.adapter.execute(request, context)
+            # RERANK-BOUNDED: the deadline is published to the rerank stage, so a
+            # rerank only ever gets the time left (never the reason for a 503).
+            with retrieval_deadline(self.dependencies.strategy_timeout_seconds):
+                async with asyncio.timeout(self.dependencies.strategy_timeout_seconds):
+                    result = await capability.adapter.execute(request, context)
         except TimeoutError as exc:
             logger.warning(
                 "rag_strategy_failed",

@@ -20,7 +20,7 @@ def test_cross_encoder_available() -> None:
     from app.rag.cross_encoder import cross_encode, is_cross_encoder_available
 
     # Whether available or not, must not raise
-    avail = is_cross_encoder_available()
+    avail = is_cross_encoder_available(wait_seconds=120)
     assert isinstance(avail, bool)
     # Fallback path always works
     scores = cross_encode("python", ["Python code", "Java code"])
