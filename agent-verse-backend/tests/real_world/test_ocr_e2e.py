@@ -161,13 +161,16 @@ def test_partial_pages_and_refusals(api: LiveAPI, evidence: dict[str, Any]) -> N
 
     cases = {
         "truncated PNG": (ocf.truncated_png(), "broken-scan.png", ocf.PNG, (502, 422, 400)),
-        "unrasterisable PDF": (ocf.unrasterisable_pdf(), "garbage.pdf", ocf.PDF,
-                               (502, 422, 400, 200)),
+        # A PDF no renderer can open is a 422 with the reason (it was a silent
+        # zero-page 200); 502 only if the renderer itself failed.
+        "unrasterisable PDF": (ocf.unrasterisable_pdf(), "garbage.pdf", ocf.PDF, (422, 502)),
         "unsupported type": (b"plain text, not an image", "notes.txt", "text/plain",
                              (415, 422, 400)),
         "over the upload cap": (ocf.oversize_png(MAX_UPLOAD), "huge-scan.png", ocf.PNG, (413,)),
+        # Under the cap: never a 413 (the agent tool used to refuse past a
+        # hardcoded 10 MiB). This body is not a decodable PNG, hence the 422.
         "between 10 MiB and the cap": (ocf.oversize_png(12 * 1024 * 1024 - 1), "big-scan.png",
-                                       ocf.PNG, (413, 422, 502, 400)),
+                                       ocf.PNG, (422,)),
     }
     for name, (data, filename, mime, allowed) in cases.items():
         status, body, secs = extract(api, data, filename, mime)
@@ -181,6 +184,8 @@ def test_partial_pages_and_refusals(api: LiveAPI, evidence: dict[str, Any]) -> N
         if status == 200 and not body.get("degraded") and not str(body.get("raw_text") or ""
                                                                    ).strip():
             soft.append(f"{name}: a silent empty 200 (nothing read, not flagged degraded)")
+        if "10 MB" in str(body.get("detail") or ""):
+            soft.append(f"{name}: refused at the old hardcoded 10 MB tool limit")
         if name == "over the upload cap" and secs > 30:
             soft.append(f"the over-cap upload took {secs}s to refuse")
     evidence["cases"] = out

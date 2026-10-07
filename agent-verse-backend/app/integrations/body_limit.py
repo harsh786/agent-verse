@@ -19,7 +19,10 @@ Signature verification therefore always runs on bounded bytes.
 The authenticated OCR upload routes (``/ocr/``, a10-F243-05) are bounded the
 same way: their JSON bodies carry whole documents as base64 and used to be read
 with no limit. Their cap is the base64-inflated ``OCR_MAX_UPLOAD_BYTES`` plus
-envelope room; the route enforces the exact per-document limit.
+envelope room (a ``/ocr/batch`` request shares it: its documents together); the
+route enforces the exact per-document limit. The OCR 413 states the document
+limit, not just the inflated body cap, so the one documented limit is the one a
+client sees.
 """
 
 from __future__ import annotations
@@ -57,12 +60,25 @@ def ocr_body_cap(max_document_bytes: int) -> int:
 
 
 def _default_ocr_cap() -> int:
-    try:
-        from app.core.config import get_settings
+    from app.ocr.limits import ocr_max_upload_bytes
 
-        return ocr_body_cap(int(get_settings().ocr_max_upload_bytes))
-    except Exception:
-        return ocr_body_cap(25 * 1_048_576)
+    return ocr_body_cap(ocr_max_upload_bytes())
+
+
+def ocr_body_too_large_detail(body_cap: int) -> str:
+    """The OCR 413 detail: the per-document limit behind ``body_cap`` (the
+    inverse of :func:`ocr_body_cap`), not only the inflated body size."""
+    from app.ocr.limits import describe_byte_limit
+
+    document_bytes = (body_cap - _OCR_ENVELOPE_BYTES) * 3 // 4
+    if document_bytes <= 0:  # an explicit cap not derived from a document limit
+        return f"Request body exceeds {body_cap} bytes (OCR request body cap)"
+    return (
+        f"Request body exceeds {body_cap} bytes: the OCR limit is "
+        f"{describe_byte_limit(document_bytes)} per document "
+        "(OCR_MAX_UPLOAD_BYTES), sent raw or base64-encoded; a /ocr/batch "
+        "request's documents share one such body"
+    )
 
 
 def _env_int(name: str, default: int) -> int:
@@ -95,12 +111,12 @@ def cap_for_path(
 class RequestBodyTooLargeError(HTTPException):
     """Raised from ``receive`` once the streamed body passes the cap."""
 
-    def __init__(self, cap: int) -> None:
-        super().__init__(status_code=413, detail=f"Request body exceeds {cap} bytes")
+    def __init__(self, cap: int, detail: str | None = None) -> None:
+        super().__init__(status_code=413, detail=detail or f"Request body exceeds {cap} bytes")
 
 
-async def _send_413(send: Send, cap: int) -> None:
-    body = json.dumps({"detail": f"Request body exceeds {cap} bytes"}).encode()
+async def _send_413(send: Send, cap: int, detail: str | None = None) -> None:
+    body = json.dumps({"detail": detail or f"Request body exceeds {cap} bytes"}).encode()
     await send(
         {
             "type": "http.response.start",
@@ -146,10 +162,15 @@ class PublicIngressBodyLimitMiddleware:
         if cap is None:
             await self.app(scope, receive, send)
             return
+        detail = (
+            ocr_body_too_large_detail(cap)
+            if any(path.startswith(p) for p in _OCR_PREFIXES)
+            else None
+        )
 
         declared = _declared_length(scope)
         if declared is not None and declared > cap:
-            await _send_413(send, cap)
+            await _send_413(send, cap, detail)
             return
 
         received = 0
@@ -159,13 +180,13 @@ class PublicIngressBodyLimitMiddleware:
         async def limited_receive() -> Message:
             nonlocal received, exceeded
             if exceeded:
-                raise RequestBodyTooLargeError(cap)
+                raise RequestBodyTooLargeError(cap, detail)
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b"") or b"")
                 if received > cap:
                     exceeded = True
-                    raise RequestBodyTooLargeError(cap)
+                    raise RequestBodyTooLargeError(cap, detail)
             return message
 
         async def tracking_send(message: Message) -> None:
@@ -180,7 +201,7 @@ class PublicIngressBodyLimitMiddleware:
             # A handler that let the error escape (instead of FastAPI turning it
             # into a 413) still answers 413 — unless it already started a reply.
             if not response_started:
-                await _send_413(send, cap)
+                await _send_413(send, cap, detail)
 
 
 def _declared_length(scope: Scope) -> int | None:

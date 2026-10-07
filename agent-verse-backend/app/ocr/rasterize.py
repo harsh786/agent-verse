@@ -42,3 +42,58 @@ def render_pdf_page_image(source: str | Path | bytes, page_number: int, *, dpi: 
     if not images:
         raise ValueError(f"page {page_number} rendered no image")
     return images[0]
+
+
+def pdf_structure_problem(data: bytes) -> tuple[str, str] | None:
+    """Why the PDF cannot be opened at all, judged by pypdf (independent of
+    poppler), else ``None``: ``("encrypted", reason)``, ``("no_pages", reason)``
+    or ``("damaged", reason)`` (corrupt, truncated, not a PDF).
+
+    Used to tell an input that can never be OCR'd (422) from a renderer that
+    failed on a readable document (502). Pure Python but CPU-bound on large
+    files: run it via :func:`app.ocr.concurrency.run_ocr_work`. Raises
+    ``ImportError`` when pypdf is not installed.
+    """
+    import io
+
+    import pypdf
+
+    if not data.strip():
+        return "damaged", "the file is empty"
+    if b"%PDF-" not in data[:1024]:
+        return "damaged", "the file is not a PDF (no %PDF- header)"
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data), strict=False)
+        if reader.is_encrypted:
+            try:
+                opened = bool(reader.decrypt(""))
+            except Exception:
+                opened = False
+            if not opened:
+                return (
+                    "encrypted",
+                    "the PDF is encrypted (password-protected) and cannot be opened "
+                    "without its password",
+                )
+        pages = len(reader.pages)
+    except Exception as exc:
+        detail = " ".join(str(exc).split())[:160]
+        return "damaged", f"the PDF is corrupt or truncated ({type(exc).__name__}: {detail})"
+    if pages == 0:
+        return "no_pages", "the PDF has no pages"
+    return None
+
+
+def describe_render_failure(exc: BaseException) -> str:
+    """A client-safe description of a poppler / pdf2image failure."""
+    name = type(exc).__name__
+    if name == "PDFInfoNotInstalledError":
+        return "the PDF renderer (poppler) is not installed on this host"
+    if "Timeout" in name:
+        return "the PDF renderer timed out"
+    if name in {"PDFPageCountError", "PDFSyntaxError"}:
+        # pdf2image puts poppler's stderr after its own first line.
+        lines = [ln.strip() for ln in str(exc).splitlines()[1:] if ln.strip()]
+        detail = "; ".join(dict.fromkeys(lines))[:200]
+        return f"the PDF renderer could not open the document ({detail or name})"
+    return f"the PDF renderer failed ({name})"

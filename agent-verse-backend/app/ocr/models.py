@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal
 
+OcrFailureKind = Literal["invalid_input", "engine_failed"]
+
 
 class DocumentType(StrEnum):
     PAN_CARD = "pan_card"
@@ -62,3 +64,9 @@ class OcrResult:
     # Any failed page also sets ``degraded`` with the reasons.
     empty_pages: list[int] = field(default_factory=list)
     failed_pages: list[int] = field(default_factory=list)
+    # Set when NOTHING could be read from the input, with the reason in
+    # ``degradation_reason``: "invalid_input" — the document itself cannot be
+    # OCR'd (corrupt, truncated, encrypted, no pages, not an image) and sending it
+    # again can never succeed; "engine_failed" — the renderer / OCR engine failed
+    # or is missing on this host. The API answers 422 / 502 respectively.
+    failure_kind: OcrFailureKind | None = None

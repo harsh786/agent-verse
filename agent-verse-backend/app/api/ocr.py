@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.observability.logging import get_logger
 from app.ocr.engine import OcrEngine
+from app.ocr.limits import OcrDocumentTooLargeError, ocr_limit_message, ocr_max_upload_bytes
 from app.tools.ocr_tool import OcrDocumentTool
 
 _log = get_logger(__name__)
@@ -36,16 +37,11 @@ class OcrRequest(BaseModel):
 
 
 def _ocr_max_bytes() -> int:
-    from app.core.config import get_settings
-
-    return int(get_settings().ocr_max_upload_bytes)
+    return ocr_max_upload_bytes()
 
 
 def _too_large(limit: int) -> HTTPException:
-    return HTTPException(
-        status_code=413,
-        detail=f"Document exceeds the {limit // (1024 * 1024)} MiB OCR limit",
-    )
+    return HTTPException(status_code=413, detail=ocr_limit_message(limit))
 
 
 async def _read_upload_capped(file: UploadFile) -> bytes:
@@ -93,16 +89,33 @@ def _provenance(res: dict[str, Any]) -> dict[str, Any]:
 
 
 def _raise_if_unread(res: dict[str, Any]) -> None:
-    """a10-F243-03: a document whose every page the engine failed on (no LLM
-    provider, vision call failed, render failure) is a 502 with the reason — not
-    a 200 carrying empty text. Partly-read documents answer 200 with
-    ``degraded``, ``failed_pages`` and the reason."""
+    """Never a plain 200 with empty text for a document nothing was read from.
+
+    * the input itself cannot be OCR'd (corrupt / truncated / encrypted PDF, a
+      PDF with no pages, an undecodable image): **422** with the reason —
+      resubmitting the same document can never succeed;
+    * the engine failed on every page (no LLM provider, vision call failed,
+      renderer failed or missing): **502** with the reason (a10-F243-03);
+    * no page at all for any other reason: **502** (defensive).
+
+    Partly-read documents answer 200 with ``degraded``, ``failed_pages`` and
+    the reason.
+    """
+    reason = res.get("degradation_reason") or ""
+    kind = res.get("failure_kind")
+    if kind == "invalid_input":
+        raise HTTPException(
+            status_code=422, detail=f"The document cannot be OCR'd: {reason or 'unreadable input'}"
+        )
     pages = int(res.get("page_count") or 0)
     failed = res.get("failed_pages") or []
-    if pages > 0 and len(failed) >= pages:
+    if kind == "engine_failed" or pages <= 0 or len(failed) >= pages:
         raise HTTPException(
             status_code=502,
-            detail=f"OCR could not read the document: {res.get('degradation_reason') or ''}",
+            detail=(
+                "OCR could not read the document: "
+                f"{reason or 'no page of the document could be rendered'}"
+            ),
         )
 
 
@@ -240,6 +253,12 @@ async def extract_document(
     WS-13: pass ``persist_to_kb`` + ``collection_id`` to also index the extracted
     text into the knowledge base with ``source_type=ocr`` provenance (deduped
     against the one store).
+
+    Size: one document of up to ``OCR_MAX_UPLOAD_BYTES`` (default 25 MiB), raw
+    upload or decoded base64; larger is a 413 naming the limit. Errors: 422 for
+    a document that can never be OCR'd (corrupt, truncated, encrypted, no
+    pages), 502 when the engine read no page, 200 + ``degraded`` /
+    ``failed_pages`` when only some pages were read.
     """
     # The tenant's provider (BYOK first), resolved once for every page. This read
     # app.state.provider, which is never set, so the engine re-resolved a fresh
@@ -307,6 +326,8 @@ async def extract_document(
                 )
     except (HTTPException, DecisionBudgetExceededError):
         raise  # a budget refusal answers 429 via the app's handler
+    except OcrDocumentTooLargeError as exc:
+        raise _too_large(exc.limit) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -378,6 +399,11 @@ class BatchOcrResponse(BaseModel):
     # a10-F243-01: why item i failed (None when it succeeded), aligned with
     # ``results``. A failed item used to be a bare None with no reason.
     errors: list[str | None] = Field(default_factory=list)
+    # The HTTP status /ocr/extract would have answered for item i (None when it
+    # succeeded): 413 over the size cap, 422 for input that can never be OCR'd
+    # (corrupt / encrypted / empty document, bad base64), 502 when the engine
+    # failed, 500 for an unexpected error.
+    error_status: list[int | None] = Field(default_factory=list)
     total: int
     succeeded: int
     failed: int
@@ -394,9 +420,15 @@ async def extract_documents_batch(
 ) -> BatchOcrResponse:
     """Process up to 10 documents concurrently.
 
+    Size: each document may decode to at most ``OCR_MAX_UPLOAD_BYTES``, and the
+    whole request body is bounded like one ``/ocr/extract`` base64 document
+    (the documents together, plus envelope room —
+    ``app/integrations/body_limit.py``); a larger body is a 413.
+
     Each document honours its own ``persist_to_kb`` / ``collection_id`` (indexed
     exactly like ``/ocr/extract``). A failed item is ``None`` in ``results`` with
-    its reason in ``errors``; an item whose OCR succeeded but whose
+    its reason in ``errors`` and the status ``/ocr/extract`` would have answered
+    in ``error_status``; an item whose OCR succeeded but whose
     knowledge-base write failed keeps its result and carries the error.
     """
     from app.api.llm_access import tenant_llm_provider
@@ -407,7 +439,9 @@ async def extract_documents_batch(
     if _tenant is not None:
         provider = await tenant_llm_provider(request, _tenant)
 
-    async def _extract_one(doc: OcrRequest) -> tuple[OcrResponse | None, str | None]:
+    async def _extract_one(
+        doc: OcrRequest,
+    ) -> tuple[OcrResponse | None, str | None, int | None]:
         try:
             _check_b64_size(doc.image_base64, doc.pdf_base64)
             res = await _tool.execute(
@@ -436,16 +470,18 @@ async def extract_documents_batch(
         except DecisionBudgetExceededError:
             raise  # the whole batch answers 429, not N silent item failures
         except HTTPException as exc:
-            return None, str(exc.detail)
+            return None, str(exc.detail), exc.status_code
+        except OcrDocumentTooLargeError as exc:
+            return None, str(exc), 413
         except ValueError as exc:
-            return None, str(exc)
+            return None, str(exc), 422
         except Exception as exc:
             _log.warning("Batch OCR item failed: %s", exc)
-            return None, "OCR extraction failed."
+            return None, "OCR extraction failed.", 500
 
         # a10-F243-02: per-document persist_to_kb / collection_id were ignored.
         if not doc.persist_to_kb:
-            return item, None
+            return item, None, None
         try:
             kb_info = await _persist_ocr_to_kb(
                 request,
@@ -455,23 +491,24 @@ async def extract_documents_batch(
                 engine_used=item.engine_used,
             )
         except HTTPException as exc:
-            return item, f"knowledge-base persist failed: {exc.detail}"
+            return item, f"knowledge-base persist failed: {exc.detail}", exc.status_code
         except Exception as exc:
             _log.warning("Batch OCR item KB persist failed: %s", exc)
-            return item, "knowledge-base persist failed."
+            return item, "knowledge-base persist failed.", 500
         item.kb_persisted = bool(kb_info.get("kb_persisted", False))
         item.kb_deduplicated = bool(kb_info.get("kb_deduplicated", False))
         item.kb_chunks_ingested = int(kb_info.get("kb_chunks_ingested", 0))
         item.kb_collection_id = doc.collection_id
-        return item, None
+        return item, None, None
 
     outcomes = await asyncio.gather(*(_extract_one(doc) for doc in body.documents))
-    results = [item for item, _ in outcomes]
-    errors = [err for _, err in outcomes]
+    results = [item for item, _, _ in outcomes]
+    errors = [err for _, err, _ in outcomes]
     succeeded = sum(1 for err in errors if err is None)
     return BatchOcrResponse(
         results=results,
         errors=errors,
+        error_status=[status for _, _, status in outcomes],
         total=len(results),
         succeeded=succeeded,
         failed=len(results) - succeeded,
