@@ -205,3 +205,34 @@ def test_celery_app_import_installs_redaction() -> None:
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert proc.stdout.strip().endswith("ok")
+
+
+def test_uvicorn_access_record_keeps_its_args_tuple() -> None:
+    """uvicorn's AccessFormatter unpacks record.args; None broke every access line."""
+    import logging
+
+    from uvicorn.logging import AccessFormatter
+
+    from app.observability.log_redaction import _redact_record
+
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+        ("172.18.0.1:5000", "GET", "/goals?api_key=av_pro_secretvalue123", "1.1", 200), None,
+    )
+    _redact_record(record)
+    assert isinstance(record.args, tuple) and len(record.args) == 5
+    line = AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s').format(record)
+    assert "av_pro_secretvalue123" not in line
+    assert "GET /goals" in line and "200" in line
+
+
+def test_secret_only_visible_when_joined_is_still_redacted() -> None:
+    import logging
+
+    from app.observability.log_redaction import _redact_record
+
+    record = logging.LogRecord(
+        "x", logging.INFO, __file__, 1, "Authorization: Bearer %s", ("abcdef0123456789secret",), None,
+    )
+    _redact_record(record)
+    assert "abcdef0123456789secret" not in record.getMessage()

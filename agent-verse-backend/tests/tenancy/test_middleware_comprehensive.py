@@ -193,7 +193,9 @@ def test_rate_limit_response_has_retry_after_header():
     resp = _rate_limit_response(reset_at=future)
     retry = resp.headers.get("Retry-After")
     assert retry is not None
-    assert int(retry) > 0
+    # delay-seconds, not the epoch reset timestamp
+    assert 0 < int(retry) <= 121
+    assert int(resp.headers["X-RateLimit-Reset"]) == int(future)
 
 
 def test_rate_limit_response_body_structure():

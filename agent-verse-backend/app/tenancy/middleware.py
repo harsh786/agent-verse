@@ -14,6 +14,8 @@ SecurityHeadersMiddleware:
 
 from __future__ import annotations
 
+import math
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -502,7 +504,10 @@ def _rate_limit_response(reset_at: float) -> JSONResponse:
         },
         status_code=429,
     )
-    resp.headers["Retry-After"] = str(int(reset_at))
+    # Retry-After is delay-seconds (RFC 9110); reset_at is an epoch timestamp, and
+    # sending it raw told clients to back off for ~56 years.
+    resp.headers["Retry-After"] = str(max(1, math.ceil(reset_at - time.time())))
+    resp.headers["X-RateLimit-Reset"] = str(int(reset_at))
     return resp
 
 

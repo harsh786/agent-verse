@@ -273,7 +273,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      # Startup tasks (vault/DSN secret migrations, registry seeding, trigger
+      # consumers) can take over a minute on a warm DB; 30s made a fresh
+      # `docker-compose up` fail with "backend is unhealthy" although it
+      # became ready shortly after.
+      start_period: 150s
     labels:
       - "traefik.enable=false"
       - "com.agentverse.note=Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real LLM execution"
