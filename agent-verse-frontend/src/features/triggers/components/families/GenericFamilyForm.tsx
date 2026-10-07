@@ -46,7 +46,7 @@ export function GenericFamilyForm({ triggerType, value, onChange }: FamilyFormPr
               /* ignore parse errors while typing */
             }
           }}
-          placeholder='{"mqtt_topic": "sensors/+/temp"}'
+          placeholder='{"event_channel": "orders.created"}'
           className={`${inputCls} resize-y`}
         />
       </Field>

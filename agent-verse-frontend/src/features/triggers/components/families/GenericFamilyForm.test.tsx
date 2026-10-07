@@ -41,21 +41,21 @@ describe('GenericFamilyForm', () => {
   test('valid JSON in the extra field is parsed and merged into the spec', () => {
     const onChange = vi.fn();
     render(<GenericFamilyForm triggerType={'iot' as never} value={{ condition: 'c' }} onChange={onChange} />);
-    fireEvent.change(screen.getByPlaceholderText('{"mqtt_topic": "sensors/+/temp"}'), {
-      target: { value: '{"mqtt_topic":"sensors/+/temp"}' },
+    fireEvent.change(screen.getByPlaceholderText('{"event_channel": "orders.created"}'), {
+      target: { value: '{"event_channel":"orders.created"}' },
     });
     // Parsed keys are spread in alongside the preserved condition + raw string.
     expect(lastArg(onChange)).toEqual({
       condition: 'c',
-      mqtt_topic: 'sensors/+/temp',
-      _raw_extra: '{"mqtt_topic":"sensors/+/temp"}',
+      event_channel: 'orders.created',
+      _raw_extra: '{"event_channel":"orders.created"}',
     });
   });
 
   test('invalid JSON only records the raw string without throwing', () => {
     const onChange = vi.fn();
     render(<GenericFamilyForm triggerType={'iot' as never} value={{}} onChange={onChange} />);
-    fireEvent.change(screen.getByPlaceholderText('{"mqtt_topic": "sensors/+/temp"}'), {
+    fireEvent.change(screen.getByPlaceholderText('{"event_channel": "orders.created"}'), {
       target: { value: '{not valid json' },
     });
     // Only the _raw_extra passthrough fires; the parse branch is skipped.

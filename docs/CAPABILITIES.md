@@ -712,6 +712,16 @@ Deduplicates LLM calls by embedding similarity:
 
 Search across multiple knowledge collections simultaneously. Results from all collections are merged and re-ranked by relevance before returning to the agent.
 
+### 9.6 RAFT fine-tuning (beta)
+
+> **Beta.** RAFT (retrieval-augmented fine-tuning) is offered as a beta feature.
+
+RAFT builds a training set from a knowledge collection (questions with oracle and distractor chunks), fine-tunes a model on it, evaluates it on held-out examples and serves the fine-tuned model for that collection's `raft` retrieval strategy (`/rag/raft/*`).
+
+- **Providers:** only OpenAI-compatible fine-tune providers are supported: OpenAI itself (`OPENAI_API_KEY`) or any vendor exposing OpenAI's fine-tuning REST API (`RAFT_COMPAT_FINE_TUNE_BASE_URL` / `RAFT_COMPAT_FINE_TUNE_API_KEY`). AWS Bedrock and Google Vertex fine-tuning are out of scope.
+- **Verification:** the lifecycle (dataset, cost preview and confirmation, submit, poll, evaluate, deploy, serve) is tested against scripted providers. Real (paid) provider fine-tune runs are **not** CI-verified.
+- **Where it shows:** every `/rag/raft/*` response carries `"stability": "beta"` and a `stability_note`, the OpenAPI operations carry `x-stability: beta`, `GET /rag/strategies` marks `raft` as beta, and the UI's retrieval-strategy picker labels RAFT "Beta".
+
 ---
 
 ## 10. Scheduling & Automation

@@ -127,6 +127,25 @@ The merged context is formatted as a `<context>` block prepended to the step pro
 
 ---
 
+## RAFT Fine-Tuning (Beta)
+
+> **Beta.** RAFT is a beta feature: only OpenAI-compatible fine-tune providers are supported, and real provider fine-tune runs are not CI-verified.
+
+RAFT (retrieval-augmented fine-tuning) trains a model on a collection so the `raft` retrieval strategy answers from that fine-tuned model:
+
+1. `POST /rag/raft/datasets` builds a training set from a collection (questions with oracle and distractor chunks, a held-out test split).
+2. `POST /rag/raft/jobs/preview` estimates the cost and returns a confirmation token; `POST /rag/raft/jobs` (admin) submits the paid fine-tune with that token.
+3. The job is polled to completion (`GET /rag/raft/jobs/{id}`, `POST .../refresh`), optionally scored on the held-out split (`POST .../evaluate`), then deployed for its collection (`POST .../deploy`).
+4. `GET /rag/strategies?collection_id=...` reports `raft` as available once a deployed model can be served.
+
+**Providers.** Only OpenAI-compatible fine-tune providers: OpenAI (`OPENAI_API_KEY`) or a vendor exposing OpenAI's fine-tuning REST API (`RAFT_COMPAT_FINE_TUNE_BASE_URL`, `RAFT_COMPAT_FINE_TUNE_API_KEY`). AWS Bedrock and Google Vertex are not supported.
+
+**Verification.** CI exercises the whole lifecycle against scripted providers; no paid fine-tune runs against a real provider in CI.
+
+Every RAFT response carries `"stability": "beta"` and a `stability_note`; the RAFT OpenAPI operations carry `x-stability: beta`; the retrieval-strategy picker labels RAFT "Beta" and shows the note when it is selected.
+
+---
+
 ## API Reference
 
 | Method | Path | Description |

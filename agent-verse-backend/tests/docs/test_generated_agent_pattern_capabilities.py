@@ -23,3 +23,15 @@ def test_generated_reference_links_to_truth_without_hand_authored_counts() -> No
     reference = (ROOT / "docs/generated/agent-pattern-capabilities.md").read_text()
     assert "Generated from the runtime registry" in reference
     assert "Certification is evidence-derived" in reference
+
+
+def test_unrunnable_patterns_are_marked_unavailable_in_the_manifest() -> None:
+    """a01-F016-03: rewoo / llm_compiler / lats / codeact stay registered but are not
+    goal-runnable; the generated truth says so (the UI hides them, POST /goals refuses)."""
+    manifest = json.loads((ROOT / "docs/generated/agent-pattern-capabilities.json").read_text())
+    by_id = {row["capability_id"]: row for row in manifest["capabilities"]}
+    for strategy_id in ("rewoo", "llm_compiler", "lats", "codeact"):
+        assert by_id[strategy_id]["goal_selectable"] is False, strategy_id
+        assert by_id[strategy_id]["availability"] == "experimental", strategy_id
+    assert by_id["react"]["goal_selectable"] is True
+    assert by_id["react"]["availability"] == "available"

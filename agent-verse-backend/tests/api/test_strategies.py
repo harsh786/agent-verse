@@ -151,13 +151,43 @@ def test_catalogue_marks_non_admitted_strategies_experimental() -> None:
     assert by_id["magentic"]["execution_driver"] == "strategy_runner"
 
 
+def test_catalogue_flags_unrunnable_patterns_not_goal_selectable() -> None:
+    """a01-F016-03: rewoo / llm_compiler / lats / codeact have adapter logic but no goal
+    driver. They stay in the registry and the catalogue, flagged goal_selectable=false
+    (the flag the UI hides them by); POST /goals keeps refusing them."""
+    from app.orchestration.execution_drivers import is_goal_executable
+
+    api = client()
+    catalogue = api.get("/strategies", headers={"X-API-Key": "valid"}).json()["strategies"]
+    by_id = {item["strategy_id"]: item for item in catalogue}
+    for strategy_id in ("rewoo", "llm_compiler", "lats", "codeact"):
+        assert by_id[strategy_id]["goal_selectable"] is False, strategy_id
+        assert by_id[strategy_id]["availability"] == "experimental", strategy_id
+        detail = api.get(f"/strategies/{strategy_id}", headers={"X-API-Key": "valid"}).json()
+        assert detail["goal_selectable"] is False
+        readiness = api.get(
+            f"/strategies/{strategy_id}/readiness", headers={"X-API-Key": "valid"}
+        ).json()
+        assert readiness["goal_selectable"] is False
+    for strategy_id in ("react", "supervisor", "magentic"):
+        assert by_id[strategy_id]["goal_selectable"] is True, strategy_id
+    # RAG strategies run on the RAG runtime, not as a goal strategy_override.
+    assert by_id["hybrid"]["availability"] == "available"
+    assert by_id["hybrid"]["goal_selectable"] is False
+    # goal_selectable is exactly what POST /goals accepts as a strategy_override.
+    registry = build_default_registry()
+    for item in catalogue:
+        expected = is_goal_executable(registry, item["strategy_id"])
+        assert item["goal_selectable"] is expected, item["strategy_id"]
+
+
 def test_override_without_goal_execution_driver_is_422() -> None:
     """ReWOO / CodeAct have adapter logic but no goal driver: accepting them would run
     a plain ReAct loop under their name. The 422 says why and lists what can run."""
     service = AsyncMock()
     service.submit_goal.return_value = {"id": "goal-1", "status": "planning"}
     api = client(service)
-    for strategy_id in ("rewoo", "codeact", "no_such_strategy"):
+    for strategy_id in ("rewoo", "llm_compiler", "lats", "codeact", "no_such_strategy"):
         response = api.post(
             "/goals",
             headers={"X-API-Key": "valid"},

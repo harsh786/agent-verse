@@ -127,6 +127,25 @@ describe('PatternSelectionPanel', () => {
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/goals/g2'));
   });
 
+  it('hides patterns the backend marks unavailable (rewoo, llm_compiler, lats, codeact)', async () => {
+    getPatternSelection.mockResolvedValue({
+      ...SELECTION,
+      available_patterns: [
+        ...SELECTION.available_patterns,
+        ...['rewoo', 'llm_compiler', 'lats', 'codeact'].map((id) => ({
+          id, name: id, description: `${id} adapter`, state: 'implemented', available: false,
+          cost_class: 'medium', latency_class: 'batch',
+        })),
+      ],
+    });
+    render(<PatternSelectionPanel goalId="g1" goalText="do a thing" />, { wrapper: wrapper() });
+    await screen.findByTestId('pattern-primary-name');
+    const values = Array.from(
+      (screen.getByTestId('pattern-override-select') as HTMLSelectElement).options,
+    ).map((option) => option.value);
+    expect(values).toEqual(['', 'react', 'debate']);
+  });
+
   it('shows an empty state when the request fails', async () => {
     getPatternSelection.mockRejectedValueOnce(new Error('boom'));
     render(<PatternSelectionPanel goalId="g1" />, { wrapper: wrapper() });

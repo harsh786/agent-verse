@@ -65,6 +65,8 @@ interface StrategyOption {
   derived_state: string;
   ready?: boolean;
   certified?: boolean;
+  /** True only for strategies POST /goals accepts as a strategy_override. */
+  goal_selectable?: boolean;
 }
 
 export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (goalId: string) => void; initialGoal?: string }) {
@@ -113,6 +115,12 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
     queryFn: () => apiFetch<{ strategies: StrategyOption[] }>('/strategies'),
     staleTime: 5 * 60_000,
   });
+  // Patterns with adapter logic but no goal driver (rewoo, llm_compiler, lats,
+  // codeact — a01-F016-03) and RAG-only strategies cannot run a goal: the backend
+  // flags them goal_selectable=false and refuses them, so they are not offered.
+  const selectableStrategies = (strategyCatalogue?.strategies ?? []).filter(
+    (strategy) => strategy.goal_selectable === true,
+  );
 
   const submit = useMutation({
     mutationFn: () => {
@@ -356,7 +364,7 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
               <label htmlFor="strategy-override" className="w-20 shrink-0 text-xs text-muted-foreground">Runtime</label>
               <select id="strategy-override" value={strategyOverride} onChange={(event) => setStrategyOverride(event.target.value)} className="flex-1 rounded-lg border border-input bg-background px-3 py-1.5 text-xs">
                 <option value="">Automatic strategy</option>
-                {(strategyCatalogue?.strategies ?? []).map((strategy) => (
+                {selectableStrategies.map((strategy) => (
                   <option key={strategy.strategy_id} value={strategy.strategy_id} disabled={strategy.ready === false}>
                     {strategy.strategy_id} · {strategy.derived_state} · {strategy.ready === false ? 'not ready' : 'ready'} · {strategy.certified ? 'certified' : 'uncertified'}
                   </option>

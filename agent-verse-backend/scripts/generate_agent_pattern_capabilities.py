@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.orchestration.execution_drivers import goal_execution_driver, strategy_availability
 from app.orchestration.strategy_certification import CertificationEvaluator
 from app.orchestration.strategy_registry import StrategyCategory, build_default_registry
 
@@ -36,6 +37,9 @@ def build_manifest() -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for capability in registry.list_all():
         derived = evaluator.derive_state(capability, ())
+        # Same truth as GET /strategies: only a goal-selectable strategy can be a goal's
+        # strategy_override; pickers hide the rest and POST /goals refuses them.
+        availability = strategy_availability(capability)
         coordination_surface = capability.strategy_id in {
             "magentic_one", "mixture_of_agents", "camel", "generative_agents",
             "decentralized_swarm", "market_auction",
@@ -47,6 +51,8 @@ def build_manifest() -> dict[str, Any]:
                 "learning_phase": PHASES[capability.category],
                 "adapter_version": capability.adapter_version,
                 "implementation_state": capability.state.value,
+                "availability": availability.availability,
+                "goal_selectable": goal_execution_driver(capability) is not None,
                 "operational_readiness": derived.state.value,
                 "certification_state": (
                     "certified" if derived.state.value == "certified" else "not_certified"
@@ -87,15 +93,20 @@ def render_markdown(manifest: dict[str, Any]) -> str:
         "",
         "Generated from the runtime registry and evidence evaluator. Do not edit by hand.",
         "Certification is evidence-derived; missing or stale evidence is shown as not certified.",
+        "Availability is what a driver can run today (`experimental` = adapter logic only).",
+        "Only goal-selectable strategies can be a goal's `strategy_override`; the UI hides",
+        "the rest and `POST /goals` refuses them.",
         "",
-        "| Capability | Family | Version | Implementation | Readiness | Certification |",
-        "|---|---|---:|---|---|---|",
+        "| Capability | Family | Version | Implementation | Availability | Goal-selectable "
+        "| Readiness | Certification |",
+        "|---|---|---:|---|---|---|---|---|",
     ]
     for row in manifest["capabilities"]:
         lines.append(
             f"| `{row['capability_id']}` | {row['family']} | `{row['adapter_version']}` | "
-            f"{row['implementation_state']} | {row['operational_readiness']} | "
-            f"{row['certification_state']} |"
+            f"{row['implementation_state']} | {row['availability']} | "
+            f"{'yes' if row['goal_selectable'] else 'no'} | "
+            f"{row['operational_readiness']} | {row['certification_state']} |"
         )
     return "\n".join(lines) + "\n"
 

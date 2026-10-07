@@ -402,6 +402,21 @@ def test_create_rejects_unsupported_trigger_type(client):
     assert "not yet supported" in resp.json()["detail"]
 
 
+def test_create_refuses_mqtt_trigger(client):
+    """Owner decision a06-F105-01: MQTT triggers stay refused (no MQTT consumer is
+    wired) and the UI hides them. A fully configured MQTT spec is still a 422."""
+    resp = client.post("/triggers", json={
+        "spec": {
+            "trigger_type": "mqtt",
+            "mqtt_topic": "sensors/+/temp",
+            "mqtt_broker_url": "mqtt://broker.example.com:1883",
+        },
+        "goal_template": "handle {{payload}}",
+    })
+    assert resp.status_code == 422
+    assert "'mqtt' is not yet supported" in resp.json()["detail"]
+
+
 def test_create_accepts_supported_consumer_type(client):
     """A supported type (goal_completed → chain consumer) is accepted."""
     resp = client.post("/triggers", json={

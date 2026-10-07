@@ -2,10 +2,12 @@
   "capabilities": [
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "autogpt",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -52,10 +54,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "babyagi",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -100,10 +104,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "camel",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -148,10 +154,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "chain_of_thought",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -191,10 +199,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "codeact",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -243,10 +253,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "consensus",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -286,10 +298,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "debate",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -329,10 +343,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "decentralized_swarm",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -379,10 +395,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "few_shot_cot",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -429,10 +447,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "generative_agents",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -477,10 +497,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "goal_tree",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -520,10 +542,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "graph_of_thoughts",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -568,10 +592,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "group_chat",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -618,10 +644,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "intent_router",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 2,
       "limits": {
@@ -661,10 +689,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "lats",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -711,10 +741,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "least_to_most",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -759,10 +791,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "llm_compiler",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -809,10 +843,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "loop_engineering",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 2,
       "limits": {
@@ -852,10 +888,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "loop_until",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -895,10 +933,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "magentic",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -945,10 +985,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "market_auction",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -995,10 +1037,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "meta_agent_planner",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 2,
       "limits": {
@@ -1038,10 +1082,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "mixture_of_agents",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1088,10 +1134,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "peer_review",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1131,10 +1179,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "persistence_strategy",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 2,
       "limits": {
@@ -1174,10 +1224,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "plan_execute",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1217,10 +1269,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "program_of_thought",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1269,10 +1323,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "react",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1312,10 +1368,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "reflection",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1355,10 +1413,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "reflexion",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1398,10 +1458,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "rewoo",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1448,10 +1510,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "scratchpad",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1491,10 +1555,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "self_consistency",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1534,10 +1600,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "self_refine",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1577,10 +1645,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "skill_selector",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 2,
       "limits": {
@@ -1620,10 +1690,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "structured_planning",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 2,
       "limits": {
@@ -1663,10 +1735,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "supervisor",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1706,10 +1780,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "tree_of_thoughts",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1749,10 +1825,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "voyager",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1799,10 +1877,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "wave_execution",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": true,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1842,10 +1922,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "workflow_dag",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
@@ -1885,10 +1967,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "adaptive",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -1933,10 +2017,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "agentic",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -1983,10 +2069,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "agentic_chunking",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2033,10 +2121,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "code",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2081,10 +2171,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "colbert",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2133,10 +2225,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "corrective",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2183,10 +2277,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "flare",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2233,10 +2329,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "fusion",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2283,10 +2381,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "graph",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2333,10 +2433,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "hybrid",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2381,10 +2483,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "hyde",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2431,10 +2535,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "memory_augmented",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2481,10 +2587,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "modular",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2531,10 +2639,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "multi_hop",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2581,10 +2691,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "naive",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2629,10 +2741,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "raft",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2681,10 +2795,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "raptor",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2731,10 +2847,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "self_rag",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2781,10 +2899,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "speculative",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2831,10 +2951,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "available",
       "capability_id": "web_augmented",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "rag",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 3,
       "limits": {
@@ -2881,10 +3003,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "budget_control",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -2924,10 +3048,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "context_budgeting",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -2967,10 +3093,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "cost_optimisation",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3010,10 +3138,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "embedding_routing",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3053,10 +3183,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "latency_optimisation",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3096,10 +3228,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "llm_response_cache",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3139,10 +3273,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "model_ab_testing",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3182,10 +3318,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "model_routing",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3225,10 +3363,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "prompt_ab_testing",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3268,10 +3408,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "prompt_compression",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3311,10 +3453,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "semantic_cache",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3357,10 +3501,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "token_optimisation",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "optimization",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3400,10 +3546,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "circuit_breaker",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3443,10 +3591,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "consensus_verification",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 5,
       "limits": {
@@ -3486,10 +3636,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "experimental",
       "capability_id": "constitutional_ai",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "implemented",
       "learning_phase": 5,
       "limits": {
@@ -3534,10 +3686,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "data_classification",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3577,10 +3731,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "exfiltration_guard",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3620,10 +3776,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "grounding_checker",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3663,10 +3821,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "guardrails",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3706,10 +3866,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "hitl",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3749,10 +3911,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "permission_matrix",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3792,10 +3956,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "plan_verification",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3835,10 +4001,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "policy_compiler",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3878,10 +4046,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "provenance_verification",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -3921,10 +4091,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "rollback",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 5,
       "limits": {
@@ -3964,10 +4136,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "sandbox",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "safety",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 5,
       "limits": {
@@ -4007,10 +4181,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "episodic_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4050,10 +4226,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "execution_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4093,10 +4271,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "knowledge_graph_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4136,10 +4316,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "long_term_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4179,10 +4361,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "procedural_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4222,10 +4406,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "not_available",
       "capability_id": "prospective_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "planned",
       "learning_phase": 6,
       "limits": {
@@ -4265,10 +4451,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "reflexion_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4308,10 +4496,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "semantic_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4354,10 +4544,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "session_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {
@@ -4397,10 +4589,12 @@
     },
     {
       "adapter_version": "1.0.0",
+      "availability": "cross_cutting",
       "capability_id": "working_memory",
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "memory",
+      "goal_selectable": false,
       "implementation_state": "partial",
       "learning_phase": 6,
       "limits": {

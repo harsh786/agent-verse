@@ -5,8 +5,8 @@ After ``alembic upgrade head`` these tables were not actually isolated:
 * ``chat_artifacts``, ``chat_message_usage``, ``chat_session_folders`` and
   ``cost_ledger`` had ``ENABLE`` + a USING-only policy but no ``FORCE`` — the
   table owner (the role every dev/compose stack connects as) bypassed them.
-* ``budget_configs``, ``ab_test_results``, ``benchmark_runs`` and
-  ``audit_wal_queue`` had no RLS at all.
+* ``budget_configs``, ``benchmark_runs`` and ``audit_wal_queue`` had no RLS at
+  all (``ab_test_results`` too; that orphaned table was dropped in e5f1a9c3d7b2).
 
 ``RLS_SQL`` below is the schema change these tables need (to be shipped as an
 Alembic revision; this test applies it itself so it can exercise the fixed
@@ -64,7 +64,6 @@ _TENANT_TABLES = (
     "chat_session_folders",
     "cost_ledger",
     "budget_configs",
-    "ab_test_results",
     "benchmark_runs",
     "audit_wal_queue",
 )
@@ -86,7 +85,6 @@ RLS_SQL = (
     + _isolation("chat_session_folders", "chat_session_folders_tenant_isolation")
     + _isolation("cost_ledger", "cost_ledger_isolation")
     + _isolation("budget_configs", "budget_configs_tenant_isolation")
-    + _isolation("ab_test_results", "ab_test_results_tenant_isolation")
     + _isolation("benchmark_runs", "benchmark_runs_tenant_isolation")
     + "DROP POLICY IF EXISTS benchmark_runs_global_read ON benchmark_runs;\n"
     + "CREATE POLICY benchmark_runs_global_read ON benchmark_runs "
@@ -256,31 +254,6 @@ async def test_budget_update_persists_under_rls(factories: tuple) -> None:
             await s.execute(
                 text("INSERT INTO budget_configs (tenant_id) VALUES (:t)"), {"t": TENANT_A}
             )
-
-
-@pytest.mark.asyncio
-async def test_ab_results_are_tenant_scoped(factories: tuple) -> None:
-    # The ABTestingEngine that wrote this table had no caller and was removed
-    # (a05-F089-01); the table's policies are still exercised directly.
-    _, app_factory = factories
-    async with app_factory() as s, s.begin(), sqlalchemy_rls_context(s, TENANT_A):
-        await s.execute(
-            text(
-                "INSERT INTO ab_test_results (id, goal_id, tenant_id, experiment_type, "
-                "arm_id, score, created_at) "
-                "VALUES ('ab-1', 'g-1', :t, 'rag_strategy', 'control', 0.9, NOW())"
-            ),
-            {"t": TENANT_A},
-        )
-
-    async def _count(tenant: str) -> int:
-        async with app_factory() as s, s.begin(), sqlalchemy_rls_context(s, tenant):
-            return int(
-                (await s.execute(text("SELECT count(*) FROM ab_test_results"))).scalar_one()
-            )
-
-    assert await _count(TENANT_A) == 1
-    assert await _count(TENANT_B) == 0
 
 
 @pytest.mark.asyncio

@@ -60,9 +60,9 @@ describe('FamilyFormRouter', () => {
 
   test('iot family routes to IoTFamilyForm', () => {
     render(
-      <FamilyFormRouter family="iot" triggerType="mqtt" value={{}} onChange={vi.fn()} />
+      <FamilyFormRouter family="iot" triggerType="sensor_threshold" value={{}} onChange={vi.fn()} />
     );
-    expect(screen.getByText('MQTT Broker URL')).toBeInTheDocument();
+    expect(screen.getByText('Metric Name')).toBeInTheDocument();
   });
 
   test('ml_signal family routes to PollingFamilyForm', () => {

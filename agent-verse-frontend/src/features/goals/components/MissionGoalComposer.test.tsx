@@ -13,7 +13,14 @@ vi.mock('@/lib/api/client', () => ({
   agentsApi: { list: vi.fn().mockResolvedValue([]) },
   goalsApi: { submit },
   apiFetch: vi.fn((path: string) => Promise.resolve(path === '/strategies' ? {
-    strategies: [{ strategy_id: 'react', derived_state: 'implemented', ready: true, certified: false }],
+    strategies: [
+      { strategy_id: 'react', derived_state: 'implemented', ready: true, certified: false, goal_selectable: true },
+      // a01-F016-03: registered but not goal-runnable; the picker must hide these.
+      ...['rewoo', 'llm_compiler', 'lats', 'codeact'].map((strategy_id) => ({
+        strategy_id, derived_state: 'implemented', ready: false, certified: false, goal_selectable: false,
+      })),
+      { strategy_id: 'hybrid', derived_state: 'implemented', ready: true, certified: false, goal_selectable: false },
+    ],
   } : { models: [] })),
 }));
 vi.mock('@/features/templates/components/TemplatePickerModal', () => ({ TemplatePickerModal: () => null }));
@@ -45,6 +52,21 @@ describe('MissionGoalComposer strategy controls', () => {
     fireEvent.change(screen.getByLabelText('Goal text'), { target: { value: 'Run a bounded goal' } });
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({ strategy_override: 'react', pattern_limits: { calls: 4 } })));
+  });
+});
+
+describe('MissionGoalComposer strategy catalogue', () => {
+  test('hides strategies that cannot run a goal (goal_selectable=false)', async () => {
+    view();
+    fireEvent.click(screen.getByRole('button', { name: 'Options' }));
+    await screen.findByRole('option', { name: /react.*implemented/i });
+    const values = Array.from(
+      (screen.getByLabelText('Runtime') as HTMLSelectElement).options,
+    ).map((option) => option.value);
+    expect(values).toEqual(['', 'react']);
+    for (const hidden of ['rewoo', 'llm_compiler', 'lats', 'codeact', 'hybrid']) {
+      expect(screen.queryByRole('option', { name: new RegExp(`^${hidden} `) })).toBeNull();
+    }
   });
 });
 
