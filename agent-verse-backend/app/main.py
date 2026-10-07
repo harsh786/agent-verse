@@ -753,6 +753,9 @@ def create_app(
     settings = settings or get_settings()
     _apply_onprem_settings(settings)
     configure_logging(level=settings.log_level, json_logs=settings.is_production)
+    from app.observability.debug_signals import install_stack_dump_signal
+
+    install_stack_dump_signal()  # kill -USR2 <pid>: every thread's stack to stderr
 
     # Allow env var to enable manage_pools when uvicorn calls create_app() with no args
     import os as _os_mp
