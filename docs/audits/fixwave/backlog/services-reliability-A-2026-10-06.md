@@ -7,7 +7,7 @@ notifications and usage metering belong to part B and were not touched.
 Branch `backlog/bl-services-a` (based on `d45dcd727`), not pushed. No migration was added, so alembic still has one
 head (`a7c9e1f3b5d7`). The owner decisions of 2026-10-07 (F193-06, F199-02, F200-02, F200-03) are applied below.
 
-**Counts:** FIXED 20 (17 at first, plus F199-02, F200-02 and F200-03 after the owner decisions) · ALREADY-FIXED 3 (F198-04 on `backlog/bl-core`, F193-06 on `decision/dec-restorer`) · NEEDS-OWNER 0 · OBSOLETE 0.
+**Counts (23 items):** FIXED 21 (18 at first, plus F199-02, F200-02 and F200-03 after the owner decisions) · ALREADY-FIXED 2 (F198-04 on `backlog/bl-core`, F193-06 on `decision/dec-restorer`) · NEEDS-OWNER 0 · OBSOLETE 0. (The first report miscounted 17 / 5; the table had 18 fixed and 4 owner items.)
 
 The tests named below failed before their fix and pass after it. I checked each one by running it against the
 pre-fix file. "Real PG" and "real Redis" tests use the testcontainers fixtures (`pg_url` / `redis_url`) and carry
