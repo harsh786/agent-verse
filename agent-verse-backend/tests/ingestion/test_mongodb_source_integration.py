@@ -661,7 +661,8 @@ async def test_bson_types_round_trip_through_a_sync(mongo: tuple[str, int]) -> N
     (doc,) = pipeline.docs
     text = doc.content.decode()
     assert "price: 19.99" in text
-    assert "blob: <binary subtype 4, 16 bytes>" in text
+    # Subtype 4 is a UUID by the BSON spec: rendered as one, never as raw bytes.
+    assert "blob: <uuid 00ff6269-6e61-7279-2d70-61796c6f6164>" in text
     assert "binary-payload" not in text
     assert "pattern: /^sku-[0-9]+$/i" in text
     assert f"big: {2**62}" in text

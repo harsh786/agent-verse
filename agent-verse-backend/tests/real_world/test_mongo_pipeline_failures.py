@@ -289,16 +289,23 @@ def test_poison_documents_dlq_and_operator_retry(api: LiveAPI, cleanup: Any,
         evidence["indexed_count"] = len(keys) - len(missing)
         status1 = str(job1.get("status")).lower()
         accounted = int(job1.get("docs_skipped") or 0) + int(job1.get("docs_failed") or 0)
-        if status1 in sj.COMPLETED and len(missing) > accounted:
+        finished = status1 in sj.COMPLETED or status1 == "partial"
+        if finished and len(missing) > accounted:
             soft.append(f"{len(missing)} documents missing but only {accounted} skipped/failed "
                         f"were reported: silent loss ({sorted(missing)[:5]})")
-        if status1 not in sj.COMPLETED:
+        if status1 == "partial" and "ingestion DLQ" in str(job1.get("error_message")):
+            # Document-level failures: the job points at the DLQ, where each entry
+            # carries its own reason (with an error id when driver detail is withheld).
+            if int(job1.get("docs_failed") or 0) != len(dlq1):
+                soft.append(f"job reports {job1.get('docs_failed')} failed document(s) but the "
+                            f"DLQ holds {len(dlq1)}")
+        elif status1 not in sj.COMPLETED:
             soft += [f"poison sync: {p}" for p in _honest_error(job1)]
         for entry in dlq1:
             if not (entry.get("error_message") or entry.get("last_error")):
                 soft.append(f"DLQ entry {entry.get('id')} has no reason")
         normal_missing = [k for k in missing if str(k).startswith("OK-")]
-        if status1 in sj.COMPLETED and normal_missing:
+        if finished and normal_missing:
             soft.append(f"normal documents lost next to the poison ones: {normal_missing[:5]}")
         if "POISON-DEEP" not in missing:
             hit = [h for h in kb.search(api, cid, "Bottom of the 95-level settlement tree", 10)
