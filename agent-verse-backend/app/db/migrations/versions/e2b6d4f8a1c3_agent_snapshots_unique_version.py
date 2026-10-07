@@ -9,7 +9,11 @@ Existing duplicates are renumbered first: the earliest row of each duplicate
 group keeps its number, later ones move past the agent's current maximum (in
 ``snapshotted_at`` order), and the ``version`` inside the snapshot JSON follows.
 The table is FORCE RLS, so the owner lifts FORCE for the data fix inside this
-transaction and restores it.
+transaction (otherwise a NOSUPERUSER / NOBYPASSRLS owner would see no rows and
+renumber nothing) and then re-applies ENABLE + FORCE explicitly. Every statement
+runs in the one migration transaction (Postgres DDL is transactional), so there
+is no path that commits with FORCE lifted: an error anywhere rolls the
+``NO FORCE`` back together with the rest.
 
 Revision ID: e2b6d4f8a1c3
 Revises: c4e8a2f6b1d3
@@ -28,6 +32,11 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _CONSTRAINT = "uq_agent_snapshots_tenant_agent_version"
+
+
+def _restore_rls() -> None:
+    op.execute("ALTER TABLE agent_snapshots ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE agent_snapshots FORCE ROW LEVEL SECURITY")
 
 
 def upgrade() -> None:
@@ -64,7 +73,7 @@ def upgrade() -> None:
         WHERE a.id = renumbered.id
         """
     )
-    op.execute("ALTER TABLE agent_snapshots FORCE ROW LEVEL SECURITY")
+    _restore_rls()
     op.execute(
         f"ALTER TABLE agent_snapshots ADD CONSTRAINT {_CONSTRAINT} "
         "UNIQUE (tenant_id, agent_id, version)"
@@ -73,3 +82,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(f"ALTER TABLE agent_snapshots DROP CONSTRAINT IF EXISTS {_CONSTRAINT}")
+    _restore_rls()  # idempotent; the table stays ENABLE + FORCE either way

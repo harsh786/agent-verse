@@ -2532,7 +2532,8 @@ class TestAgentsWave4:
             mock_rls.return_value.__aexit__ = AsyncMock(return_value=False)
             await _save_snapshot_to_db(snapshot, _db, "t1")
 
-        mock_session.execute.assert_called_once()
+        # advisory lock + the version-allocating INSERT (a10-F236-04)
+        assert mock_session.execute.call_count == 2
 
     @pytest.mark.asyncio
     async def test_load_snapshots_from_db_success(self) -> None:

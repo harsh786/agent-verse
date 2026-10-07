@@ -64,8 +64,9 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
     """Persist an agent snapshot WITH RLS context; return the version it got.
 
     The version is allocated in the INSERT itself (MAX + 1 for the agent) and
-    the unique ``(tenant_id, agent_id, version)`` constraint (migration
-    e2b6d4f8a1c3) turns a concurrent duplicate into a conflict that is retried.
+    a per-agent advisory lock serializes concurrent snapshots; the unique
+    ``(tenant_id, agent_id, version)`` constraint (migration e2b6d4f8a1c3) is the
+    backstop (a conflict is retried).
     It used to be ``len(existing) + 1`` from a separate read, so two snapshots
     racing got the same number. A failure raises (the route answers 503): the
     old helper logged a warning and the route reported a snapshot that was never
@@ -85,6 +86,13 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
+                # Serialize allocation per agent (transaction-scoped advisory
+                # lock): concurrent snapshots then queue instead of colliding and
+                # burning retries. The unique constraint stays the backstop.
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                    {"k": f"agent_snapshot:{tenant_id}:{snapshot['agent_id']}"},
+                )
                 version = (
                     await session.execute(
                         text(_SNAPSHOT_INSERT_SQL),
