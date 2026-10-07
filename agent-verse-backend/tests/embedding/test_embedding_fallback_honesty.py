@@ -17,7 +17,6 @@ from app.embedding.model_registry import EmbeddingModelRegistry
 from app.embedding.orchestrator import (
     _FALLBACK_ORDER,
     EmbeddingOrchestrator,
-    NoEmbeddingModelAvailableError,
     fallback_order,
 )
 from app.embedding.router import EmbeddingRouter, EmbeddingUnavailableError
@@ -57,19 +56,24 @@ def test_fake_is_never_in_the_production_chain(monkeypatch: pytest.MonkeyPatch) 
     assert fallback_order()[-1] == "fake"
 
 
-def test_production_select_raises_instead_of_fake_embedding(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("environment", ["production", "development"])
+def test_empty_registry_selects_the_default_embedder_never_a_fake_model(
+    monkeypatch: pytest.MonkeyPatch, environment: str
 ) -> None:
-    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("ENVIRONMENT", environment)
     orch = EmbeddingOrchestrator(registry=EmbeddingModelRegistry([]))
-    with pytest.raises(NoEmbeddingModelAvailableError):
-        orch.select(ContentType.TEXT)
+    selection = orch.select(ContentType.TEXT)
+    assert selection.uses_default_embedder
+    assert selection.model_id == ""  # the default embedder's own model, no literal
 
 
-def test_production_registry_has_no_fake_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-    monkeypatch.delenv("NVIDIA_EMBED_MODEL", raising=False)
-    monkeypatch.setenv("ENVIRONMENT", "production")
-    assert EmbeddingModelRegistry.build_default().get("fake-embedding") is None
-    monkeypatch.setenv("ENVIRONMENT", "development")
-    assert EmbeddingModelRegistry.build_default().get("fake-embedding") is not None
+@pytest.mark.parametrize("environment", ["production", "development"])
+def test_routing_registry_has_no_fake_model(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    from app.ai_router.registry import ModelRegistry
+
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    registry = EmbeddingModelRegistry.from_model_registry(registry=ModelRegistry())
+    assert registry.get("fake-embedding") is None
+    assert registry.list_all() == []

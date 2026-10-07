@@ -36,7 +36,7 @@ SPEC_MODULES = [
     # Layer 5
     "app.ingestion.orchestrator", "app.ingestion.content_classifier",
     "app.ingestion.parser_registry", "app.ingestion.chunking_strategy_selector",
-    "app.ingestion.embedding_policy_selector", "app.ingestion.modality_pipeline",
+    "app.ingestion.modality_pipeline",
     "app.ingestion.provenance_builder", "app.ingestion.quality_checks",
     # Layer 6
     "app.embedding.orchestrator", "app.embedding.model_registry",

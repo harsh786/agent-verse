@@ -1,5 +1,16 @@
 """EmbeddingOrchestrator — selects embedding model per content type and tenant policy.
 
+Registry-only routing
+---------------------
+Every embedding comes from the Model Registry-configured embedder. Text content is
+embedded with the deployment's default embedder (the registry-resolved
+``app.state.embedder``) and its own model — never a model id from a table. Only a
+CODE / multimodal content type may be routed, and only to a configured registry
+embedding model of that modality (:class:`EmbeddingModelRegistry`) whose width
+equals the collection's (``target_dim``); otherwise the default embedder serves it.
+A collection strictly bound to an embedder is never routed (the ingestion
+orchestrator embeds it with its bound model before reaching here).
+
 Honesty note on "multimodal" embeddings (finding D-11)
 ------------------------------------------------------
 The registry advertises ``voyage-multimodal-3`` for image/video content, but the
@@ -67,15 +78,19 @@ def fallback_order() -> list[str]:
     return [*_FALLBACK_ORDER] if _is_production() else [*_FALLBACK_ORDER, "fake"]
 
 
-class NoEmbeddingModelAvailableError(RuntimeError):
-    """No real embedding model is selectable (production never falls back to fake)."""
-
 # Default batch size for embed_batch()
 _DEFAULT_BATCH_SIZE = 32
 
 # Modalities that cannot be embedded natively and are realised as
 # caption-then-text-embed (see the module docstring, finding D-11).
 _CAPTION_FIRST_MODALITIES = frozenset({"image", "multimodal"})
+
+
+# ``EmbeddingSelectionResult.provider`` of a selection served by the default embedder.
+DEFAULT_EMBEDDER_PROVIDER = "default"
+
+# Content types whose content reaches the embedder as text of a caption (D-11).
+_CAPTIONED_CONTENT = frozenset({ContentType.IMAGE, ContentType.VIDEO})
 
 
 @dataclass
@@ -89,6 +104,13 @@ class EmbeddingSelectionResult:
     # D-11: True when the modality (image/multimodal) is realised as
     # caption-then-text-embed rather than a native multimodal vector.
     requires_captioning: bool = False
+    # Model Registry key (``provider/model_id``) of a routed specialist; "" when
+    # the default embedder serves the content.
+    key: str = ""
+
+    @property
+    def uses_default_embedder(self) -> bool:
+        return not self.key
 
 
 @dataclass
@@ -134,58 +156,59 @@ class EmbeddingOrchestrator:
         content_type: ContentType,
         tenant_ctx: TenantContext | None = None,
         collection_size: int = 0,
+        *,
+        target_dim: int | None = None,
+        default_model: str = "",
     ) -> EmbeddingSelectionResult:
+        """The embedder for *content_type*: a registry specialist, else the default.
+
+        A CODE / multimodal content type is routed to a configured registry model
+        of that modality the tenant's plan affords, in registry order (the
+        operator's preference first), whose width equals *target_dim* (the
+        collection's, else the default embedder's). Unknown widths are never
+        routed. Everything else — and every text content type — is served by the
+        default embedder with its own model (``default_model`` names it).
+        """
+        del collection_size
         modalities = _MODALITY_MAP.get(content_type, ["text"])
-        # Use tenant plan when available; fall back to "free" tier for broad compatibility
         if tenant_ctx is not None:
             allowed_costs = _COST_BY_PLAN.get(tenant_ctx.plan.value, ["low"])
         else:
             allowed_costs = _COST_BY_PLAN.get("free", ["free", "low"])
 
-        # Try each modality in preference order
         for modality in modalities:
-            candidates = self._registry.list_by_modality(modality)
-            # Filter by allowed cost class
-            affordable = [c for c in candidates if c.cost_class in allowed_costs]
-            if affordable:
-                # Pick highest quality (largest dimension) that's affordable
-                best = max(affordable, key=lambda m: m.dimension)
+            if modality == "text":
+                break  # the default embedder serves text
+            candidates = [
+                c
+                for c in self._registry.list_by_modality(modality)
+                if c.cost_class in allowed_costs
+                and c.dimension > 0
+                and target_dim is not None
+                and c.dimension == target_dim
+            ]
+            if candidates:
+                best = candidates[0]
                 return EmbeddingSelectionResult(
                     model_id=best.model_id,
-                    # Trust the registry's own dimension for THIS model spec rather
-                    # than a second, hardcoded lookup (DimensionPolicy): a custom
-                    # model configured via EMBEDDING_MODEL/EMBEDDING_DIM (see
-                    # EmbeddingModelRegistry.build_default) is never present in
-                    # DimensionPolicy's static map, so routing its model_id through
-                    # DimensionPolicy silently reported the wrong dimension (falling
-                    # back to 1536) instead of the model's real, configured one.
                     dimension=best.dimension,
                     modality=best.modality,
                     cost_class=best.cost_class,
                     provider=best.provider,
                     selection_reason=f"content_type={content_type.value} modality={modality}",
-                    requires_captioning=best.modality in _CAPTION_FIRST_MODALITIES,
+                    requires_captioning=best.modality in _CAPTION_FIRST_MODALITIES
+                    or content_type in _CAPTIONED_CONTENT,
+                    key=best.key,
                 )
 
-        # Fallback to any text model
-        fallback = self._registry.list_by_modality("text")
-        if fallback:
-            m = fallback[0]
-            return EmbeddingSelectionResult(
-                model_id=m.model_id,
-                # See the comment above: trust the registry spec's own dimension.
-                dimension=m.dimension,
-                modality=m.modality,
-                cost_class=m.cost_class,
-                provider=m.provider,
-                selection_reason="fallback to text embedding",
-            )
-
-        # No model at all: refuse in every environment. A fake 10-dim
-        # "embedding" (the old non-production fallback) silently poisons a
-        # vector index wherever it runs.
-        raise NoEmbeddingModelAvailableError(
-            f"no embedding model available for content_type={content_type.value}"
+        return EmbeddingSelectionResult(
+            model_id=default_model,
+            dimension=target_dim or 0,
+            modality="text",
+            cost_class="",
+            provider=DEFAULT_EMBEDDER_PROVIDER,
+            selection_reason=f"content_type={content_type.value}: default embedder",
+            requires_captioning=content_type in _CAPTIONED_CONTENT,
         )
 
     async def embed_with_fallback(
@@ -316,6 +339,7 @@ class EmbeddingOrchestrator:
         provider_resolver: Callable[[str], Any] | None = None,
         collection_size: int = 0,
         cost_controller: Any = None,
+        target_dim: int | None = None,
     ) -> RoutedEmbeddingResult:
         """Select a model for *content_type* and ACTUALLY embed with it (D-10).
 
@@ -325,11 +349,12 @@ class EmbeddingOrchestrator:
         selecting a model and then discarding it in favour of one fixed embedder.
 
         Provider resolution:
-          * ``provider_resolver`` (optional) maps the selected provider name to a
-            concrete provider instance. When it returns a provider, that provider
-            is used.
-          * Otherwise ``default_provider`` is used (safe fallback), still with the
-            selected model id threaded through.
+          * a routed specialist (see :meth:`select`) is built by
+            ``provider_resolver`` from its Model Registry key (``provider/model_id``);
+          * otherwise — no specialist, or it cannot be built — ``default_provider``
+            embeds with ITS OWN model (no model id is ever forced onto it: the
+            selected id used to be sent to the default embedder, which 404'd on it
+            or embedded with a model it does not serve).
 
         Spend (KB-40): texts go out in bounded batches, each reserved against
         the tenant's budget first (``cost_controller``, else the process one)
@@ -337,27 +362,53 @@ class EmbeddingOrchestrator:
         A refused reservation raises ``EmbeddingBudgetExceededError`` before
         that batch is sent.
         """
-        selection = self.select(content_type, tenant_ctx, collection_size)
+        from app.providers.embedder_factory import embedder_model_name
+
+        default_model = embedder_model_name(default_provider)
+        selection = self.select(
+            content_type,
+            tenant_ctx,
+            collection_size,
+            target_dim=target_dim,
+            default_model=default_model,
+        )
 
         provider = default_provider
-        if provider_resolver is not None:
-            try:
-                resolved = provider_resolver(selection.provider)
-            except Exception:
-                resolved = None
+        if selection.key:
+            resolved = None
+            if provider_resolver is not None:
+                try:
+                    resolved = provider_resolver(selection.key)
+                except Exception:
+                    resolved = None
             if resolved is not None:
                 provider = resolved
+            else:
+                _log.warning(
+                    "embedding_route_unavailable: %s; the default embedder serves it",
+                    selection.key,
+                )
+                selection = EmbeddingSelectionResult(
+                    model_id=default_model,
+                    dimension=target_dim or 0,
+                    modality="text",
+                    cost_class="",
+                    provider=DEFAULT_EMBEDDER_PROVIDER,
+                    selection_reason=f"{selection.key} unavailable: default embedder",
+                    requires_captioning=content_type in _CAPTIONED_CONTENT,
+                )
 
         from app.embedding.metering import embed_metered
 
         async def _one_batch(batch: list[str]) -> list[list[float]]:
-            return await self._embed_texts_with_model(batch, provider, selection.model_id)
+            # "": the provider embeds with its own (registry-built) model.
+            return await self._embed_texts_with_model(batch, provider, "")
 
         embeddings = await embed_metered(
             texts,
             _one_batch,
             tenant_ctx=tenant_ctx,
-            model=selection.model_id,
+            model=selection.model_id or default_model,
             controller=cost_controller,
             label="knowledge-ingest",
         )
@@ -395,26 +446,50 @@ class EmbeddingOrchestrator:
 
 
 def build_provider_resolver(
-    providers_by_name: dict[str, Any],
+    providers_by_key: dict[str, Any],
 ) -> Callable[[str], Any] | None:
-    """Build a resolver mapping an embedding provider NAME to its instance.
+    """A resolver over fixed embedders keyed by Model Registry key (tests / wiring).
 
-    Gives :meth:`EmbeddingOrchestrator.embed_for_content` real multi-provider
-    routing (D-10): the model selected for a content type is embedded on that
-    model's own provider (e.g. a ``voyage`` code model routes to the Voyage
-    provider) instead of always using one fixed embedder. The resolver returns
-    ``None`` for an unknown/absent provider name, which makes
-    ``embed_for_content`` fall back to ``default_provider`` — so a single-provider
-    deployment keeps working unchanged while a multi-provider one routes for real.
-
-    Returns ``None`` when no providers are supplied (callers then pass no
-    resolver and keep the single-embedder behaviour).
+    Returns ``None`` for an unknown key, which makes ``embed_for_content`` use the
+    default embedder; ``None`` overall when no embedders are supplied.
     """
-    if not providers_by_name:
+    if not providers_by_key:
         return None
-    mapping = dict(providers_by_name)
+    mapping = dict(providers_by_key)
 
-    def _resolve(provider_name: str) -> Any:
-        return mapping.get(provider_name)
+    def _resolve(key: str) -> Any:
+        return mapping.get(key)
+
+    return _resolve
+
+
+def build_registry_embedder_resolver(
+    settings: Any = None, *, registry: Any = None
+) -> Callable[[str], Any]:
+    """Map a Model Registry embedding key (``provider/model_id``) to its embedder.
+
+    The embedder is built from the model's registry entry exactly as a collection
+    bound to it would be (own ``base_url`` + vault key, same-model failover; see
+    :class:`app.rag.collection_embedders.CollectionEmbedders`) and cached until
+    the registry changes. A key the registry does not configure (or that cannot be
+    built here) resolves to ``None``: the default embedder then serves the content.
+    This replaced a by-provider-NAME map of env-keyed providers built with literal
+    model ids (``text-embedding-3-small`` on OpenAI, Voyage's own default, ...).
+    """
+    from app.rag.collection_embedders import CollectionEmbedders, EmbeddingBinding
+
+    embedders = CollectionEmbedders(settings=settings, registry=registry)
+
+    def _resolve(key: str) -> Any:
+        provider, _, model_id = (key or "").partition("/")
+        if not provider or not model_id:
+            return None
+        try:
+            return embedders.resolve(
+                EmbeddingBinding(provider=provider, model=model_id), default=None
+            )
+        except Exception as exc:  # unavailable here → the default embedder
+            _log.warning("embedding_route_unbuildable: %s (%s)", key, str(exc)[:200])
+            return None
 
     return _resolve

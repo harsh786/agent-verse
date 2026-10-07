@@ -274,12 +274,18 @@ def resolve_embed_model(fallback: str = "", *, provider: str | None = None) -> s
     Pass the *provider* of the embedding endpoint being built: an embedding
     model only works on the endpoint that serves it, so another provider's model
     (e.g. an imported Ollama embedder on an OpenAI embedder) is never chosen.
+
+    The env-configured embedding model (``EMBEDDING_MODEL`` / ``NVIDIA_EMBED_MODEL``)
+    is seeded INTO the registry (app.ai_router.seeder), so it is found above. With
+    a *provider* the raw env value is never used in its place: it may name another
+    provider's model, which this endpoint cannot serve.
     """
+    chosen = select_configured_model_id(TaskType.EMBEDDING, provider=provider)
+    if chosen or provider:
+        return chosen or fallback
     from app.providers.model_defaults import configured_embed_model
 
-    return select_configured_model_id(
-        TaskType.EMBEDDING, provider=provider
-    ) or configured_embed_model(fallback)
+    return configured_embed_model(fallback)
 
 
 def resolve_vision_model(fallback: str = "") -> str:

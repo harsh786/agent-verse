@@ -287,7 +287,6 @@ class PatternSelector:
             planner="default",
             executor="default",
             verifier="default",
-            embedder="default",
             classifier="default",
             cost_class=cost,
             latency_class=latency,

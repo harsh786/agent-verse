@@ -88,9 +88,9 @@ def _detect_providers() -> list[ProviderConfig]:
     # ── NVIDIA (build.nvidia.com / integrate.api.nvidia.com) ──────────────────
     # OpenAI-compatible cloud endpoint. Detected FIRST so, when configured, it is
     # the *prioritised* provider: a generic, fully env-configured cloud model
-    # serves reasoning/tooling/OCR (and embeddings via NVIDIA_EMBED_MODEL) instead
-    # of falling back to a possibly-unreachable self-hosted default. Model names
-    # are never hardcoded — they come from NVIDIA_MODEL / NVIDIA_EMBED_MODEL.
+    # serves reasoning/tooling/OCR instead of falling back to a possibly-unreachable
+    # self-hosted default. Model names are never hardcoded — they come from
+    # NVIDIA_MODEL (embeddings: the platform registry embedder).
     if os.getenv("NVIDIA_API_KEY") and not (os.getenv("NVIDIA_MODEL") or "").strip():
         # No hardcoded fallback model (the old default 404s on the NVIDIA API).
         if os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
@@ -167,8 +167,8 @@ def _detect_providers() -> list[ProviderConfig]:
                 provider_type="ollama",
                 base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
                 display_name="Ollama (local)",
-                # OLLAMA_MODEL (or the provider's OLLAMA_DEFAULT_MODEL); the embed /
-                # OCR models come from OLLAMA_EMBED_MODEL / OLLAMA_OCR_MODEL.
+                # OLLAMA_MODEL (or the provider's OLLAMA_DEFAULT_MODEL); the OCR
+                # model from OLLAMA_OCR_MODEL (embeddings: the registry embedder).
                 models=[m] if (m := (os.getenv("OLLAMA_MODEL") or "").strip()) else None,
             )
         )
@@ -340,7 +340,20 @@ def _require_model(ptype: str, model: str, env_name: str) -> str:
 
 
 def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
-    """Instantiate a provider from its config. Returns None if prerequisites missing."""
+    """Instantiate a provider from its config. Returns None if prerequisites missing.
+
+    These are CHAT providers: their ``embed`` goes to the platform Model Registry
+    embedder (:func:`app.providers.embedder_factory.delegate_embeddings_to_platform`),
+    never to an embedding model of their own (``NVIDIA_EMBED_MODEL`` with a
+    literal default, ``OLLAMA_EMBED_MODEL``, ...).
+    """
+    from app.providers.embedder_factory import delegate_embeddings_to_platform
+
+    return delegate_embeddings_to_platform(_instantiate_chat_provider(cfg))
+
+
+def _instantiate_chat_provider(cfg: ProviderConfig) -> Any | None:
+    """Build the chat provider of *cfg* (see :func:`_instantiate_provider`)."""
     ptype = cfg.provider_type
     configured_model = cfg.models[0].strip() if cfg.models and cfg.models[0].strip() else ""
 
@@ -379,7 +392,6 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
             default_model=_require_model(
                 ptype, configured_model or (os.getenv("NVIDIA_MODEL") or "").strip(), "NVIDIA_MODEL"
             ),
-            embed_model=os.getenv("NVIDIA_EMBED_MODEL") or "nvidia/nemotron-3-embed-1b",
         )
 
     elif ptype == "gemini":
@@ -403,7 +415,8 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         return OllamaProvider(
             base_url=cfg.base_url or "http://localhost:11434",
             default_model=configured_model or None,
-            # None → the provider reads OLLAMA_EMBED_MODEL / OLLAMA_OCR_MODEL.
+            # Embeddings: the platform registry embedder (see above); OCR: None →
+            # the provider reads OLLAMA_OCR_MODEL.
             default_embed_model=None,
             default_ocr_model=None,
         )

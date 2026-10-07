@@ -1,96 +1,69 @@
-"""Deepened coverage for tenant plan/cost constraints in EmbeddingOrchestrator.select().
+"""Tenant plan/cost constraints in EmbeddingOrchestrator.select().
 
-The prior suite only tested the FREE-plan case. This adds paid-tier selection
-(starter/professional/enterprise), plan upgrade/downgrade mid-session, and a
-"budget exceeded" analogue: this codebase enforces embedding cost not through
-a separate USD budget check but through the ``_COST_BY_PLAN`` cost-class
-allowlist — when a tenant's plan cannot afford any candidate for a modality,
-selection gracefully degrades to a cheaper modality / the ultimate fallback
-rather than erroring.
+Every embedding comes from the Model Registry-configured embedder. Text content
+is always the default embedder (no plan-dependent model swap — that would put
+two models' vectors in one index). The plan's cost-class allowlist
+(``_COST_BY_PLAN``) applies to the only thing that is routed: a configured
+CODE / multimodal registry specialist of the collection's width. When the plan
+cannot afford one, the default embedder serves the content — never an
+unaffordable model, never a fake one.
 """
 from __future__ import annotations
-
-import pytest
 
 from app.embedding.model_registry import EmbeddingModelRegistry, EmbeddingModelSpec
 from app.embedding.orchestrator import EmbeddingOrchestrator
 from app.ingestion.content_classifier import ContentType
 from app.tenancy.context import PlanTier, TenantContext
 
+_DIM = 1024
+
 
 def _ctx(plan: PlanTier, tenant_id: str = "t1") -> TenantContext:
     return TenantContext(tenant_id=tenant_id, plan=plan, api_key_id="k1")
 
 
-@pytest.fixture
-def orch() -> EmbeddingOrchestrator:
-    return EmbeddingOrchestrator(registry=EmbeddingModelRegistry.build_default())
+def _orch(*specs: EmbeddingModelSpec) -> EmbeddingOrchestrator:
+    return EmbeddingOrchestrator(registry=EmbeddingModelRegistry(list(specs)))
 
 
-# ── Paid-tier plan selection ──────────────────────────────────────────────────
+_CODE_LOW = EmbeddingModelSpec("code-low", "code", _DIM, "low", "p")
+_CODE_MEDIUM = EmbeddingModelSpec("code-medium", "code", _DIM, "medium", "p")
+_CODE_HIGH = EmbeddingModelSpec("code-high", "code", _DIM, "high", "p")
 
 
 class TestPaidTierSelection:
-    def test_free_plan_never_gets_medium_or_high_cost(self, orch: EmbeddingOrchestrator) -> None:
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.FREE))
-        assert result.cost_class in ("free", "low")
+    def test_free_plan_never_gets_medium_or_high_cost(self) -> None:
+        orch = _orch(_CODE_HIGH, _CODE_MEDIUM, _CODE_LOW)
+        result = orch.select(ContentType.CODE, _ctx(PlanTier.FREE), target_dim=_DIM)
+        assert result.model_id == "code-low"
 
-    def test_starter_plan_capped_same_as_free(self, orch: EmbeddingOrchestrator) -> None:
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.STARTER))
-        assert result.cost_class in ("free", "low")
+    def test_starter_plan_capped_same_as_free(self) -> None:
+        orch = _orch(_CODE_HIGH, _CODE_MEDIUM, _CODE_LOW)
+        result = orch.select(ContentType.CODE, _ctx(PlanTier.STARTER), target_dim=_DIM)
+        assert result.model_id == "code-low"
 
-    def test_professional_plan_can_get_medium_cost_model(
-        self, orch: EmbeddingOrchestrator
-    ) -> None:
-        """Professional unlocks 'medium' cost class; with the default catalogue
-        the affordable, highest-dimension text model is text-embedding-3-large
-        (medium, 3072-d) over text-embedding-3-small (low, 1536-d)."""
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.PROFESSIONAL))
-        assert result.model_id == "text-embedding-3-large"
+    def test_professional_plan_can_get_medium_cost_model(self) -> None:
+        orch = _orch(_CODE_HIGH, _CODE_MEDIUM)
+        result = orch.select(ContentType.CODE, _ctx(PlanTier.PROFESSIONAL), target_dim=_DIM)
+        assert result.model_id == "code-medium"
         assert result.cost_class == "medium"
-        assert result.dimension == 3072
 
     def test_enterprise_plan_can_get_high_cost_model(self) -> None:
-        """Build a registry with an explicit 'high' cost class model and verify
-        only enterprise reaches it; professional stays capped at medium."""
-        registry = EmbeddingModelRegistry(
-            [
-                EmbeddingModelSpec("text-low", "text", 512, "low", "p"),
-                EmbeddingModelSpec("text-medium", "text", 1536, "medium", "p"),
-                EmbeddingModelSpec("text-high", "text", 4096, "high", "p"),
-            ]
+        orch = _orch(_CODE_HIGH, _CODE_MEDIUM)
+        enterprise = orch.select(ContentType.CODE, _ctx(PlanTier.ENTERPRISE), target_dim=_DIM)
+        assert enterprise.model_id == "code-high"
+        professional = orch.select(
+            ContentType.CODE, _ctx(PlanTier.PROFESSIONAL), target_dim=_DIM
         )
-        orch = EmbeddingOrchestrator(registry=registry)
+        assert professional.model_id == "code-medium"
 
-        enterprise_result = orch.select(
-            content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.ENTERPRISE)
-        )
-        assert enterprise_result.model_id == "text-high"
-        assert enterprise_result.cost_class == "high"
-
-        professional_result = orch.select(
-            content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.PROFESSIONAL)
-        )
-        assert professional_result.model_id == "text-medium"
-        assert professional_result.cost_class == "medium"
-
-    def test_no_tenant_ctx_defaults_to_free_tier_allowance(
-        self, orch: EmbeddingOrchestrator
-    ) -> None:
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=None)
-        assert result.cost_class in ("free", "low")
+    def test_no_tenant_ctx_defaults_to_free_tier_allowance(self) -> None:
+        orch = _orch(_CODE_HIGH, _CODE_LOW)
+        result = orch.select(ContentType.CODE, None, target_dim=_DIM)
+        assert result.model_id == "code-low"
 
     def test_unknown_plan_value_falls_back_to_low_only(self) -> None:
-        """_COST_BY_PLAN.get(plan, ["low"]) — an unrecognised plan string (should
-        never happen with the PlanTier enum, but the lookup itself must degrade
-        safely) only allows 'low', never 'medium'/'high'."""
-        registry = EmbeddingModelRegistry(
-            [
-                EmbeddingModelSpec("text-low", "text", 512, "low", "p"),
-                EmbeddingModelSpec("text-high", "text", 4096, "high", "p"),
-            ]
-        )
-        orch = EmbeddingOrchestrator(registry=registry)
+        orch = _orch(_CODE_HIGH, _CODE_LOW)
 
         class _FakePlan:
             value = "super-secret-plan"
@@ -98,115 +71,48 @@ class TestPaidTierSelection:
         class _FakeCtx:
             plan = _FakePlan()
 
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=_FakeCtx())  # type: ignore[arg-type]
-        assert result.model_id == "text-low"
-        assert result.cost_class == "low"
+        result = orch.select(ContentType.CODE, _FakeCtx(), target_dim=_DIM)  # type: ignore[arg-type]
+        assert result.model_id == "code-low"
 
-
-# ── Plan upgrade / downgrade mid-session ──────────────────────────────────────
+    def test_text_is_never_plan_routed(self) -> None:
+        """Text keeps the default embedder whatever the plan affords."""
+        orch = _orch(EmbeddingModelSpec("text-high", "text", _DIM, "high", "p"))
+        for plan in PlanTier:
+            result = orch.select(
+                ContentType.TEXT, _ctx(plan), target_dim=_DIM, default_model="default-embed"
+            )
+            assert result.uses_default_embedder
+            assert result.model_id == "default-embed"
 
 
 class TestPlanChangeMidSession:
-    def test_upgrade_from_free_to_professional_unlocks_better_model(
-        self, orch: EmbeddingOrchestrator
-    ) -> None:
-        """The orchestrator is stateless per-call: the same instance, called
-        first for a free tenant and then for the *same tenant id* now on
-        professional, must reflect the upgrade on the very next call."""
-        before = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.FREE, "t9"))
-        after = orch.select(
-            content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.PROFESSIONAL, "t9")
-        )
-        assert before.cost_class in ("free", "low")
-        assert after.cost_class == "medium"
-        assert after.dimension > before.dimension
+    def test_upgrade_from_free_to_professional_unlocks_better_model(self) -> None:
+        orch = _orch(_CODE_MEDIUM, _CODE_LOW)
+        before = orch.select(ContentType.CODE, _ctx(PlanTier.FREE, "t9"), target_dim=_DIM)
+        after = orch.select(ContentType.CODE, _ctx(PlanTier.PROFESSIONAL, "t9"), target_dim=_DIM)
+        assert before.model_id == "code-low"
+        assert after.model_id == "code-medium"
 
     def test_downgrade_from_enterprise_to_free_loses_access_to_expensive_model(self) -> None:
-        registry = EmbeddingModelRegistry(
-            [
-                EmbeddingModelSpec("text-low", "text", 512, "low", "p"),
-                EmbeddingModelSpec("text-high", "text", 4096, "high", "p"),
-            ]
-        )
-        orch = EmbeddingOrchestrator(registry=registry)
-
-        before = orch.select(
-            content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.ENTERPRISE, "t9")
-        )
-        after = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.FREE, "t9"))
-
-        assert before.model_id == "text-high"
-        assert after.model_id == "text-low"
-        assert after.cost_class == "low"
-
-
-# ── "Budget exceeded" analogue: cost-class exhaustion per modality ───────────
+        orch = _orch(_CODE_HIGH, _CODE_LOW)
+        before = orch.select(ContentType.CODE, _ctx(PlanTier.ENTERPRISE, "t9"), target_dim=_DIM)
+        after = orch.select(ContentType.CODE, _ctx(PlanTier.FREE, "t9"), target_dim=_DIM)
+        assert before.model_id == "code-high"
+        assert after.model_id == "code-low"
 
 
 class TestBudgetExhaustionDegradesGracefully:
-    def test_free_tenant_with_only_high_cost_code_model_falls_back_to_text(self) -> None:
-        """CODE content prefers modality ['code', 'text']. If the only 'code'
-        candidate is unaffordable on the tenant's plan, selection must silently
-        degrade to the next modality (text) instead of erroring or returning
-        the unaffordable model."""
-        registry = EmbeddingModelRegistry(
-            [
-                EmbeddingModelSpec("code-expensive", "code", 2048, "high", "p"),
-                EmbeddingModelSpec("text-cheap", "text", 1536, "low", "p"),
-            ]
+    def test_free_tenant_with_only_high_cost_code_model_gets_the_default(self) -> None:
+        orch = _orch(_CODE_HIGH)
+        result = orch.select(
+            ContentType.CODE, _ctx(PlanTier.FREE), target_dim=_DIM, default_model="default-embed"
         )
-        orch = EmbeddingOrchestrator(registry=registry)
+        assert result.uses_default_embedder
+        assert result.model_id == "default-embed"
 
-        result = orch.select(content_type=ContentType.CODE, tenant_ctx=_ctx(PlanTier.FREE))
-        assert result.model_id == "text-cheap"
-        assert result.cost_class == "low"
-
-    def test_all_modalities_unaffordable_refuses_instead_of_a_fake_model(self) -> None:
-        """When the registry has candidates but NONE are affordable on the
-        tenant's plan for ANY modality the content type maps to, and there is
-        also no plain 'text' model at all to fall back to, selection refuses
-        (KB-27) — it used to return a fake 10-dim 'embedding' model."""
-        registry = EmbeddingModelRegistry(
-            [
-                EmbeddingModelSpec("code-only-expensive", "code", 2048, "high", "p"),
-            ]
-        )
-        orch = EmbeddingOrchestrator(registry=registry)
-
-        from app.embedding.orchestrator import NoEmbeddingModelAvailableError
-
-        with pytest.raises(NoEmbeddingModelAvailableError):
-            orch.select(content_type=ContentType.CODE, tenant_ctx=_ctx(PlanTier.FREE))
-
-    def test_last_resort_fallback_ignores_plan_cap_when_no_affordable_text_model(
-        self,
-    ) -> None:
-        """Documents a real behavioural edge case (pinned, not asserted as
-        'correct'): when the only TEXT model in the registry is unaffordable
-        for the tenant's plan, ``select()``'s literal
-        ``list_by_modality("text")`` last-resort branch returns it ANYWAY,
-        bypassing the cost-class allowlist — rather than falling through to
-        the cost-blind 'fake-embedding' ultimate fallback. This is the one
-        place cost enforcement can be bypassed, so it is worth pinning
-        explicitly: a free-tier tenant CAN receive a 'high' cost-class model
-        if it is the only text model registered."""
-        registry = EmbeddingModelRegistry(
-            [
-                EmbeddingModelSpec("text-only-expensive", "text", 3072, "high", "p"),
-            ]
-        )
-        orch = EmbeddingOrchestrator(registry=registry)
-
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.FREE))
-        assert result.model_id == "text-only-expensive"
-        assert result.cost_class == "high"
-        assert result.selection_reason == "fallback to text embedding"
-
-    def test_empty_registry_refuses_for_any_content_type(self) -> None:
-        from app.embedding.orchestrator import NoEmbeddingModelAvailableError
-
-        registry = EmbeddingModelRegistry([])
-        orch = EmbeddingOrchestrator(registry=registry)
-
-        with pytest.raises(NoEmbeddingModelAvailableError):
-            orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.ENTERPRISE))
+    def test_empty_registry_is_the_default_embedder_for_any_content_type(self) -> None:
+        orch = _orch()
+        for content_type in ContentType:
+            result = orch.select(content_type, _ctx(PlanTier.ENTERPRISE), target_dim=_DIM)
+            assert result.uses_default_embedder
+            assert result.model_id == ""

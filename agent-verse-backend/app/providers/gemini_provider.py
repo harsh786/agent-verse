@@ -23,7 +23,9 @@ class GeminiProvider:
         api_key: str | None = None,
         *,
         default_model: str = "gemini-2.5-pro",
-        embed_model: str = "gemini-embedding-001",
+        # Named by the Model Registry embedder resolver; None = this provider
+        # cannot embed (EmbeddingModelNotConfiguredError).
+        embed_model: str | None = None,
         request_timeout_ms: int = 30_000,
         embed_dimensions: int | None = None,
     ) -> None:
@@ -231,13 +233,18 @@ class GeminiProvider:
         )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        embed_model = self._embed_model
+        if not embed_model:
+            from app.providers.base import EmbeddingModelNotConfiguredError
+
+            raise EmbeddingModelNotConfiguredError(type(self).__name__)
         task_type = "RETRIEVAL_QUERY" if request.input_type == "query" else "RETRIEVAL_DOCUMENT"
         config: dict[str, Any] = {"task_type": task_type}
         dimensions = getattr(self, "_embed_dimensions", None)
         if dimensions:
             config["output_dimensionality"] = dimensions
         response = await self._client.aio.models.embed_content(
-            model=self._embed_model,
+            model=embed_model,
             contents=request.texts,  # type: ignore[arg-type]
             config=self._types.EmbedContentConfig(**config),
         )
@@ -245,7 +252,7 @@ class GeminiProvider:
             list(getattr(item, "values", None) or [])
             for item in (getattr(response, "embeddings", None) or [])
         ]
-        return EmbedResponse(embeddings=embeddings, model=self._embed_model)
+        return EmbedResponse(embeddings=embeddings, model=embed_model)
 
     async def aclose(self) -> None:
         await self._client.aio.aclose()

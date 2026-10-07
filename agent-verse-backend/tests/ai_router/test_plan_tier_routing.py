@@ -81,14 +81,13 @@ class TestPlanTierCap:
         assert assignment.quality_tier == "low"
 
     def test_free_tier_models_are_the_cheap_tier_models(self) -> None:
-        # judge/embedder/reranker are always taken straight from the resolved
+        # judge/reranker are always taken straight from the resolved
         # tier (unlike planner/executor/verifier, which accept a PatternConfig
         # hint override) — the cleanest signal that the "low" tier is in effect.
         orch = ModelOrchestrator()
         cfg = _premium_config(plan_tier=PlanTier.FREE.value)
         assignment = orch.select_models(cfg)
         assert assignment.judge == "gpt-4o-mini"
-        assert assignment.embedder == "voyage-3-lite"
 
 
 class TestPlanTierBudgetInteraction:

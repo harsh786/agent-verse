@@ -52,9 +52,15 @@ __all__ = [
     "RegistryReloadingEmbedder",
     "apply_embedding_endpoint_settings",
     "build_query_embedder",
+    "delegate_embeddings_to_platform",
     "embedder_dimension",
     "embedder_model_name",
+    "platform_embed",
+    "platform_embed_batch",
+    "process_embedder",
+    "reset_process_embedder",
     "resolve_embedder",
+    "set_process_embedder",
     "target_embedding_dim",
     "watch_for_late_registry_embedder",
 ]
@@ -169,17 +175,21 @@ def _declared_endpoint_dim(settings: Any) -> int | None:
     return None
 
 
-def _endpoint_embed_model(base_url: str, fallback: str = "text-embedding-3-small") -> str:
-    """The embedding model for a dedicated endpoint: a registry model of that
-    endpoint's provider when it can be told from the URL, else the configured one
-    (another provider's model would fail on this endpoint)."""
-    from app.ai_router.model_catalog import provider_for_endpoint_url
+def _endpoint_embed_model(base_url: str) -> str:
+    """The embedding model for a dedicated endpoint with no ``EMBEDDING_MODEL``:
+    a registry model of that endpoint's provider when it can be told from the URL
+    (another provider's model would fail on this endpoint), else the registry's
+    embedding model, else the deployment default of an OpenAI-compatible endpoint."""
+    from app.ai_router.model_catalog import (
+        deployment_default_embed_model,
+        provider_for_endpoint_url,
+    )
     from app.ai_router.selection import resolve_embed_model
-    from app.providers.model_defaults import configured_embed_model
 
+    fallback = deployment_default_embed_model("openai")
     provider = provider_for_endpoint_url(base_url)
     if provider is None:
-        return configured_embed_model(fallback)
+        return resolve_embed_model(fallback)
     return resolve_embed_model(fallback, provider=provider)
 
 
@@ -200,8 +210,21 @@ def resolve_embedder(
     registry store — where the preference order lives — is bound before
     selection, and the worker embeds with the SAME model as the API.
     """
+    from app.ai_router.model_catalog import deployment_default_embed_model
     from app.ai_router.selection import resolve_embed_model
     from app.core.config import get_provider_env
+
+    def _provider_model(provider: str) -> str:
+        """The embedding model an env-keyed *provider* embeds with: the explicit
+        model always comes from here (provider classes carry no default). OpenAI
+        has always taken a registry model of its own provider first; Voyage and
+        Gemini keep their deployment default (a registry change must never move an
+        existing index to another model silently — the saved preference order,
+        step 1, is how an operator changes it)."""
+        default = deployment_default_embed_model(provider)
+        if provider == "openai":
+            return resolve_embed_model(default, provider=provider)
+        return default
 
     if settings is None:
         from app.core.config import get_settings
@@ -246,7 +269,7 @@ def resolve_embedder(
         def _voyage() -> Any:
             from app.providers.voyage_provider import VoyageProvider
 
-            return VoyageProvider(api_key=voyage_key)
+            return VoyageProvider(api_key=voyage_key, model=_provider_model("voyage"))
 
         candidates.append(("voyage", _voyage, None))
 
@@ -256,11 +279,12 @@ def resolve_embedder(
         def _openai() -> Any:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
+            model = _provider_model("openai")
             return OpenAICompatibleProvider(
                 api_key=openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
-                embed_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
+                default_model=model,
+                embed_model=model,
             )
 
         candidates.append(("openai", _openai, None))
@@ -271,7 +295,7 @@ def resolve_embedder(
         def _gemini() -> Any:
             from app.providers.gemini_provider import GeminiProvider
 
-            return GeminiProvider(api_key=google_key)
+            return GeminiProvider(api_key=google_key, embed_model=_provider_model("gemini"))
 
         candidates.append(("gemini", _gemini, None))
 
@@ -586,6 +610,143 @@ def build_query_embedder(settings: Any = None, *, wire_registry_store: bool = Fa
     return resolve_embedder(settings, wire_registry_store=wire_registry_store).embedder
 
 
+# ── The process embedder (side paths share the ONE registry embedder) ─────────
+
+_PROCESS_RECHECK_S = 5.0
+
+
+@dataclass
+class _ProcessEmbedderState:
+    embedder: Any = None
+    # Set by create_app: reads the API's CURRENT ``app.state.embedder`` (never
+    # re-resolved here: it is a RegistryReloadingEmbedder, and late binding is the
+    # API's own watcher).
+    source: Callable[[], Any] | None = None
+    # Negative cache for a process with no embedder: re-resolved when the registry
+    # version changes (checked at most every _PROCESS_RECHECK_S).
+    version: int | None = None
+    checked_at: float = float("-inf")
+
+
+_process_state = _ProcessEmbedderState()
+
+
+def set_process_embedder(source: Callable[[], Any]) -> None:
+    """Register this process's embedder source (``lambda: app.state.embedder``).
+
+    Side paths that embed without a collection (a chat provider's ``embed``, a
+    tenant provider without its own embedding model, a workflow step's query)
+    then embed with exactly the embedder retrieval and ingestion use.
+    """
+    _process_state.source = source
+
+
+def reset_process_embedder() -> None:
+    """Forget the process embedder (tests; a re-created app re-registers its own)."""
+    global _process_state
+    _process_state = _ProcessEmbedderState()
+
+
+def process_embedder() -> Any:
+    """The process-wide Model Registry embedder, or ``None`` when none is configured.
+
+    The API's is the one ``create_app`` registered (:func:`set_process_embedder`).
+    Any other process (a Celery worker) resolves it on first use with
+    :func:`resolve_embedder` (the shared registry store wired), wrapped in
+    :class:`RegistryReloadingEmbedder` so a registry change is picked up, and
+    traced. "No embedder" is re-checked when the registry changes.
+    """
+    import time
+
+    state = _process_state
+    if state.source is not None:
+        try:
+            return state.source()
+        except Exception:  # pragma: no cover - a broken getter is "no embedder"
+            return None
+    if state.embedder is not None:
+        return state.embedder
+    now = time.monotonic()
+    if now - state.checked_at < _PROCESS_RECHECK_S:
+        return None
+    state.checked_at = now
+    try:
+        version = _registry_version()
+    except Exception:  # never fail an embed on the version check
+        version = None
+    if state.version is not None and version == state.version:
+        return None
+    state.version = version
+    resolution = resolve_embedder(wire_registry_store=True)
+    if resolution.embedder is None:
+        logger.warning("process_embedder_unavailable", reason=resolution.reason())
+        return None
+    from app.observability.traced_provider import traced_embedder
+
+    state.embedder = traced_embedder(
+        RegistryReloadingEmbedder(
+            resolution, resolve=lambda: resolve_embedder(wire_registry_store=True)
+        )
+    )
+    return state.embedder
+
+
+def _platform_embedder_or_raise() -> Any:
+    embedder = process_embedder()
+    if embedder is None:
+        from app.providers.base import EmbedderUnavailableError
+
+        raise EmbedderUnavailableError(
+            "no embedding model is configured: add one in the Model Registry "
+            "(Models page) or configure the deployment's embedding endpoint"
+        )
+    return embedder
+
+
+async def platform_embed(request: Any) -> Any:
+    """Embed with the platform registry embedder, always with ITS model."""
+    import dataclasses
+
+    embedder = _platform_embedder_or_raise()
+    if getattr(request, "model", ""):
+        # The platform embedder's model decides the vector space; a model id a
+        # caller names (another provider's) is never forwarded to it.
+        request = dataclasses.replace(request, model="")
+    return await embedder.embed(request)
+
+
+async def platform_embed_batch(texts: list[str]) -> list[list[float]]:
+    embedder = _platform_embedder_or_raise()
+    batch = getattr(embedder, "embed_batch", None)
+    if callable(batch):
+        vectors: list[list[float]] = await batch(texts)
+        return vectors
+    from app.providers.base import EmbedRequest
+
+    response = await embedder.embed(EmbedRequest(texts=texts))
+    return list(response.embeddings)
+
+
+def delegate_embeddings_to_platform(provider: Any) -> Any:
+    """Make *provider* (a chat provider) embed with the platform registry embedder.
+
+    A chat provider has no embedding model of its own: it used to embed with a
+    hardcoded / env-only model (``text-embedding-3-small``, ``NVIDIA_EMBED_MODEL``,
+    ``OLLAMA_EMBED_MODEL``, ...), i.e. in another vector space than the indexes.
+    Its ``embed`` / ``embed_batch`` now go to :func:`process_embedder`. Returns
+    *provider* (``None`` stays ``None``).
+    """
+    if provider is None:
+        return None
+    try:
+        provider.embed = platform_embed
+        provider.embed_batch = platform_embed_batch
+        provider._agentverse_platform_embedder = True
+    except (AttributeError, TypeError):  # a slotted / frozen provider keeps its own
+        logger.warning("platform_embed_delegation_unsupported", type=type(provider).__name__)
+    return provider
+
+
 def embedder_model_name(embedder: Any) -> str:
     """Best-effort name of the model an embedding provider produces vectors with."""
     if embedder is None:
@@ -593,6 +754,9 @@ def embedder_model_name(embedder: Any) -> str:
     from app.observability.traced_provider import unwrap_provider
 
     embedder = unwrap_provider(embedder)
+    if getattr(embedder, "_agentverse_platform_embedder", False) is True:
+        platform = process_embedder()
+        return embedder_model_name(platform) if platform is not None else ""
     for attr in ("_embed_model_name", "embed_model_name", "_embed_model", "embed_model",
                  "_model_name", "model_name", "_model"):
         value = getattr(embedder, attr, None)

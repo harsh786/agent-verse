@@ -137,30 +137,6 @@ def test_get_chunker_for_strategy() -> None:
         assert chunker is not None, f"No chunker for {strategy}"
 
 
-# ── EMBEDDING POLICY SELECTOR ─────────────────────────────────────────────────
-
-def test_embedding_policy_for_content_types() -> None:
-    from app.ingestion.content_classifier import ContentType
-    from app.ingestion.embedding_policy_selector import EmbeddingPolicy, EmbeddingPolicySelector
-
-    selector = EmbeddingPolicySelector()
-
-    for ct in [ContentType.TEXT, ContentType.CODE, ContentType.IMAGE, ContentType.VIDEO]:
-        policy = selector.select(ct, collection_size=1000)
-        assert isinstance(policy, EmbeddingPolicy)
-        assert policy.dimension > 0
-        assert policy.model_id is not None
-
-
-def test_embedding_policy_hnsw_for_large_collection() -> None:
-    from app.ingestion.content_classifier import ContentType
-    from app.ingestion.embedding_policy_selector import EmbeddingPolicySelector
-
-    selector = EmbeddingPolicySelector()
-    policy = selector.select(ContentType.TEXT, collection_size=50000)
-    assert policy.index_strategy == "hnsw"
-
-
 # ── VECTOR INDEX POLICY ───────────────────────────────────────────────────────
 
 def test_vector_index_policy() -> None:

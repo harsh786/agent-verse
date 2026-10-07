@@ -31,7 +31,8 @@ class VoyageProvider:
         self,
         api_key: str | None = None,
         *,
-        model: str = "voyage-4-large",
+        # Named by the Model Registry embedder resolver (no default model).
+        model: str | None = None,
         request_timeout_seconds: float = 30.0,
         http_client: _AsyncHTTPClient | None = None,
     ) -> None:
@@ -58,10 +59,18 @@ class VoyageProvider:
             "Use AnthropicProvider or OpenAICompatibleProvider for completions."
         )
 
+    def _require_model(self) -> str:
+        if not self._model:
+            from app.providers.base import EmbeddingModelNotConfiguredError
+
+            raise EmbeddingModelNotConfiguredError(type(self).__name__)
+        return self._model
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        model = self._require_model()
         return EmbedResponse(
             embeddings=await self._embed_texts(request.texts, request.input_type),
-            model=self._model,
+            model=model,
         )
 
     async def _embed_texts(
@@ -73,7 +82,7 @@ class VoyageProvider:
             _VOYAGE_EMBEDDINGS_URL,
             json={
                 "input": texts,
-                "model": self._model,
+                "model": self._require_model(),
                 "input_type": input_type,
             },
         )
@@ -103,7 +112,7 @@ class VoyageProvider:
 class LocalEmbedProvider:
     """Local sentence-transformers embedding provider."""
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+    def __init__(self, model_name: str) -> None:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:

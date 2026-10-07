@@ -58,7 +58,10 @@ def test_ollama_models_come_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _instantiate_provider(cfg)
     assert provider is not None
     assert provider._default_model == "llama3:8b"
-    assert getattr(provider, "_default_embed_model", None) == "nomic-embed"
+    # Chat provider: no embedding model of its own (OLLAMA_EMBED_MODEL is not
+    # read) — its embed goes to the platform Model Registry embedder.
+    assert getattr(provider, "_default_embed_model", None) is None
+    assert getattr(provider, "_agentverse_platform_embedder", False) is True
     assert getattr(provider, "_default_ocr_model", None) == "my-ocr"
 
 

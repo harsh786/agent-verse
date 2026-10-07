@@ -180,7 +180,9 @@ async def abuild_tenant_byok_provider(
     return build_tenant_provider(
         prepared,
         tenant_id=tenant_id,
-        embed_model=embed_model or os.getenv("EMBEDDING_MODEL") or None,
+        # BYOK embedding policy (app.providers.tenant_provider): the tenant's own
+        # embedding model, else the platform registry embedder — never env-only.
+        embed_model=embed_model,
     )
 
 

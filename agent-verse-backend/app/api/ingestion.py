@@ -1032,24 +1032,28 @@ async def get_quota(request: Request) -> dict:
         "docs_limit": docs_limit,
         "tokens_used_month": tokens_used,
         "tokens_limit_month": None,  # no token quota is enforced
-        "cost_usd_month": _estimate_cost_usd(tokens_used)[0],
+        "cost_usd_month": _estimate_cost_usd(tokens_used, _embedding_model(request))[0],
     }
 
 
-def _estimate_cost_usd(tokens: int) -> tuple[float | None, str | None]:
-    """Embedding cost for *tokens* at the configured model's list price.
+def _embedding_model(request: Request) -> str:
+    """The model of the app's (Model Registry) embedder ("" when there is none)."""
+    from app.providers.embedder_factory import embedder_model_name
 
-    ``None`` when the configured model has no known price — an honest "unknown"
-    instead of a fabricated $0.
+    return embedder_model_name(getattr(request.app.state, "embedder", None))
+
+
+def _estimate_cost_usd(tokens: int, model: str = "") -> tuple[float | None, str | None]:
+    """Embedding cost for *tokens* at *model*'s list price.
+
+    *model* is the app's registry embedder's model (it used to be read from the
+    ``EMBEDDING_MODEL`` / ``NVIDIA_EMBED_MODEL`` env only, missing every registry
+    and settings-configured embedder). ``None`` when the model has no known
+    price — an honest "unknown" instead of a fabricated $0.
     """
-    import os
-
     from app.embedding.router import BUILTIN_EMBEDDING_CONFIGS
 
-    model = (
-        os.getenv("EMBEDDING_MODEL", "").strip()
-        or os.getenv("NVIDIA_EMBED_MODEL", "").strip()
-    )
+    model = (model or "").strip()
     candidates = [
         cfg for key, cfg in BUILTIN_EMBEDDING_CONFIGS.items() if model and model in (key, cfg.model)
     ]
@@ -1076,7 +1080,7 @@ async def get_cost(request: Request) -> dict:
     except Exception as exc:
         _log.exception("ingestion_cost_query_failed")
         raise HTTPException(status_code=503, detail="Ingestion usage is unavailable") from exc
-    cost, pricing_model = _estimate_cost_usd(usage["tokens"])
+    cost, pricing_model = _estimate_cost_usd(usage["tokens"], _embedding_model(request))
     return {
         "tenant_id": tenant.tenant_id,
         "tokens_used_month": usage["tokens"],

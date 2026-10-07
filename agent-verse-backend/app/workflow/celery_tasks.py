@@ -120,6 +120,13 @@ def _build_worker_runner() -> Any:
         from app.rag.store import KnowledgeStore
 
         _wf_knowledge = KnowledgeStore(db_factory)
+        # Per-collection embedders: a RAG step's query is embedded with the
+        # collection's bound model, and an unbound collection with the worker's
+        # Model Registry embedder (resolved lazily, reloaded on registry change).
+        from app.providers.embedder_factory import process_embedder
+        from app.rag.collection_embedders import CollectionEmbedders
+
+        _wf_knowledge.collection_embedders = CollectionEmbedders(process_embedder)
     except Exception as _ks_exc:
         _log.warning("worker_runner_knowledge_store_unavailable", error=str(_ks_exc)[:120])
     # Wire a real MCP client so workflow tool steps dispatch actual connectors

@@ -61,7 +61,17 @@ class ProviderMemoryEmbedder:
 
     def __init__(self, provider: Any) -> None:
         self._provider = provider
-        self.model_id = _provider_model_id(provider)
+
+    @property
+    def model_id(self) -> str:
+        """The embedding model RIGHT NOW, read per call.
+
+        It used to be captured once at construction: after a Model Registry
+        reload swapped the process embedder (RegistryReloadingEmbedder) new
+        vectors were stored — and recall filtered — under the OLD model's id,
+        mixing two models' vectors under one label.
+        """
+        return _provider_model_id(self._provider)
 
     async def __call__(self, text: str) -> tuple[float, ...] | None:
         vector, _reason = await self.embed_checked(text)

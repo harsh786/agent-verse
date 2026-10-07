@@ -28,6 +28,18 @@ class LLMStepNode:
         # platform → error). Preferred over the process-wide ``llm_provider``.
         self.llm_provider_resolver = services.get("llm_provider_resolver")
         self.knowledge_store = services.get("knowledge_store")
+        # The deployment's default (Model Registry) embedder; a collection bound
+        # to another model is embedded with that model by the store.
+        self.embedder = services.get("embedder")
+
+    def _rag_query_embedder(self) -> Any:
+        """The default embedder for a RAG query: the injected one, else the
+        process's Model Registry embedder (never the chat provider)."""
+        if self.embedder is not None:
+            return self.embedder
+        from app.providers.embedder_factory import process_embedder
+
+        return process_embedder()
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         if state.get("is_test_run") and self.step.id in (state.get("mock_overrides") or {}):
@@ -68,10 +80,11 @@ class LLMStepNode:
                     collection_name=self.step.rag.collection,
                     top_k=self.step.rag.top_k,
                     tenant_id=state.get("tenant_id", ""),
-                    # The chat provider also embeds (NVIDIA/OpenAI-compatible),
-                    # so the query is embedded for semantic retrieval; without it
-                    # retrieve() degrades to lexical rather than silently failing.
-                    embedder=provider,
+                    # The query is embedded in the COLLECTION's vector space: the
+                    # store embeds with the collection's bound embedder, and this
+                    # default (the registry embedder) serves an unbound one. It
+                    # used to be the CHAT provider — another model than the index.
+                    embedder=self._rag_query_embedder(),
                 )
                 if results:
                     rag_context = "\n\nRelevant context:\n" + "\n---\n".join(

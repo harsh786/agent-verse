@@ -25,7 +25,8 @@ def test_simple_goal_gets_low_cost_models(orchestrator):
     assert assignment.executor is not None
     assert assignment.verifier is not None
     assert assignment.judge is not None
-    assert assignment.embedder is not None
+    # No embedder role: every embedding uses the Model Registry embedder.
+    assert not hasattr(assignment, "embedder")
     assert assignment.classifier is not None
 
 

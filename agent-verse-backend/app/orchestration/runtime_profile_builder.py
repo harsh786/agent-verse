@@ -355,7 +355,6 @@ class RuntimeProfileBuilder:
                     ("planner", model_cfg.planner),
                     ("executor", str(config.get("executor_model", model_cfg.executor))),
                     ("verifier", model_cfg.verifier),
-                    ("embedder", model_cfg.embedder),
                     ("classifier", model_cfg.classifier),
                 )
                 + (

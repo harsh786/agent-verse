@@ -19,14 +19,9 @@ if TYPE_CHECKING:
     from app.ingestion.content_classifier import ContentType
 
 # Reasoning roles (planner / executor / verifier / judge / classifier) resolve
-# through app.ai_router.resolve.resolve_reasoning — never a table. What remains
-# here is the embedder reference slug per tier, owned by the embedding resolver.
-_TIER_MODELS: dict[str, dict[str, str]] = {
-    "high": {"embedder": "text-embedding-3-large"},
-    "medium": {"embedder": "text-embedding-3-small"},
-    "low": {"embedder": "voyage-3-lite"},
-}
-
+# through app.ai_router.resolve.resolve_reasoning — never a table. Embeddings are
+# not routed here: every embedding uses the Model Registry embedder
+# (app.providers.embedder_factory.resolve_embedder).
 _REASONING_ROLE_TASK: dict[str, str] = {
     "planner": "planning",
     "executor": "execution",
@@ -43,9 +38,6 @@ _MODEL_PROVIDER: dict[str, str] = {
     "claude-3-5-sonnet": "anthropic",
     "claude-3-haiku": "anthropic",
     "gemini-2.5-pro": "google",
-    "text-embedding-3-large": "openai",
-    "text-embedding-3-small": "openai",
-    "voyage-3-lite": "voyage",
 }
 
 
@@ -216,8 +208,8 @@ def reference_role_model(tier: str, role: str, vendor: str = "") -> str:
 
     Reasoning roles: :func:`app.ai_router.resolve.reasoning_model` (the Model
     Registry, env pins, role map — never a vendor table; ``""`` when nothing is
-    configured, so the provider reports the honest error). Embedder: the
-    reference tier table (owned by the embedding resolver).
+    configured, so the provider reports the honest error). Any other role:
+    ``""`` (embeddings use the Model Registry embedder, not a role table).
     """
     del vendor  # the resolver decides from what is configured, not the vendor
     task = _REASONING_ROLE_TASK.get(role)
@@ -225,7 +217,8 @@ def reference_role_model(tier: str, role: str, vendor: str = "") -> str:
         from app.ai_router.resolve import reasoning_model
 
         return reasoning_model(task)
-    return _TIER_MODELS.get(tier, _TIER_MODELS["medium"]).get(role, "")
+    del tier
+    return ""
 
 
 @dataclass
@@ -234,7 +227,6 @@ class ModelRoleAssignment:
     executor: str
     verifier: str
     judge: str
-    embedder: str
     classifier: str
     quality_tier: str = "medium"
     latency_class: str = "interactive"
@@ -328,7 +320,6 @@ class ModelOrchestrator:
             executor=resolve("executor", config.model_executor),
             verifier=resolve("verifier", config.model_verifier),
             judge=resolve("judge", ""),
-            embedder=reference_role_model(tier, "embedder"),
             classifier=resolve("classifier", config.model_classifier),
             quality_tier=tier,
             latency_class=latency_class,

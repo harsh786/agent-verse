@@ -537,17 +537,22 @@ async def test_gemini_provider_uses_current_defaults():
 
     provider = GeminiProvider(api_key="test")
     assert provider._default_model == "gemini-2.5-pro"
-    assert provider._embed_model == "gemini-embedding-001"
+    # No default embedding model: the Model Registry embedder resolver names it.
+    assert provider._embed_model is None
     await provider.aclose()
 
 
 @pytest.mark.asyncio
-async def test_voyage_provider_uses_current_default():
+async def test_voyage_provider_has_no_default_model():
+    """The Model Registry embedder resolver names the model (deployment default:
+    app.ai_router.model_catalog.DEPLOYMENT_DEFAULT_EMBED_MODELS)."""
+    from app.ai_router.model_catalog import deployment_default_embed_model
     from app.providers.voyage_provider import VoyageProvider
 
     provider = VoyageProvider(api_key="test")
-    assert provider._model == "voyage-4-large"
+    assert provider._model is None
     await provider.aclose()
+    assert deployment_default_embed_model("voyage") == "voyage-4-large"
 
 
 def test_openai_compatible_provider_raises_import_error():

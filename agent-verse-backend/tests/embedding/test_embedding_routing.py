@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.embedding.model_registry import EmbeddingModelRegistry, EmbeddingModelSpec
 from app.embedding.orchestrator import (
     BatchEmbeddingResult,
     EmbeddingOrchestrator,
@@ -51,27 +52,69 @@ class RecordingProvider:
 # ── D-10: selection actually routes to the chosen model ──────────────────────
 
 
+def _code_registry() -> EmbeddingModelRegistry:
+    """The Model Registry configures a 1024-d code embedder (voyage provider)."""
+    return EmbeddingModelRegistry(
+        [EmbeddingModelSpec("reg-code-embed", "code", 1024, "low", "voyage")]
+    )
+
+
 class TestSelectionRoutes:
     async def test_embed_for_content_routes_code_to_code_model(self, prof_ctx) -> None:
-        orch = EmbeddingOrchestrator()
-        provider = RecordingProvider()
+        orch = EmbeddingOrchestrator(registry=_code_registry())
+        default_provider = RecordingProvider()
+        code_provider = RecordingProvider()
 
         result = await orch.embed_for_content(
             ["def foo():\n    return 1"],
             content_type=ContentType.CODE,
             tenant_ctx=prof_ctx,
-            default_provider=provider,
+            default_provider=default_provider,
+            provider_resolver={"voyage/reg-code-embed": code_provider}.get,
+            target_dim=1024,
         )
 
         assert isinstance(result, RoutedEmbeddingResult)
-        # The code model was selected...
-        assert result.model_id == "voyage-code-3"
-        # ...and ACTUALLY requested on the provider, not discarded / defaulted.
-        assert provider.requested_models == ["voyage-code-3"]
+        # The configured code model was selected...
+        assert result.model_id == "reg-code-embed"
+        # ...and ACTUALLY embedded on its own (registry-built) embedder, with its
+        # own model — never a model id forced onto the default embedder.
+        assert code_provider.requested_models == [""]
+        assert default_provider.requested_models == []
         assert result.embeddings and result.embeddings[0] == [0.1, 0.2, 0.3]
 
+    async def test_code_is_not_routed_without_a_configured_code_model(self, prof_ctx) -> None:
+        """No code embedder in the Model Registry: the default embedder, own model."""
+        orch = EmbeddingOrchestrator(registry=EmbeddingModelRegistry([]))
+        provider = RecordingProvider()
+        result = await orch.embed_for_content(
+            ["def foo(): pass"],
+            content_type=ContentType.CODE,
+            tenant_ctx=prof_ctx,
+            default_provider=provider,
+            target_dim=1024,
+        )
+        assert provider.requested_models == [""]
+        assert result.provider == "default"
+
+    async def test_code_model_of_another_width_is_not_routed(self, prof_ctx) -> None:
+        orch = EmbeddingOrchestrator(registry=_code_registry())
+        provider = RecordingProvider()
+        code_provider = RecordingProvider()
+        result = await orch.embed_for_content(
+            ["def foo(): pass"],
+            content_type=ContentType.CODE,
+            tenant_ctx=prof_ctx,
+            default_provider=provider,
+            provider_resolver={"voyage/reg-code-embed": code_provider}.get,
+            target_dim=2048,  # the collection's width differs from the code model's
+        )
+        assert code_provider.requested_models == []
+        assert provider.requested_models == [""]
+        assert result.provider == "default"
+
     async def test_embed_for_content_text_does_not_use_code_model(self, prof_ctx) -> None:
-        orch = EmbeddingOrchestrator()
+        orch = EmbeddingOrchestrator(registry=_code_registry())
         provider = RecordingProvider()
 
         result = await orch.embed_for_content(
@@ -79,20 +122,21 @@ class TestSelectionRoutes:
             content_type=ContentType.TEXT,
             tenant_ctx=prof_ctx,
             default_provider=provider,
+            target_dim=1024,
         )
 
-        assert result.model_id != "voyage-code-3"
-        assert provider.requested_models[0] != "voyage-code-3"
+        assert result.model_id != "reg-code-embed"
+        assert provider.requested_models == [""]
 
-    async def test_embed_for_content_resolves_provider_by_name(self, prof_ctx) -> None:
-        orch = EmbeddingOrchestrator()
+    async def test_embed_for_content_resolves_provider_by_registry_key(self, prof_ctx) -> None:
+        orch = EmbeddingOrchestrator(registry=_code_registry())
         default_provider = RecordingProvider()
         routed_provider = RecordingProvider()
 
         seen: list[str] = []
 
-        def resolver(provider_name: str):
-            seen.append(provider_name)
+        def resolver(key: str):
+            seen.append(key)
             return routed_provider
 
         result = await orch.embed_for_content(
@@ -101,14 +145,28 @@ class TestSelectionRoutes:
             tenant_ctx=prof_ctx,
             default_provider=default_provider,
             provider_resolver=resolver,
+            target_dim=1024,
         )
 
-        # The selected provider name (voyage for code) is what the resolver saw.
-        assert seen == ["voyage"]
-        # The resolved provider did the work; the default was not used.
-        assert routed_provider.requested_models == ["voyage-code-3"]
+        # The Model Registry key of the selected model is what the resolver saw.
+        assert seen == ["voyage/reg-code-embed"]
+        assert routed_provider.requested_models == [""]
         assert default_provider.requested_models == []
         assert result.provider == "voyage"
+
+    async def test_unbuildable_route_falls_back_to_the_default(self, prof_ctx) -> None:
+        orch = EmbeddingOrchestrator(registry=_code_registry())
+        provider = RecordingProvider()
+        result = await orch.embed_for_content(
+            ["def foo(): pass"],
+            content_type=ContentType.CODE,
+            tenant_ctx=prof_ctx,
+            default_provider=provider,
+            provider_resolver=lambda _key: None,
+            target_dim=1024,
+        )
+        assert provider.requested_models == [""]
+        assert result.provider == "default"
 
     async def test_embed_for_content_falls_back_to_default_when_no_provider(
         self, prof_ctx

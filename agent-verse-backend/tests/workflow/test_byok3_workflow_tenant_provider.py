@@ -196,15 +196,21 @@ async def test_rag_step_resolves_the_tenant_provider_too(
             return [{"content": "ctx"}]
 
     knowledge = _Knowledge()
+    registry_embedder = object()  # the platform's Model Registry embedder
     node = RAGStepNode(
         StepDefinition(id="r1", type="rag", prompt="q", input={"collection": "c"}),
         ContextResolver(),
         knowledge_store=knowledge,
         llm_provider_resolver=TenantLLMProviderResolver(store=_Store(_tenant_config())),
+        embedder=registry_embedder,
     )
     await node.execute(_state())
-    assert built and built[0].api_key == TENANT_KEY
-    assert knowledge.embedder is built[0]  # the query is embedded with the tenant's provider
+    assert built and built[0].api_key == TENANT_KEY  # the tenant's provider completes
+    # ...but the query is embedded in the COLLECTION's vector space (its bound
+    # embedder, else the registry embedder) — never with the chat provider, whose
+    # model is not the one the index was built with.
+    assert knowledge.embedder is registry_embedder
+    assert knowledge.embedder is not built[0]
 
 
 async def test_ocr_and_rpa_steps_get_the_tenant_provider(

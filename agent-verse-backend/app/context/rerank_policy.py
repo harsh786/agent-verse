@@ -774,7 +774,9 @@ class RerankPolicy:
             self._record_degraded("hosted_reranker_needs_async")
             out: list[dict[str, Any]] | None = None
         else:
-            out = asyncio.run(
+            from app.db.session import run_in_fresh_loop
+
+            out = run_in_fresh_loop(
                 self._hosted_rerank(
                     chunks,
                     query,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.embedding.model_registry import EmbeddingModelRegistry, EmbeddingModelSpec
 from app.embedding.orchestrator import EmbeddingOrchestrator, RoutedEmbeddingResult
 from app.ingestion.content_classifier import ContentType
 from app.providers.base import EmbedRequest, EmbedResponse
@@ -110,12 +111,27 @@ class TestVeryLongText:
         assert len(result.embeddings) == 5
 
 
+_CODE_KEY = "voyage/reg-code-embed"
+
+
+def _code_routing() -> tuple[EmbeddingOrchestrator, RecordingProvider, dict]:
+    """An orchestrator whose Model Registry configures a 1024-d code embedder."""
+    orch = EmbeddingOrchestrator(
+        registry=EmbeddingModelRegistry(
+            [EmbeddingModelSpec("reg-code-embed", "code", 1024, "low", "voyage")]
+        )
+    )
+    code_provider = RecordingProvider()
+    return orch, code_provider, {"provider_resolver": {_CODE_KEY: code_provider}.get,
+                                 "target_dim": 1024}
+
+
 class TestCodeContentEdgeCases:
     async def test_code_with_syntax_errors_still_routes_to_code_model(self, prof_ctx) -> None:
         """The orchestrator never parses code — a syntactically broken snippet
         is routed exactly like valid code, based solely on the declared
         ContentType."""
-        orch = EmbeddingOrchestrator()
+        orch, code_provider, routing = _code_routing()
         provider = RecordingProvider()
         broken_code = "def foo(:\n    return\nclass :::"
 
@@ -124,12 +140,15 @@ class TestCodeContentEdgeCases:
             content_type=ContentType.CODE,
             tenant_ctx=prof_ctx,
             default_provider=provider,
+            **routing,
         )
-        assert result.model_id == "voyage-code-3"
-        assert provider.requested_models == ["voyage-code-3"]
+        assert result.model_id == "reg-code-embed"
+        # Built from its registry entry: it embeds with its own model (no override).
+        assert code_provider.requested_models == [""]
+        assert provider.requested_models == []
 
     async def test_mixed_language_code_routes_to_code_model(self, prof_ctx) -> None:
-        orch = EmbeddingOrchestrator()
+        orch, _code_provider, routing = _code_routing()
         provider = RecordingProvider()
         mixed = (
             "def python_fn():\n    return 1\n\n"
@@ -141,8 +160,9 @@ class TestCodeContentEdgeCases:
             content_type=ContentType.CODE,
             tenant_ctx=prof_ctx,
             default_provider=provider,
+            **routing,
         )
-        assert result.model_id == "voyage-code-3"
+        assert result.model_id == "reg-code-embed"
         assert result.embeddings and result.embeddings[0] == [0.1, 0.2, 0.3]
 
 
@@ -198,7 +218,7 @@ class TestContentTypeMisdetection:
         """Upstream classification can be wrong (e.g. prose that looks vaguely
         code-like); the orchestrator must still produce a usable embedding
         rather than erroring out."""
-        orch = EmbeddingOrchestrator()
+        orch, _code_provider, routing = _code_routing()
         provider = RecordingProvider()
         prose = "The quarterly report shows strong growth across all regions."
 
@@ -207,10 +227,11 @@ class TestContentTypeMisdetection:
             content_type=ContentType.CODE,
             tenant_ctx=prof_ctx,
             default_provider=provider,
+            **routing,
         )
         # Routed to the code model per the (mis)declared type — but it still
         # produces a real embedding, not an error.
-        assert result.model_id == "voyage-code-3"
+        assert result.model_id == "reg-code-embed"
         assert len(result.embeddings) == 1
         assert result.embeddings[0]
 
@@ -225,6 +246,6 @@ class TestContentTypeMisdetection:
             tenant_ctx=prof_ctx,
             default_provider=provider,
         )
-        assert result.model_id != "voyage-code-3"
+        assert result.model_id != "reg-code-embed"
         assert len(result.embeddings) == 1
         assert result.embeddings[0]

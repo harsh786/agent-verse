@@ -4,8 +4,11 @@ A self-hosted vLLM cluster serves several models on separate OpenAI-compatible
 ports (a capable chat model, a small/fast one, an embedding service). The model
 router picks a *model name* per task (planning vs verification, etc.); this
 provider dispatches each request to the endpoint that actually serves that model,
-so one logical provider fronts many endpoints. Embeddings route to the dedicated
-embedding endpoint. Reranking is handled separately by the hosted-reranker config.
+so one logical provider fronts many endpoints. Embeddings are the platform's
+Model Registry embedder (app.providers.embedder_factory.process_embedder — which
+serves the NVIDIA / on-prem embedding endpoint when that is what the deployment
+configures), never a model this provider picks itself. Reranking is handled
+separately by the hosted-reranker config.
 """
 
 from __future__ import annotations
@@ -32,7 +35,8 @@ class MultiEndpointLLMProvider:
     """Fronts several OpenAI-compatible endpoints, dispatching by model name.
 
     ``endpoints`` maps a model id → its provider. ``default_model`` is used when a
-    request names no model. ``embed_provider`` (optional) serves embeddings.
+    request names no model. Embeddings go to the platform registry embedder
+    (``embed_provider`` overrides it: an explicitly injected embedder).
     ``_agentverse_provider_type`` steers the model router to a matching profile.
     """
 
@@ -50,6 +54,8 @@ class MultiEndpointLLMProvider:
         self._endpoints = endpoints
         self._default_model = default_model
         self._embed = embed_provider
+        # Names the platform embedder's model (embedder_model_name) when it embeds.
+        self._agentverse_platform_embedder = embed_provider is None
         self._agentverse_provider_type = provider_type
         # Runtime failover target (e.g. NVIDIA cloud) used when the chosen endpoint
         # is unreachable/errors — so an on-prem outage degrades to the cloud model.
@@ -124,12 +130,21 @@ class MultiEndpointLLMProvider:
             return await fb.stream_tokens(request, on_token)
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        target = self._embed or self._for(None)
-        return await target.embed(request)
+        if self._embed is not None:
+            return await self._embed.embed(request)
+        # Never the chat endpoint's own /embeddings (another model and vector
+        # space): the ONE registry embedder retrieval and ingestion use.
+        from app.providers.embedder_factory import platform_embed
+
+        response: EmbedResponse = await platform_embed(request)
+        return response
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        target = self._embed or self._for(None)
-        return await target.embed_batch(texts)
+        if self._embed is not None:
+            return await self._embed.embed_batch(texts)
+        from app.providers.embedder_factory import platform_embed_batch
+
+        return await platform_embed_batch(texts)
 
     def supports_vision(self) -> bool:
         return self._for(None).supports_vision()
@@ -175,7 +190,6 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
         if settings.onprem_disable_thinking
         else None
     )
-    embed_provider: OpenAICompatibleProvider | None = None
     if onprem_on:
         endpoints[settings.onprem_qwen_model] = OpenAICompatibleProvider(
             api_key=api_key, base_url=qwen_url, default_model=settings.onprem_qwen_model,
@@ -192,19 +206,10 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
                 extra_body=vllm_extra,
             )
 
-    # Embeddings: prefer the NVIDIA embedding model when configured (dim must match
-    # the DB), else the on-prem embedding endpoint.
-    if nvidia_on and settings.nvidia_embed_model.strip():
-        embed_provider = OpenAICompatibleProvider(
-            api_key=settings.nvidia_api_key, base_url=settings.nvidia_base_url,
-            default_model=settings.nvidia_embed_model, embed_model=settings.nvidia_embed_model,
-        )
-    elif onprem_on and settings.onprem_embedding_base_url.strip():
-        embed_provider = OpenAICompatibleProvider(
-            api_key=api_key, base_url=settings.onprem_embedding_base_url.strip(),
-            default_model=settings.onprem_embedding_model,
-            embed_model=settings.onprem_embedding_model,
-        )
+    # Embeddings: no embedder of its own. The NVIDIA / on-prem embedding endpoint
+    # is the deployment's registry embedder (embedder_factory applies it via
+    # apply_embedding_endpoint_settings and the seeder registers the model), and
+    # embed() delegates to it — so a registry change reaches this path too.
 
     provider_type = "hybrid" if (nvidia_on and onprem_on) else ("nvidia" if nvidia_on else "onprem")
     # Failover to NVIDIA cloud when a chosen (on-prem) endpoint is unreachable; if
@@ -218,7 +223,6 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
     return MultiEndpointLLMProvider(
         endpoints=endpoints,
         default_model=default_model,
-        embed_provider=embed_provider,
         provider_type=provider_type,
         fallback_model=fallback_model,
     )

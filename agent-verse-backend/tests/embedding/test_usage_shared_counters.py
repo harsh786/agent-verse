@@ -86,7 +86,7 @@ async def test_an_ingestion_embed_is_visible_from_another_app_instance(shared_re
 
 
 def test_orchestrator_never_selects_a_fake_embedding_model() -> None:
-    from app.embedding.orchestrator import EmbeddingOrchestrator, NoEmbeddingModelAvailableError
+    from app.embedding.orchestrator import EmbeddingOrchestrator
     from app.ingestion.content_classifier import ContentType
 
     class _EmptyRegistry:
@@ -95,5 +95,6 @@ def test_orchestrator_never_selects_a_fake_embedding_model() -> None:
 
     orchestrator = EmbeddingOrchestrator.__new__(EmbeddingOrchestrator)
     orchestrator._registry = _EmptyRegistry()  # type: ignore[attr-defined]
-    with pytest.raises(NoEmbeddingModelAvailableError):
-        orchestrator.select(ContentType.TEXT)
+    selection = orchestrator.select(ContentType.TEXT)
+    assert selection.uses_default_embedder
+    assert "fake" not in selection.model_id

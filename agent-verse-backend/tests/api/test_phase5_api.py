@@ -256,15 +256,6 @@ def test_idempotency_store_interface():
     assert hasattr(IdempotencyStore, "exists")
 
 
-def test_embedding_model_registry_voyage_dimension_512():
-    """voyage-3-lite dimension must be 512 (not 1024)."""
-    from app.embedding.model_registry import EmbeddingModelRegistry
-    registry = EmbeddingModelRegistry.build_default()
-    model = registry.get("voyage-3-lite")
-    assert model is not None, "voyage-3-lite not found in registry"
-    assert model.dimension == 512, f"Expected 512, got {model.dimension}"
-
-
 def test_parser_registry_has_vision_parser_for_image():
     """ParserRegistry must map ContentType.IMAGE to VisionParser."""
     from app.ingestion.content_classifier import ContentType

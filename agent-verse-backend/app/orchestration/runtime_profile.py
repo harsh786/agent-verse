@@ -118,7 +118,6 @@ class ModelPlanConfig:
     planner: str = "default"
     executor: str = "default"
     verifier: str = "default"
-    embedder: str = "default"
     classifier: str = "default"
     cost_class: str = "medium"
     latency_class: str = "interactive"
@@ -389,7 +388,9 @@ class MultimodalRuntimeProfile(_ToDictMixin):
     content_type: str = "text"
     parser: str = "text_parser"
     chunking_strategy: str = "semantic"
-    embedding_model: str = "text-embedding-3-small"
+    # Not a model id: the Model Registry embedder (or the collection's bound one)
+    # embeds; "default" names that.
+    embedding_model: str = "default"
     model_roles: dict[str, str] = field(default_factory=dict)
     provenance_required: bool = True
 

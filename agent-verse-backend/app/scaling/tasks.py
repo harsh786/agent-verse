@@ -901,11 +901,9 @@ def _get_llm_provider(tenant_id: str) -> Any:
     # failed goal — never silent platform spend.
     from app.providers.llm_resolution import abuild_tenant_byok_provider
 
-    return _run_async(
-        abuild_tenant_byok_provider(
-            config, tenant_id, embed_model=os.getenv("EMBEDDING_MODEL") or None
-        )
-    )
+    # BYOK embedding policy (app.providers.tenant_provider): the tenant's own
+    # embedding model, else the platform registry embedder — never EMBEDDING_MODEL.
+    return _run_async(abuild_tenant_byok_provider(config, tenant_id))
 
 
 _WORKER_SIGNAL_POLL_SECONDS = 5.0

@@ -561,7 +561,7 @@ async def test_embed_returns_vectors_and_tokens() -> None:
 
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
-        provider = OpenAICompatibleProvider(api_key="key")
+        provider = OpenAICompatibleProvider(api_key="key", embed_model="text-embedding-3-small")
         result = await provider.embed(EmbedRequest(texts=["hello", "world"]))
 
     assert result.embeddings == vectors
@@ -569,7 +569,7 @@ async def test_embed_returns_vectors_and_tokens() -> None:
 
 
 @pytest.mark.asyncio
-async def test_embed_uses_default_model() -> None:
+async def test_embed_without_a_model_refuses_instead_of_a_literal_default() -> None:
     mock_openai, mock_client = _make_openai_module()
     captured: list[dict] = []
 
@@ -582,9 +582,16 @@ async def test_embed_uses_default_model() -> None:
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(api_key="key")
-        await provider.embed(EmbedRequest(texts=["text"]))
+        # No embed model: the provider carries no default (the Model Registry
+        # resolver names the model) — it refuses instead of sending a literal.
+        from app.providers.base import EmbeddingModelNotConfiguredError
 
-    assert captured[0]["model"] == "text-embedding-3-small"
+        with pytest.raises(EmbeddingModelNotConfiguredError):
+            await provider.embed(EmbedRequest(texts=["text"]))
+        with pytest.raises(EmbeddingModelNotConfiguredError):
+            await provider.embed_batch(["text"])
+
+    assert captured == []
 
 
 @pytest.mark.asyncio
@@ -623,7 +630,7 @@ async def test_embed_no_usage_returns_zero_tokens() -> None:
 
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
-        provider = OpenAICompatibleProvider(api_key="key")
+        provider = OpenAICompatibleProvider(api_key="key", embed_model="text-embedding-3-small")
         result = await provider.embed(EmbedRequest(texts=["x"]))
 
     assert result.total_tokens == 0
@@ -657,7 +664,7 @@ async def test_embed_batch_single_batch_under_2048() -> None:
 
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
-        provider = OpenAICompatibleProvider(api_key="key")
+        provider = OpenAICompatibleProvider(api_key="key", embed_model="text-embedding-3-small")
         result = await provider.embed_batch(texts)
 
     assert len(result) == 10
@@ -684,7 +691,7 @@ async def test_embed_batch_splits_at_2048() -> None:
 
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
-        provider = OpenAICompatibleProvider(api_key="key")
+        provider = OpenAICompatibleProvider(api_key="key", embed_model="text-embedding-3-small")
         result = await provider.embed_batch(texts)
 
     assert len(result) == 2050

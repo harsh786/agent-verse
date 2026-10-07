@@ -44,7 +44,7 @@ async def test_voyage_embed_and_batch_preserve_modes() -> None:
     from app.providers.voyage_provider import VoyageProvider
 
     client = _Client()
-    provider = VoyageProvider(http_client=client)
+    provider = VoyageProvider(http_client=client, model="voyage-4-large")
     query = await provider.embed(EmbedRequest(texts=["q"], input_type="query"))
     batch = await provider.embed_batch([str(index) for index in range(100)])
 
@@ -87,6 +87,18 @@ async def test_local_embed_provider_uses_sentence_transformer() -> None:
     module = MagicMock()
     module.SentenceTransformer.return_value = model
     with patch.dict("sys.modules", {"sentence_transformers": module}):
-        provider = LocalEmbedProvider()
+        provider = LocalEmbedProvider(model_name="all-MiniLM-L6-v2")
         result = await provider.embed(EmbedRequest(texts=["a", "b"]))
     assert result.embeddings == [[0.1], [0.2]]
+
+
+async def test_voyage_without_a_model_refuses_instead_of_a_literal_default() -> None:
+    """The Model Registry resolver names the model; no provider default."""
+    from app.providers.base import EmbeddingModelNotConfiguredError
+    from app.providers.voyage_provider import VoyageProvider
+
+    client = _Client()
+    provider = VoyageProvider(http_client=client)
+    with pytest.raises(EmbeddingModelNotConfiguredError):
+        await provider.embed(EmbedRequest(texts=["q"]))
+    assert client.calls == []

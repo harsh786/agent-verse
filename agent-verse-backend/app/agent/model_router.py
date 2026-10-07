@@ -30,7 +30,6 @@ class ModelRouterConfig:
     planning_model: str = ""
     execution_model: str = ""
     verification_model: str = ""
-    embedding_model: str = ""
     fallback_model: str = ""
 
 
@@ -94,8 +93,6 @@ class ModelRouter:
         ``""`` when nothing is configured anywhere (the provider then reports
         the honest "no LLM configured" error).
         """
-        if task_type == "embedding":
-            return self._config.embedding_model or fallback
         from app.ai_router.resolve import (
             ModelNotConfiguredError,
             reasoning_task_type,
@@ -167,7 +164,6 @@ class ModelRouter:
             planning_model=model,
             execution_model=model,
             verification_model=model,
-            embedding_model=self._config.embedding_model,  # keep embedding model
             fallback_model=model,
         )
         new_router._config = new_config

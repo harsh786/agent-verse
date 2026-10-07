@@ -197,6 +197,38 @@ def _reranker_models() -> list[tuple[str, str | None]]:
     return out
 
 
+def _settings_embed_models() -> list[tuple[str, str | None]]:
+    """``(model_id, provider)`` of every embedding model the typed Settings configure.
+
+    ``configured_embed_model()`` reads the process env only, so an embedding
+    model set only in Settings / ``.env`` (the on-prem ``ONPREM_EMBEDDING_MODEL``
+    behind ``ONPREM_EMBEDDING_BASE_URL``, ``NVIDIA_EMBED_MODEL``, a dedicated
+    ``EMBEDDING_BASE_URL`` + ``EMBEDDING_MODEL``) never reached the registry.
+    Provider None = inferred.
+    """
+    out: list[tuple[str, str | None]] = []
+    try:
+        from app.core.config import get_settings
+
+        _s = get_settings()
+        nvidia_model = str(_s.nvidia_embed_model or "").strip()
+        if str(_s.nvidia_api_key or "").strip() and nvidia_model:
+            out.append((nvidia_model, "nvidia"))
+        onprem_model = str(_s.onprem_embedding_model or "").strip()
+        if _s.onprem_enabled and str(_s.onprem_embedding_base_url or "").strip() and onprem_model:
+            out.append((onprem_model, "onprem"))
+        dedicated = str(_s.embedding_model or "").strip()
+        if (
+            str(_s.embedding_base_url or "").strip()
+            and dedicated
+            and dedicated not in {m for m, _ in out}
+        ):
+            out.append((dedicated, None))
+    except Exception:  # pragma: no cover - never block seeding
+        pass
+    return out
+
+
 def _speech_models(capability: ModelCapability) -> list[tuple[str, str]]:
     """``(model_id, provider)`` of the speech models env / Settings pin."""
     try:
@@ -303,6 +335,8 @@ def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
             _register(reg, mid, [_TG, _TU, _SO])
         # Embeddings (used from P2 onward; harmless to register now).
         _register(reg, configured_embed_model(), [_EM])
+        for _em, _em_provider in _settings_embed_models():
+            _register(reg, _em, [_EM], provider=_em_provider)  # merges capabilities
         # Vision / OCR — only when EXPLICITLY pinned (VISION_MODEL /
         # NVIDIA_VISION_MODEL, OCR_MODEL), never the reasoning model by default.
         # Merged into an existing entry, so a vision pin equal to the reasoning

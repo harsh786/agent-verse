@@ -65,7 +65,6 @@ ALLOWED_FILES: dict[str, str] = {
     # Other capabilities, resolved by their own resolver branches (vision / OCR,
     # embeddings, rerank, speech) — not reasoning models.
     "ingestion/parsers/vision_parser.py": "vision/OCR resolver branch",
-    "ingestion/embedding_policy_selector.py": "embedding resolver branch",
     "ingestion/parsers/audio_parser.py": "speech resolver branch",
     "embedding/": "embedding resolver branch",
     "perception/": "vision resolver branch",
@@ -91,17 +90,8 @@ ALLOWED_LITERALS: dict[tuple[str, str], str] = {
     ("ai_router/model_orchestrator.py", "claude-3-haiku"): "_MODEL_PROVIDER reference map",
     ("ai_router/model_orchestrator.py", "gemini-2.5-pro"): "_MODEL_PROVIDER map / vision and "
     "speech tables (their resolver branches)",
-    ("ai_router/model_orchestrator.py", "text-embedding-3-large"): "embedder tier table "
-    "(embedding resolver branch)",
-    ("ai_router/model_orchestrator.py", "text-embedding-3-small"): "embedder tier table "
-    "(embedding resolver branch)",
-    ("ai_router/model_orchestrator.py", "voyage-3-lite"): "embedder tier table (embedding "
-    "resolver branch)",
     ("db/models/knowledge.py", "voyage-4-large"): "collection embedder column default "
     "(embedding resolver branch)",
-    ("main.py", "text-embedding-3-small"): "OpenAI embedder fallback (embedding branch)",
-    ("orchestration/runtime_profile.py", "text-embedding-3-small"): "multimodal profile "
-    "embedding model (embedding resolver branch)",
     ("api/agents.py", "gpt-5.2"): "OpenAI-assistant EXPORT format: the document is imported "
     "into the vendor's own platform, which needs one of its model ids",
     ("api/agents.py", "claude-opus-4-5"): "Anthropic EXPORT format (see above)",

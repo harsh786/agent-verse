@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.embedding.dimension_policy import DimensionPolicy
-from app.embedding.model_registry import EmbeddingModelRegistry
+from app.embedding.model_registry import EmbeddingModelRegistry, EmbeddingModelSpec
 from app.embedding.orchestrator import EmbeddingOrchestrator, EmbeddingSelectionResult
 from app.embedding.reembedding_policy import ReembeddingPolicy, ReembeddingTrigger
 from app.ingestion.content_classifier import ContentType
@@ -19,7 +19,14 @@ def tenant_ctx():
 
 @pytest.fixture
 def registry():
-    return EmbeddingModelRegistry.build_default()
+    # What the Model Registry would yield: a configured text embedder and a code
+    # specialist of the same width (EmbeddingModelRegistry.from_model_registry).
+    return EmbeddingModelRegistry(
+        [
+            EmbeddingModelSpec("reg-text-embed", "text", 1024, "low", "onprem"),
+            EmbeddingModelSpec("reg-code-embed", "code", 1024, "low", "voyage"),
+        ]
+    )
 
 
 @pytest.fixture
@@ -28,13 +35,17 @@ def orchestrator(registry):
 
 
 def test_text_content_gets_text_embedding(orchestrator, tenant_ctx):
+    """Text is the default (registry-resolved) embedder with its own model."""
     result = orchestrator.select(
         content_type=ContentType.TEXT,
         tenant_ctx=tenant_ctx,
+        target_dim=1024,
+        default_model="default-embed",
     )
     assert isinstance(result, EmbeddingSelectionResult)
-    assert result.model_id is not None
-    assert result.dimension > 0
+    assert result.uses_default_embedder
+    assert result.model_id == "default-embed"
+    assert result.dimension == 1024
 
 
 def test_code_content_gets_code_embedding(orchestrator, tenant_ctx):
@@ -55,8 +66,11 @@ def test_image_content_gets_multimodal_or_text_embedding(orchestrator, tenant_ct
 
 def test_free_plan_gets_cheaper_model(orchestrator):
     free_ctx = TenantContext(tenant_id="t2", plan=PlanTier.FREE, api_key_id="k2")
-    result = orchestrator.select(content_type=ContentType.TEXT, tenant_ctx=free_ctx)
+    result = orchestrator.select(
+        content_type=ContentType.CODE, tenant_ctx=free_ctx, target_dim=1024
+    )
     assert result.cost_class in ("free", "low")
+    assert result.key == "voyage/reg-code-embed"
 
 
 def test_model_registry_has_text_models(registry):

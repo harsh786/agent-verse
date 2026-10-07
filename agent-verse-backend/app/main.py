@@ -44,7 +44,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.ai_router.selection import resolve_embed_model
 from app.api.agents import AgentStore
 from app.api.templates import template_store as _template_store
 from app.api.workflows import _WorkflowStore as WorkflowStore
@@ -978,17 +977,12 @@ def create_app(
     # GuardrailEngine v2 — wired with Redis in lifespan
     _guardrail_engine_v2 = GuardrailEngineV2()
 
-    # Wire embedder: use VoyageProvider if VOYAGE_API_KEY set,
-    # OpenAICompatibleProvider if OPENAI_API_KEY set,
-    # LocalEmbedProvider if SENTENCE_TRANSFORMERS_MODEL set, else None.
-    import os
-
+    # Wire embedder: the ONE Model Registry-configured embedder
+    # (app.providers.embedder_factory.resolve_embedder).
     _embedder: Any = None
     from app.core.config import get_provider_env
 
     _openai_key = get_provider_env("OPENAI_API_KEY")
-    _voyage_key = get_provider_env("VOYAGE_API_KEY")
-    _anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
     # Selection lives in app.providers.embedder_factory so the Celery worker's
     # ingestion pipeline builds the SAME embedder (document and query vectors
     # must come from one model/space).
@@ -999,7 +993,7 @@ def create_app(
     _embedder_resolution = resolve_embedder(settings)
     # Traced: every query / ingestion / memory embed emits a gen_ai.embeddings
     # span (a01-F024-01). The resolution keeps the real embedder for reporting.
-    from app.observability.traced_provider import traced_embedder, unwrap_provider
+    from app.observability.traced_provider import traced_embedder
 
     # Wrapped so a Model Registry change (saved embedding model / preference
     # order, on any replica) re-resolves it: queries keep being embedded with
@@ -1015,52 +1009,23 @@ def create_app(
 
     _embedder_proxy = _reloading(_embedder_resolution)
     _embedder = traced_embedder(_embedder_proxy)
+    # Side paths that embed outside a collection (a chat provider's embed, a BYOK
+    # provider without its own embedding model, a workflow RAG query) embed with
+    # THIS app's current embedder (app.state.embedder, set below).
+    from app.providers.embedder_factory import set_process_embedder
+
+    set_process_embedder(lambda: getattr(app.state, "embedder", None))
     # app.state.embedder is set after app = FastAPI(...)
 
-    # Multi-model embedding routing (D-10): map EVERY configured embedding
-    # provider by name so EmbeddingOrchestrator.select's chosen model is embedded
-    # on its own provider (e.g. a code content type → the Voyage code model on the
-    # Voyage provider). Built independently of the single primary `_embedder`
-    # above; the resolver falls back to that primary when a provider is absent, so
-    # a single-provider deployment is unchanged.
-    _embed_providers_by_name: dict[str, Any] = {}
-    if _voyage_key:
-        try:
-            from app.providers.voyage_provider import VoyageProvider
+    # Content-type embedding routing (D-10): a content type may be routed only to
+    # a configured Model Registry embedding model (e.g. a code embedder, when one
+    # is configured), built from its registry entry. This used to be a map of
+    # env-keyed providers built with literal models (text-embedding-3-small on
+    # OpenAI, Voyage's / Gemini's own defaults). Per-collection binding wins: a
+    # bound collection is never routed.
+    from app.embedding.orchestrator import build_registry_embedder_resolver
 
-            _embed_providers_by_name["voyage"] = (
-                _embedder
-                if isinstance(unwrap_provider(_embedder), VoyageProvider)
-                else traced_embedder(VoyageProvider(api_key=_voyage_key))
-            )
-        except Exception:
-            pass
-    if _openai_key:
-        try:
-            from app.providers.openai_compatible import OpenAICompatibleProvider
-
-            _embed_providers_by_name["openai"] = traced_embedder(
-                OpenAICompatibleProvider(
-                    api_key=_openai_key,
-                    base_url=os.getenv("OPENAI_BASE_URL", ""),
-                    default_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
-                    embed_model=resolve_embed_model("text-embedding-3-small", provider="openai"),
-                )
-            )
-        except Exception:
-            pass
-    if get_provider_env("GOOGLE_API_KEY"):
-        try:
-            from app.providers.gemini_provider import GeminiProvider
-
-            _embed_providers_by_name["gemini"] = traced_embedder(
-                GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
-            )
-        except Exception:
-            pass
-    from app.embedding.orchestrator import build_provider_resolver
-
-    _embed_provider_resolver = build_provider_resolver(_embed_providers_by_name)
+    _embed_provider_resolver = build_registry_embedder_resolver(settings)
 
     async def _resolve_retrieval_llm(
         tenant_context: TenantContext,

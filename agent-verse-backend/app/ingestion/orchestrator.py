@@ -58,10 +58,10 @@ class IngestionOrchestrator:
         # None -> the process-wide controller the API / worker registered.
         self._cost_controller = cost_controller
         self._embedder = embedder
-        # Maps an embedding provider name (e.g. "voyage", "openai") to a concrete
-        # provider instance so EmbeddingOrchestrator.select's chosen model is
-        # embedded on its own provider (multi-model routing / D-10). None → the
-        # single configured embedder is used for every content type.
+        # Maps a Model Registry embedding key (``provider/model_id``) to its
+        # embedder, so a content type routed to a configured registry specialist
+        # (EmbeddingOrchestrator.select, D-10) is embedded on it. None → the
+        # default embedder serves every content type.
         self._embed_provider_resolver = embed_provider_resolver
         self._indexing_dependencies = dict(indexing_dependencies or {})
         self._rag_indexing_config = rag_indexing_config
@@ -85,6 +85,23 @@ class IngestionOrchestrator:
             collection_id, tenant_ctx=tenant_ctx, default=self._embedder
         )
         return None if bound is self._embedder else bound
+
+    async def _routing_target_dim(
+        self, collection_id: str, tenant_ctx: TenantContext
+    ) -> int | None:
+        """The width a routed embedder must produce: the collection's stored width,
+        else the default embedder's (None = unknown → never routed)."""
+        dim_lookup = getattr(self._kb, "get_collection_embedding_dim", None)
+        if dim_lookup is not None:
+            try:
+                existing = await dim_lookup(collection_id, tenant_ctx=tenant_ctx)
+            except Exception:
+                existing = None
+            if isinstance(existing, int) and existing > 0:
+                return existing
+        from app.providers.embedder_factory import embedder_dimension
+
+        return embedder_dimension(self._embedder)
 
     def _embedding_orch(self) -> Any:
         """Lazily build and cache the EmbeddingOrchestrator (avoids import cycles)."""
@@ -270,9 +287,15 @@ class IngestionOrchestrator:
         # selection fails, so every consumer below must degrade to the default
         # embedder rather than assume it succeeded.
         _emb_selection: Any = None
+        _target_dim = await self._routing_target_dim(collection_id, tenant_ctx)
         try:
+            from app.providers.embedder_factory import embedder_model_name
+
             _emb_selection = self._embedding_orch().select(
-                content_type=detected, tenant_ctx=tenant_ctx
+                content_type=detected,
+                tenant_ctx=tenant_ctx,
+                target_dim=_target_dim,
+                default_model=embedder_model_name(self._embedder),
             )
             if metadata is None:
                 metadata = {}
@@ -358,36 +381,24 @@ class IngestionOrchestrator:
             if bound_embedder is not None:
                 effective_embedder = bound_embedder
                 embedding_model_effective = str(metadata["embedding_model_effective"])
-            elif _emb_selection is not None:
-                existing_dim: int | None = None
-                dim_lookup = getattr(self._kb, "get_collection_embedding_dim", None)
-                if dim_lookup is not None:
+            elif _emb_selection is not None and _emb_selection.key:
+                # A configured registry specialist whose width select() already
+                # checked against the collection's (dimension safety: never a
+                # mismatched-width vector). Built from its registry entry, it
+                # embeds with its own model (no model id override).
+                resolved = None
+                if self._embed_provider_resolver is not None:
                     try:
-                        existing_dim = await dim_lookup(collection_id, tenant_ctx=tenant_ctx)
+                        resolved = self._embed_provider_resolver(_emb_selection.key)
                     except Exception:
-                        existing_dim = None
-                if existing_dim is not None and existing_dim != _emb_selection.dimension:
-                    # Dimension safety: never write a mismatched-dimension vector.
-                    # Reuses the collection's stored embedding_dim (the same
-                    # source of truth `_persist_chunks` enforces) instead of a
-                    # separate check; falls back to the default embedder with no
-                    # model override — its own, already-matching, dimension.
-                    pass
-                else:
-                    resolved = None
-                    if self._embed_provider_resolver is not None:
-                        try:
-                            resolved = self._embed_provider_resolver(_emb_selection.provider)
-                        except Exception:
-                            resolved = None
-                    if resolved is not None:
-                        effective_embedder = resolved
-                        effective_model = _emb_selection.model_id
-                        embedding_model_effective = _emb_selection.model_id
-                    # else: keep the default embedder AND its own model. The
-                    # selected model id used to be sent to the default embedder
-                    # anyway (e.g. "text-embedding-3-small" to the on-prem Qwen
-                    # endpoint → 404), failing every RAPTOR/agentic-chunking ingest.
+                        resolved = None
+                if resolved is not None:
+                    effective_embedder = resolved
+                    embedding_model_effective = _emb_selection.model_id
+                # else: keep the default embedder AND its own model. A selected
+                # model id used to be sent to the default embedder anyway (e.g.
+                # "text-embedding-3-small" to the on-prem Qwen endpoint → 404),
+                # failing every RAPTOR/agentic-chunking ingest.
 
             if metadata is None:
                 metadata = {}
@@ -442,6 +453,7 @@ class IngestionOrchestrator:
                 default_provider=self._embedder,
                 provider_resolver=self._embed_provider_resolver,
                 cost_controller=self._cost_controller,
+                target_dim=_target_dim,
             )
             embeddings = routed.embeddings
         if len(embeddings) != chunks_prepared:

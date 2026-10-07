@@ -39,7 +39,6 @@ def test_all_6_roles_assigned() -> None:
     assert assignment.executor
     assert assignment.verifier
     assert assignment.judge
-    assert assignment.embedder
     assert assignment.classifier
 
 
@@ -177,9 +176,8 @@ def test_realtime_forces_low_tier_and_a_different_model_than_normal() -> None:
     assert normal_assignment.quality_tier == "high"
     assert realtime_assignment.quality_tier == "low"
     # planner keeps PatternConfig's default hint ("gpt-5.2") regardless of tier
-    # (see test_pattern_config_hints_respected) — embedder has no such hint and
+    # (see test_pattern_config_hints_respected) — judge has no such hint and
     # is the cleanest signal that the tier itself actually changed.
-    assert normal_assignment.embedder != realtime_assignment.embedder
     assert normal_assignment.judge != realtime_assignment.judge
 
 
@@ -196,7 +194,7 @@ def test_batch_and_normal_produce_the_same_tier_and_models() -> None:
 
     assert normal_assignment.quality_tier == batch_assignment.quality_tier
     assert normal_assignment.planner == batch_assignment.planner
-    assert normal_assignment.embedder == batch_assignment.embedder
+    assert normal_assignment.judge == batch_assignment.judge
 
 
 def test_critical_risk_wins_over_realtime_latency() -> None:

@@ -45,6 +45,24 @@ KNOWN_EMBEDDING_DIMENSIONS: dict[str, int] = {
 }
 
 
+# The embedding model an env-keyed provider has always embedded with when the
+# deployment names none (VOYAGE_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY alone).
+# The ONE table the embedder resolver (app.providers.embedder_factory) reads them
+# from; provider classes carry no default embedding model of their own. Changing
+# an entry silently moves every existing index of such a deployment into another
+# vector space, so a change needs a re-embed plan.
+DEPLOYMENT_DEFAULT_EMBED_MODELS: dict[str, str] = {
+    "voyage": "voyage-4-large",
+    "openai": "text-embedding-3-small",
+    "gemini": "gemini-embedding-001",
+}
+
+
+def deployment_default_embed_model(provider: str) -> str:
+    """The embedding model an env-keyed *provider* embeds with when none is named."""
+    return DEPLOYMENT_DEFAULT_EMBED_MODELS.get((provider or "").strip().lower(), "")
+
+
 @dataclass(frozen=True)
 class CatalogModel:
     model_id: str

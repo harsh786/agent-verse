@@ -1156,12 +1156,18 @@ class OpenAICompatibleProvider:
     def _embed_model(self, requested: str | None = None) -> str:
         """Resolve the embedding model: explicit request → configured embed_model.
 
-        Falls back to ``text-embedding-3-small`` only when neither is set, so a
-        self-hosted endpoint configured with its own embed_model (e.g. a
-        Qwen3-Embedding on vLLM) is used instead of a hardcoded OpenAI name — and
-        the chat default_model (e.g. "gpt-5.2") is NEVER sent to /embeddings.
+        Neither set raises :class:`EmbeddingModelNotConfiguredError`: no model
+        literal (it used to be ``text-embedding-3-small`` — another vector space
+        than the index, and a 404 on a self-hosted endpoint), and the chat
+        default_model (e.g. "gpt-5.2") is NEVER sent to /embeddings. The embed
+        model comes from the Model Registry embedder resolver.
         """
-        return requested or self._embed_model_name or "text-embedding-3-small"
+        model = requested or self._embed_model_name
+        if not model:
+            from app.providers.base import EmbeddingModelNotConfiguredError
+
+            raise EmbeddingModelNotConfiguredError(type(self).__name__)
+        return model
 
     def _embed_kwargs(self, input_type: str, model: str | None = None) -> dict[str, Any]:
         """Optional /embeddings fields.
@@ -1200,7 +1206,7 @@ class OpenAICompatibleProvider:
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed up to 2048 texts in one OpenAI API call (OpenAI batch limit).
 
-        Uses ``text-embedding-3-small`` by default (same as ``embed()``).
+        Uses the configured embed_model (same as ``embed()``).
         Splits into batches of 2048 automatically when *texts* is longer.
         """
         if not texts:

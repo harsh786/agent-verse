@@ -3,41 +3,14 @@
 from __future__ import annotations
 
 from app.ingestion.content_classifier import ContentType
-from app.ingestion.embedding_policy_selector import EmbeddingPolicy, EmbeddingPolicySelector
 from app.ingestion.modality_pipeline import ModalityPipeline, ModalityPipelineResult
 from app.ingestion.provenance_builder import IngestionProvenance, ProvenanceBuilder
 from app.ingestion.quality_checks import QualityChecker, QualityCheckResult
 
 
 def test_all_layer5_files_importable():
-    files = [EmbeddingPolicySelector, ModalityPipeline, ProvenanceBuilder, QualityChecker]
+    files = [ModalityPipeline, ProvenanceBuilder, QualityChecker]
     assert all(f is not None for f in files)
-
-
-def test_embedding_policy_text_selects_text_model():
-    selector = EmbeddingPolicySelector()
-    policy = selector.select(ContentType.TEXT, collection_size=500)
-    assert isinstance(policy, EmbeddingPolicy)
-    assert policy.model_id is not None
-    assert policy.dimension > 0
-
-
-def test_embedding_policy_code_selects_code_model():
-    selector = EmbeddingPolicySelector()
-    policy = selector.select(ContentType.CODE, collection_size=100)
-    assert policy.modality in ("code", "text")
-
-
-def test_embedding_policy_image_selects_multimodal():
-    selector = EmbeddingPolicySelector()
-    policy = selector.select(ContentType.IMAGE, collection_size=50)
-    assert policy.modality in ("multimodal", "image", "text")
-
-
-def test_embedding_policy_large_collection_uses_hnsw():
-    selector = EmbeddingPolicySelector()
-    policy = selector.select(ContentType.TEXT, collection_size=50_000)
-    assert policy.index_strategy in ("hnsw", "exact")
 
 
 def test_modality_pipeline_selects_text_pipeline():

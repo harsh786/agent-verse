@@ -19,7 +19,7 @@ Stage order:
   7  QUALITY_GATE  — min tokens, gibberish filter, quality_score
   8  CHUNK         — ChunkingStrategySelector dispatch
   9  ENRICH        — contextual enrichment, metadata injection
-  10 EMBED         — EmbeddingPolicySelector → float vectors
+  10 EMBED         — the Model Registry embedder → float vectors
   11 DEDUP_CHUNKS  — chunk-level SHA-256 + near-dup cosine check
   12 INDEX         — write to pgvector + BM25 + update indexed_documents
   13 EMIT          — cursor update, Redis event, Prometheus metrics

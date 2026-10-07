@@ -18,6 +18,17 @@ and both had the same three defects:
 A tenant that configured BYOK now gets its own provider or a
 :class:`TenantProviderError` the caller turns into a goal failure — never a
 silent fallback to platform spend.
+
+Embedding policy (BYOK)
+-----------------------
+A tenant's own provider embeds with the **tenant-configured embedding model**
+(``embedding_model`` in its LLM config) when one is set — on the tenant's own
+endpoint and key. Otherwise it embeds with the **platform Model Registry
+embedder** (:func:`app.providers.embedder_factory.process_embedder`), the same
+one the knowledge indexes are built with. It never embeds with an env-only model
+(``EMBEDDING_MODEL`` used to be forced onto the tenant's endpoint, which may not
+serve it) or a provider default. A provider family that cannot embed at all
+(Anthropic) always uses the platform embedder.
 """
 
 from __future__ import annotations
@@ -217,6 +228,8 @@ def build_tenant_provider(
         raise TenantProviderError("Tenant LLM API key is empty")
 
     model = str(cfg.get("default_model") or cfg.get("model") or "").strip()
+    # An explicit caller override, else the tenant's own embedding model (policy above).
+    embed_model = (embed_model or "").strip() or tenant_embed_model(cfg) or None
     base_url = str(cfg.get("base_url") or "").strip() or None
     if pname in REQUIRES_BASE_URL and base_url is None:
         raise TenantProviderError(f"Tenant LLM provider {pname!r} requires an explicit base_url")
@@ -242,7 +255,34 @@ def build_tenant_provider(
     provider._circuit_scope = tenant_circuit_scope(tenant_id)
     provider._byok_tenant_id = tenant_id
     provider._agentverse_provider_type = pname
-    return provider
+    return apply_tenant_embedding_policy(provider, pname, embed_model)
+
+
+def tenant_embed_model(cfg: dict[str, Any] | None) -> str:
+    """The embedding model a tenant configured for its own provider ("" = none)."""
+    if not cfg:
+        return ""
+    return str(cfg.get("embedding_model") or cfg.get("embed_model") or "").strip()
+
+
+def apply_tenant_embedding_policy(provider: Any, pname: str, embed_model: str | None) -> Any:
+    """Bind *provider*'s embeddings per the BYOK embedding policy (module docstring).
+
+    The tenant's model when set and the provider family can embed (the
+    OpenAI-compatible family reads ``_embed_model_name``; Gemini ``_embed_model``);
+    otherwise the platform Model Registry embedder.
+    """
+    from app.providers.embedder_factory import delegate_embeddings_to_platform
+
+    model = (embed_model or "").strip()
+    if model and pname != "anthropic":
+        if hasattr(provider, "_embed_model_name"):
+            provider._embed_model_name = model
+            return provider
+        if pname == "gemini" and hasattr(provider, "_embed_model"):
+            provider._embed_model = model
+            return provider
+    return delegate_embeddings_to_platform(provider)
 
 
 def _construct(

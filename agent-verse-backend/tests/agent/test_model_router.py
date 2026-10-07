@@ -95,9 +95,10 @@ def test_byok_provider_keeps_its_own_model(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_embedding_is_not_a_reasoning_role() -> None:
-    router = ModelRouter(config=ModelRouterConfig(embedding_model="embedder"))
-    assert router.model_for("embedding") == "embedder"
-    assert ModelRouter().model_for("embedding", fallback="x") == "x"
+    # Embeddings use the Model Registry embedder, never a router role field.
+    from dataclasses import fields
+
+    assert "embedding_model" not in {f.name for f in fields(ModelRouterConfig)}
 
 
 def test_get_router_for_tenant_default_model_serves_every_role(

@@ -194,7 +194,10 @@ class OllamaProvider(OpenAICompatibleProvider):
         )
         self._base = _raw_base.rstrip("/")
         _model = default_model or os.getenv("OLLAMA_DEFAULT_MODEL", "qwen3.8:latest")
-        _embed = default_embed_model or os.getenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:latest")
+        # No env / literal embedding model: the Model Registry embedder resolver
+        # names it (build_endpoint_embedder); a chat Ollama provider's embed goes
+        # to the platform registry embedder (providers.registry).
+        _embed = default_embed_model
         # OCR model: an explicit pin only (the Model Registry's OCR order decides
         # first — app.ai_router.resolve.resolve_ocr); no literal default.
         _ocr = default_ocr_model or (os.getenv("OLLAMA_OCR_MODEL") or "").strip()
@@ -215,9 +218,16 @@ class OllamaProvider(OpenAICompatibleProvider):
     # Embeddings — native Ollama API
     # ------------------------------------------------------------------
 
+    def _require_embed_model(self) -> str:
+        if not self._default_embed_model:
+            from app.providers.base import EmbeddingModelNotConfiguredError
+
+            raise EmbeddingModelNotConfiguredError(type(self).__name__)
+        return self._default_embed_model
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         """Embed a list of texts using Ollama's /api/embeddings endpoint."""
-        model = request.model or self._default_embed_model or "qwen3-embedding:latest"
+        model = request.model or self._require_embed_model()
         embeddings: list[list[float]] = []
         async with httpx.AsyncClient(timeout=120.0) as client:
             for text in request.texts:
@@ -234,7 +244,7 @@ class OllamaProvider(OpenAICompatibleProvider):
         if not texts:
             return []
         sem = asyncio.Semaphore(8)
-        model = self._default_embed_model
+        model = self._require_embed_model()
 
         async def _one(text: str) -> list[float]:
             async with sem, httpx.AsyncClient(timeout=120.0) as client:

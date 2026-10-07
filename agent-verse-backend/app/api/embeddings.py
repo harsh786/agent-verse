@@ -244,7 +244,11 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
 
     total_chunks = 0
     embedded_chunks = 0
-    model = "openai/text-embedding-3-small"
+    # The collection's embedder (read below), else the app's registry embedder —
+    # never a model literal.
+    from app.providers.embedder_factory import embedder_model_name
+
+    model = embedder_model_name(getattr(request.app.state, "embedder", None)) or "unknown"
     embedding_dim: int | None = None
     last_embedded_at: str | None = None
     avg_similarity: float | None = None

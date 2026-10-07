@@ -45,7 +45,9 @@ async def test_voyage_uses_async_http_current_model_and_input_type() -> None:
     from app.providers.voyage_provider import VoyageProvider
 
     client = _VoyageHTTPClient()
-    provider = VoyageProvider(api_key="key", http_client=client, request_timeout_seconds=7.5)
+    provider = VoyageProvider(
+        api_key="key", http_client=client, request_timeout_seconds=7.5, model="voyage-4-large"
+    )
 
     result = await provider.embed(EmbedRequest(texts=["query"], input_type="query"))
 
@@ -63,7 +65,7 @@ async def test_voyage_cancellation_reaches_async_network_call_and_client_closes(
     from app.providers.voyage_provider import VoyageProvider
 
     client = _VoyageHTTPClient(block=True)
-    provider = VoyageProvider(api_key="key", http_client=client)
+    provider = VoyageProvider(api_key="key", http_client=client, model="voyage-4-large")
     task = asyncio.create_task(provider.embed(EmbedRequest(texts=["document"])))
     await asyncio.sleep(0)
     task.cancel()
@@ -133,7 +135,9 @@ async def test_gemini_uses_aio_embed_current_model_task_and_timeout() -> None:
     google.genai = genai
 
     with patch.dict(sys.modules, {"google": google, "google.genai": genai}):
-        provider = GeminiProvider(api_key="key", request_timeout_ms=8_000)
+        provider = GeminiProvider(
+            api_key="key", request_timeout_ms=8_000, embed_model="gemini-embedding-001"
+        )
         result = await provider.embed(
             EmbedRequest(texts=["query"], input_type="query")
         )

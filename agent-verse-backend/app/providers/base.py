@@ -168,6 +168,23 @@ class EmbedderUnavailableError(RuntimeError):
     """No embedder is configured, or the configured one cannot embed (PROV-08)."""
 
 
+class EmbeddingModelNotConfiguredError(NotImplementedError):
+    """A provider was asked to embed with no embedding model named.
+
+    Provider classes carry no default embedding model: the model always comes
+    from the Model Registry embedder resolver
+    (:func:`app.providers.embedder_factory.resolve_embedder`). A
+    ``NotImplementedError`` so :func:`embed_texts` reports it as "this provider
+    cannot embed" (``EmbedderUnavailableError``).
+    """
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(
+            f"{provider}: no embedding model configured — embeddings come from the "
+            "Model Registry embedder (resolve_embedder), which names the model"
+        )
+
+
 async def embed_texts(texts: list[str], provider: LLMProvider | None = None) -> list[list[float]]:
     """Embed texts with *provider*.
 
