@@ -162,3 +162,14 @@ async def test_an_empty_preprocessed_reading_falls_back_to_the_plain_page() -> N
                                             vision_fallback=False)
     assert text == "DN-58213 received by Meenakshi Iyer"
     assert calls[0] == "preprocessed"
+
+
+def test_backend_image_installs_the_tesseract_languages_the_engine_uses() -> None:
+    """The engine reads ``eng`` and ``hin+eng`` (and OSD): the backend image must
+    ship the Hindi pack, or Devanagari pages silently fall back to English.
+    Verified in the built image: ``tesseract --list-langs`` -> eng, hin, osd."""
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).resolve().parents[2] / "Dockerfile").read_text()
+    for package in ("tesseract-ocr", "tesseract-ocr-hin", "poppler-utils"):
+        assert f" {package} " in dockerfile.replace("\n", " ").replace("\\", " "), package

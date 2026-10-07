@@ -676,6 +676,20 @@
       },
       "BatchOcrResponse": {
         "properties": {
+          "error_status": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Error Status",
+            "type": "array"
+          },
           "errors": {
             "items": {
               "anyOf": [
@@ -41358,7 +41372,7 @@
     },
     "/ocr/batch": {
       "post": {
-        "description": "Process up to 10 documents concurrently.\n\nEach document honours its own ``persist_to_kb`` / ``collection_id`` (indexed\nexactly like ``/ocr/extract``). A failed item is ``None`` in ``results`` with\nits reason in ``errors``; an item whose OCR succeeded but whose\nknowledge-base write failed keeps its result and carries the error.",
+        "description": "Process up to 10 documents concurrently.\n\nSize: each document may decode to at most ``OCR_MAX_UPLOAD_BYTES``, and the\nwhole request body is bounded like one ``/ocr/extract`` base64 document\n(the documents together, plus envelope room \u2014\n``app/integrations/body_limit.py``); a larger body is a 413.\n\nEach document honours its own ``persist_to_kb`` / ``collection_id`` (indexed\nexactly like ``/ocr/extract``). A failed item is ``None`` in ``results`` with\nits reason in ``errors`` and the status ``/ocr/extract`` would have answered\nin ``error_status``; an item whose OCR succeeded but whose\nknowledge-base write failed keeps its result and carries the error.",
         "operationId": "extract_documents_batch_ocr_batch_post",
         "requestBody": {
           "content": {
@@ -41400,7 +41414,7 @@
     },
     "/ocr/extract": {
       "post": {
-        "description": "Extract text and structured fields from an image or PDF document.\n\nAccepts either:\n- JSON body with `image_base64` or `pdf_base64`\n- Multipart file upload\n\nWS-13: pass ``persist_to_kb`` + ``collection_id`` to also index the extracted\ntext into the knowledge base with ``source_type=ocr`` provenance (deduped\nagainst the one store).",
+        "description": "Extract text and structured fields from an image or PDF document.\n\nAccepts either:\n- JSON body with `image_base64` or `pdf_base64`\n- Multipart file upload\n\nWS-13: pass ``persist_to_kb`` + ``collection_id`` to also index the extracted\ntext into the knowledge base with ``source_type=ocr`` provenance (deduped\nagainst the one store).\n\nSize: one document of up to ``OCR_MAX_UPLOAD_BYTES`` (default 25 MiB), raw\nupload or decoded base64; larger is a 413 naming the limit. Errors: 422 for\na document that can never be OCR'd (corrupt, truncated, encrypted, no\npages), 502 when the engine read no page, 200 + ``degraded`` /\n``failed_pages`` when only some pages were read.",
         "operationId": "extract_document_ocr_extract_post",
         "requestBody": {
           "content": {

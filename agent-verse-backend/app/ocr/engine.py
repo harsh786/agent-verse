@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,8 +26,13 @@ from app.ocr.concurrency import (
     run_ocr_work,
 )
 from app.ocr.extractors import get_extractor
-from app.ocr.models import DocumentType, OcrResult
-from app.ocr.rasterize import pdf_page_count, render_pdf_page_image
+from app.ocr.models import DocumentType, OcrFailureKind, OcrResult
+from app.ocr.rasterize import (
+    describe_render_failure,
+    pdf_page_count,
+    pdf_structure_problem,
+    render_pdf_page_image,
+)
 
 # A page to OCR: a blocking zero-argument loader (decode / rasterise) that returns
 # the page's PIL image, run on the OCR pool when the page gets its slot.
@@ -67,6 +73,37 @@ def _page_outcome(
         listed = ", ".join(str(n) for n in failed[:20]) + (", ..." if len(failed) > 20 else "")
         reason = f"{len(failed)} of {total} page(s) could not be read (pages {listed}): {causes}"
     return empty, failed, reason
+
+
+@dataclass
+class _InputReport:
+    """What opening the input found (filled in by ``OcrEngine._open_pages``).
+
+    ``failure_kind`` / ``reason``: why the input yielded NO pages at all.
+    ``pdf_bytes``: the PDF the renderer did yield pages for — checked for
+    structural damage (pypdf) only if those pages come out unreadable, so a
+    readable document never pays for the second parse.
+    """
+
+    failure_kind: OcrFailureKind | None = None
+    reason: str | None = None
+    pdf_bytes: bytes | None = None
+
+
+def _decode_error(img: Any) -> str | None:
+    """Decode a lazily-opened PIL image now; why it cannot be decoded, else None."""
+    try:
+        img.load()
+    except Exception as exc:
+        return f"{type(exc).__name__}: {' '.join(str(exc).split())[:120]}"
+    return None
+
+
+def _pdf_problem_or_none(data: bytes) -> tuple[str, str] | None:
+    try:
+        return pdf_structure_problem(data)
+    except ImportError:
+        return None  # no pypdf: the renderer's verdict alone decides
 
 
 def _ocr_model() -> str:
@@ -294,13 +331,27 @@ class OcrEngine:
         extract_fields: bool,
         vision_fallback: bool,
     ) -> OcrResult:
-        async with self._open_pages(image_bytes=image_bytes, pdf_bytes=pdf_bytes) as pages:
+        report = _InputReport()
+        async with self._open_pages(
+            image_bytes=image_bytes, pdf_bytes=pdf_bytes, report=report
+        ) as pages:
             if not pages:
+                # An input that yielded no page is never a silent empty answer:
+                # it carries why (invalid input vs. renderer failure).
+                if report.failure_kind is not None:
+                    _log.warning(
+                        "ocr_input_unreadable kind=%s reason=%s",
+                        report.failure_kind,
+                        report.reason,
+                    )
                 return OcrResult(
                     raw_text="",
                     document_type=DocumentType.GENERAL,
                     overall_confidence=0.0,
                     page_count=0,
+                    degraded=report.failure_kind is not None,
+                    degradation_reason=report.reason,
+                    failure_kind=report.failure_kind,
                 )
 
             async def _page(load: PageLoader) -> tuple[tuple[str, float, str], list[str]]:
@@ -324,6 +375,25 @@ class OcrEngine:
         # a10-F243-03: pages the engine failed on (no provider, vision error,
         # render failure) used to be joined in as silent empty text.
         empty_pages, failed_pages, failure_reason = _page_outcome(page_results)
+        failure_kind: OcrFailureKind | None = None
+        damage: str | None = None
+        if report.pdf_bytes is not None and (failed_pages or len(empty_pages) == len(pages)):
+            problem = await run_ocr_work(_pdf_problem_or_none, report.pdf_bytes)
+            if problem is not None and problem[0] == "damaged":
+                damage = problem[1]
+        if damage:
+            # Pages the renderer recovered from a damaged PDF came out unreadable:
+            # the damage is the cause, and a document with no text is bad input.
+            if len(empty_pages) == len(pages):
+                failure_kind = "invalid_input"
+                failure_reason = (
+                    f"{damage}; no text could be read from the {len(pages)} "
+                    "page(s) the renderer recovered"
+                )
+            else:
+                failure_reason = f"{damage}; {failure_reason}"
+        elif failed_pages and len(failed_pages) == len(pages):
+            failure_kind = "engine_failed"
         if failure_reason:
             _log.warning("ocr_pages_failed %s", failure_reason)
         provenance: dict[str, Any] = {
@@ -334,6 +404,7 @@ class OcrEngine:
             "failed_pages": failed_pages,
             "degraded": failure_reason is not None,
             "degradation_reason": failure_reason,
+            "failure_kind": failure_kind,
         }
 
         if not extract_fields:
@@ -499,6 +570,7 @@ class OcrEngine:
         *,
         image_bytes: bytes | None,
         pdf_bytes: bytes | None,
+        report: _InputReport | None = None,
     ) -> AsyncIterator[list[PageLoader]]:
         """One loader per page of the input, in page order (``[]``: no pages).
 
@@ -506,9 +578,27 @@ class OcrEngine:
         page from it (``first_page == last_page``) when that page gets its slot,
         so a 200-page scan never holds every page bitmap at once; the page count
         and every render run on the OCR pool, never on the event loop.
+
+        When the input yields no pages, ``report`` records why: ``invalid_input``
+        when the document itself cannot be opened (corrupt, truncated, encrypted,
+        no pages, not an image — confirmed by pypdf, independently of poppler),
+        ``engine_failed`` when the renderer failed on (or is missing for) a
+        document pypdf can read. This used to be a silent zero-page result.
         """
+        report = report if report is not None else _InputReport()
         if image_bytes:
             images = self._to_images(image_bytes=image_bytes)
+            # PIL decodes lazily: a truncated image opens fine and only fails
+            # later (its page was then sent to vision OCR with no image data).
+            undecodable = await run_ocr_work(_decode_error, images[0]) if images else None
+            if not images or undecodable:
+                report.failure_kind = "invalid_input"
+                report.reason = (
+                    "the image could not be decoded (corrupt, truncated or not a "
+                    "supported image format"
+                    + (f": {undecodable})" if undecodable else ")")
+                )
+                images = []
             yield [(lambda img=img: img) for img in images]
             return
         if not pdf_bytes:
@@ -516,15 +606,30 @@ class OcrEngine:
             return
         with tempfile.TemporaryDirectory(prefix="ocr-pdf-") as tmp:
             path = Path(tmp) / "document.pdf"
+            count = 0
+            render_error: str | None = None
             try:
                 await run_ocr_work(path.write_bytes, pdf_bytes)
                 count = await run_ocr_work(pdf_page_count, path)
             except ImportError:
-                _log.debug("pdf2image not installed; skipping PDF rendering")
-                count = 0
+                render_error = "the PDF renderer (pdf2image/poppler) is not installed on this host"
+                _log.warning("pdf2image not installed; cannot render PDF for OCR")
             except Exception as exc:
+                render_error = describe_render_failure(exc)
                 _log.warning("Failed to read PDF for OCR: %s", exc)
-                count = 0
+            if count <= 0:
+                # Tell bad input from a failed renderer with an independent parser.
+                problem = await run_ocr_work(_pdf_problem_or_none, pdf_bytes)
+                if problem is not None:
+                    report.failure_kind, report.reason = "invalid_input", problem[1]
+                else:
+                    report.failure_kind = "engine_failed"
+                    report.reason = (
+                        f"could not render the PDF: {render_error or 'the renderer found no pages'}"
+                    )
+                yield []
+                return
+            report.pdf_bytes = pdf_bytes
             dpi = current_limits().render_dpi
             yield [
                 (lambda n=n: self._render_page(path, n, dpi)) for n in range(1, count + 1)

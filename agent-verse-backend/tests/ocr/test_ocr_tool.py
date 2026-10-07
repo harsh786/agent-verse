@@ -127,12 +127,33 @@ async def test_execute_raises_on_invalid_base64():
 
 
 @pytest.mark.asyncio
-async def test_execute_raises_on_oversized_input():
-    tool = OcrDocumentTool()
-    big_data = b"x" * (11 * 1024 * 1024)  # 11 MB
-    big_b64 = base64.b64encode(big_data).decode()
-    with pytest.raises(ValueError, match="maximum allowed size"):
-        await tool.execute(image_base64=big_b64)
+async def test_execute_raises_on_input_over_the_configured_ocr_limit(monkeypatch):
+    """The tool enforces OCR_MAX_UPLOAD_BYTES (the API's limit), as a ValueError
+    subclass naming the real limit."""
+    from app.ocr.limits import OcrDocumentTooLargeError
+
+    monkeypatch.setattr("app.tools.ocr_tool.ocr_max_upload_bytes", lambda: 1000)
+    tool = OcrDocumentTool(ocr_engine=MagicMock())
+    with pytest.raises(OcrDocumentTooLargeError, match="1000 bytes") as info:
+        await tool.execute(image_base64=base64.b64encode(b"x" * 1001).decode())
+    assert isinstance(info.value, ValueError)
+    assert info.value.limit == 1000
+
+
+@pytest.mark.asyncio
+async def test_documents_between_10_and_25_mib_are_no_longer_refused():
+    """The tool used to stop at a hardcoded 10 MiB, below the documented 25 MiB
+    OCR_MAX_UPLOAD_BYTES, so an 11 MiB document passed the API's check and was
+    then refused with a 422 naming "10 MB"."""
+    from app.core.config import get_settings
+
+    assert get_settings().ocr_max_upload_bytes == 25 * 1024 * 1024
+    mock_engine = MagicMock()
+    mock_engine.extract = AsyncMock(return_value=_make_result())
+    tool = OcrDocumentTool(ocr_engine=mock_engine)
+    big = b"x" * (11 * 1024 * 1024)
+    await tool.execute(pdf_base64=base64.b64encode(big).decode())
+    assert mock_engine.extract.await_args.kwargs["pdf_bytes"] == big
 
 
 @pytest.mark.asyncio
