@@ -123,9 +123,39 @@ class _RedactingRecordFactory:
         return record
 
 
+def _redact_arg(value: Any) -> Any:
+    """Redact one %-format argument, keeping numbers numeric (``%d`` still works)."""
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str):
+        return redact_log_text(value)
+    return redact_log_text(str(value))
+
+
 def _redact_record(record: logging.LogRecord) -> None:
     if isinstance(record.msg, dict) and not record.args:
         record.msg = _redact_value(record.msg)
+    elif isinstance(record.msg, str) and isinstance(record.args, tuple) and record.args:
+        # Keep the %-args shape when that is provably as safe as merging:
+        # formatters such as uvicorn's AccessFormatter unpack ``record.args``
+        # (client, method, path, version, status) and failed with a logging error
+        # on every access line once args was None. A secret that only matches once
+        # template and argument are joined ("token=%s") makes the two renderings
+        # differ, and then the merged, redacted text wins.
+        try:
+            merged = redact_log_text(record.getMessage())
+        except Exception:
+            merged = redact_log_text(f"{record.msg!s} {record.args!r}")
+        msg = redact_log_text(record.msg)
+        args = tuple(_redact_arg(a) for a in record.args)
+        try:
+            per_arg = msg % args
+        except Exception:
+            per_arg = None
+        if per_arg == merged:
+            record.msg, record.args = msg, args
+        else:
+            record.msg, record.args = merged, None
     else:
         try:
             message = record.getMessage()
