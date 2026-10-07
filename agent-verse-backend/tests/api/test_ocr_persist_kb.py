@@ -156,3 +156,45 @@ async def test_persist_passes_the_request_so_tenant_guardrails_screen_ocr_text()
         )
     assert out["kb_chunks_ingested"] == 1
     assert ingest.await_args.kwargs["request"] is request
+
+
+# ── a10-F243-02: /ocr/batch honours each document's persist_to_kb ────────────
+
+
+def test_batch_persists_each_document_that_asks_for_it(client: TestClient) -> None:
+    resp = client.post(
+        "/ocr/batch",
+        json={
+            "documents": [
+                _img_body(persist_to_kb=True, collection_id="ocr-1", filename="a.png"),
+                _img_body(),  # no persist requested
+            ]
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    first, second = body["results"]
+    assert first["kb_persisted"] is True
+    assert first["kb_chunks_ingested"] >= 1
+    assert first["kb_collection_id"] == "ocr-1"
+    assert second["kb_persisted"] is False
+    assert body["errors"] == [None, None]
+    assert body["succeeded"] == 2
+
+
+def test_batch_persist_without_collection_is_an_item_error_not_silently_skipped(
+    client: TestClient,
+) -> None:
+    resp = client.post(
+        "/ocr/batch",
+        json={"documents": [_img_body(persist_to_kb=True)]},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The OCR text is kept; the failed knowledge-base write is reported.
+    assert body["results"][0]["raw_text"].startswith("INVOICE")
+    assert body["results"][0]["kb_persisted"] is False
+    assert "collection_id is required" in body["errors"][0]
+    assert body["failed"] == 1

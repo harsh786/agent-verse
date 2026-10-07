@@ -338,6 +338,9 @@ class BatchOcrRequest(BaseModel):
 
 class BatchOcrResponse(BaseModel):
     results: list[OcrResponse | None]
+    # a10-F243-01: why item i failed (None when it succeeded), aligned with
+    # ``results``. A failed item used to be a bare None with no reason.
+    errors: list[str | None] = Field(default_factory=list)
     total: int
     succeeded: int
     failed: int
@@ -352,7 +355,13 @@ async def extract_documents_batch(
     request: Request,
     body: BatchOcrRequest,
 ) -> BatchOcrResponse:
-    """Process up to 10 documents concurrently."""
+    """Process up to 10 documents concurrently.
+
+    Each document honours its own ``persist_to_kb`` / ``collection_id`` (indexed
+    exactly like ``/ocr/extract``). A failed item is ``None`` in ``results`` with
+    its reason in ``errors``; an item whose OCR succeeded but whose
+    knowledge-base write failed keeps its result and carries the error.
+    """
     from app.api.llm_access import tenant_llm_provider
     from app.providers.guarded_completion import DecisionBudgetExceededError
 
@@ -361,14 +370,15 @@ async def extract_documents_batch(
     if _tenant is not None:
         provider = await tenant_llm_provider(request, _tenant)
 
-    async def _extract_one(doc: OcrRequest) -> OcrResponse | None:
+    async def _extract_one(doc: OcrRequest) -> tuple[OcrResponse | None, str | None]:
         try:
             res = await _tool.execute(
                 image_base64=doc.image_base64,
                 pdf_base64=doc.pdf_base64,
                 provider=provider,
             )
-            return OcrResponse(
+            _raise_if_unread(res)
+            item = OcrResponse(
                 raw_text=res["raw_text"],
                 document_type=res["document_type"],
                 fields={
@@ -387,16 +397,43 @@ async def extract_documents_batch(
             )
         except DecisionBudgetExceededError:
             raise  # the whole batch answers 429, not N silent item failures
+        except HTTPException as exc:
+            return None, str(exc.detail)
+        except ValueError as exc:
+            return None, str(exc)
         except Exception as exc:
             _log.warning("Batch OCR item failed: %s", exc)
-            return None
+            return None, "OCR extraction failed."
 
-    tasks = [_extract_one(doc) for doc in body.documents]
-    results: list[OcrResponse | None] = list(await asyncio.gather(*tasks))
+        # a10-F243-02: per-document persist_to_kb / collection_id were ignored.
+        if not doc.persist_to_kb:
+            return item, None
+        try:
+            kb_info = await _persist_ocr_to_kb(
+                request,
+                raw_text=item.raw_text,
+                collection_id=doc.collection_id,
+                filename=doc.filename,
+                engine_used=item.engine_used,
+            )
+        except HTTPException as exc:
+            return item, f"knowledge-base persist failed: {exc.detail}"
+        except Exception as exc:
+            _log.warning("Batch OCR item KB persist failed: %s", exc)
+            return item, "knowledge-base persist failed."
+        item.kb_persisted = bool(kb_info.get("kb_persisted", False))
+        item.kb_deduplicated = bool(kb_info.get("kb_deduplicated", False))
+        item.kb_chunks_ingested = int(kb_info.get("kb_chunks_ingested", 0))
+        item.kb_collection_id = doc.collection_id
+        return item, None
 
-    succeeded = sum(1 for r in results if r is not None)
+    outcomes = await asyncio.gather(*(_extract_one(doc) for doc in body.documents))
+    results = [item for item, _ in outcomes]
+    errors = [err for _, err in outcomes]
+    succeeded = sum(1 for err in errors if err is None)
     return BatchOcrResponse(
         results=results,
+        errors=errors,
         total=len(results),
         succeeded=succeeded,
         failed=len(results) - succeeded,

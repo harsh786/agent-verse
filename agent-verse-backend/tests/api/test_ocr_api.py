@@ -211,3 +211,45 @@ async def test_extract_document_tool_output_carries_provenance():
     assert out["page_engines"] == ["tesseract", "llm_vision"]
     assert out["vision_pages"] == 1
     assert out["confidence_measured"] is True
+
+
+# ── a10-F243-01: a failed batch item carries its reason ──────────────────────
+
+
+def test_batch_failed_items_carry_a_reason(client, mock_tool):
+    ok = dict(_FIXTURE_RESULT)
+    mock_tool.side_effect = [
+        ok,
+        ValueError("image_base64 is not valid base64"),
+        RuntimeError("internal detail that must not leak"),
+    ]
+    b64 = base64.b64encode(b"x").decode()
+    resp = client.post(
+        "/ocr/batch",
+        json={"documents": [{"image_base64": b64}] * 3},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["results"][0] is not None
+    assert body["results"][1] is None and body["results"][2] is None
+    assert body["errors"][0] is None
+    assert body["errors"][1] == "image_base64 is not valid base64"
+    assert body["errors"][2] == "OCR extraction failed."
+    assert "internal detail" not in resp.text
+    assert (body["succeeded"], body["failed"]) == (1, 2)
+
+
+def test_batch_unread_item_is_a_failed_item_with_the_reason(client, mock_tool):
+    mock_tool.return_value = {
+        **_FIXTURE_RESULT, "raw_text": "", "page_count": 1, "failed_pages": [1],
+        "degraded": True, "degradation_reason": "no text could be read from any of the 1 page(s)",
+    }
+    b64 = base64.b64encode(b"x").decode()
+    resp = client.post(
+        "/ocr/batch", json={"documents": [{"image_base64": b64}]},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    body = resp.json()
+    assert body["results"] == [None]
+    assert "could not read the document" in body["errors"][0]
