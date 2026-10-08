@@ -731,6 +731,34 @@ class ExecutorMixin:
                         f"'{tool_name}'; failing closed."
                     ) from _g2_exc
 
+    def _prepare_call_arguments(self, tool_call: Any, state: AgentState) -> str | None:
+        """Normalise ``tool_call.arguments`` in place to the tool's schema (MCPGOV-01).
+
+        Returns None when the call may proceed to governance, or the rejection
+        text when its arguments do not fit the schema (unknown or missing keys):
+        such a call is never governed, approved or dispatched.
+        """
+        from app.agent.tool_calls import prepare_tool_arguments
+
+        tool_context = state.context.get("tool_context")
+        tool_ref = (
+            tool_context.find_tool(tool_call.tool)
+            if tool_context is not None and hasattr(tool_context, "find_tool")
+            else None
+        )
+        prepared = prepare_tool_arguments(
+            tool_call.arguments, getattr(tool_ref, "input_schema", None) or {}
+        )
+        tool_call.arguments = prepared.arguments
+        if not prepared.errors:
+            return None
+        return (
+            f"[ARGUMENT VALIDATION FAILED] Tool '{tool_call.tool}' "
+            f"called with invalid arguments:\n"
+            + "\n".join(f"  - {e}" for e in prepared.errors)
+            + "\nPlease retry with correct arguments from the tool schema."
+        )
+
     async def _tool_policy_gate(
         self,
         *,
@@ -2897,6 +2925,25 @@ class ExecutorMixin:
                 )
                 tool_call = None  # prevent dispatch
         if tool_call is not None:
+            # MCPGOV-01: normalise the arguments to the tool's schema and validate
+            # them BEFORE any governance, so the guardrails, policy rules, grants,
+            # risk gate and approval decide on exactly what is dispatched
+            # (MCPClient.call_tool no longer rewrites them after the decision).
+            _arg_rejection = self._prepare_call_arguments(tool_call, state)
+            if _arg_rejection is not None:
+                _taint_step_cache()
+                raw_output = self._sanitize_tool_raw_output(_arg_rejection)
+                raw_output_sanitized = True
+                await self._emit(
+                    {
+                        "type": "tool_call_failed",
+                        "tool": tool_call.tool,
+                        "error": _arg_rejection[:300],
+                    }
+                )
+                record_tool_call(tool_call.tool, "unknown", "arg_validation_failed", 0.0)
+                tool_call = None  # never dispatched
+        if tool_call is not None:
             # Tool-argument guardrails BEFORE the MCP call (shared with the
             # parallel extra-call path, so every call of a turn is checked).
             await self._guard_tool_args(tool_name, tool_call.arguments, step, state, tenant_ctx)
@@ -4231,7 +4278,7 @@ class ExecutorMixin:
             replay_output,
         )
         from app.agent.tool_calls import (
-            validate_tool_arguments as _validate_args,
+            prepare_tool_arguments as _prepare_args,
         )
         from app.agent.tool_calls import (
             validate_tool_name as _validate_tn,
@@ -4261,10 +4308,10 @@ class ExecutorMixin:
 
         async def _one(index: int, stc: dict[str, Any]) -> tuple[str, str] | None:
             """One extra call through the SAME gates as the primary call: name
-            validation, budget, argument guardrails, tool policy, per-agent
-            permissions, grants, risk class (destructive denied; write_high
-            approved by a human in supervised mode, refused otherwise), argument
-            validation and the placeholder guard. A refusal is reported in the
+            validation, budget, argument normalisation + validation, argument
+            guardrails, tool policy, per-agent permissions, grants, risk class
+            (destructive denied; write_high approved by a human in supervised
+            mode, refused otherwise) and the placeholder guard. A refusal is reported in the
             step output; a guardrail block or a rejected approval raises
             PermissionError, exactly as it does for the primary call."""
             name = stc.get("name") or stc.get("tool_name", "")
@@ -4290,11 +4337,21 @@ class ExecutorMixin:
                     f"Tool call denied: '{name}' was not run — the goal's tool-call budget "
                     f"({_budget}) is spent. Answer from the information already gathered.",
                 )
-            await self._guard_tool_args(name, args, step, state, tenant_ctx)
             tool_ref = _tc_ctx.find_tool(name) if _tc_ctx is not None else None
             if tool_ref is None:
                 _taint_step_cache()
                 return (name, f"[tool not found: '{name}']")
+            # MCPGOV-01: normalised + validated BEFORE governance — the gates
+            # below decide on exactly the arguments that are dispatched.
+            _prepared = _prepare_args(args, getattr(tool_ref, "input_schema", None) or {})
+            args = _prepared.arguments
+            if _prepared.errors:
+                _taint_step_cache()
+                return (
+                    tool_ref.name,
+                    f"[argument validation failed: {'; '.join(_prepared.errors)}]",
+                )
+            await self._guard_tool_args(name, args, step, state, tenant_ctx)
             pol_denial = await self._tool_policy_gate(
                 tool_name=tool_ref.name,
                 step=step,
@@ -4386,10 +4443,6 @@ class ExecutorMixin:
                         _fp or call_fingerprint(tool_ref.server_id, tool_ref.name, args)
                     ),
                 )
-            _arg_errors = _validate_args(args, getattr(tool_ref, "input_schema", None) or {})
-            if _arg_errors:
-                _taint_step_cache()
-                return (tool_ref.name, f"[argument validation failed: {'; '.join(_arg_errors)}]")
             _ph_hits = [
                 f"{k}={v!r}"
                 for k, v in args.items()

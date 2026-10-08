@@ -187,6 +187,30 @@ class ToolStepNode:
                 _tctx = TenantContext(
                     tenant_id=_tid, plan=PlanTier.FREE, api_key_id="workflow", roles=()
                 )
+            # MCPGOV-01: normalise + validate the input against the tool's schema
+            # BEFORE governance, so the risk gate, policies and an approval decide
+            # on exactly the arguments dispatched (call_tool no longer rewrites
+            # them afterwards). Input that does not fit the schema is not run.
+            from app.mcp.client import prepare_via
+
+            prepared = await prepare_via(
+                self.mcp_client,
+                "prepare_arguments_by_name",
+                tool_name=self.step.tool or "",
+                arguments=resolved_input,
+                tenant_ctx=_tctx,
+                server_id=self.step.server_id or None,
+            )
+            if prepared is not None:
+                if prepared.errors:
+                    return self._denied(
+                        state,
+                        f"tool step {self.step.id!r}: the input of '{self.step.tool}' does "
+                        f"not match the tool schema ({'; '.join(prepared.errors)}); it was "
+                        "not run",
+                        static_tool_risk(str(self.step.tool or ""), resolved_input),
+                    )
+                resolved_input = prepared.arguments
             # OI-2: the tool risk gate, before anything is dispatched.
             risk = await self._effective_risk(resolved_input, _tctx)
             # QA-7: the tenant's governance policies come first.

@@ -12,7 +12,7 @@ import pytest
 
 from app.mcp import client as client_mod
 from app.mcp.bounded_cache import BoundedTTLCache
-from app.mcp.client import MCPClient, ToolCallResult, ToolDefinition
+from app.mcp.client import MCPClient, ToolDefinition
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
 
@@ -89,15 +89,14 @@ async def test_schema_cache_is_invalidated_when_the_connector_changes(
         discovered.append(server_id)
         return [ToolDefinition(name="search", description="", input_schema={"type": "object"})]
 
-    ok = ToolCallResult(tool_name="search", success=True, output="ok")
     get = AsyncMock(side_effect=[before, before, after])
     with (
         patch.object(registry, "get", get),
         patch.object(client, "discover_tools", side_effect=fake_discover),
-        patch.object(client, "_call_tool_impl", AsyncMock(return_value=ok)),
     ):
         for _ in range(3):
-            await client.call_tool(
+            # The schema lookup moved to the pre-governance normalisation (MCPGOV-01).
+            await client.prepare_arguments(
                 server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
             )
     # Cached for the unchanged config, rediscovered once the connector changed.

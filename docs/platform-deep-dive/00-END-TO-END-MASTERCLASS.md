@@ -1206,17 +1206,18 @@ list is built from (`AgentGraph._mcp_client.discover_all_tools`).
 
 ```mermaid
 flowchart TD
-    A["agent emits tool call<br/>(server_id, tool_name, args)"] --> V["validate args"]
+    P["caller: prepare_arguments()<br/>normalise + validate vs schema"] --> G["caller governance<br/>policy · grants · risk · approval"]
+    G --> A["call_tool(server_id, tool_name, args)<br/>args dispatched exactly as governed"]
+    A --> V["validate args"]
     V --> CB{"circuit breaker open?"}
     CB -->|yes| STALE["serve stale cache OR raise CircuitBreakerOpenError"]
     CB -->|no| REG["registry.get(server_id)"]
-    REG --> RES["resolve args vs schema (tool intelligence)"]
-    RES --> CH{"result cache hit?"}
+    REG --> CH{"result cache hit?"}
     CH -->|yes| RET["return cached"]
     CH -->|no| EXG["exfil_guard: secrets/oversized → block"]
     EXG --> DISP["dispatch: builtin | ws | openapi | jira | MCP/HTTP"]
     DISP --> HEAL{"argument error?"}
-    HEAL -->|yes| SH["LLM self-heal args → retry once"]
+    HEAL -->|yes| SH["self-heal: corrected args returned as a<br/>suggestion (never dispatched)"]
     HEAL -->|no| POST["cache (unless write) · record CB success · update tool stats"]
     POST --> R["ToolCallResult(success, output, error)"]
 ```
@@ -1224,8 +1225,11 @@ flowchart TD
 Cross-cutting concerns layered on every call: **SSRF guard** on the URL, **exfil guard** on
 write-sink args, **circuit breakers** (per tenant+server, 5 failures / 60s, Redis-backed for
 cross-replica), a **two-tier result cache** (`ToolResultCache`: L1 in-proc + L2 Redis zlib,
-TTL by tool class — writes never cached and invalidate reads), **argument resolution +
-LLM self-heal**, and **tool stats** updates. Every failure returns a structured
+TTL by tool class — writes never cached and invalidate reads), **self-heal suggestions**, and
+**tool stats** updates. Argument normalisation runs in the caller BEFORE governance
+(`prepare_arguments` / `prepare_arguments_by_name`): `call_tool` never changes the arguments
+it was given, and a healed argument set is only returned (`ToolCallResult.suggested_arguments`)
+for the caller to re-submit through its governed path (MCPGOV-01). Every failure returns a structured
 `ToolCallResult(success=False, error=…)` rather than raising to the agent.
 
 ### 10.4 Auth injection & OAuth/PKCE (`app/mcp/oauth.py`)
@@ -1244,7 +1248,7 @@ cross-restart recovery.
 
 1. Planner/executor/verifier each use their own model from `model_role_assignments`.
 2. Tools are discovered per-tenant from Redis-stored MCP connectors.
-3. Each tool call passes: validate → breaker → registry → arg-resolve → cache → exfil → dispatch → self-heal → cache/stats.
+3. Each tool call passes: prepare (normalise + validate) → governance → validate → breaker → registry → cache → exfil → dispatch → self-heal suggestion → cache/stats.
 4. Auth headers are injected per connector; OAuth/PKCE tokens are vault-encrypted and refreshed.
 5. Results are cached by tool class; writes invalidate reads; failures are structured, never raised.
 

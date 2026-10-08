@@ -896,10 +896,10 @@ async def test_call_tool_blocked_by_exfil_guard():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_self_heals_argument_error_and_retries_successfully():
-    """A tool call that fails with a missing-argument error should trigger
-    self-healing: the healer proposes corrected arguments, and the second
-    dispatch (with healed args) succeeds."""
+async def test_call_tool_self_heal_suggests_arguments_without_retrying():
+    """A tool call that fails with a missing-argument error triggers
+    self-healing, but the healed arguments are only SUGGESTED (MCPGOV-01): a
+    second dispatch would run them past the caller's governance."""
     cfg = MCPServerConfig(server_id="srv-1", name="Srv", url="http://api.example.com")
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)
@@ -907,27 +907,23 @@ async def test_call_tool_self_heals_argument_error_and_retries_successfully():
     failed = ToolCallResult(
         tool_name="search", success=False, error="missing required parameter: query"
     )
-    healed = ToolCallResult(tool_name="search", success=True, output="found")
 
     mock_healer = MagicMock()
     mock_healer.is_argument_error = MagicMock(return_value=True)
     mock_healer.heal = AsyncMock(return_value={"query": "healed-value"})
-
-    call_results = [failed, healed]
-
-    async def fake_impl(*args, **kwargs):
-        return call_results.pop(0)
+    impl = AsyncMock(return_value=failed)
 
     with (
         patch.object(registry, "get", AsyncMock(return_value=cfg)),
-        patch.object(client, "_call_tool_impl", side_effect=fake_impl),
+        patch.object(client, "_call_tool_impl", impl),
         patch("app.mcp.tool_intelligence.get_healer", return_value=mock_healer),
     ):
         result = await client.call_tool(
             server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
         )
-    assert result.success is True
-    assert result.output == "found"
+    assert result.success is False
+    assert result.suggested_arguments == {"query": "healed-value"}
+    impl.assert_awaited_once()
     mock_healer.heal.assert_awaited_once()
 
 
@@ -989,7 +985,7 @@ async def test_call_tool_self_heal_errors_are_swallowed():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_resolves_arguments_against_stored_tool_definition_schema():
+async def test_prepare_arguments_resolves_against_stored_tool_definition_schema():
     schema = {
         "type": "object",
         "properties": {"query": {"type": "string"}},
@@ -1002,29 +998,22 @@ async def test_call_tool_resolves_arguments_against_stored_tool_definition_schem
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)
 
-    real_result = ToolCallResult(tool_name="search", success=True, output="ok")
-    captured_args = {}
-
-    async def fake_impl(cfg_, server_id, tool_name, arguments, tenant_ctx):
-        captured_args.update(arguments)
-        return real_result
-
-    with (
-        patch.object(registry, "get", AsyncMock(return_value=cfg)),
-        patch.object(client, "_call_tool_impl", side_effect=fake_impl),
-    ):
-        result = await client.call_tool(
-            server_id="srv-1", tool_name="search", arguments={"q": "hello"}, tenant_ctx=_ctx()
+    with patch.object(registry, "get", AsyncMock(return_value=cfg)):
+        prepared = await client.prepare_arguments(
+            server_id="srv-1",
+            tool_name="search",
+            arguments={"searchQuery": "hello"},
+            tenant_ctx=_ctx(),
         )
-    assert result.success is True
-    # The resolver aliases "q" -> "query" per the schema (semantic normalisation).
-    assert "query" in captured_args or "q" in captured_args
+    # The resolver renames "searchQuery" -> "query" per the schema.
+    assert prepared.arguments == {"query": "hello"}
+    assert prepared.errors == []
 
 
 @pytest.mark.asyncio
-async def test_call_tool_schema_cache_reused_across_calls():
+async def test_prepare_arguments_schema_cache_reused_across_calls():
     """The per-session schema cache avoids a second discover_tools() network
-    round trip on the second call_tool() for the same server+tenant."""
+    round trip on the second prepare_arguments() for the same server+tenant."""
     cfg = MCPServerConfig(server_id="srv-1", name="Srv", url="http://api.example.com")
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)
@@ -1037,45 +1026,41 @@ async def test_call_tool_schema_cache_reused_across_calls():
         discover_calls.append(server_id)
         return [ToolDefinition(name="search", description="", input_schema={"type": "object"})]
 
-    real_result = ToolCallResult(tool_name="search", success=True, output="ok")
     with (
         patch.object(registry, "get", AsyncMock(return_value=cfg)),
         patch.object(client, "discover_tools", side_effect=fake_discover),
-        patch.object(client, "_call_tool_impl", AsyncMock(return_value=real_result)),
     ):
-        await client.call_tool(
+        await client.prepare_arguments(
             server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
         )
-        await client.call_tool(
+        await client.prepare_arguments(
             server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
         )
     # discover_tools (for schema resolution) should only be invoked once — the
-    # second call_tool() must hit the schema cache.
+    # second prepare_arguments() must hit the schema cache.
     assert len(discover_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_call_tool_schema_lookup_discover_tools_raises_is_swallowed():
+async def test_prepare_arguments_schema_lookup_discover_tools_raises_is_swallowed():
     cfg = MCPServerConfig(server_id="srv-1", name="Srv", url="http://api.example.com")
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)
 
-    real_result = ToolCallResult(tool_name="search", success=True, output="ok")
     with (
         patch.object(registry, "get", AsyncMock(return_value=cfg)),
         patch.object(client, "discover_tools", AsyncMock(side_effect=RuntimeError("boom"))),
-        patch.object(client, "_call_tool_impl", AsyncMock(return_value=real_result)),
     ):
-        result = await client.call_tool(
-            server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
+        prepared = await client.prepare_arguments(
+            server_id="srv-1", tool_name="search", arguments={"q": "x"}, tenant_ctx=_ctx()
         )
-    assert result.success is True
+    assert prepared.arguments == {"q": "x"}  # no schema: unchanged
 
 
 @pytest.mark.asyncio
 async def test_call_tool_tool_intelligence_import_failure_is_swallowed():
-    """If the tool-intelligence layer itself blows up (e.g. a bad patch in
-    get_resolver), call_tool must still dispatch the tool unmodified."""
+    """call_tool never consults the argument resolver (MCPGOV-01): a broken
+    resolver cannot stop or alter a dispatch."""
     cfg = MCPServerConfig(server_id="srv-1", name="Srv", url="http://api.example.com")
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)

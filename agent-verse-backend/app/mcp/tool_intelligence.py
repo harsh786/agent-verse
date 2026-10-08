@@ -11,20 +11,20 @@ Three components:
    No hardcoded tool-specific logic.
 
 2. SelfHealingToolCaller
-   When a tool call fails with an argument error, uses a fast LLM call to
-   fix the arguments and retries automatically.  Works for any tool, any
-   provider, forever — no manual patches.
+   When a tool call fails with an argument error, proposes corrected
+   arguments (resolver first, then a fast LLM call).  The proposal is only a
+   suggestion: MCPClient never dispatches it — the caller re-submits it through
+   its governed path (MCPGOV-01).
 
 3. SchemaAwarePromptInjector
    Injects the tool's full JSON Schema into the executor prompt so the LLM
    generates correct argument names in the first place.
 
-Usage (in MCPClient.call_tool):
-    resolver = UniversalArgumentResolver()
-    normalised = resolver.resolve(tool_schema, raw_arguments)
-    result = await self._call_tool_impl(cfg, server_id, tool_name, normalised, ctx)
-    if not result.success and SelfHealingToolCaller.is_argument_error(result.error):
-        result = await healer.heal(tool_name, tool_schema, raw_arguments, result, ...)
+Usage: normalise BEFORE governance, then dispatch exactly what was governed:
+    prepared = await mcp_client.prepare_arguments(server_id=..., tool_name=...,
+                                                  arguments=raw, tenant_ctx=ctx)
+    # policy rules / grants / risk gate / approval decide on prepared.arguments
+    result = await mcp_client.call_tool(..., arguments=prepared.arguments, ...)
 """
 
 from __future__ import annotations
@@ -136,18 +136,26 @@ class UniversalArgumentResolver:
             return arguments  # No schema to resolve against
 
         resolved = dict(arguments)
+        # Off-schema keys whose value now sits under a schema name (MCPGOV-01).
+        # They are renamed, not copied: governance and the connector must see one
+        # value under one key, never ``amount_usd`` beside the ``amount`` it became.
+        consumed: set[str] = set()
 
         # For every schema property that's missing, try to find a match
         for param_name, param_def in properties.items():
             if param_name in resolved:
                 continue  # Already present
 
-            value = (
+            match = (
                 self._by_semantic_alias(param_name, resolved)
                 or self._by_normalised_key(param_name, resolved)
                 or self._by_fuzzy_match(param_name, resolved)
-                or self._by_type_guided(param_name, param_def, resolved)
             )
+            if match is not None:
+                source_key, value = match
+                consumed.add(source_key)
+            else:
+                value = self._by_type_guided(param_name, param_def, resolved)
             if value is not None:
                 resolved[param_name] = value
                 logger.debug(
@@ -155,6 +163,9 @@ class UniversalArgumentResolver:
                     param=param_name,
                     resolved_from=str(value)[:60],
                 )
+
+        for key in consumed - properties.keys():
+            resolved.pop(key, None)
 
         # Remove keys that are clearly wrong (not in schema) to avoid noise
         # Only when the schema is exhaustive (additionalProperties: false)
@@ -165,41 +176,44 @@ class UniversalArgumentResolver:
 
     # ── Resolution strategies ──────────────────────────────────────────────
 
-    def _by_semantic_alias(self, param: str, args: dict) -> Any:
+    # The key-matching strategies return ``(source_key, value)`` so ``resolve`` can
+    # rename the source key rather than leave it beside the schema name.
+
+    def _by_semantic_alias(self, param: str, args: dict) -> tuple[str, Any] | None:
         """Check our semantic alias table."""
         aliases = _SEMANTIC_ALIASES.get(param, [])
         for alias in aliases:
-            if alias in args:
-                return args[alias]
+            if alias in args and args[alias] is not None:
+                return alias, args[alias]
         # Also reverse: if param itself is an alias for something in args
         for alias, canonicals in _ALIAS_TO_CANONICAL.items():
-            if alias in args and param in canonicals:
-                return args[alias]
+            if alias in args and param in canonicals and args[alias] is not None:
+                return alias, args[alias]
         return None
 
-    def _by_normalised_key(self, param: str, args: dict) -> Any:
+    def _by_normalised_key(self, param: str, args: dict) -> tuple[str, Any] | None:
         """Case/punctuation insensitive match."""
         norm_param = _normalise_key(param)
         for key, val in args.items():
-            if _normalise_key(key) == norm_param:
-                return val
+            if _normalise_key(key) == norm_param and val is not None:
+                return key, val
         return None
 
-    def _by_fuzzy_match(self, param: str, args: dict) -> Any:
+    def _by_fuzzy_match(self, param: str, args: dict) -> tuple[str, Any] | None:
         """Substring match — 'jqlQuery' contains 'jql'."""
         norm_param = _normalise_key(param)
         # Score each key by longest common substring length
         best_score = 0
-        best_val: Any = None
+        best: tuple[str, Any] | None = None
         for key, val in args.items():
             norm_key = _normalise_key(key)
             # Both directions
-            if norm_param in norm_key or norm_key in norm_param:
+            if (norm_param in norm_key or norm_key in norm_param) and val is not None:
                 score = min(len(norm_param), len(norm_key))
                 if score > best_score:
                     best_score = score
-                    best_val = val
-        return best_val if best_score >= 3 else None  # Minimum 3 chars to avoid noise
+                    best = (key, val)
+        return best if best_score >= 3 else None  # Minimum 3 chars to avoid noise
 
     def _by_type_guided(self, param: str, param_def: dict, args: dict) -> Any:
         """

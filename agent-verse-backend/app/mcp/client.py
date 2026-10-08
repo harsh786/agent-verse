@@ -17,11 +17,12 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import httpx
 
+from app.agent.tool_calls import PreparedArguments, prepare_tool_arguments
 from app.mcp.bounded_cache import BoundedTTLCache
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
@@ -138,6 +139,9 @@ class ToolCallResult:
     # True when ``output`` is a cached result served because the connector's
     # circuit is open — not a live call (MCPCLI-05).
     stale: bool = False
+    # Corrected arguments proposed after an argument error. Never dispatched by
+    # the client: the caller re-submits them through its governed path (MCPGOV-01).
+    suggested_arguments: dict[str, Any] | None = None
 
 
 def stale_result_notice(result: Any) -> str:
@@ -163,6 +167,26 @@ def with_stale_notice(result: Any, text: Any) -> Any:
     if not notice:
         return text
     return f"{notice}\n\n{text}" if text not in (None, "") else notice
+
+
+async def prepare_via(client: Any, method: str, **kwargs: Any) -> PreparedArguments | None:
+    """``client.<method>(**kwargs)`` — ``prepare_arguments(_by_name)`` — or None.
+
+    None when the client does not normalise arguments (a test double) or the
+    normalisation failed: the caller then governs and dispatches its arguments
+    unchanged, which is still what call_tool runs (MCPGOV-01).
+    """
+    prepare = getattr(client, method, None)
+    if not callable(prepare):
+        return None
+    try:
+        prepared = prepare(**kwargs)
+        if inspect.isawaitable(prepared):
+            prepared = await prepared
+    except Exception as exc:
+        logger.warning("prepare_arguments_failed: %s", exc)
+        return None
+    return prepared if isinstance(prepared, PreparedArguments) else None
 
 
 def _is_caller_argument_error(error: str | None) -> bool:
@@ -1741,61 +1765,12 @@ class MCPClient:
         _tenant_id = getattr(tenant_ctx, "tenant_id", "")
         _t0 = _time.monotonic()
 
-        # ── Universal Intelligence Layer ───────────────────────────────────────
-        # Step 1: Resolve arguments against the tool's JSON schema before the
-        # first call so the LLM's parameter name variations are fixed upstream.
-        try:
-            from app.mcp.tool_intelligence import get_healer, get_resolver
-
-            _resolver = get_resolver()
-            _healer = get_healer(getattr(self, "_provider", None))
-
-            # Get the tool schema — try multiple sources:
-            # Source A: cfg.tool_definitions (builtin + OpenAPI servers)
-            # Source B: live discover_tools() call (external MCP servers)
-            _tool_schema: dict | None = None
-            for _tdef in cfg.tool_definitions or []:
-                if _tdef.get("name") == tool_name:
-                    _tool_schema = (
-                        _tdef.get("parameters")
-                        or _tdef.get("inputSchema")
-                        or _tdef.get("input_schema")
-                        or {}
-                    )
-                    break
-
-            # Source B: If not found in stored definitions, use per-session schema cache.
-            # Only do live discover_tools() for non-MCP-endpoint servers (e.g. REST APIs)
-            # to avoid extra network round-trips for JSON-RPC MCP endpoints which handle
-            # tool listing separately from tool calling.
-            if not _tool_schema and not _is_mcp_endpoint(
-                getattr(cfg, "url", "") or getattr(cfg, "base_url", "") or ""
-            ):
-                try:
-                    # Check per-session schema cache first
-                    _cache_key = (
-                        f"{server_id}:{tenant_ctx.tenant_id}:{_config_fingerprint(cfg)}"
-                    )
-                    _cached_tools = self._schema_cache.get(_cache_key)
-                    if _cached_tools is None:
-                        _live_tools = await self.discover_tools(
-                            server_id=server_id, tenant_ctx=tenant_ctx
-                        )
-                        self._schema_cache[_cache_key] = _live_tools
-                    else:
-                        _live_tools = _cached_tools
-                    for _lt in _live_tools:
-                        if _lt.name == tool_name:
-                            _tool_schema = _lt.input_schema or {}
-                            break
-                except Exception:
-                    pass
-
-            # Normalise arguments against schema (zero-cost, no LLM)
-            if _tool_schema:
-                arguments = _resolver.resolve(_tool_schema, arguments)
-        except Exception as _ti_exc:
-            logger.debug("tool_intelligence_resolve_skipped: %s", _ti_exc)
+        # MCPGOV-01: the arguments are dispatched EXACTLY as given. The caller
+        # governed these arguments (policy rules, grants, risk gate, approval);
+        # normalising them here — as this used to — ran after that decision, so
+        # a rule on ``arguments.amount`` never saw the ``amount_usd`` the
+        # connector then received as ``amount``. Callers normalise first with
+        # prepare_arguments() / prepare_arguments_by_name().
 
         # ── Tool Result Cache: return immediately on cache hit ─────────────────
         _tc = getattr(self, "_tool_cache", None)
@@ -1872,32 +1847,15 @@ class MCPClient:
                 except Exception:
                     pass
 
-            # ── Self-healing: retry if argument error ──────────────────────────
-            if (
-                not result.success and _healer.is_argument_error(result.error)  # type: ignore[union-attr]
-            ):
-                try:
-                    logger.info(
-                        "self_heal_triggered",
-                        tool=tool_name,
-                        error=str(result.error)[:100],
-                    )
-                    _healed_args = await _healer.heal(  # type: ignore[union-attr]
-                        tool_name=tool_name,
-                        tool_schema=_tool_schema,  # type: ignore[name-defined]
-                        original_arguments=arguments,
-                        failed_result=result,
-                        resolver=_resolver,  # type: ignore[name-defined]
-                        tenant_ctx=tenant_ctx,
-                    )
-                    if _healed_args != arguments:
-                        result = await self._call_tool_impl(
-                            cfg, server_id, tool_name, _healed_args, tenant_ctx
-                        )
-                        if result.success:
-                            logger.info("self_heal_succeeded: tool=%s", tool_name)
-                except Exception as _heal_exc:
-                    logger.warning("self_heal_error: %s", _heal_exc)
+            # ── Self-healing: suggest, never re-dispatch (MCPGOV-01) ───────────
+            # Healed arguments (possibly LLM-written from the server's error
+            # text) were dispatched here directly — past every policy, grant and
+            # approval. They are now only returned for the caller to re-submit
+            # through its governed path.
+            if not result.success and _is_caller_argument_error(result.error):
+                result = await self._with_healed_suggestion(
+                    result, cfg, server_id, tool_name, arguments, tenant_ctx
+                )
             _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
                 # A failed result counts against the connector (MCPCLI-06) —
@@ -1964,6 +1922,121 @@ class MCPClient:
                 server_id=server_id,
             )
 
+    async def _tool_input_schema(
+        self, cfg: Any, server_id: str, tool_name: str, tenant_ctx: TenantContext
+    ) -> dict[str, Any] | None:
+        """The tool's JSON input schema, or None when it cannot be found.
+
+        Source A: ``cfg.tool_definitions`` (builtin + OpenAPI servers). Source B:
+        the per-session cache of ``discover_tools()`` — only for non-MCP-endpoint
+        servers (e.g. REST APIs), avoiding an extra round-trip to JSON-RPC MCP
+        endpoints, which list tools separately from calling them.
+        """
+        for tdef in cfg.tool_definitions or []:
+            if tdef.get("name") == tool_name:
+                return (
+                    tdef.get("parameters")
+                    or tdef.get("inputSchema")
+                    or tdef.get("input_schema")
+                    or {}
+                )
+        if _is_mcp_endpoint(getattr(cfg, "url", "") or getattr(cfg, "base_url", "") or ""):
+            return None
+        try:
+            cache_key = f"{server_id}:{tenant_ctx.tenant_id}:{_config_fingerprint(cfg)}"
+            live_tools = self._schema_cache.get(cache_key)
+            if live_tools is None:
+                live_tools = await self.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
+                self._schema_cache[cache_key] = live_tools
+        except Exception:
+            return None
+        for tool in live_tools:
+            if tool.name == tool_name:
+                return tool.input_schema or {}
+        return None
+
+    async def _with_healed_suggestion(
+        self,
+        result: ToolCallResult,
+        cfg: Any,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> ToolCallResult:
+        """``result`` carrying corrected arguments as a suggestion (MCPGOV-01).
+
+        The suggestion is never dispatched here; it goes back to the caller,
+        whose governed path decides on it like any other call.
+        """
+        try:
+            from app.mcp.tool_intelligence import get_healer, get_resolver
+
+            logger.info("self_heal_triggered", tool=tool_name, error=str(result.error)[:100])
+            healed = await get_healer(getattr(self, "_provider", None)).heal(
+                tool_name=tool_name,
+                tool_schema=await self._tool_input_schema(cfg, server_id, tool_name, tenant_ctx),
+                original_arguments=arguments,
+                failed_result=result,
+                resolver=get_resolver(),
+                tenant_ctx=tenant_ctx,
+            )
+        except Exception as exc:
+            logger.warning("self_heal_error: %s", exc)
+            return result
+        if not isinstance(healed, dict) or healed == arguments:
+            return result
+        suggestion = json.dumps(healed, default=str)[:1000]
+        return replace(
+            result,
+            error=(
+                f"{result.error} [Suggested corrected arguments for '{tool_name}' "
+                f"(not run): {suggestion}]"
+            ),
+            suggested_arguments=healed,
+        )
+
+    async def prepare_arguments(
+        self,
+        *,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> PreparedArguments:
+        """Normalise and validate a call's arguments BEFORE it is governed.
+
+        ``call_tool`` dispatches its arguments exactly as given (MCPGOV-01), so
+        a caller runs this first and governs + dispatches the result. An
+        unknown server or schema leaves the arguments unchanged.
+        """
+        cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
+        if cfg is None:
+            return PreparedArguments(dict(arguments or {}))
+        from app.mcp.tool_naming import strip_connection_prefix
+
+        bare = strip_connection_prefix(tool_name, cfg.name)
+        schema = await self._tool_input_schema(cfg, server_id, bare, tenant_ctx)
+        return prepare_tool_arguments(arguments, schema)
+
+    async def prepare_arguments_by_name(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+        server_id: str | None = None,
+    ) -> PreparedArguments:
+        """:meth:`prepare_arguments` for the connector ``call_tool_by_name`` picks."""
+        target = await self._resolve_tool_target(
+            tool_name=tool_name, tenant_ctx=tenant_ctx, server_id=server_id
+        )
+        if isinstance(target, ToolCallResult):  # dispatch will report the same error
+            return PreparedArguments(dict(arguments or {}))
+        return await self.prepare_arguments(
+            server_id=target[0], tool_name=target[1], arguments=arguments, tenant_ctx=tenant_ctx
+        )
+
     async def call_tool_by_name(
         self,
         *,
@@ -1985,6 +2058,23 @@ class MCPClient:
         ``mongodb_find``) is refused as ambiguous — it used to run on whichever
         connection was listed first.
         """
+        target = await self._resolve_tool_target(
+            tool_name=tool_name, tenant_ctx=tenant_ctx, server_id=server_id
+        )
+        if isinstance(target, ToolCallResult):
+            return target
+        return await self.call_tool(
+            server_id=target[0], tool_name=target[1], arguments=arguments, tenant_ctx=tenant_ctx
+        )
+
+    async def _resolve_tool_target(
+        self,
+        *,
+        tool_name: str,
+        tenant_ctx: TenantContext,
+        server_id: str | None = None,
+    ) -> tuple[str, str] | ToolCallResult:
+        """``(server_id, bare tool name)`` for :meth:`call_tool_by_name`, or the failure."""
         from app.mcp.tool_naming import connection_slug, strip_connection_prefix
 
         if server_id:
@@ -2014,9 +2104,7 @@ class MCPClient:
                     error=f"connector '{pinned_cfg.name}' does not expose tool '{bare}'",
                     server_id=server_id,
                 )
-            return await self.call_tool(
-                server_id=server_id, tool_name=bare, arguments=arguments, tenant_ctx=tenant_ctx
-            )
+            return server_id, bare
 
         try:
             records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
@@ -2051,17 +2139,9 @@ class MCPClient:
             elif tool_name in names:
                 bare_hits.append((server_id, conn_name or server_id))
         if len(targeted) == 1:
-            server_id, bare = targeted[0]
-            return await self.call_tool(
-                server_id=server_id, tool_name=bare, arguments=arguments, tenant_ctx=tenant_ctx
-            )
+            return targeted[0]
         if len(bare_hits) == 1 and not targeted:
-            return await self.call_tool(
-                server_id=bare_hits[0][0],
-                tool_name=tool_name,
-                arguments=arguments,
-                tenant_ctx=tenant_ctx,
-            )
+            return bare_hits[0][0], tool_name
         if len(bare_hits) > 1 or len(targeted) > 1:
             names = ", ".join(sorted(f"'{name}'" for _, name in bare_hits))
             return ToolCallResult(

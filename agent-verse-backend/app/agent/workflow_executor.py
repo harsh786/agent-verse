@@ -361,7 +361,12 @@ class WorkflowExecutor:
                                     break
                         except Exception:
                             pass
-                    tool_args = {"description": step.description, "context": prior_context}
+                    tool_args = await self._governable_arguments(
+                        server_id,
+                        step.tool,
+                        {"description": step.description, "context": prior_context},
+                        tenant_ctx,
+                    )
                     decision = await self._tool_gate.authorize(
                         tool_name=step.tool,
                         arguments=tool_args,
@@ -553,6 +558,31 @@ class WorkflowExecutor:
     async def _emit(self, event_callback: WorkflowEventCallback, event: dict[str, Any]) -> None:
         await event_callback(sanitize_event(event))
 
+    async def _governable_arguments(
+        self,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> dict[str, Any]:
+        """``arguments`` normalised to the tool's schema, for the gate AND the call.
+
+        MCPGOV-01: ``call_tool`` used to rewrite them after the gate had decided.
+        These platform-built arguments are not refused for schema errors (an
+        off-schema key is governed and dispatched as is) — only renamed.
+        """
+        from app.mcp.client import prepare_via
+
+        prepared = await prepare_via(
+            self._mcp_client,
+            "prepare_arguments",
+            server_id=server_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            tenant_ctx=tenant_ctx,
+        )
+        return arguments if prepared is None else prepared.arguments
+
     async def _run_step(
         self,
         step: StructuredStep | _StaticWorkflowStep,
@@ -568,7 +598,9 @@ class WorkflowExecutor:
                 "reason": "no_matching_connector_tool",
             }
 
-        arguments = _arguments_for_step(step, previous_outputs)
+        arguments = await self._governable_arguments(
+            tool.server_id, tool.name, _arguments_for_step(step, previous_outputs), tenant_ctx
+        )
         # Governed gate (was: no checks at all). ``requires_approval`` steps are
         # routed through HITL instead of being silently parked.
         decision = await self._tool_gate.authorize(

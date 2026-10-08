@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -385,11 +385,11 @@ def validate_tool_arguments(
     required: list[str] = schema.get("required") or []
 
     # 1. Missing required fields
-    for field in required:
-        if field not in arguments:
+    for name in required:
+        if name not in arguments:
             errors.append(
-                f"Missing required argument '{field}'. "
-                f"Expected type: {properties.get(field, {}).get('type', 'unknown')}."
+                f"Missing required argument '{name}'. "
+                f"Expected type: {properties.get(name, {}).get('type', 'unknown')}."
             )
 
     # 2. Unknown fields (warn — some servers are lenient but LLM should know)
@@ -402,3 +402,30 @@ def validate_tool_arguments(
                 )
 
     return errors
+
+
+@dataclass
+class PreparedArguments:
+    """A tool call's arguments as they will be governed AND dispatched."""
+
+    arguments: dict[str, Any]
+    errors: list[str] = field(default_factory=list)
+
+
+def prepare_tool_arguments(
+    arguments: dict[str, Any] | None,
+    schema: dict[str, Any] | None,
+) -> PreparedArguments:
+    """Normalise argument names to *schema*, then validate them (MCPGOV-01).
+
+    Runs BEFORE governance: policy rules, grants, the risk gate and a human
+    approval decide on exactly the arguments ``MCPClient.call_tool`` dispatches
+    (it no longer rewrites them). ``errors`` lists unknown and missing
+    arguments — a caller with an LLM- or user-authored call refuses to run it.
+    """
+    from app.mcp.tool_intelligence import get_resolver
+
+    normalised = dict(arguments or {})
+    if schema:
+        normalised = get_resolver().resolve(schema, normalised)
+    return PreparedArguments(normalised, validate_tool_arguments(normalised, schema))

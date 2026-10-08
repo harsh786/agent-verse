@@ -94,7 +94,7 @@ flowchart TD
             EX5["Executor LLM emits tool call"]
             EX6{"Cost over budget?"}
             EX7["exfil guard on write-sink args"]
-            EX8["MCP call_tool<br/>breaker → cache → resolve args<br/>→ dispatch → self-heal"]
+            EX8["MCP call_tool (args as governed)<br/>breaker → cache → dispatch<br/>→ self-heal suggestion"]
             EX9["output guardrails · sanitize · PII redact"]
             EXG{"grounding check<br/>claims vs evidence"}
             EXA["Audit record"]
@@ -247,8 +247,9 @@ Read this alongside the diagram — each number matches a node.
     - Executor LLM emits the tool call.
     - **Cost** check — over budget → **skip step** (note: charged for planning tokens first).
     - **exfil guard** blocks secrets/oversized payloads to write sinks.
-    - **MCP `call_tool`** — circuit-breaker → result-cache → arg-resolve → dispatch → LLM
-      self-heal on arg errors.
+    - **MCP `call_tool`** — circuit-breaker → result-cache → dispatch → self-heal
+      *suggestion* on arg errors. Arguments were normalised + validated before governance
+      and are dispatched unchanged (MCPGOV-01).
     - Output guardrails + sanitize + PII redaction.
     - **Grounding check** — claims vs tool-output evidence; **2 consecutive ungrounded** steps →
       `rag_remediate` (re-retrieve) → replan.

@@ -85,6 +85,27 @@ class TestUniversalArgumentResolver:
     def test_empty_args_returns_empty(self):
         assert self.r.resolve(JIRA_SEARCH_SCHEMA, {}) == {}
 
+    # ── A mapped key is renamed, not copied (MCPGOV-01) ───────────────────────
+
+    def test_mapped_source_key_is_renamed_to_the_schema_param(self):
+        # One value under one name: governance and the connector must see the same
+        # key, so the off-schema source name is not kept beside the schema name.
+        assert self.r.resolve(JIRA_SEARCH_SCHEMA, {"query": "project = BAU"}) == {
+            "jql": "project = BAU"
+        }
+
+    def test_off_schema_key_that_maps_nothing_is_kept(self):
+        resolved = self.r.resolve(JIRA_SEARCH_SCHEMA, {"jql": "x", "color": "red"})
+        assert resolved == {"jql": "x", "color": "red"}
+
+    def test_schema_key_used_as_a_source_is_kept(self):
+        schema = {
+            "type": "object",
+            "properties": {"title": {"type": "string"}, "page_title": {"type": "string"}},
+        }
+        resolved = self.r.resolve(schema, {"title": "T"})
+        assert resolved["title"] == "T"
+
     # ── Semantic alias resolution ─────────────────────────────────────────────
 
     def test_jira_query_becomes_jql(self):

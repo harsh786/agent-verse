@@ -186,3 +186,72 @@ async def test_unpersistable_approval_denies_workflow_tool_immediately() -> None
     hitl.wait_for_approval.assert_not_awaited()
     assert hitl._requests == {}  # no invisible, process-local request left behind
     mcp.call_tool.assert_not_called()
+
+
+# ── MCPGOV-01: the gate decides on exactly the arguments that are dispatched ──
+
+
+class _NormalisingMCP:
+    """Normalises like the real client (``prepare_arguments``) and records calls."""
+
+    def __init__(self, schema: dict) -> None:
+        self.schema = schema
+        self.dispatched: list[dict] = []
+
+    async def prepare_arguments(self, **kwargs: object) -> object:
+        from app.agent.tool_calls import prepare_tool_arguments
+
+        return prepare_tool_arguments(kwargs["arguments"], self.schema)  # type: ignore[arg-type]
+
+    async def call_tool(self, **kwargs: object) -> SimpleNamespace:
+        self.dispatched.append(kwargs["arguments"])  # type: ignore[arg-type]
+        return SimpleNamespace(success=True, output="rows", error=None)
+
+
+def _recording_gate() -> tuple[SimpleNamespace, list[dict]]:
+    governed: list[dict] = []
+
+    async def _authorize(**kwargs: object) -> SimpleNamespace:
+        governed.append(kwargs["arguments"])  # type: ignore[arg-type]
+        return SimpleNamespace(allowed=True, reason="")
+
+    return SimpleNamespace(authorize=_authorize), governed
+
+
+async def test_tool_step_governs_the_normalised_arguments_it_dispatches() -> None:
+    mcp = _NormalisingMCP({"type": "object", "properties": {"task_description": {}}})
+    gate, governed = _recording_gate()
+    ex = WorkflowExecutor(mcp_client=mcp, tool_gate=gate, goal_id="g1")  # type: ignore[arg-type]
+
+    await ex._execute_step(WorkflowStep(id="s1", description="d", tool="search_records"), T, {})
+
+    assert governed[0]["task_description"] == "d"
+    assert "description" not in governed[0]
+    assert mcp.dispatched == governed
+
+
+async def test_static_step_governs_the_normalised_arguments_it_dispatches() -> None:
+    mcp = _NormalisingMCP({"type": "object", "properties": {"jql_query": {}}})
+    gate, governed = _recording_gate()
+    tool = ToolRef(
+        server_id="jira", server_name="Jira", name="search_issue", description="jira search",
+        input_schema={},
+    )
+    plan = _StaticWorkflowPlan(
+        steps=[
+            _StaticWorkflowStep(
+                step_id="s1",
+                connector_name="jira",
+                agent_id=None,
+                intent="fetch_open_issues",
+                input_from=[],
+                requires_approval=False,
+            )
+        ]
+    )
+    ex = WorkflowExecutor(mcp_client=mcp, tool_gate=gate)  # type: ignore[arg-type]
+
+    await ex.execute(plan, T, tool_context=ToolContext(connectors=[], tools=[tool]))
+
+    assert governed == [{"jql_query": "statusCategory != Done ORDER BY updated DESC"}]
+    assert mcp.dispatched == governed
